@@ -439,10 +439,10 @@ export function App() {
     }
   });
 
-  // progress-as-rule: the menu bar is a thin rule across the content width;
+  // progress-as-rule: a short fixed rule centered over the content;
   // the accepted fraction draws in accent, the rest in border color.
-  const ruleWidth = () => Math.max(0, termWidth() - (sidebar() ? 27 : 0) - 4 - ` ${doneCount()}/${items.length} · ?`.length);
-  const ruleDone = () => Math.round((doneCount() / items.length) * ruleWidth());
+  const RULE_WIDTH = 24;
+  const ruleDone = () => Math.round((doneCount() / items.length) * RULE_WIDTH);
 
   return (
     <box flexDirection="column" flexGrow={1} backgroundColor={C.bg}>
@@ -452,12 +452,11 @@ export function App() {
         </Show>
         {/* content column: the menu bar heads only this section, never the sidebar */}
         <box flexDirection="column" flexGrow={1}>
-          <box height={1} paddingLeft={2} paddingRight={2}>
+          <box height={1} flexDirection="row" justifyContent="center">
             <text>
               <Sp fg={C.accent}>{"━".repeat(ruleDone())}</Sp>
-              <Sp fg={C.border}>{"─".repeat(ruleWidth() - ruleDone())}</Sp>
+              <Sp fg={C.border}>{"─".repeat(RULE_WIDTH - ruleDone())}</Sp>
               <Sp fg={C.muted}> {doneCount()}/{items.length}</Sp>
-              <Sp fg={C.dim}> · ?</Sp>
             </text>
           </box>
           <Show when={!allDone()} fallback={<DoneCard />}>
