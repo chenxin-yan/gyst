@@ -37,11 +37,22 @@ frame = t.captureCharFrame();
 assert(frame.includes("item 1/6"), "undo returns cursor");
 assert(frame.includes("0/6 done"), "undo clears the verdict");
 
-// tab: sidebar collapses
-await t.mockInput.pressKey("TAB");
+// a on an accepted item: toggle off, stay put
+await t.mockInput.pressKey("a");
 await t.renderOnce();
-assert(!t.captureCharFrame().includes("GROUPS"), "tab hides sidebar");
-await t.mockInput.pressKey("TAB");
+await t.mockInput.pressKey("k");
+await t.renderOnce();
+await t.mockInput.pressKey("a");
+await t.renderOnce();
+frame = t.captureCharFrame();
+assert(frame.includes("item 1/6"), "toggle-off stays put");
+assert(frame.includes("0/6 done"), "toggle-off clears the verdict");
+
+// s: sidebar collapses
+await t.mockInput.pressKey("s");
+await t.renderOnce();
+assert(!t.captureCharFrame().includes("GROUPS"), "s hides sidebar");
+await t.mockInput.pressKey("s");
 await t.renderOnce();
 
 // accept everything → done card
@@ -53,5 +64,5 @@ frame = t.captureCharFrame();
 assert(frame.includes("review complete"), "done card shows");
 assert(frame.includes("6/6 accepted"), "all verdicts counted");
 
-console.log("smoke OK — layout, expand toggle, accept→advance, undo, sidebar, done card");
+console.log("smoke OK — layout, expand toggle, accept toggle→advance, undo, sidebar, done card");
 process.exit(0);

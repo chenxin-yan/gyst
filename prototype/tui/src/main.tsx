@@ -41,7 +41,15 @@ function nextPending(from: number): number {
 
 function accept() {
   const it = current();
-  if (isAccepted(it.id)) return;
+  if (isAccepted(it.id)) {
+    // toggle off: unmark and stay put
+    const next = new Set(accepted());
+    next.delete(it.id);
+    setAccepted(next);
+    const i = undoStack.indexOf(it.id);
+    if (i !== -1) undoStack.splice(i, 1);
+    return;
+  }
   setAccepted(new Set([...accepted(), it.id]));
   undoStack.push(it.id);
   if (!allDone()) setCursor(nextPending(cursor()));
@@ -189,7 +197,7 @@ export function App() {
     if (key.name === "k") setCursor((cursor() - 1 + items.length) % items.length);
     if (key.name === "a") accept();
     if (key.name === "u") undo();
-    if (key.name === "tab") setSidebar(!sidebar());
+    if (key.name === "s") setSidebar(!sidebar());
     if (key.name === "e" && current().kind === "group") {
       const next = new Set(expanded());
       next.has(current().id) ? next.delete(current().id) : next.add(current().id);
@@ -224,7 +232,7 @@ export function App() {
         </Show>
       </box>
       <box height={1} paddingLeft={1} backgroundColor={C.panel}>
-        <text fg={C.dim}>j/k move   a accept→next   e expand   u undo   tab sidebar   q quit</text>
+        <text fg={C.dim}>j/k move   a accept⇄next   e expand   u undo   s sidebar   q quit</text>
       </box>
     </box>
   );

@@ -15,21 +15,22 @@ bun run smoke    # headless frame assertions
 ## The decided model
 
 **Layout**: triage queue — one item fullscreen at a time — plus a collapsible
-sidebar (`tab`) that tracks all groups/spotlight hunks with verdict marks
+sidebar (`s`) that tracks all groups/spotlight hunks with verdict marks
 (`✓` done, `▸` current, `·` pending) and a header progress bar.
 
 **Verdict model** (deliberately minimal):
 
-- `a` **accept** is the only verdict: "done reviewing this part". Auto-advances
-  to the next pending item; `u` undoes.
+- `a` **accept** is the only verdict: "done reviewing this part". It toggles:
+  accepting auto-advances to the next pending item, pressing `a` on an accepted
+  item unmarks it and stays put. `u` undoes the last accept.
 - `e` **expand** is a view toggle on groups (peek at all members inline), an
   action, not a verdict.
 - **No flag, no prompt box.** All conversation happens in the harness window;
   the agent reads the human's cursor + verdict state via the control plane
   (`pith session status`).
 
-Full grammar: `j/k` move · `a` accept→next · `e` expand · `u` undo ·
-`tab` sidebar · `q` quit.
+Full grammar: `j/k` move · `a` accept toggle (→next) · `e` expand · `u` undo ·
+`s` sidebar · `q` quit.
 
 ## Solid spike notes
 
