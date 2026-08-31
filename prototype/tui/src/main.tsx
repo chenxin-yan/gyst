@@ -5,7 +5,8 @@
 // Visual system: hunk's github-dark diff layering (row bg tints, tinted line-number
 // gutters, sign-colored rails) + opencode chrome (panel layering, peach accent,
 // key-normal/desc-muted hints, accent strip on the current row).
-import { render, useKeyboard } from "@opentui/solid";
+import { render, useKeyboard, useTerminalDimensions } from "@opentui/solid";
+import { createEffect } from "solid-js";
 import { For, Show, createSignal } from "solid-js";
 import { items, session, type DiffLine, type Item, type Member } from "./data";
 
@@ -37,6 +38,14 @@ const [accepted, setAccepted] = createSignal<ReadonlySet<string>>(new Set());
 const [expanded, setExpanded] = createSignal<ReadonlySet<string>>(new Set());
 const [sidebar, setSidebar] = createSignal(true);
 const undoStack: string[] = [];
+
+// Layout modes, hunk semantics: auto resolves from terminal width (>=120 → split).
+type LayoutMode = "auto" | "split" | "stack";
+const AUTO_SPLIT_MIN_WIDTH = 120;
+const [layoutMode, setLayoutMode] = createSignal<LayoutMode>("auto");
+const [termWidth, setTermWidth] = createSignal(100);
+const resolvedLayout = () =>
+  layoutMode() === "auto" ? (termWidth() >= AUTO_SPLIT_MIN_WIDTH ? "split" : "stack") : layoutMode();
 
 const current = () => items[cursor()]!;
 const isAccepted = (id: string) => accepted().has(id);
@@ -82,19 +91,104 @@ const stats = (lines: DiffLine[]) => ({
   del: lines.filter((l) => l.sign === "-").length,
 });
 
-/** One diff row: tinted line-number gutter + sign + content on a full-width tinted band. */
-function DiffRow(props: { line: DiffLine; no: string }) {
-  const l = () => props.line;
-  const rowBg = () => (l().sign === "+" ? C.addBg : l().sign === "-" ? C.delBg : C.bg);
-  const gutterBg = () => (l().sign === "+" ? C.addGutterBg : l().sign === "-" ? C.delGutterBg : C.bg);
-  const signFg = () => (l().sign === "+" ? C.addSign : l().sign === "-" ? C.delSign : C.dim);
+type NumberedLine = { sign: DiffLine["sign"]; text: string; oldNo: number | null; newNo: number | null };
+
+/** Walk lines assigning old/new numbers: context consumes both, '-' old only, '+' new only. */
+function numberLines(member: Member): NumberedLine[] {
+  let oldNo = member.start;
+  let newNo = member.start;
+  return member.lines.map((l) => {
+    if (l.sign === " ") return { ...l, oldNo: oldNo++, newNo: newNo++ };
+    if (l.sign === "-") return { ...l, oldNo: oldNo++, newNo: null };
+    return { ...l, oldNo: null, newNo: newNo++ };
+  });
+}
+
+type SplitCell = NumberedLine | null; // null = empty cell (panelAlt fill)
+
+/** hunk's positional pairing: per change block, deletion i pairs with addition i. */
+function splitRows(lines: NumberedLine[]): { left: SplitCell; right: SplitCell }[] {
+  const rows: { left: SplitCell; right: SplitCell }[] = [];
+  let i = 0;
+  while (i < lines.length) {
+    if (lines[i]!.sign === " ") {
+      rows.push({ left: lines[i]!, right: lines[i]! });
+      i++;
+      continue;
+    }
+    const removed: NumberedLine[] = [];
+    const added: NumberedLine[] = [];
+    while (i < lines.length && lines[i]!.sign !== " ") {
+      (lines[i]!.sign === "-" ? removed : added).push(lines[i]!);
+      i++;
+    }
+    for (let j = 0; j < Math.max(removed.length, added.length); j++) {
+      rows.push({ left: removed[j] ?? null, right: added[j] ?? null });
+    }
+  }
+  return rows;
+}
+
+/** hunk's stack ordering: context once, then per block all deletions before all additions. */
+function stackRows(lines: NumberedLine[]): NumberedLine[] {
+  const rows: NumberedLine[] = [];
+  let i = 0;
+  while (i < lines.length) {
+    if (lines[i]!.sign === " ") {
+      rows.push(lines[i]!);
+      i++;
+      continue;
+    }
+    const removed: NumberedLine[] = [];
+    const added: NumberedLine[] = [];
+    while (i < lines.length && lines[i]!.sign !== " ") {
+      (lines[i]!.sign === "-" ? removed : added).push(lines[i]!);
+      i++;
+    }
+    rows.push(...removed, ...added);
+  }
+  return rows;
+}
+
+const rowBg = (sign: DiffLine["sign"]) => (sign === "+" ? C.addBg : sign === "-" ? C.delBg : C.bg);
+const gutterBg = (sign: DiffLine["sign"]) => (sign === "+" ? C.addGutterBg : sign === "-" ? C.delGutterBg : C.bg);
+const signFg = (sign: DiffLine["sign"]) => (sign === "+" ? C.addSign : sign === "-" ? C.delSign : C.dim);
+const pad = (n: number | null, w: number) => (n === null ? "" : String(n)).padStart(w);
+
+/** Stack row: dual gutter `<old> <new> <sign>` (hunk rowStyle.ts:426-444). */
+function StackRow(props: { r: NumberedLine; w: number }) {
+  const r = () => props.r;
   return (
-    <box flexDirection="row" backgroundColor={rowBg()}>
-      <text fg={l().sign === " " ? C.dim : signFg()} bg={gutterBg()}>
-        {props.no} {l().sign === " " ? " " : l().sign}{" "}
+    <box flexDirection="row" backgroundColor={rowBg(r().sign)}>
+      <text fg={r().sign === " " ? C.dim : signFg(r().sign)} bg={gutterBg(r().sign)}>
+        {pad(r().oldNo, props.w)} {pad(r().newNo, props.w)} {r().sign === " " ? " " : r().sign}{" "}
       </text>
-      <text fg={l().sign === " " ? C.muted : C.fg}> {l().text}</text>
+      <text fg={r().sign === " " ? C.muted : C.fg}> {r().text}</text>
     </box>
+  );
+}
+
+/** One half of a split row; empty cells fill with panelAlt, no gutter numbers. */
+function SplitHalf(props: { cell: SplitCell; w: number; side: "left" | "right" }) {
+  const c = () => props.cell;
+  const no = () => (props.side === "left" ? c()!.oldNo : c()!.newNo);
+  const sign = (): DiffLine["sign"] => {
+    const s = c()!.sign;
+    if (s === " ") return " ";
+    return props.side === "left" ? "-" : "+";
+  };
+  return (
+    <Show
+      when={c()}
+      fallback={<box flexGrow={1} flexBasis={0} backgroundColor={C.panelAlt}><text> </text></box>}
+    >
+      <box flexGrow={1} flexBasis={0} flexDirection="row" backgroundColor={rowBg(sign())}>
+        <text fg={c()!.sign === " " ? C.dim : signFg(sign())} bg={gutterBg(sign())}>
+          {pad(no(), props.w)} {c()!.sign === " " ? " " : sign()}{" "}
+        </text>
+        <text fg={c()!.sign === " " ? C.muted : C.fg}> {c()!.text}</text>
+      </box>
+    </Show>
   );
 }
 
@@ -122,16 +216,25 @@ function FileHeader(props: { file: string; lines: DiffLine[]; tag?: string }) {
 }
 
 function MemberDiff(props: { member: Member; tag?: string }) {
-  const width = () => String(props.member.start + props.member.lines.length).length;
-  let n = props.member.start;
-  const numbered = props.member.lines.map((l) => {
-    const no = l.sign === "-" ? "" : String(n++);
-    return { l, no };
-  });
+  const w = () => String(props.member.start + props.member.lines.length).length;
+  const numbered = () => numberLines(props.member);
   return (
     <box flexDirection="column">
       <FileHeader file={props.member.file} lines={props.member.lines} tag={props.tag} />
-      <For each={numbered}>{(r) => <DiffRow line={r.l} no={r.no.padStart(width() + 1)} />}</For>
+      <Show
+        when={resolvedLayout() === "split"}
+        fallback={<For each={stackRows(numbered())}>{(r) => <StackRow r={r} w={w()} />}</For>}
+      >
+        <For each={splitRows(numbered())}>
+          {(row) => (
+            <box flexDirection="row">
+              <SplitHalf cell={row.left} w={w()} side="left" />
+              <text fg={C.border}>▌</text>
+              <SplitHalf cell={row.right} w={w()} side="right" />
+            </box>
+          )}
+        </For>
+      </Show>
     </box>
   );
 }
@@ -266,6 +369,7 @@ function KeyHints() {
     ["e", "expand"],
     ["u", "undo"],
     ["s", "sidebar"],
+    ["1/2/0", "layout"],
     ["q", "quit"],
   ];
   return (
@@ -281,7 +385,13 @@ function KeyHints() {
 }
 
 export function App() {
+  const dims = useTerminalDimensions();
+  createEffect(() => setTermWidth(dims().width));
+
   useKeyboard((key) => {
+    if (key.name === "1") setLayoutMode("split");
+    if (key.name === "2") setLayoutMode("stack");
+    if (key.name === "0") setLayoutMode("auto");
     if (key.name === "q" || (key.ctrl && key.name === "c")) process.exit(0);
     if (key.name === "j") setCursor((cursor() + 1) % items.length);
     if (key.name === "k") setCursor((cursor() - 1 + items.length) % items.length);
@@ -308,6 +418,7 @@ export function App() {
           <Sp fg={C.muted}> · {session.branch}</Sp>
         </text>
         <text>
+          <Sp fg={C.dim}>{layoutMode() === "auto" ? "auto·" : ""}{resolvedLayout()}  </Sp>
           <Sp fg={C.fg}>item {cursor() + 1}/{items.length}  </Sp>
           <Sp fg={C.accent}>{bar()}</Sp>
           <Sp fg={C.muted}>  {doneCount()}/{items.length} done</Sp>

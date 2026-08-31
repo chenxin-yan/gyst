@@ -29,7 +29,16 @@ sidebar (`s`) that tracks all groups/spotlight hunks with verdict marks
   (`pith session status`).
 
 Full grammar: `j/k` move · `a` accept toggle · `e` expand · `u` undo ·
-`s` sidebar · `q` quit.
+`s` sidebar · `1` split / `2` stack / `0` auto layout · `q` quit.
+
+**Layout modes** (hunk semantics, see `research/` brief): `auto` resolves from
+terminal width (≥120 → split, else stack). Split uses positional block pairing
+(deletion *i* pairs with addition *i*; odd side gets a panelAlt empty cell);
+stack emits all deletions then all additions per block with a dual
+`<old> <new> <sign>` gutter.
+
+**Agent notes**: accent-railed panel blocks — the group's pattern rationale and
+a per-spotlight `tldr` summarizing what the change does.
 
 ## Visual system
 

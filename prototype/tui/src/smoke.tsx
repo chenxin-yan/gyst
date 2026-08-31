@@ -46,6 +46,25 @@ frame = t.captureCharFrame();
 assert(frame.includes("item 1/6"), "undo returns cursor");
 assert(frame.includes("0/6 done"), "undo clears the verdict");
 
+// layout modes: width 100 → auto resolves stack; '1' forces split (pairing puts -/+ on one row)
+assert(t.captureCharFrame().includes("auto·stack"), "auto resolves stack at width 100");
+const onOneRow = (f: string) =>
+  f.split("\n").some((ln) => ln.includes("= getUser(") && ln.includes("= fetchUser("));
+assert(!onOneRow(t.captureCharFrame()), "stack keeps -/+ on separate rows");
+await t.mockInput.pressKey("1");
+await t.renderOnce();
+frame = t.captureCharFrame();
+assert(frame.includes(" split "), "header shows forced split");
+assert(onOneRow(frame), "split pairs deletion and addition on one row");
+await t.mockInput.pressKey("0");
+await t.renderOnce();
+t.resize(140, 30);
+await t.renderOnce();
+assert(t.captureCharFrame().includes("auto·split"), "auto resolves split at width 140");
+t.resize(100, 30);
+await t.renderOnce();
+assert(t.captureCharFrame().includes("auto·stack"), "auto falls back to stack when narrow");
+
 // s: sidebar collapses
 await t.mockInput.pressKey("s");
 await t.renderOnce();
@@ -64,5 +83,5 @@ frame = t.captureCharFrame();
 assert(frame.includes("review complete"), "done card shows");
 assert(frame.includes("6/6 accepted"), "all verdicts counted");
 
-console.log("smoke OK — layout, expand toggle, accept toggle, undo, sidebar, done card");
+console.log("smoke OK — layout modes, expand toggle, accept toggle, undo, sidebar, done card");
 process.exit(0);
