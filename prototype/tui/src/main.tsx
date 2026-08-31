@@ -377,7 +377,7 @@ function KeyHints() {
       {hints.map(([key, desc]) => (
         <>
           <Sp fg={C.fg}>{key}</Sp>
-          <Sp fg={C.dim}> {desc}   </Sp>
+          <Sp fg={C.muted}> {desc}   </Sp>
         </>
       ))}
     </text>
@@ -412,9 +412,9 @@ export function App() {
 
   return (
     <box flexDirection="column" flexGrow={1} backgroundColor={C.bg}>
-      <box height={1} paddingLeft={2} paddingRight={2} backgroundColor={C.panel} flexDirection="row" justifyContent="space-between">
+      <box height={1} paddingLeft={2} paddingRight={2} flexDirection="row" justifyContent="space-between">
         <text>
-          <Sp fg={C.accent} attributes={1}>● pith</Sp>
+          <Sp fg={C.fg} attributes={1}>{session.scope}</Sp>
           <Sp fg={C.muted}> · {session.branch}</Sp>
         </text>
         <text>
@@ -432,7 +432,7 @@ export function App() {
           <FocusCard />
         </Show>
       </box>
-      <box height={1} paddingLeft={2} backgroundColor={C.bg}>
+      <box height={1} paddingLeft={2} backgroundColor={C.panelAlt}>
         <KeyHints />
       </box>
     </box>
