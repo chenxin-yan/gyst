@@ -22,31 +22,29 @@ await t.mockInput.pressKey("e");
 await t.renderOnce();
 assert(t.captureCharFrame().includes("exemplar · 1 of 8"), "expand folds back");
 
-// a: accept → auto-advance
+// a: accept marks the item and stays put
 await t.mockInput.pressKey("a");
 await t.renderOnce();
 frame = t.captureCharFrame();
-assert(frame.includes("item 2/6"), "accept auto-advances");
+assert(frame.includes("item 1/6"), "accept stays put");
 assert(frame.includes("1/6 done"), "progress counts the verdict");
-assert(frame.includes("import path"), "next group focused");
+assert(frame.includes("✓ accepted"), "card shows the verdict");
 
-// u: undo returns to the undone item
+// a again: toggle off
+await t.mockInput.pressKey("a");
+await t.renderOnce();
+assert(t.captureCharFrame().includes("0/6 done"), "toggle-off clears the verdict");
+
+// u: undo jumps back to the last accepted item
+await t.mockInput.pressKey("a");
+await t.renderOnce();
+await t.mockInput.pressKey("j");
+await t.renderOnce();
 await t.mockInput.pressKey("u");
 await t.renderOnce();
 frame = t.captureCharFrame();
 assert(frame.includes("item 1/6"), "undo returns cursor");
 assert(frame.includes("0/6 done"), "undo clears the verdict");
-
-// a on an accepted item: toggle off, stay put
-await t.mockInput.pressKey("a");
-await t.renderOnce();
-await t.mockInput.pressKey("k");
-await t.renderOnce();
-await t.mockInput.pressKey("a");
-await t.renderOnce();
-frame = t.captureCharFrame();
-assert(frame.includes("item 1/6"), "toggle-off stays put");
-assert(frame.includes("0/6 done"), "toggle-off clears the verdict");
 
 // s: sidebar collapses
 await t.mockInput.pressKey("s");
@@ -59,10 +57,12 @@ await t.renderOnce();
 for (let i = 0; i < 6; i++) {
   await t.mockInput.pressKey("a");
   await t.renderOnce();
+  await t.mockInput.pressKey("j");
+  await t.renderOnce();
 }
 frame = t.captureCharFrame();
 assert(frame.includes("review complete"), "done card shows");
 assert(frame.includes("6/6 accepted"), "all verdicts counted");
 
-console.log("smoke OK — layout, expand toggle, accept toggle→advance, undo, sidebar, done card");
+console.log("smoke OK — layout, expand toggle, accept toggle, undo, sidebar, done card");
 process.exit(0);

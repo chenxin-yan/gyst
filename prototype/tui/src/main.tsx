@@ -31,14 +31,6 @@ const isAccepted = (id: string) => accepted().has(id);
 const doneCount = () => accepted().size;
 const allDone = () => doneCount() === items.length;
 
-function nextPending(from: number): number {
-  for (let step = 1; step <= items.length; step++) {
-    const i = (from + step) % items.length;
-    if (!accepted().has(items[i]!.id)) return i;
-  }
-  return from;
-}
-
 function accept() {
   const it = current();
   if (isAccepted(it.id)) {
@@ -52,7 +44,6 @@ function accept() {
   }
   setAccepted(new Set([...accepted(), it.id]));
   undoStack.push(it.id);
-  if (!allDone()) setCursor(nextPending(cursor()));
 }
 
 function undo() {
@@ -232,7 +223,7 @@ export function App() {
         </Show>
       </box>
       <box height={1} paddingLeft={1} backgroundColor={C.panel}>
-        <text fg={C.dim}>j/k move   a accept⇄next   e expand   u undo   s sidebar   q quit</text>
+        <text fg={C.dim}>j/k move   a accept   e expand   u undo   s sidebar   q quit</text>
       </box>
     </box>
   );
