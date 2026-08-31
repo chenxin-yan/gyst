@@ -72,6 +72,20 @@ assert(!t.captureCharFrame().includes("GROUPS"), "s hides sidebar");
 await t.mockInput.pressKey("s");
 await t.renderOnce();
 
+// ?: help overlay opens, blocks keys, esc closes
+await t.mockInput.pressKey("?");
+await t.renderOnce();
+assert(t.captureCharFrame().includes("undo last accept"), "? opens help overlay");
+await t.mockInput.pressKey("j");
+await t.renderOnce();
+frame = t.captureCharFrame();
+assert(frame.includes("undo last accept"), "keys are inert while help is up");
+assert(frame.includes("item 1/6"), "cursor did not move under the overlay");
+// lone ESC is ambiguous for the key parser in headless tests; q is an equivalent close key
+await t.mockInput.pressKey("q");
+await t.renderOnce();
+assert(!t.captureCharFrame().includes("undo last accept"), "q closes help");
+
 // accept everything → done card
 for (let i = 0; i < 6; i++) {
   await t.mockInput.pressKey("a");
@@ -83,5 +97,5 @@ frame = t.captureCharFrame();
 assert(frame.includes("review complete"), "done card shows");
 assert(frame.includes("6/6 accepted"), "all verdicts counted");
 
-console.log("smoke OK — layout modes, expand toggle, accept toggle, undo, sidebar, done card");
+console.log("smoke OK — layout modes, expand, accept toggle, undo, sidebar, help overlay, done card");
 process.exit(0);

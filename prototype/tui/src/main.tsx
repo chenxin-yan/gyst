@@ -37,6 +37,7 @@ const [cursor, setCursor] = createSignal(0);
 const [accepted, setAccepted] = createSignal<ReadonlySet<string>>(new Set());
 const [expanded, setExpanded] = createSignal<ReadonlySet<string>>(new Set());
 const [sidebar, setSidebar] = createSignal(true);
+const [help, setHelp] = createSignal(false);
 const undoStack: string[] = [];
 
 // Layout modes, hunk semantics: auto resolves from terminal width (>=120 → split).
@@ -362,25 +363,48 @@ function DoneCard() {
   );
 }
 
-function KeyHints() {
-  const hints: [string, string][] = [
-    ["j/k", "move"],
-    ["a", "accept"],
-    ["e", "expand"],
-    ["u", "undo"],
-    ["s", "sidebar"],
-    ["1/2/0", "layout"],
+/** Centered help modal, hunk ModalFrame style: panel fill, accent border, key column accent. */
+function HelpOverlay() {
+  const rows: [string, string][] = [
+    ["j / k", "next / previous item"],
+    ["a", "accept — done reviewing (toggle)"],
+    ["e", "expand group members (toggle)"],
+    ["u", "undo last accept"],
+    ["s", "toggle sidebar"],
+    ["1 / 2 / 0", "split / stack / auto layout"],
     ["q", "quit"],
   ];
+  const width = 48;
   return (
-    <text>
-      {hints.map(([key, desc]) => (
-        <>
-          <Sp fg={C.fg}>{key}</Sp>
-          <Sp fg={C.muted}> {desc}   </Sp>
-        </>
-      ))}
-    </text>
+    <box
+      position="absolute"
+      left={Math.max(0, Math.floor((termWidth() - width) / 2))}
+      top={4}
+      width={width}
+      zIndex={10}
+      backgroundColor={C.panel}
+      border
+      borderColor={C.border}
+      flexDirection="column"
+      paddingLeft={2}
+      paddingRight={2}
+      paddingTop={1}
+      paddingBottom={1}
+    >
+      <box flexDirection="row" justifyContent="space-between">
+        <text fg={C.fg} attributes={1}>keys</text>
+        <text fg={C.dim}>? / esc</text>
+      </box>
+      <text> </text>
+      <For each={rows}>
+        {([key, desc]) => (
+          <text>
+            <Sp fg={C.accent}>{key.padEnd(11)}</Sp>
+            <Sp fg={C.muted}>{desc}</Sp>
+          </text>
+        )}
+      </For>
+    </box>
   );
 }
 
@@ -389,10 +413,20 @@ export function App() {
   createEffect(() => setTermWidth(dims().width));
 
   useKeyboard((key) => {
+    if (key.ctrl && key.name === "c") process.exit(0);
+    if (help()) {
+      // any of ?, esc, q closes the overlay; everything else is inert while it is up
+      if (key.name === "?" || key.name === "escape" || key.name === "q") setHelp(false);
+      return;
+    }
+    if (key.name === "?") {
+      setHelp(true);
+      return;
+    }
     if (key.name === "1") setLayoutMode("split");
     if (key.name === "2") setLayoutMode("stack");
     if (key.name === "0") setLayoutMode("auto");
-    if (key.name === "q" || (key.ctrl && key.name === "c")) process.exit(0);
+    if (key.name === "q") process.exit(0);
     if (key.name === "j") setCursor((cursor() + 1) % items.length);
     if (key.name === "k") setCursor((cursor() - 1 + items.length) % items.length);
     if (key.name === "a") accept();
@@ -412,16 +446,13 @@ export function App() {
 
   return (
     <box flexDirection="column" flexGrow={1} backgroundColor={C.bg}>
-      <box height={1} paddingLeft={2} paddingRight={2} flexDirection="row" justifyContent="space-between">
-        <text>
-          <Sp fg={C.fg} attributes={1}>{session.scope}</Sp>
-          <Sp fg={C.muted}> · {session.branch}</Sp>
-        </text>
+      <box height={1} paddingLeft={2} paddingRight={2} flexDirection="row" justifyContent="flex-end">
         <text>
           <Sp fg={C.dim}>{layoutMode() === "auto" ? "auto·" : ""}{resolvedLayout()}  </Sp>
           <Sp fg={C.fg}>item {cursor() + 1}/{items.length}  </Sp>
           <Sp fg={C.accent}>{bar()}</Sp>
           <Sp fg={C.muted}>  {doneCount()}/{items.length} done</Sp>
+          <Sp fg={C.dim}>   ? help</Sp>
         </text>
       </box>
       <box flexDirection="row" flexGrow={1}>
@@ -432,9 +463,9 @@ export function App() {
           <FocusCard />
         </Show>
       </box>
-      <box height={1} paddingLeft={2} backgroundColor={C.panelAlt}>
-        <KeyHints />
-      </box>
+      <Show when={help()}>
+        <HelpOverlay />
+      </Show>
     </box>
   );
 }
