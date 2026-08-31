@@ -17,6 +17,7 @@ export type Item =
       id: string;
       file: string;
       hunkHeader: string;
+      tldr: string;
       start: number;
       lines: DiffLine[];
     };
@@ -92,6 +93,7 @@ export const items: Item[] = [
     kind: "spotlight",
     id: "s1",
     start: 40,
+    tldr: "resolve() now serves fresh cache hits and refreshes expired ones instead of returning stale entries",
     file: "src/api/session.ts",
     hunkHeader: "@@ -40,7 +40,11 @@ export function resolve(key: string)",
     lines: [
@@ -107,6 +109,7 @@ export const items: Item[] = [
     kind: "spotlight",
     id: "s2",
     start: 12,
+    tldr: "new expired() helper — TTL check used by session.ts to decide cache freshness",
     file: "src/lib/cache.ts",
     hunkHeader: "@@ -12,4 +12,9 @@ export function expired(entry: Entry)",
     lines: [
@@ -119,6 +122,7 @@ export const items: Item[] = [
     kind: "spotlight",
     id: "s3",
     start: 88,
+    tldr: "sync tick now skips keys already in flight — prevents duplicate pushes under slow networks",
     file: "src/workers/sync.ts",
     hunkHeader: "@@ -88,6 +88,8 @@ async function tick()",
     lines: [

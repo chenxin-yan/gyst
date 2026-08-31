@@ -67,6 +67,16 @@ function undo() {
   setCursor(items.findIndex((it) => it.id === id));
 }
 
+/** Agent note: pronounced accent-railed block, hunk note style. */
+function Note(props: { text: string }) {
+  return (
+    <box flexDirection="row" backgroundColor={C.panel} marginTop={1}>
+      <text fg={C.accent} bg={C.panel}>▌ </text>
+      <text fg={C.fg} bg={C.panel}>{props.text}</text>
+    </box>
+  );
+}
+
 const stats = (lines: DiffLine[]) => ({
   add: lines.filter((l) => l.sign === "+").length,
   del: lines.filter((l) => l.sign === "-").length,
@@ -178,7 +188,7 @@ function GroupCard(props: { item: Item & { kind: "group" } }) {
         <Sp fg={C.dim}>  ×{g().members.length}</Sp>
         <VerdictTag id={g().id} />
       </text>
-      <text fg={C.muted} attributes={2}>agent: {g().agentNote}</text>
+      <Note text={g().agentNote} />
       <text> </text>
       <Show
         when={open()}
@@ -220,6 +230,7 @@ function SpotlightCard(props: { item: Item & { kind: "spotlight" } }) {
         <VerdictTag id={s().id} />
       </text>
       <text fg={C.muted} attributes={2}>{s().hunkHeader}</text>
+      <Note text={s().tldr} />
       <text> </text>
       <MemberDiff member={{ file: s().file, lines: s().lines, start: s().start }} />
     </box>
