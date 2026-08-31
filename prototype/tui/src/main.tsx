@@ -258,10 +258,6 @@ function Sidebar() {
       </box>
     );
   };
-  const bar = () => {
-    const filled = Math.round((doneCount() / items.length) * 10);
-    return "━".repeat(filled) + "╌".repeat(10 - filled);
-  };
   return (
     <box width={27} flexDirection="column" backgroundColor={C.panel} paddingTop={1} paddingBottom={1}>
       <text fg={C.dim} attributes={1}>{"  GROUPS"}</text>
@@ -273,12 +269,6 @@ function Sidebar() {
       <For each={items.filter((it) => it.kind === "spotlight")}>
         {(it) => row(it, (it as Item & { kind: "spotlight" }).file.replace("src/", ""))}
       </For>
-      <box flexGrow={1} />
-      <text>
-        <Sp fg={C.accent}>{"  "}{bar()}</Sp>
-        <Sp fg={C.muted}> {doneCount()}/{items.length}</Sp>
-        <Sp fg={C.dim}> · ?</Sp>
-      </text>
     </box>
   );
 }
@@ -449,15 +439,32 @@ export function App() {
     }
   });
 
+  const bar = () => {
+    const filled = Math.round((doneCount() / items.length) * 10);
+    return "━".repeat(filled) + "╌".repeat(10 - filled);
+  };
+
   return (
     <box flexDirection="column" flexGrow={1} backgroundColor={C.bg}>
       <box flexDirection="row" flexGrow={1}>
         <Show when={sidebar()}>
           <Sidebar />
         </Show>
-        <Show when={!allDone()} fallback={<DoneCard />}>
-          <FocusCard />
-        </Show>
+        {/* content column: the menu bar heads only this section, never the sidebar */}
+        <box flexDirection="column" flexGrow={1}>
+          <box height={1} paddingLeft={2} paddingRight={2} flexDirection="row" justifyContent="flex-end">
+            <text>
+              <Sp fg={C.dim}>{layoutMode() === "auto" ? "auto·" : ""}{resolvedLayout()}  </Sp>
+              <Sp fg={C.fg}>item {cursor() + 1}/{items.length}  </Sp>
+              <Sp fg={C.accent}>{bar()}</Sp>
+              <Sp fg={C.muted}>  {doneCount()}/{items.length} done</Sp>
+              <Sp fg={C.dim}>   ? help</Sp>
+            </text>
+          </box>
+          <Show when={!allDone()} fallback={<DoneCard />}>
+            <FocusCard />
+          </Show>
+        </box>
       </box>
       <Show when={help()}>
         <HelpOverlay />

@@ -31,10 +31,10 @@ sidebar (`s`) that tracks all groups/spotlight hunks with verdict marks
 Full grammar: `j/k` move · `a` accept toggle · `e` expand · `u` undo ·
 `s` sidebar · `1` split / `2` stack / `0` auto layout · `?` help overlay · `q` quit.
 
-Chrome is minimal: no header, no footer. Progress (bar · done/total · `?`) is
-pinned to the sidebar footer; hiding the sidebar leaves nothing but the diff.
-The keymap lives in a centered `?` overlay (panel fill, key column accent,
-closed by `?`/esc/q).
+Chrome is minimal: one quiet menu bar heading only the content section (the
+sidebar runs full-height beside it) — layout mode · item · progress · `? help`,
+right-aligned, no background band. No footer — the keymap lives in a centered
+`?` overlay (panel fill, key column accent, closed by `?`/esc/q).
 
 **Layout modes** (hunk semantics, see `research/` brief): `auto` resolves from
 terminal width (≥120 → split, else stack). Split uses positional block pairing
