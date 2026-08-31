@@ -17,8 +17,8 @@ The residual set of hunks the human must read in full — everything not folded 
 _Avoid_: Meat, important hunks
 
 **Verdict**:
-The human's ruling on a group or hunk: accept the fold, expand it, or flag it. Verdicts live in the session; they are never exported.
-_Avoid_: Approval, resolution
+The human's single ruling on a group or spotlight hunk: accept — "done reviewing this part". Expanding a group is a view action, not a verdict; there is no flag. Verdicts live in the session; they are never exported.
+_Avoid_: Approval, resolution, flag
 
 **Pre-pass**:
 The agent's batch phase before the human looks: gather codebase/PR context, propose groups and the spotlight through the control plane.
