@@ -21,8 +21,12 @@ The human's single ruling on a group or spotlight hunk: accept — "done reviewi
 _Avoid_: Approval, resolution, flag
 
 **Pre-pass**:
-The agent's batch phase before the human looks: gather codebase/PR context, propose groups and the spotlight through the control plane.
+The agent's batch phase before the human looks: gather context on the scoped change, propose groups and the spotlight through the control plane.
 _Avoid_: Analysis phase, triage
+
+**Scope**:
+What the human hands the harness to review — any diff range, not just a PR: uncommitted changes, a ref range, a PR. Named in the invocation ("/pith uncommitted changes", "/pith PR 42") and shown in the session header.
+_Avoid_: Target, range
 
 **Co-review**:
 The live phase after the pre-pass: human drives the TUI, agent operates the same session through the control plane.
