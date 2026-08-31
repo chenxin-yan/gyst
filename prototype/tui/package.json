@@ -1,0 +1,17 @@
+{
+  "name": "pith-tui-prototype",
+  "private": true,
+  "scripts": {
+    "start": "bun src/main.tsx",
+    "smoke": "bun src/smoke.tsx"
+  },
+  "dependencies": {
+    "@opentui/core": "^0.5.9",
+    "@opentui/solid": "^0.5.9",
+    "solid-js": "^1.9.0"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.4.0",
+    "typescript": "^7.0.2"
+  }
+}
