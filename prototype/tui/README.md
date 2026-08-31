@@ -31,6 +31,17 @@ sidebar (`s`) that tracks all groups/spotlight hunks with verdict marks
 Full grammar: `j/k` move · `a` accept toggle · `e` expand · `u` undo ·
 `s` sidebar · `q` quit.
 
+## Visual system
+
+Stolen deliberately, from source-mined briefs of hunk and opencode:
+
+- **hunk (github-dark)**: diff row bg tints (`#12251d` add / `#3c1e21` del), tinted
+  line-number gutters, sign-colored `+`/`-`, panel layering (`#0d1117` base,
+  `#1e2329` panel, `#272b31` elevated), file-header band with right-aligned
+  `+N -N` badges, accent strip `▌` on the current sidebar row.
+- **opencode**: peach accent `#fab283`, key-normal/description-muted hint pairs,
+  `·` metadata separators, unicode markers over icon boxes, whitespace over borders.
+
 ## Solid spike notes
 
 - `@opentui/solid` 0.5.9 works: render/useKeyboard/scrollbox/flex/testRender all fine under Bun with the `@opentui/solid/preload` bunfig entry.

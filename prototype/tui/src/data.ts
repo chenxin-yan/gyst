@@ -2,7 +2,7 @@
 
 export type DiffLine = { sign: " " | "+" | "-"; text: string };
 
-export type Member = { file: string; lines: DiffLine[] };
+export type Member = { file: string; lines: DiffLine[]; start: number };
 
 export type Item =
   | {
@@ -17,11 +17,13 @@ export type Item =
       id: string;
       file: string;
       hunkHeader: string;
+      start: number;
       lines: DiffLine[];
     };
 
 const rename = (file: string): Member => ({
   file,
+  start: 12,
   lines: [
     { sign: " ", text: "  const session = await auth(ctx)" },
     { sign: "-", text: "  const user = getUser(session.id)" },
@@ -31,6 +33,7 @@ const rename = (file: string): Member => ({
 
 const importPath = (file: string): Member => ({
   file,
+  start: 1,
   lines: [
     { sign: "-", text: 'import { retry } from "../../lib/retry"' },
     { sign: "+", text: 'import { retry } from "@app/lib/retry"' },
@@ -39,6 +42,7 @@ const importPath = (file: string): Member => ({
 
 const guard = (file: string): Member => ({
   file,
+  start: 18,
   lines: [
     { sign: " ", text: "  const user = fetchUser(id)" },
     { sign: "+", text: "  if (!user) return null" },
@@ -87,6 +91,7 @@ export const items: Item[] = [
   {
     kind: "spotlight",
     id: "s1",
+    start: 40,
     file: "src/api/session.ts",
     hunkHeader: "@@ -40,7 +40,11 @@ export function resolve(key: string)",
     lines: [
@@ -101,6 +106,7 @@ export const items: Item[] = [
   {
     kind: "spotlight",
     id: "s2",
+    start: 12,
     file: "src/lib/cache.ts",
     hunkHeader: "@@ -12,4 +12,9 @@ export function expired(entry: Entry)",
     lines: [
@@ -112,6 +118,7 @@ export const items: Item[] = [
   {
     kind: "spotlight",
     id: "s3",
+    start: 88,
     file: "src/workers/sync.ts",
     hunkHeader: "@@ -88,6 +88,8 @@ async function tick()",
     lines: [
