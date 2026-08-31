@@ -11,7 +11,6 @@ let frame = t.captureCharFrame();
 assert(frame.includes("GROUPS"), "sidebar renders");
 assert(frame.includes("rename getUser → fetchUser"), "first group focused");
 assert(frame.includes("exemplar · 1 of 8"), "folded card shows exemplar");
-assert(frame.includes("0/6"), "sidebar footer shows progress");
 
 // e: expand toggle (peek, not a verdict)
 await t.mockInput.pressKey("e");
@@ -27,13 +26,12 @@ await t.mockInput.pressKey("a");
 await t.renderOnce();
 frame = t.captureCharFrame();
 assert(frame.includes("exemplar · 1 of 8"), "accept stays put (same card)");
-assert(frame.includes("1/6"), "progress counts the verdict");
 assert(frame.includes("✓ accepted"), "card shows the verdict");
 
 // a again: toggle off
 await t.mockInput.pressKey("a");
 await t.renderOnce();
-assert(t.captureCharFrame().includes("0/6"), "toggle-off clears the verdict");
+assert(!t.captureCharFrame().includes("✓ accepted"), "toggle-off clears the verdict");
 
 // u: undo jumps back to the last accepted item
 await t.mockInput.pressKey("a");
@@ -44,7 +42,7 @@ await t.mockInput.pressKey("u");
 await t.renderOnce();
 frame = t.captureCharFrame();
 assert(frame.includes("exemplar · 1 of 8"), "undo returns cursor to the undone item");
-assert(frame.includes("0/6"), "undo clears the verdict");
+assert(!frame.includes("✓ accepted"), "undo clears the verdict");
 
 // layout modes: width 100 → auto resolves stack; '1' forces split (pairing puts -/+ on one row)
 const onOneRow = (f: string) =>
