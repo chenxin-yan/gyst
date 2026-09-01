@@ -1,10 +1,10 @@
-# pith
+# gyst
 
 ## Agent skills
 
 ### Issue tracker
 
-Issues are tracked in GitHub Issues (`chenxin-yan/pith`) via the `gh` CLI. See `docs/agents/issue-tracker.md`.
+Issues are tracked in GitHub Issues (`chenxin-yan/gyst`) via the `gh` CLI. See `docs/agents/issue-tracker.md`.
 
 ### Triage labels
 

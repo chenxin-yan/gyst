@@ -101,7 +101,7 @@ Open `src/ui/themes.ts:158-275` first: it is the palette authority. Then read `s
     }
   ],
   "changedFiles": [
-    "/home/cyan/.pi/agent/sessions/--home-cyan-dev-github.com-chenxin-yan-pith--/subagent-artifacts/outputs/d6d315d3-bf72-4a70-a04b-7670c96d0a15/hunk-visuals.md"
+    "/home/cyan/.pi/agent/sessions/--home-cyan-dev-github.com-chenxin-yan-gyst--/subagent-artifacts/outputs/d6d315d3-bf72-4a70-a04b-7670c96d0a15/hunk-visuals.md"
   ],
   "testsAddedOrUpdated": [],
   "commandsRun": [

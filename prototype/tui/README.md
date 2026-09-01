@@ -1,4 +1,4 @@
-# PROTOTYPE — pith TUI, winning hybrid layout
+# PROTOTYPE — gyst TUI, winning hybrid layout
 
 Throwaway. Answers ticket #12: **layout + interaction model for a folded session.**
 Doubles as the OpenTUI+Solid spike.
@@ -26,14 +26,14 @@ sidebar (`s`) that tracks all groups/spotlight hunks with verdict marks
   action, not a verdict.
 - **No flag, no prompt box.** All conversation happens in the harness window;
   the agent reads the human's cursor + verdict state via the control plane
-  (`pith session status`).
+  (`gyst session status`).
 
 Full grammar: `j/k` move · `a` accept toggle · `e` expand · `u` undo ·
 `s` sidebar · `1` split / `2` stack / `0` auto layout · `?` help overlay · `q` quit.
 
 Chrome is zero: no header, no footer, no progress bar — the sidebar's `✓`
 marks are the progress (per-item and spatial), and the done card announces
-completion. Neither hunk nor opencode ships floating status chrome; pith
+completion. Neither hunk nor opencode ships floating status chrome; gyst
 follows. The keymap lives in a centered overlay on the `?` key (closed by
 `?`/esc/q).
 

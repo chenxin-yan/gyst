@@ -80,7 +80,7 @@ Diff palette (`packages/tui/src/theme/assets/opencode.json:104-150`):
     }
   ],
   "changedFiles": [
-    "/home/cyan/.pi/agent/sessions/--home-cyan-dev-github.com-chenxin-yan-pith--/subagent-artifacts/outputs/d6d315d3-bf72-4a70-a04b-7670c96d0a15/opencode-visuals.md"
+    "/home/cyan/.pi/agent/sessions/--home-cyan-dev-github.com-chenxin-yan-gyst--/subagent-artifacts/outputs/d6d315d3-bf72-4a70-a04b-7670c96d0a15/opencode-visuals.md"
   ],
   "testsAddedOrUpdated": [],
   "commandsRun": [

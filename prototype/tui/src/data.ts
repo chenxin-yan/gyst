@@ -136,7 +136,7 @@ export const items: Item[] = [
 ];
 
 export const session = {
-  // whatever the human handed the harness: "/pith uncommitted changes", "/pith PR 42", "/pith main..feat/x"
+  // whatever the human handed the harness: "/gyst uncommitted changes", "/gyst PR 42", "/gyst main..feat/x"
   scope: "uncommitted changes",
   branch: "feat/rename-user-service",
   totalHunks: items.reduce((n, it) => n + (it.kind === "group" ? it.members.length : 1), 0),

@@ -1,18 +1,18 @@
 # Code Context
 
 ## Files Retrieved
-1. `/tmp/pith-src/hunk/src/ui/lib/responsive.ts` (lines 6-55) - effective auto/explicit layout policy and width thresholds.
-2. `/tmp/pith-src/hunk/src/ui/App.tsx` (lines 213-218, 418-423, 646-724, 813-817) - requested-mode state, terminal-vs-pane width inputs, viewport width, and mode-change scroll capture.
-3. `/tmp/pith-src/hunk/src/core/run/commandCatalog.ts` (lines 315-341) - default layout keybindings.
-4. `/tmp/pith-src/hunk/src/ui/diff/diffRows.ts` (lines 317-369, 767-885, 888-985) - split/stack row construction, hunk block pairing, and padding.
-5. `/tmp/pith-src/hunk/src/ui/diff/codeColumns.ts` (lines 8-11, 113-171) - split pane widths, separator/rail constants, gutters, and code viewports.
-6. `/tmp/pith-src/hunk/src/ui/diff/rowStyle.ts` (lines 116-185, 426-459) - cell palettes and exact gutter strings.
-7. `/tmp/pith-src/hunk/src/ui/diff/CodeCellView.tsx` (lines 151-266, 505-570, 1006-1078, 1093-1155, 1163-1262) - OpenTUI direct styled-text composition and wrap/nowrap behavior.
-8. `/tmp/pith-src/hunk/src/ui/diff/styledSpanLayout.ts` (lines 56-122, 153-229) - terminal-cell slicing and wrapping.
-9. `/tmp/pith-src/hunk/src/ui/lib/lineCursors.ts` (lines 50-107, 157-182, 224-243) - cursor semantics for context/change rows.
-10. `/tmp/pith-src/hunk/src/ui/components/panes/DiffPane.tsx` (lines 1191-1309, 2130-2275, 2719-2722) - measured cursor list, mode-aware cursor paint, scroll-anchor restoration, and content remount.
-11. `/tmp/pith-src/hunk/src/opentui/HunkDiffBody.tsx` (lines 19-47) and `/tmp/pith-src/hunk/src/opentui/types.ts` (lines 4, 40-68) - reusable OpenTUI primitive accepts only resolved split/stack; app resolves auto before it.
-12. `/tmp/pith-src/hunk/src/ui/themes.ts` (lines 181-259) - semantic color derivation; evaluated default themes with the source's `resolveTheme`.
+1. `/tmp/gyst-src/hunk/src/ui/lib/responsive.ts` (lines 6-55) - effective auto/explicit layout policy and width thresholds.
+2. `/tmp/gyst-src/hunk/src/ui/App.tsx` (lines 213-218, 418-423, 646-724, 813-817) - requested-mode state, terminal-vs-pane width inputs, viewport width, and mode-change scroll capture.
+3. `/tmp/gyst-src/hunk/src/core/run/commandCatalog.ts` (lines 315-341) - default layout keybindings.
+4. `/tmp/gyst-src/hunk/src/ui/diff/diffRows.ts` (lines 317-369, 767-885, 888-985) - split/stack row construction, hunk block pairing, and padding.
+5. `/tmp/gyst-src/hunk/src/ui/diff/codeColumns.ts` (lines 8-11, 113-171) - split pane widths, separator/rail constants, gutters, and code viewports.
+6. `/tmp/gyst-src/hunk/src/ui/diff/rowStyle.ts` (lines 116-185, 426-459) - cell palettes and exact gutter strings.
+7. `/tmp/gyst-src/hunk/src/ui/diff/CodeCellView.tsx` (lines 151-266, 505-570, 1006-1078, 1093-1155, 1163-1262) - OpenTUI direct styled-text composition and wrap/nowrap behavior.
+8. `/tmp/gyst-src/hunk/src/ui/diff/styledSpanLayout.ts` (lines 56-122, 153-229) - terminal-cell slicing and wrapping.
+9. `/tmp/gyst-src/hunk/src/ui/lib/lineCursors.ts` (lines 50-107, 157-182, 224-243) - cursor semantics for context/change rows.
+10. `/tmp/gyst-src/hunk/src/ui/components/panes/DiffPane.tsx` (lines 1191-1309, 2130-2275, 2719-2722) - measured cursor list, mode-aware cursor paint, scroll-anchor restoration, and content remount.
+11. `/tmp/gyst-src/hunk/src/opentui/HunkDiffBody.tsx` (lines 19-47) and `/tmp/gyst-src/hunk/src/opentui/types.ts` (lines 4, 40-68) - reusable OpenTUI primitive accepts only resolved split/stack; app resolves auto before it.
+12. `/tmp/gyst-src/hunk/src/ui/themes.ts` (lines 181-259) - semantic color derivation; evaluated default themes with the source's `resolveTheme`.
 
 ## Key Code
 
@@ -49,7 +49,7 @@
 `App` stores requested mode -> `resolveResponsiveLayout` yields concrete split/stack from terminal width -> `DiffPane` receives concrete layout and pane content width -> each section builds `buildSplitRows` or `buildStackRows` -> `planCodeRowLayout` computes fixed terminal columns -> `CodeCellView` emits one OpenTUI styled text stream with per-cell backgrounds, gutters, clipping, or wrapping. Cursor and scroll geometry are based on this same measured render plan, so a mode switch changes row heights/keys but should preserve stable row identity.
 
 ## Start Here
-Open `/tmp/pith-src/hunk/src/ui/diff/diffRows.ts:767-985` first: it contains the exact semantic difference between split positional pairing and stack deletion-then-addition ordering. Then use `codeColumns.ts:113-171` and `rowStyle.ts:426-459` to reproduce geometry and gutters.
+Open `/tmp/gyst-src/hunk/src/ui/diff/diffRows.ts:767-985` first: it contains the exact semantic difference between split positional pairing and stack deletion-then-addition ordering. Then use `codeColumns.ts:113-171` and `rowStyle.ts:426-459` to reproduce geometry and gutters.
 
 ## Suggested minimal pairing algorithm
 ```text
@@ -85,11 +85,11 @@ For the requested `{sign,text}[]`, use `text: ""` only as the internal empty-cel
     {
       "id": "criterion-1",
       "status": "satisfied",
-      "evidence": "Concrete mode, pairing, stack gutter, OpenTUI geometry, color, and scroll/cursor findings are documented with /tmp/pith-src/hunk file:line citations."
+      "evidence": "Concrete mode, pairing, stack gutter, OpenTUI geometry, color, and scroll/cursor findings are documented with /tmp/gyst-src/hunk file:line citations."
     }
   ],
   "changedFiles": [
-    "/home/cyan/.pi/agent/sessions/--home-cyan-dev-github.com-chenxin-yan-pith--/subagent-artifacts/outputs/c776a59c-50b5-484d-90ea-9f61ffceef58/context.md"
+    "/home/cyan/.pi/agent/sessions/--home-cyan-dev-github.com-chenxin-yan-gyst--/subagent-artifacts/outputs/c776a59c-50b5-484d-90ea-9f61ffceef58/context.md"
   ],
   "testsAddedOrUpdated": [],
   "commandsRun": [
@@ -110,7 +110,7 @@ For the requested `{sign,text}[]`, use `text: ""` only as the internal empty-cel
   "noStagedFiles": true,
   "diffSummary": "Wrote the requested compact implementation brief; no project source changes.",
   "reviewFindings": [
-    "info: /tmp/pith-src/hunk/src/core/run/commandCatalog.ts:315-341 - there is no built-in cycle key; 1/2/0 directly select split/stack/auto.",
+    "info: /tmp/gyst-src/hunk/src/core/run/commandCatalog.ts:315-341 - there is no built-in cycle key; 1/2/0 directly select split/stack/auto.",
     "none: no correctness blocker found in the reviewed layout implementation."
   ],
   "manualNotes": "Auto uses terminal.width (120 cutoff), not the diff pane width; resolved OpenTUI body layout is only split or stack."

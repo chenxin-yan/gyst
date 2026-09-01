@@ -1,4 +1,4 @@
-// PROTOTYPE — pith TUI, winning hybrid layout (ticket #12).
+// PROTOTYPE — gyst TUI, winning hybrid layout (ticket #12).
 // Triage queue focus card + collapsible sidebar. Grammar: j/k move, a accept toggle,
 // e expand toggle (groups), u undo, s sidebar, q quit. `bun start` in a real terminal.
 //
