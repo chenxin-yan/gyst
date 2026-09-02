@@ -24,7 +24,7 @@ runs:
       working-directory: crust
       run: |
         bun install --frozen-lockfile
-        bunx turbo run build --filter=@crustjs/core --filter=@crustjs/skills...
+        bunx turbo run build --filter=@crustjs/core --filter=@crustjs/extensions --filter=@crustjs/skills...
         bun run --cwd packages/crust build:cli
     - name: Link local crust dependencies
       shell: bash
