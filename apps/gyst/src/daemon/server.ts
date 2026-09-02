@@ -5,6 +5,7 @@ import { parseArgs } from "node:util";
 import {
   ApplyEnvelopeSchema,
   type ClosePayload,
+  HumanActionSchema,
   type DiffPayload,
   type ErrorPayload,
   ErrorPayloadSchema,
@@ -15,6 +16,7 @@ import {
   type Session,
   type StatusPayload,
   applyBatch,
+  applyHumanAction,
   migratePersistedSession,
   parseSnapshot,
   refreshSession,
@@ -206,6 +208,19 @@ async function handle(request: Request): Promise<StatusPayload | ClosePayload | 
   const root = values.session ? "" : await repoRoot(request.cwd);
   const session = selectedSession(values.session, root);
   if (request.command === "status") return statusOf(session);
+  if (request.command === "tui.action") {
+    let action;
+    try {
+      action = Schema.decodeUnknownSync(HumanActionSchema)(request.action);
+    } catch (error) {
+      failure("validation_failed", "invalid TUI action", String(error));
+    }
+    const updated = applyHumanAction(session, action);
+    if (!updated) failure("validation_failed", "TUI action does not apply to the current session");
+    await persist(updated);
+    sessions.set(session.id, updated);
+    return statusOf(updated);
+  }
   if (request.command === "close") {
     await rm(join(dataDir(), `${session.id}.json`), { force: true });
     sessions.delete(session.id);

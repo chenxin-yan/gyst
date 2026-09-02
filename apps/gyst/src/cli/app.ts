@@ -5,6 +5,7 @@ import { Schema } from "effect";
 import packageJson from "../../package.json" with { type: "json" };
 
 import { renderCompileSmoke } from "../tui/compile-smoke.tsx";
+import { renderTui } from "../tui/render.tsx";
 import { runSessionCli } from "./session.ts";
 
 const sessionFlag = {
@@ -112,4 +113,7 @@ export const app = new Crust("gyst", {
   .extend(help())
   .extend(version())
   .add(session)
-  .action(renderCompileSmoke);
+  .action(async () => {
+    if (process.env.GYST_COMPILE_SMOKE === "1") return renderCompileSmoke();
+    await renderTui();
+  });

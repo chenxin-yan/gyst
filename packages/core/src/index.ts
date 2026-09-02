@@ -179,6 +179,14 @@ export const ApplyEnvelopeSchema = Schema.Struct({
 });
 export type ApplyEnvelope = typeof ApplyEnvelopeSchema.Type;
 
+export const HumanActionSchema = Schema.Union(
+  Schema.Struct({ type: Schema.Literal("cursor.move"), itemId: Schema.String }),
+  Schema.Struct({ type: Schema.Literal("expand.toggle") }),
+  Schema.Struct({ type: Schema.Literal("verdict.toggle"), itemId: Schema.String }),
+  Schema.Struct({ type: Schema.Literal("verdict.undo"), itemId: Schema.String }),
+);
+export type HumanAction = typeof HumanActionSchema.Type;
+
 export const DiffPayloadSchema = Schema.Struct({
   sessionId: Schema.String,
   revision: Schema.Number,
@@ -193,10 +201,11 @@ export const ClosePayloadSchema = Schema.Struct({
 export type ClosePayload = typeof ClosePayloadSchema.Type;
 
 export const RequestSchema = Schema.Struct({
-  command: Schema.Literal("create", "status", "diff", "apply", "refresh", "close"),
+  command: Schema.Literal("create", "status", "diff", "apply", "refresh", "close", "tui.action"),
   cwd: Schema.String,
   args: Schema.Array(Schema.String),
   stdin: Schema.optional(Schema.String),
+  action: Schema.optional(HumanActionSchema),
 });
 export type Request = typeof RequestSchema.Type;
 
@@ -502,6 +511,34 @@ export function applyBatch(session: Session, envelope: ApplyEnvelope): ApplyResu
   const status = statusOf(draft);
   draft.applyReceipts.push({ key: envelope.idempotencyKey, status });
   return { session: draft, status };
+}
+
+export function applyHumanAction(session: Session, action: HumanAction): Session | undefined {
+  const draft = structuredClone(session) as MutableSession;
+  const visibleIds = new Set(visibleItemIds(session));
+
+  if (action.type === "cursor.move") {
+    if (!visibleIds.has(action.itemId)) return;
+    draft.cursor = { itemId: action.itemId, expanded: false };
+    draft.seq++;
+  } else if (action.type === "expand.toggle") {
+    if (!session.cursor.itemId || !session.groups.some(({ id }) => id === session.cursor.itemId)) return;
+    draft.cursor = { ...draft.cursor, expanded: !draft.cursor.expanded };
+    draft.seq++;
+  } else {
+    const group = draft.groups.find(({ id }) => id === action.itemId);
+    const grouped = groupedIds(draft);
+    const hunk = draft.hunks.find(({ id, tldr }) => id === action.itemId && tldr !== undefined && !grouped.has(id));
+    const item = group ?? hunk;
+    if (!item || (action.type === "verdict.undo" && !item.accepted)) return;
+    item.accepted = action.type === "verdict.toggle" ? !item.accepted : false;
+    if (action.type === "verdict.undo") draft.cursor = { itemId: action.itemId, expanded: false };
+    draft.revision++;
+    draft.seq++;
+  }
+
+  draft.updatedAt = new Date().toISOString();
+  return draft;
 }
 
 export function refreshSession(session: Session, freshHunks: readonly Hunk[]): Session {

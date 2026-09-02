@@ -5,8 +5,8 @@ import { join } from "node:path";
 const root = join(import.meta.dir, "..");
 const binary = join(root, "dist", "gyst");
 
-function run(command: string[], label: string, cwd = root): string {
-  const result = Bun.spawnSync(command, { cwd, stdout: "pipe", stderr: "pipe" });
+function run(command: string[], label: string, cwd = root, env?: Record<string, string>): string {
+  const result = Bun.spawnSync(command, { cwd, stdout: "pipe", stderr: "pipe", env: { ...process.env, ...env } });
   const stdout = result.stdout.toString();
   const stderr = result.stderr.toString();
   if (result.exitCode !== 0) {
@@ -25,7 +25,7 @@ try {
   await copyFile(binary, isolatedBinary);
   await chmod(isolatedBinary, 0o755);
 
-  const frame = run([isolatedBinary], "compiled OpenTUI frame", isolated);
+  const frame = run([isolatedBinary], "compiled OpenTUI frame", isolated, { GYST_COMPILE_SMOKE: "1" });
   if (!frame.includes("gyst · OpenTUI compile smoke")) throw new Error("compiled frame missing");
 
   const rootHelp = run([isolatedBinary, "--help"], "compiled root help", isolated);

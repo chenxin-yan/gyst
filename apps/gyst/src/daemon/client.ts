@@ -1,0 +1,48 @@
+import {
+  ReplySchema,
+  type ErrorPayload,
+  type Reply,
+  type Request,
+} from "@gyst/core";
+import { Schema } from "effect";
+import { socketPath } from "./server.ts";
+
+function exchange(request: Request): Promise<Reply> {
+  return new Promise((resolve, reject) => {
+    let buffer = "";
+    const decoder = new TextDecoder();
+    void Bun.connect<{ request: Request }>({
+      unix: socketPath(),
+      data: { request },
+      socket: {
+        open(socket) { socket.write(`${JSON.stringify(socket.data.request)}\n`); },
+        data(_socket, bytes) {
+          buffer += decoder.decode(bytes, { stream: true });
+          const newline = buffer.indexOf("\n");
+          if (newline < 0) return;
+          try { resolve(Schema.decodeUnknownSync(ReplySchema)(JSON.parse(buffer.slice(0, newline)))); }
+          catch (error) { reject(error); }
+        },
+        error(_socket, error) { reject(error); },
+        close() { if (!buffer.includes("\n")) reject(new Error("daemon closed without a complete response")); },
+      },
+    }).catch(reject);
+  });
+}
+
+export async function requestDaemon(request: Request): Promise<Reply> {
+  try { return await exchange(request); } catch {}
+  try {
+    Bun.spawn([process.execPath, "daemon", "run"], {
+      stdin: "ignore", stdout: "ignore", stderr: "ignore", detached: true,
+      env: process.env,
+    }).unref();
+  } catch (error) {
+    throw { code: "daemon_unreachable", message: "could not start daemon", detail: String(error) } satisfies ErrorPayload;
+  }
+  for (let attempt = 0; attempt < 50; attempt++) {
+    await Bun.sleep(20);
+    try { return await exchange(request); } catch {}
+  }
+  throw { code: "daemon_unreachable", message: "daemon did not become reachable" } satisfies ErrorPayload;
+}
