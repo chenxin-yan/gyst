@@ -28,7 +28,7 @@ export function daemonTuiClient(cwd = process.cwd()): TuiClient {
   async function send(request: Request): Promise<unknown> {
     let reply;
     try { reply = await requestDaemon(request); }
-    catch (error) { throw new TuiClientError(Schema.decodeUnknownSync(ErrorPayloadSchema)(error)); }
+    catch (error) { throw new TuiClientError(error as ErrorPayload); }
     if (!reply.ok) throw new TuiClientError(Schema.decodeUnknownSync(ErrorPayloadSchema)(reply.error));
     return reply.value;
   }
