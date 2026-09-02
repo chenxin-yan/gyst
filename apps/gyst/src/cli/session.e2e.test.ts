@@ -90,15 +90,26 @@ describe("gyst session CLI seam", () => {
     const pid = Number(await readFile(join(data, "daemon.pid"), "utf8"));
     process.kill(pid, "SIGKILL");
     await Bun.sleep(50);
-    // #17 will author groups through apply; seed persisted state here to exercise this ticket's read selector.
+    // #17 will author groups and tldrs through apply; seed persisted state here to exercise this ticket's reads.
     const statePath = join(data, `${status.session.id}.json`);
     const state = JSON.parse(await readFile(statePath, "utf8"));
     state.groups = [{ id: "group-1", tldr: "same edit", exemplarHunkId: hunkId, hunkIds: [hunkId] }];
+    const spotlightHunk = state.hunks.find((hunk: { id: string }) => hunk.id !== hunkId);
+    spotlightHunk.tldr = "needs human review";
     await writeFile(statePath, JSON.stringify(state));
+    await writeFile(join(data, "corrupt.json"), "not json");
     const restored = await gyst(cwd, ["session", "status"]);
     expect(restored.exitCode).toBe(0);
-    expect(JSON.parse(restored.stdout).session.id).toBe(status.session.id);
-    expect(JSON.parse(restored.stdout).groups[0].count).toBe(1);
+    const restoredStatus = JSON.parse(restored.stdout);
+    expect(restoredStatus.session.id).toBe(status.session.id);
+    expect(restoredStatus.groups[0].count).toBe(1);
+    expect(restoredStatus.spotlight).toEqual([{
+      id: spotlightHunk.id,
+      file: spotlightHunk.file,
+      tldr: "needs human review",
+      accepted: false,
+    }]);
+    expect(restoredStatus.inbox).toEqual([]);
     expect(JSON.parse((await gyst(cwd, ["session", "diff", "--group", "group-1"])).stdout).hunks).toHaveLength(1);
 
     const outsider = join(root, "outside");
@@ -108,6 +119,49 @@ describe("gyst session CLI seam", () => {
 
     const closed = await gyst(cwd, ["session", "close"]);
     expect(JSON.parse(closed.stdout)).toEqual({ closed: true, sessionId: status.session.id });
+  }, 20_000);
+
+  it("preserves hunk text and ids across multi-file, multi-hunk stdin snapshots", async () => {
+    const cwd = await repo("multi-hunk");
+    const patch = `diff --git a/a.txt b/a.txt
+index 1234567..89abcde 100644
+--- a/a.txt
++++ b/a.txt
+@@ -1,2 +1,2 @@
+-alpha
++ALPHA
+ bravo
+@@ -5,2 +5,2 @@
+-echo
++ECHO
+ foxtrot
+diff --git a/b.txt b/b.txt
+index 1234567..89abcde 100644
+--- a/b.txt
++++ b/b.txt
+@@ -1 +1 @@
+-xray
++XRAY
+`;
+
+    const first = JSON.parse((await gyst(cwd, ["session", "create", "--stdin"], patch)).stdout);
+    const firstDiff = JSON.parse((await gyst(cwd, ["session", "diff"])).stdout);
+    expect(first.inbox).toHaveLength(3);
+    expect(firstDiff.hunks.map((hunk: { file: string }) => hunk.file)).toEqual(["a.txt", "a.txt", "b.txt"]);
+    expect(firstDiff.hunks.map((hunk: { patch: string }) => hunk.patch)).toEqual([
+      expect.stringContaining("-alpha"),
+      expect.stringContaining("-echo"),
+      expect.stringContaining("-xray"),
+    ]);
+    const ids = firstDiff.hunks.map((hunk: { id: string }) => hunk.id);
+    expect(new Set(ids).size).toBe(3);
+
+    await gyst(cwd, ["session", "close"]);
+    const second = await gyst(cwd, ["session", "create", "--stdin"], patch);
+    expect(second.exitCode).toBe(0);
+    const secondDiff = JSON.parse((await gyst(cwd, ["session", "diff"])).stdout);
+    expect(secondDiff.hunks.map((hunk: { id: string }) => hunk.id)).toEqual(ids);
+    await gyst(cwd, ["session", "close"]);
   }, 20_000);
 
   it("supports replayable git arguments, stdin patches, and no sole-session fallback", async () => {

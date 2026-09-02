@@ -96,11 +96,13 @@ export function parseSnapshot(patch: string): Hunk[] {
   const files = parsePatchFiles(patch, undefined, true).flatMap((parsed) => parsed.files);
   const rawHunks = [...patch.matchAll(/^@@[^\n]*(?:\n|$)[\s\S]*?(?=^@@|^diff --git |(?![\s\S]))/gm)]
     .map((match) => match[0]!.replace(/\n$/, ""));
+  const parsedHunkCount = files.reduce((count, file) => count + file.hunks.length, 0);
+  if (rawHunks.length !== parsedHunkCount) throw new Error("parsed hunk count does not match unified diff");
   let index = 0;
   const hunks: Hunk[] = [];
   for (const file of files) {
     for (const parsedHunk of file.hunks) {
-      const text = rawHunks[index++] ?? (parsedHunk.hunkSpecs ?? "");
+      const text = rawHunks[index++]!;
       const input = `${file.name}\0${text}`;
       let hash = 2166136261;
       for (let offset = 0; offset < input.length; offset++) hash = Math.imul(hash ^ input.charCodeAt(offset), 16777619);
