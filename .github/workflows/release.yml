@@ -7,6 +7,9 @@ on:
 permissions:
   contents: write
 
+env:
+  CRUST_REV: 08901cd0e3dc3c17877d174d2e8a1b19982c8c18
+
 jobs:
   package-smoke:
     name: package smoke (${{ matrix.alias }})
@@ -26,6 +29,7 @@ jobs:
         with:
           repository: chenxin-yan/crust
           path: crust
+          ref: ${{ env.CRUST_REV }}
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: 1.4.0
@@ -50,12 +54,16 @@ jobs:
   publish:
     needs: package-smoke
     runs-on: ubuntu-latest
+    concurrency:
+      group: gyst-npm-release
+      cancel-in-progress: false
     steps:
       - uses: actions/checkout@v4
       - uses: actions/checkout@v4
         with:
           repository: chenxin-yan/crust
           path: crust
+          ref: ${{ env.CRUST_REV }}
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: 1.4.0
@@ -92,16 +100,25 @@ jobs:
       - name: Verify publish order without network writes
         working-directory: apps/gyst
         run: bun run publish -- --dry-run
+      - name: Choose a version-aware npm dist-tag
+        id: dist-tag
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          version="${{ steps.version.outputs.version }}"
+          channel=latest
+          if [[ "${{ steps.version.outputs.prerelease }}" == "true" ]]; then channel=next; fi
+          current=$(npm view "@gyst/cli@$channel" version 2>/dev/null || true)
+          tag="$channel"
+          if [[ -n "$current" ]] && ! bun -e 'process.exit(Bun.semver.order(process.argv[1], process.argv[2]) >= 0 ? 0 : 1)' "$version" "$current"; then
+            tag="release-$(printf '%s' "$version" | tr '.+' '--')"
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
       - name: Publish platform packages, then @gyst/cli
         working-directory: apps/gyst
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-        run: |
-          if [[ "${{ steps.version.outputs.prerelease }}" == "true" ]]; then
-            bun run publish -- --tag next
-          else
-            bun run publish
-          fi
+        run: bun run publish -- --tag "${{ steps.dist-tag.outputs.tag }}"
       - name: Archive the authored skill for raw binary installs
         run: tar -C apps/gyst/dist/release -czf apps/gyst/dist/release/gyst-skills.tar.gz skills
       - name: Create GitHub Release with raw binaries and resolvers
