@@ -48,6 +48,13 @@ export const SourceSchema = Schema.Union(
 );
 export type Source = typeof SourceSchema.Type;
 
+const SessionSummaryFields = {
+  id: Schema.String,
+  repoRoot: Schema.String,
+  source: SourceSchema,
+  createdAt: Schema.String,
+  updatedAt: Schema.String,
+};
 const HunkSummarySchema = Schema.Struct({ id: Schema.String, file: Schema.String });
 const GroupSummarySchema = Schema.Struct({
   id: Schema.String,
@@ -64,7 +71,7 @@ const SpotlightSummarySchema = Schema.Struct({
   accepted: Schema.Boolean,
 });
 export const StatusPayloadSchema = Schema.Struct({
-  session: SessionSchema.pick("id", "repoRoot", "source", "createdAt", "updatedAt"),
+  session: Schema.Struct(SessionSummaryFields),
   revision: Schema.Number,
   seq: Schema.Number,
   cursor: Schema.Struct({ itemId: Schema.NullOr(Schema.String), expanded: Schema.Boolean }),
@@ -80,11 +87,7 @@ export type StatusPayload = typeof StatusPayloadSchema.Type;
 
 const ApplyReceiptSchema = Schema.Struct({ key: Schema.String, status: StatusPayloadSchema });
 export const SessionSchema = Schema.Struct({
-  id: Schema.String,
-  repoRoot: Schema.String,
-  source: SourceSchema,
-  createdAt: Schema.String,
-  updatedAt: Schema.String,
+  ...SessionSummaryFields,
   revision: Schema.Number,
   seq: Schema.Number,
   cursor: Schema.Struct({ itemId: Schema.NullOr(Schema.String), expanded: Schema.Boolean }),
