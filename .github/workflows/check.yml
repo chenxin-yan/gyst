@@ -18,25 +18,7 @@ jobs:
       - uses: actions/checkout@v7
         with:
           persist-credentials: false
-      - uses: actions/checkout@v7
-        with:
-          persist-credentials: false
-          repository: chenxin-yan/crust
-          ref: 38e7298954c60ec0a45dcfa830b515b2bc32ece0
-          path: crust
-      - uses: oven-sh/setup-bun@v2
-        with:
-          bun-version: 1.4.2
-      - name: Build local crust dependencies
-        working-directory: crust
-        run: |
-          bun install --frozen-lockfile
-          bunx turbo run build --filter=@crustjs/core --filter=@crustjs/extensions --filter=@crustjs/skills...
-          bun run --cwd packages/crust build:cli
-      - name: Link local crust dependency
-        env:
-          CRUST_CHECKOUT: ${{ github.workspace }}/crust
-        run: bun run setup:crust
+      - uses: ./.github/actions/setup-crust
       - run: bun install --frozen-lockfile
       - uses: actions/cache@v6
         with:

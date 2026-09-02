@@ -1,0 +1,33 @@
+name: Setup crust
+
+description: Build and link the pinned local crust dependencies
+
+inputs:
+  rev:
+    description: Crust revision
+    default: 08901cd0e3dc3c17877d174d2e8a1b19982c8c18
+
+runs:
+  using: composite
+  steps:
+    - uses: actions/checkout@v4
+      with:
+        persist-credentials: false
+        repository: chenxin-yan/crust
+        ref: ${{ inputs.rev }}
+        path: crust
+    - uses: oven-sh/setup-bun@v2
+      with:
+        bun-version: 1.4.2
+    - name: Build local crust dependencies
+      shell: bash
+      working-directory: crust
+      run: |
+        bun install --frozen-lockfile
+        bunx turbo run build --filter=@crustjs/core --filter=@crustjs/skills...
+        bun run --cwd packages/crust build:cli
+    - name: Link local crust dependencies
+      shell: bash
+      env:
+        CRUST_CHECKOUT: ${{ github.workspace }}/crust
+      run: bun run setup:crust
