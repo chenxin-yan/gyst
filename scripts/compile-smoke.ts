@@ -1,9 +1,10 @@
-import { chmod, copyFile, cp, lstat, mkdir, mkdtemp, readFile, readlink, rm, writeFile } from "node:fs/promises";
+import { chmod, copyFile, cp, mkdir, mkdtemp, readFile, readlink, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 
 const root = join(import.meta.dir, "..");
-const binary = join(root, "dist", "gyst");
+const app = join(root, "apps", "gyst");
+const binary = join(app, "dist", "gyst");
 
 function run(command: string[], label: string, cwd = root, env?: Record<string, string>): string {
   const result = Bun.spawnSync(command, {
@@ -21,14 +22,14 @@ function run(command: string[], label: string, cwd = root, env?: Record<string, 
   return stdout;
 }
 
-run(["bun", "run", "build:compile"], "bun build --compile");
+run(["bun", "run", "build"], "bun build --compile", app);
 
 // Run a copied binary away from this checkout so node_modules cannot mask missing embedded natives.
 const isolated = await mkdtemp(join(tmpdir(), "gyst-compile-smoke-"));
 const isolatedBinary = join(isolated, "gyst");
 try {
   await copyFile(binary, isolatedBinary);
-  await cp(join(root, "dist", "skills"), join(isolated, "skills"), { recursive: true });
+  await cp(join(app, "dist", "skills"), join(isolated, "skills"), { recursive: true });
   await chmod(isolatedBinary, 0o755);
 
   const frame = run([isolatedBinary], "compiled OpenTUI frame", isolated, {
@@ -58,7 +59,6 @@ try {
   });
   for (const name of ["gyst", "gyst-ask"]) {
     const link = join(home, ".agents", "skills", name);
-    if (!(await lstat(link)).isSymbolicLink()) throw new Error(`${name} install is not a symlink`);
     if (resolve(dirname(link), await readlink(link)) !== join(isolated, "skills", name)) {
       throw new Error(`${name} install does not target packaged skills`);
     }

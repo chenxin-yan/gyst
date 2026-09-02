@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
-import { chmod, lstat, mkdir, mkdtemp, readFile, readlink, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readlink, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 
@@ -27,7 +27,6 @@ async function gyst(...args: string[]) {
 }
 
 async function expectLink(path: string, name = "gyst") {
-  expect((await lstat(path)).isSymbolicLink()).toBe(true);
   expect(resolve(dirname(path), await readlink(path))).toBe(join(skills, name));
   expect(await readFile(join(path, "SKILL.md"), "utf8")).toContain(`name: ${name}`);
 }
@@ -38,8 +37,7 @@ beforeAll(async () => {
   const bin = join(root, "bin");
   await mkdir(bin, { recursive: true });
   const claude = join(bin, "claude");
-  await writeFile(claude, "#!/bin/sh\nexit 0\n");
-  await chmod(claude, 0o755);
+  await writeFile(claude, "#!/bin/sh\nexit 0\n", { mode: 0o755 });
   env = {
     ...process.env,
     HOME: home,
