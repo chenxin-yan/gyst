@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { homedir } from "node:os";
 import { parseArgs } from "node:util";
 import {
+  ApplyEnvelopeSchema,
   type DiffPayload,
   type ErrorPayload,
   ErrorPayloadSchema,
@@ -11,7 +12,9 @@ import {
   RequestSchema,
   type Session,
   SessionSchema,
+  applyBatch,
   parseSnapshot,
+  refreshSession,
   statusOf,
 } from "@gyst/core";
 import { Schema } from "effect";
@@ -52,22 +55,11 @@ function selectedSession(id: string | undefined, root: string): Session {
   return session;
 }
 
-async function gitPatch(root: string, args: readonly string[]): Promise<string> {
-  const bare = args.length === 0;
-  let diffArgs = args;
-  if (bare) {
-    const head = Bun.spawnSync(["git", "rev-parse", "--verify", "HEAD"], { cwd: root, stdout: "ignore", stderr: "ignore" });
-    if (head.exitCode === 0) diffArgs = ["HEAD"];
-    else {
-      const emptyTree = Bun.spawnSync(["git", "hash-object", "-t", "tree", "/dev/null"], { cwd: root, stdout: "pipe", stderr: "pipe" });
-      if (emptyTree.exitCode !== 0) failure("bad_args", "could not derive the empty git tree");
-      diffArgs = [emptyTree.stdout.toString().trim()];
-    }
-  }
-  const diff = Bun.spawnSync(["git", "diff", ...diffArgs], { cwd: root, stdout: "pipe", stderr: "pipe" });
+async function gitPatch(root: string, args: readonly string[], includeUntracked: boolean): Promise<string> {
+  const diff = Bun.spawnSync(["git", "diff", ...args], { cwd: root, stdout: "pipe", stderr: "pipe" });
   if (diff.exitCode !== 0) failure("bad_args", diff.stderr.toString().trim() || "git diff failed");
   let patch = diff.stdout.toString();
-  if (bare) {
+  if (includeUntracked) {
     const listed = Bun.spawnSync(["git", "ls-files", "--others", "--exclude-standard", "-z"], { cwd: root, stdout: "pipe", stderr: "pipe" });
     if (listed.exitCode !== 0) failure("bad_args", "could not list untracked files");
     for (const file of listed.stdout.toString().split("\0").filter(Boolean)) {
@@ -86,6 +78,11 @@ async function persist(session: Session): Promise<void> {
   await rename(temporary, destination);
 }
 
+function snapshot(patch: string) {
+  try { return parseSnapshot(patch); }
+  catch (error) { failure("bad_args", "invalid unified diff", String(error)); }
+}
+
 async function handle(request: Request): Promise<Record<string, unknown>> {
   if (request.command === "create") {
     const root = await repoRoot(request.cwd);
@@ -99,21 +96,26 @@ async function handle(request: Request): Promise<Record<string, unknown>> {
       failure("session_exists", `a session already exists for ${root}`);
     }
     if (values.stdin && positionals.length) failure("bad_args", "--stdin cannot be combined with git arguments");
+    const includeUntracked = !values.stdin && positionals.length === 0;
+    let gitArgs = positionals;
+    if (includeUntracked) {
+      const head = Bun.spawnSync(["git", "rev-parse", "--verify", "HEAD"], { cwd: root, stdout: "ignore", stderr: "ignore" });
+      if (head.exitCode === 0) gitArgs = ["HEAD"];
+      else {
+        const emptyTree = Bun.spawnSync(["git", "hash-object", "-t", "tree", "/dev/null"], { cwd: root, stdout: "pipe", stderr: "pipe" });
+        if (emptyTree.exitCode !== 0) failure("bad_args", "could not derive the empty git tree");
+        gitArgs = [emptyTree.stdout.toString().trim()];
+      }
+    }
     creatingRepoRoots.add(root);
     try {
-      const patch = values.stdin ? (request.stdin ?? "") : await gitPatch(root, positionals);
-      let hunks;
-      try {
-        hunks = parseSnapshot(patch);
-      } catch (error) {
-        failure("bad_args", "invalid unified diff", String(error));
-      }
+      const patch = values.stdin ? (request.stdin ?? "") : await gitPatch(root, gitArgs, includeUntracked);
       const now = new Date().toISOString();
       const session: Session = {
         id: crypto.randomUUID(), repoRoot: root,
-        source: values.stdin ? { kind: "stdin" } : { kind: "git", args: positionals.length ? positionals : ["HEAD"] },
+        source: values.stdin ? { kind: "stdin" } : { kind: "git", args: gitArgs, ...(includeUntracked ? { includeUntracked: true } : {}) },
         createdAt: now, updatedAt: now, revision: 0, seq: 0,
-        cursor: { itemId: null, expanded: false }, hunks, groups: [],
+        cursor: { itemId: null, expanded: false }, hunks: snapshot(patch), groups: [], queue: [], queueSet: false, applyReceipts: [],
       };
       await persist(session);
       sessions.set(session.id, session);
@@ -123,24 +125,54 @@ async function handle(request: Request): Promise<Record<string, unknown>> {
     }
   }
 
-  const { values } = parseArgs({
-    args: request.args,
-    options: {
-      session: { type: "string" },
-      hunk: { type: "string" },
-      group: { type: "string" },
-      file: { type: "string" },
-    },
-    strict: true,
-  });
+  let values: { session?: string; hunk?: string; group?: string; file?: string; stdin?: boolean };
+  try {
+    if (request.command === "diff") values = parseArgs({
+      args: request.args,
+      options: { session: { type: "string" }, hunk: { type: "string" }, group: { type: "string" }, file: { type: "string" } },
+      strict: true,
+    }).values;
+    else if (request.command === "refresh") values = parseArgs({
+      args: request.args,
+      options: { session: { type: "string" }, stdin: { type: "boolean" } },
+      strict: true,
+    }).values;
+    else values = parseArgs({ args: request.args, options: { session: { type: "string" } }, strict: true }).values;
+  } catch (error) { failure("bad_args", error instanceof Error ? error.message : "invalid arguments"); }
   const root = values.session ? "" : await repoRoot(request.cwd);
-  const session = selectedSession(values.session, root);
+  const session = selectedSession(values.session as string | undefined, root);
   if (request.command === "status") return statusOf(session);
   if (request.command === "close") {
     await rm(join(dataDir(), `${session.id}.json`), { force: true });
     sessions.delete(session.id);
     return { closed: true, sessionId: session.id };
   }
+  if (request.command === "apply") {
+    let envelope;
+    try { envelope = Schema.decodeUnknownSync(ApplyEnvelopeSchema)(JSON.parse(request.stdin ?? "")); }
+    catch (error) { failure("validation_failed", "invalid apply envelope", [{ opIndex: -1, message: String(error) }]); }
+    const result = applyBatch(session, envelope);
+    if (result.errorCode) failure(result.errorCode, result.errorCode === "stale_revision" ? "apply revision is stale" : "apply validation failed", result.errors);
+    if (!result.session) return result.status!;
+    await persist(result.session);
+    sessions.set(session.id, result.session);
+    return result.status!;
+  }
+  if (request.command === "refresh") {
+    let patch: string;
+    if (session.source.kind === "stdin") {
+      if (!values.stdin) failure("bad_args", "stdin sessions must be refreshed with --stdin");
+      patch = request.stdin ?? "";
+    } else {
+      if (values.stdin) failure("bad_args", "git sessions refresh their recorded arguments");
+      patch = await gitPatch(session.repoRoot, session.source.args, session.source.includeUntracked ?? false);
+    }
+    const refreshed = refreshSession(session, snapshot(patch));
+    await persist(refreshed);
+    sessions.set(session.id, refreshed);
+    return statusOf(refreshed);
+  }
+
   const selectors = [values.hunk, values.group, values.file].filter(Boolean);
   if (selectors.length > 1) failure("bad_args", "choose only one diff selector");
   let hunks = [...session.hunks];

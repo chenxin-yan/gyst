@@ -54,14 +54,16 @@ async function requestDaemon(request: Request): Promise<Reply> {
 
 export async function runSessionCli(argv: string[]): Promise<void> {
   const [command, ...args] = argv;
-  if (!command || !["create", "status", "diff", "close"].includes(command)) {
+  if (!command || !["create", "status", "diff", "apply", "refresh", "close"].includes(command)) {
     throw { code: "bad_args", message: `unknown session command: ${command ?? ""}` } satisfies ErrorPayload;
   }
   const request: Request = {
     command: command as Request["command"],
     cwd: process.cwd(),
     args,
-    ...(command === "create" && args.includes("--stdin") ? { stdin: await Bun.stdin.text() } : {}),
+    ...((command === "apply" || ((command === "create" || command === "refresh") && args.includes("--stdin")))
+      ? { stdin: await Bun.stdin.text() }
+      : {}),
   };
   const reply = await requestDaemon(request);
   if (!reply.ok) throw Schema.decodeUnknownSync(ErrorPayloadSchema)(reply.error);
