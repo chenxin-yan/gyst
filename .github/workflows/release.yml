@@ -83,12 +83,12 @@ jobs:
           echo "version=$version" >> "$GITHUB_OUTPUT"
           if [[ "$version" == *-* ]]; then echo "prerelease=true" >> "$GITHUB_OUTPUT"; else echo "prerelease=false" >> "$GITHUB_OUTPUT"; fi
       - run: bun run check
-      - name: Build raw release binaries and shell resolvers
-        working-directory: apps/gyst
-        run: bun run build:release
       - name: Stage all npm platform packages
         working-directory: apps/gyst
         run: bun run package
+      - name: Build raw release binaries and shell resolvers
+        working-directory: apps/gyst
+        run: bun run build:release
       - name: Verify publish order without network writes
         working-directory: apps/gyst
         run: bun run publish -- --dry-run

@@ -49,6 +49,9 @@ try {
   if (rootPackage.optionalDependencies?.[platform.name] !== manifest.version) {
     throw new Error("root optionalDependencies does not select the staged platform package");
   }
+  if (rootPackage.files?.slice().sort().join(",") !== "bin,skills") {
+    throw new Error("staged root contains artifacts other than its resolver and authored skill");
+  }
   if (platformPackage.os?.[0] !== process.platform || platformPackage.cpu?.[0] !== process.arch) {
     throw new Error("platform npm os/cpu metadata is missing or wrong");
   }
@@ -60,8 +63,14 @@ try {
   if (!rootFiles.includes("package/bin/gyst.js") || !rootFiles.includes("package/skills/gyst/SKILL.md")) {
     throw new Error("packed root is missing its resolver or authored skill");
   }
+  if (rootFiles.includes("package/release/")) {
+    throw new Error("packed root contains raw release binaries");
+  }
   if (!platformFiles.includes(`package/${platform.bin}`) || !platformFiles.includes("package/bin/skills/gyst/SKILL.md")) {
     throw new Error("packed platform package is missing its compiled binary or authored skill");
+  }
+  if (platformFiles.includes("package/bin/release/")) {
+    throw new Error("packed platform package contains raw release binaries");
   }
 
   const installDir = join(temporary, "install");
