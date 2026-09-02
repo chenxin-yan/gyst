@@ -1,6 +1,6 @@
 import type { DiffPayload, Hunk, StatusPayload } from "@gyst/core";
 import { useKeyboard, useTerminalDimensions } from "@opentui/solid";
-import { For, Show, createMemo, createSignal, onCleanup, onMount } from "solid-js";
+import { For, Show, batch, createMemo, createSignal, onCleanup, onMount } from "solid-js";
 import type { TuiClient } from "./client.ts";
 import { TuiClientError } from "./client.ts";
 
@@ -18,7 +18,7 @@ const Sp = (props: Record<string, unknown>) => <span {...(props as object)} />;
 type DiffLine = { sign: " " | "+" | "-"; text: string };
 type Member = { id: string; file: string; header: string; oldStart: number; newStart: number; lines: DiffLine[] };
 type ViewItem =
-  | { kind: "group"; id: string; tldr: string; accepted: boolean; members: Member[] }
+  | { kind: "group"; id: string; tldr: string; accepted: boolean; exemplar: Member; members: Member[] }
   | { kind: "spotlight"; id: string; tldr: string; accepted: boolean; member: Member }
   | { kind: "inbox"; id: string; accepted: false; member: Member };
 type LayoutMode = "auto" | "split" | "stack";
@@ -40,7 +40,8 @@ function buildItems(status: StatusPayload, diff: DiffPayload): ViewItem[] {
   const hunks = new Map(diff.hunks.map((hunk) => [hunk.id, memberOf(hunk)]));
   const groups = status.groups.flatMap((group): ViewItem[] => {
     const members = group.hunkIds.flatMap((id) => hunks.get(id) ? [hunks.get(id)!] : []);
-    return members.length ? [{ kind: "group", id: group.id, tldr: group.tldr, accepted: group.accepted, members }] : [];
+    const exemplar = hunks.get(group.exemplarHunkId);
+    return members.length && exemplar ? [{ kind: "group", id: group.id, tldr: group.tldr, accepted: group.accepted, exemplar, members }] : [];
   });
   const spotlight = status.spotlight.flatMap((hunk): ViewItem[] => {
     const member = hunks.get(hunk.id);
@@ -166,7 +167,7 @@ function FocusCard(props: { item: ViewItem; expanded: boolean; layout: "split" |
   if (props.item.kind === "group") return <box flexDirection="column">
     <text><Sp fg={C.accent} attributes={1}>▍GROUP</Sp><Sp fg={C.dim}>  ×{props.item.members.length}</Sp><VerdictTag accepted={props.item.accepted} /></text>
     <Note text={props.item.tldr} /><text> </text>
-    <Show when={props.expanded} fallback={<box flexDirection="column"><text fg={C.dim}>exemplar · 1 of {props.item.members.length}</text><MemberDiff member={props.item.members[0]!} layout={props.layout} /><text fg={C.dim}>(e to expand)</text></box>}>
+    <Show when={props.expanded} fallback={<box flexDirection="column"><text fg={C.dim}>exemplar · 1 of {props.item.members.length}</text><MemberDiff member={props.item.exemplar} layout={props.layout} /><text fg={C.dim}>(e to expand)</text></box>}>
       <box flexDirection="column"><text fg={C.dim}>all {props.item.members.length} members (e to fold)</text><For each={props.item.members}>{(member) => <box paddingBottom={1}><MemberDiff member={member} layout={props.layout} /></box>}</For></box>
     </Show>
   </box>;
@@ -188,15 +189,23 @@ export function App(props: { client: TuiClient; onQuit?: () => void; pollInterva
   const [sidebar, setSidebar] = createSignal(true);
   const [help, setHelp] = createSignal(false);
   const [layoutMode, setLayoutMode] = createSignal<LayoutMode>("auto");
-  const undoStack: string[] = [];
   let stopped = false;
   let syncing = false;
+  let inputs = Promise.resolve();
 
   const items = createMemo(() => status() && diff() ? buildItems(status()!, diff()!) : []);
   const currentIndex = createMemo(() => Math.max(0, items().findIndex(({ id }) => id === status()?.cursor.itemId)));
   const current = createMemo(() => items()[currentIndex()]);
   const resolvedLayout = createMemo(() => layoutMode() === "auto" ? (dims().width >= 120 ? "split" : "stack") : layoutMode() as "split" | "stack");
   const allDone = createMemo(() => items().length > 0 && items().every((item) => item.kind !== "inbox" && item.accepted));
+
+  function publish(next: StatusPayload, nextDiff: DiffPayload): void {
+    batch(() => { setDiff(nextDiff); setStatus(next); setMessage(""); });
+  }
+
+  function enqueue(operation: () => Promise<void>): void {
+    inputs = inputs.then(operation, operation);
+  }
 
   async function sync(): Promise<void> {
     if (syncing || stopped) return;
@@ -208,14 +217,14 @@ export function App(props: { client: TuiClient; onQuit?: () => void; pollInterva
       if (!previous || next.session.id !== previous.session.id || next.revision !== previous.revision || !nextDiff) nextDiff = await props.client.diff();
       const latest = status();
       if (latest && latest.session.id === next.session.id && latest.seq > next.seq) return;
-      setDiff(nextDiff);
-      setStatus(next);
-      setMessage("");
-      const nextItems = nextDiff ? buildItems(next, nextDiff) : [];
-      if (!next.cursor.itemId && nextItems[0]) setStatus(await props.client.action({ type: "cursor.move", itemId: nextItems[0].id }));
+      publish(next, nextDiff);
+      const nextItems = buildItems(next, nextDiff);
+      if (!nextItems.some(({ id }) => id === next.cursor.itemId) && nextItems[0]) {
+        setStatus(await props.client.action({ type: "cursor.move", itemId: nextItems[0].id }));
+      }
     } catch (error) {
       if (error instanceof TuiClientError && error.payload.code === "no_session") {
-        setStatus(undefined); setDiff(undefined); setMessage("no session for this repo — waiting… run /gyst in your harness");
+        batch(() => { setStatus(undefined); setDiff(undefined); setMessage("no session for this repo — waiting… run /gyst in your harness"); });
       } else setMessage(error instanceof Error ? error.message : String(error));
     } finally { syncing = false; }
   }
@@ -224,20 +233,18 @@ export function App(props: { client: TuiClient; onQuit?: () => void; pollInterva
     if (syncing || stopped) return;
     syncing = true;
     try {
-      const next = await props.client.refresh();
+      await props.client.refresh();
       const nextDiff = await props.client.diff();
-      const latest = status();
-      if (!latest || latest.session.id !== next.session.id || latest.seq <= next.seq) {
-        setDiff(nextDiff); setStatus(next);
-      }
+      const next = await props.client.status();
+      publish(next, nextDiff);
       setMessage("snapshot refreshed");
     } catch (error) { setMessage(error instanceof Error ? error.message : String(error)); }
     finally { syncing = false; }
   }
 
-  async function action(next: Parameters<TuiClient["action"]>[0]): Promise<boolean> {
-    try { setStatus(await props.client.action(next)); setMessage(""); return true; }
-    catch (error) { setMessage(error instanceof Error ? error.message : String(error)); return false; }
+  async function action(next: Parameters<TuiClient["action"]>[0]): Promise<void> {
+    try { setStatus(await props.client.action(next)); setMessage(""); }
+    catch (error) { setMessage(error instanceof Error ? error.message : String(error)); }
   }
 
   onMount(() => {
@@ -255,34 +262,28 @@ export function App(props: { client: TuiClient; onQuit?: () => void; pollInterva
     if (key.name === "0") return setLayoutMode("auto");
     if (key.name === "s") return setSidebar(!sidebar());
     if (key.name === "q") return props.onQuit?.();
-    const item = current();
-    if (!item) return;
-    if (key.name === "j" || key.name === "k") {
+    if (key.name === "r") return enqueue(async () => {
+      if (status()?.session.source.kind === "stdin") {
+        setMessage("stdin session — refresh it from the harness with gyst session refresh --stdin");
+        return;
+      }
+      await refresh();
+    });
+    if (key.name === "j" || key.name === "k") return enqueue(async () => {
+      const visible = items();
+      if (!visible.length) return;
       const delta = key.name === "j" ? 1 : -1;
-      const destination = items()[(currentIndex() + delta + items().length) % items().length]!;
-      return void action({ type: "cursor.move", itemId: destination.id });
-    }
-    if (key.name === "e" && item.kind === "group") return void action({ type: "expand.toggle" });
-    if (key.name === "a" && item.kind !== "inbox") {
-      const wasAccepted = item.accepted;
-      return void action({ type: "verdict.toggle", itemId: item.id }).then((succeeded) => {
-        if (!succeeded) return;
-        if (wasAccepted) {
-          const index = undoStack.lastIndexOf(item.id);
-          if (index >= 0) undoStack.splice(index, 1);
-        } else undoStack.push(item.id);
-      });
-    }
-    if (key.name === "u") {
-      const itemId = undoStack.at(-1);
-      if (itemId) return void action({ type: "verdict.undo", itemId }).then((succeeded) => {
-        if (succeeded && undoStack.at(-1) === itemId) undoStack.pop();
-      });
-    }
-    if (key.name === "r") {
-      if (status()!.session.source.kind === "stdin") return setMessage("stdin session — refresh it from the harness with gyst session refresh --stdin");
-      void refresh();
-    }
+      const destination = visible[(currentIndex() + delta + visible.length) % visible.length]!;
+      await action({ type: "cursor.move", itemId: destination.id });
+    });
+    if (key.name === "e") return enqueue(async () => {
+      if (current()?.kind === "group") await action({ type: "expand.toggle" });
+    });
+    if (key.name === "a") return enqueue(async () => {
+      const item = current();
+      if (item && item.kind !== "inbox") await action({ type: "verdict.toggle", itemId: item.id });
+    });
+    if (key.name === "u") return enqueue(() => action({ type: "verdict.undo" }));
   });
 
   const sidebarRow = (item: ViewItem) => {

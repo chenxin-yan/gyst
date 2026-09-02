@@ -114,7 +114,7 @@ async function handle(request: Request): Promise<Record<string, unknown>> {
       id: crypto.randomUUID(), repoRoot: root,
       source: values.stdin ? { kind: "stdin" } : { kind: "git", args: gitArgs, ...(includeUntracked ? { includeUntracked: true } : {}) },
       createdAt: now, updatedAt: now, revision: 0, seq: 0,
-      cursor: { itemId: null, expanded: false }, hunks: snapshot(patch), groups: [], queue: [], queueSet: false, applyReceipts: [],
+      cursor: { itemId: null, expanded: false }, hunks: snapshot(patch), groups: [], queue: [], queueSet: false, acceptHistory: [], applyReceipts: [],
     };
     await persist(session);
     sessions.set(session.id, session);
