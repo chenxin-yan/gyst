@@ -1,0 +1,17 @@
+{
+  "name": "@gyst/cli",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "bun build --compile --minify --outfile dist/gyst src/index.tsx",
+    "check:types": "tsc --noEmit",
+    "test": "bun test"
+  },
+  "dependencies": {
+    "@crustjs/core": "link:@crustjs/core",
+    "@gyst/core": "workspace:*",
+    "@opentui/core": "0.5.9",
+    "@opentui/solid": "0.5.9",
+    "solid-js": "1.9.12"
+  }
+}

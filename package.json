@@ -1,0 +1,25 @@
+{
+  "name": "gyst",
+  "private": true,
+  "type": "module",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "build": "turbo run build",
+    "build:compile": "cd apps/gyst && bun build --compile --minify --outfile ../../dist/gyst src/index.tsx",
+    "check": "bun run check:boundaries && bun run check:types && bun run test && bun run smoke:compile",
+    "check:boundaries": "bun scripts/check-core-boundaries.ts",
+    "check:types": "turbo run check:types",
+    "test": "turbo run test",
+    "smoke:compile": "bun scripts/compile-smoke.ts",
+    "setup:crust": "bun scripts/link-crust.ts"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.4.0",
+    "turbo": "^2.10.11",
+    "typescript": "^7.0.2"
+  },
+  "packageManager": "bun@1.4.0"
+}
