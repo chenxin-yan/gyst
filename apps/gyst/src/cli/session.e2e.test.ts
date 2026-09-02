@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { ErrorPayloadSchema, StatusPayloadSchema } from "@gyst/core";
@@ -62,6 +62,35 @@ afterAll(async () => {
 });
 
 describe("gyst session CLI seam", () => {
+  it("serializes concurrent startup and create for one repository", async () => {
+    const cwd = await repo("concurrent-create");
+    await writeFile(join(cwd, "tracked.txt"), "changed\n");
+
+    const results = await Promise.all([
+      gyst(cwd, ["session", "create"]),
+      gyst(cwd, ["session", "create"]),
+    ]);
+    expect(results.map(({ exitCode }) => exitCode).sort()).toEqual([0, 1]);
+    expect(JSON.parse(results.find(({ exitCode }) => exitCode === 1)!.stderr).code).toBe("session_exists");
+    const status = JSON.parse((await gyst(cwd, ["session", "status"])).stdout);
+    expect((await readdir(data)).filter((file) => file.endsWith(".json"))).toEqual([`${status.session.id}.json`]);
+    await gyst(cwd, ["session", "close"]);
+  }, 20_000);
+
+  it("creates the default scope in a repository without HEAD", async () => {
+    const cwd = join(root, "unborn");
+    await Bun.$`mkdir -p ${cwd}`.quiet();
+    git(cwd, "init", "-q");
+    await writeFile(join(cwd, "staged.txt"), "staged\n");
+    git(cwd, "add", "staged.txt");
+    await writeFile(join(cwd, "untracked.txt"), "untracked\n");
+
+    const created = await gyst(cwd, ["session", "create"]);
+    expect(created.exitCode).toBe(0);
+    expect(JSON.parse(created.stdout).inbox).toHaveLength(2);
+    await gyst(cwd, ["session", "close"]);
+  }, 20_000);
+
   it("creates bare snapshots, respawns from persistence, selects diffs, and closes", async () => {
     const cwd = await repo("bare");
     await writeFile(join(cwd, "tracked.txt"), "one\ntwo\n");
@@ -161,6 +190,98 @@ index 1234567..89abcde 100644
     expect(second.exitCode).toBe(0);
     const secondDiff = JSON.parse((await gyst(cwd, ["session", "diff"])).stdout);
     expect(secondDiff.hunks.map((hunk: { id: string }) => hunk.id)).toEqual(ids);
+    await gyst(cwd, ["session", "close"]);
+  }, 20_000);
+
+  it("rejects file-only changes instead of silently omitting them", async () => {
+    const cwd = await repo("file-only");
+    const modeOnly = `diff --git a/tracked.txt b/tracked.txt
+old mode 100644
+new mode 100755
+`;
+    const rejected = await gyst(cwd, ["session", "create", "--stdin"], modeOnly);
+    expect(rejected.exitCode).toBe(1);
+    expect(JSON.parse(rejected.stderr).code).toBe("bad_args");
+
+    const valid = await gyst(cwd, ["session", "create", "--stdin"], `diff --git a/tracked.txt b/tracked.txt
+--- a/tracked.txt
++++ b/tracked.txt
+@@ -1 +1 @@
+-one
++two
+`);
+    expect(valid.exitCode).toBe(0);
+    await gyst(cwd, ["session", "close"]);
+  }, 20_000);
+
+  it("keeps failed persistence from exposing a session", async () => {
+    const cwd = await repo("persist-failure");
+    await writeFile(join(cwd, "tracked.txt"), "changed\n");
+    await chmod(data, 0o500);
+    const failed = await gyst(cwd, ["session", "create"]);
+    await chmod(data, 0o700);
+    expect(failed.exitCode).toBe(1);
+    expect(JSON.parse(failed.stderr).code).toBe("daemon_unreachable");
+
+    const retried = await gyst(cwd, ["session", "create"]);
+    expect(retried.exitCode).toBe(0);
+    await gyst(cwd, ["session", "close"]);
+  }, 20_000);
+
+  it("keeps a replacement session alive during final-session shutdown", async () => {
+    const first = await repo("shutdown-first");
+    const replacement = await repo("shutdown-replacement");
+    await writeFile(join(first, "tracked.txt"), "first changed\n");
+    await writeFile(join(replacement, "tracked.txt"), "replacement changed\n");
+    expect((await gyst(first, ["session", "create"])).exitCode).toBe(0);
+
+    const [closed, created] = await Promise.all([
+      gyst(first, ["session", "close"]),
+      gyst(replacement, ["session", "create"]),
+    ]);
+    expect(closed.exitCode).toBe(0);
+    expect(created.exitCode).toBe(0);
+    await Bun.sleep(50);
+    expect((await gyst(replacement, ["session", "status"])).exitCode).toBe(0);
+    await gyst(replacement, ["session", "close"]);
+  }, 20_000);
+
+  it("preserves split UTF-8 input at the socket boundary", async () => {
+    const cwd = await repo("utf8-socket");
+    // Start the daemon without creating a session, then write one request in deliberately split byte chunks.
+    expect((await gyst(cwd, ["session", "status"])).exitCode).toBe(1);
+    const patch = `diff --git a/tracked.txt b/tracked.txt
+--- a/tracked.txt
++++ b/tracked.txt
+@@ -1 +1 @@
+-one
++café
+`;
+    const request = new TextEncoder().encode(`${JSON.stringify({ command: "create", cwd, args: ["--stdin"], stdin: patch })}\n`);
+    const marker = new TextEncoder().encode("é");
+    const markerStart = request.findIndex((byte, index) => byte === marker[0] && request[index + 1] === marker[1]);
+    expect(markerStart).toBeGreaterThan(0);
+    const reply = await new Promise<string>((resolve, reject) => {
+      let response = "";
+      const decoder = new TextDecoder();
+      void Bun.connect({
+        unix: join(data, "daemon.sock"),
+        socket: {
+          open(socket) {
+            socket.write(request.slice(0, markerStart + 1));
+            setTimeout(() => socket.write(request.slice(markerStart + 1)), 5);
+          },
+          data(_socket, bytes) {
+            response += decoder.decode(bytes, { stream: true });
+            if (response.includes("\n")) resolve(response);
+          },
+          error(_socket, error) { reject(error); },
+        },
+      }).catch(reject);
+    });
+    expect(JSON.parse(reply).ok).toBe(true);
+    const diff = JSON.parse((await gyst(cwd, ["session", "diff"])).stdout);
+    expect(diff.hunks[0].patch).toContain("café");
     await gyst(cwd, ["session", "close"]);
   }, 20_000);
 

@@ -94,6 +94,8 @@ export type ClosePayload = typeof ClosePayloadSchema.Type;
 
 export function parseSnapshot(patch: string): Hunk[] {
   const files = parsePatchFiles(patch, undefined, true).flatMap((parsed) => parsed.files);
+  const unsupported = files.find((file) => file.hunks.length === 0);
+  if (unsupported) throw new Error(`file-level change without text hunks is unsupported: ${unsupported.name}`);
   const rawHunks = [...patch.matchAll(/^@@[^\n]*(?:\n|$)[\s\S]*?(?=^@@|^diff --git |(?![\s\S]))/gm)]
     .map((match) => match[0]!.replace(/\n$/, ""));
   const parsedHunkCount = files.reduce((count, file) => count + file.hunks.length, 0);
