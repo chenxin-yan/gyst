@@ -13,6 +13,7 @@ describe("crust command help", () => {
   it("describes the root and session command tree", async () => {
     expect(await execute(["--help"])).toContain("Commands:");
     expect(await execute(["session", "--help"])).toContain("gyst session");
+    expect(await execute(["session", "create", "--help"])).toContain("gyst session create");
   });
 
   it("reports the package version in root metadata and CLI output", async () => {
