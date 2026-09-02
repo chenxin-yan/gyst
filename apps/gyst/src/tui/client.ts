@@ -27,7 +27,7 @@ export class TuiClientError extends Error {
 export function daemonTuiClient(cwd = process.cwd()): TuiClient {
   function errorPayload(error: unknown): ErrorPayload {
     try { return Schema.decodeUnknownSync(ErrorPayloadSchema)(error); }
-    catch { return { code: "bad_args", message: error instanceof Error ? error.message : "invalid daemon response" }; }
+    catch { return { code: "daemon_unreachable", message: error instanceof Error ? error.message : "invalid daemon response" }; }
   }
 
   async function send(request: Request): Promise<unknown> {
