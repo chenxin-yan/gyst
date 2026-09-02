@@ -23,6 +23,7 @@
       },
       "dependencies": {
         "@crustjs/core": "link:@crustjs/core",
+        "@crustjs/extensions": "link:@crustjs/extensions",
         "@crustjs/skills": "link:@crustjs/skills",
         "@gyst/core": "workspace:*",
         "@opentui/solid": "0.5.9",
@@ -103,6 +104,8 @@
     "@crustjs/core": ["@crustjs/core@link:@crustjs/core", {}],
 
     "@crustjs/crust": ["@crustjs/crust@link:@crustjs/crust", { "bin": { "crust": "dist/cli" } }],
+
+    "@crustjs/extensions": ["@crustjs/extensions@link:@crustjs/extensions", {}],
 
     "@crustjs/skills": ["@crustjs/skills@link:@crustjs/skills", {}],
 
