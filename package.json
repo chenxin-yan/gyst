@@ -8,11 +8,11 @@
   ],
   "scripts": {
     "build": "turbo run build",
-    "build:compile": "cd apps/gyst && bun build --compile --minify --outfile ../../dist/gyst src/index.tsx",
+    "build:compile": "bun run --cwd apps/gyst build",
     "check": "bun run check:boundaries && bun run check:types && bun run test && bun run smoke:compile",
     "check:boundaries": "bun scripts/check-core-boundaries.ts",
     "check:types": "turbo run check:types",
-    "test": "turbo run test",
+    "test": "bun test scripts && turbo run test",
     "smoke:compile": "bun scripts/compile-smoke.ts",
     "setup:crust": "bun scripts/link-crust.ts"
   },

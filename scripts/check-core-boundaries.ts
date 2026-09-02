@@ -1,8 +1,29 @@
+import { builtinModules } from "node:module";
 import { readdir } from "node:fs/promises";
 import { join, relative } from "node:path";
 
 const root = join(import.meta.dir, "..", "packages", "core", "src");
-const forbidden = /(?:from\s*|import\s*(?:\(\s*)?)["'](?:(?:node:)?(?:fs(?:\/promises)?|net|dgram|child_process)|bun|solid-js|@opentui\/)/;
+const nodeBuiltins = new Set(builtinModules.map((name) => name.replace(/^node:/, "")));
+const pureNodeBuiltins = new Set(["path"]);
+
+function isForbidden(module: string): boolean {
+  const bare = module.replace(/^node:/, "");
+  return (
+    (nodeBuiltins.has(bare) && !pureNodeBuiltins.has(bare)) ||
+    module === "bun" ||
+    module.startsWith("bun:") ||
+    module === "solid-js" ||
+    module.startsWith("solid-js/") ||
+    module.startsWith("@opentui/")
+  );
+}
+
+export function findForbiddenImports(source: string): string[] {
+  return new Bun.Transpiler({ loader: "tsx" })
+    .scan(source)
+    .imports.map(({ path }) => path)
+    .filter(isForbidden);
+}
 
 async function sourceFiles(directory: string): Promise<string[]> {
   const entries = await readdir(directory, { withFileTypes: true });
@@ -15,13 +36,17 @@ async function sourceFiles(directory: string): Promise<string[]> {
   return nested.flat();
 }
 
-const violations: string[] = [];
-for (const file of await sourceFiles(root)) {
-  if (forbidden.test(await Bun.file(file).text())) violations.push(relative(root, file));
-}
+if (import.meta.main) {
+  const violations: string[] = [];
+  for (const file of await sourceFiles(root)) {
+    if (findForbiddenImports(await Bun.file(file).text()).length > 0) {
+      violations.push(relative(root, file));
+    }
+  }
 
-if (violations.length > 0) {
-  console.error(`packages/core must stay I/O-free; forbidden imports in: ${violations.join(", ")}`);
-  process.exit(1);
+  if (violations.length > 0) {
+    console.error(`packages/core must stay I/O-free; forbidden imports in: ${violations.join(", ")}`);
+    process.exit(1);
+  }
+  console.log("core boundary OK");
 }
-console.log("core boundary OK");
