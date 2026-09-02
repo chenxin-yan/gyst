@@ -106,6 +106,17 @@ describe("gyst session CLI seam", () => {
     const created = await gyst(cwd, ["session", "create"]);
     expect(created.exitCode).toBe(0);
     expect(JSON.parse(created.stdout).inbox).toHaveLength(2);
+
+    git(cwd, "config", "user.email", "test@gyst.invalid");
+    git(cwd, "config", "user.name", "Gyst Test");
+    git(cwd, "add", ".");
+    git(cwd, "commit", "-qm", "initial");
+    await writeFile(join(cwd, "staged.txt"), "changed after initial commit\n");
+    const refreshed = await gyst(cwd, ["session", "refresh"]);
+    expect(refreshed.exitCode).toBe(0);
+    expect(JSON.parse(refreshed.stdout).inbox).toEqual([
+      expect.objectContaining({ file: "staged.txt" }),
+    ]);
     await gyst(cwd, ["session", "close"]);
   }, 20_000);
 
@@ -147,16 +158,18 @@ describe("gyst session CLI seam", () => {
     const statePath = join(data, `${status.session.id}.json`);
     const state = JSON.parse(await readFile(statePath, "utf8"));
     state.groups = [
-      {
-        id: "group-1",
-        tldr: "same edit",
-        exemplarHunkId: hunkId,
-        hunkIds: [hunkId],
-        accepted: false,
-      },
+      { id: "group-1", tldr: "same edit", exemplarHunkId: hunkId, hunkIds: [hunkId] },
     ];
     const spotlightHunk = state.hunks.find((hunk: { id: string }) => hunk.id !== hunkId);
     spotlightHunk.tldr = "needs human review";
+    delete state.queue;
+    delete state.queueSet;
+    delete state.applyReceipts;
+    delete state.source.includeUntracked;
+    for (const hunk of state.hunks) {
+      delete hunk.contentHash;
+      delete hunk.accepted;
+    }
     await writeFile(statePath, JSON.stringify(state));
     await writeFile(join(data, "corrupt.json"), "not json");
     const restored = await gyst(cwd, ["session", "status"]);
@@ -435,6 +448,14 @@ new mode 100755
     expect(stale.exitCode).toBe(1);
     expect(JSON.parse(stale.stderr).code).toBe("stale_revision");
 
+    const pid = Number(await readFile(join(data, "daemon.pid"), "utf8"));
+    process.kill(pid, "SIGKILL");
+    await Bun.sleep(50);
+    const statePath = join(data, `${status.session.id}.json`);
+    const persisted = JSON.parse(await readFile(statePath, "utf8"));
+    persisted.cursor = { itemId: "group-1", expanded: true };
+    await writeFile(statePath, JSON.stringify(persisted));
+
     const changed = await gyst(
       cwd,
       ["session", "apply"],
@@ -469,6 +490,7 @@ new mode 100755
         queue: [second.id],
         queueSet: true,
         ready: false,
+        cursor: { itemId: null, expanded: false },
       }),
     );
     await gyst(cwd, ["session", "close"]);

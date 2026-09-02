@@ -15,6 +15,7 @@ import {
   SessionSchema,
   type StatusPayload,
   applyBatch,
+  migratePersistedSession,
   parseSnapshot,
   refreshSession,
   statusOf,
@@ -67,6 +68,22 @@ function selectedSession(id: string | undefined, root: string): Session {
   const session = [...sessions.values()].find((candidate) => candidate.repoRoot === root);
   if (!session) failure("no_session", `no session for repository ${root}`);
   return session;
+}
+
+function defaultGitArgs(root: string): string[] {
+  const head = Bun.spawnSync(["git", "rev-parse", "--verify", "HEAD"], {
+    cwd: root,
+    stdout: "ignore",
+    stderr: "ignore",
+  });
+  if (head.exitCode === 0) return ["HEAD"];
+  const emptyTree = Bun.spawnSync(["git", "hash-object", "-t", "tree", "/dev/null"], {
+    cwd: root,
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+  if (emptyTree.exitCode !== 0) failure("bad_args", "could not derive the empty git tree");
+  return [emptyTree.stdout.toString().trim()];
 }
 
 async function gitPatch(
@@ -135,24 +152,7 @@ async function handle(request: Request): Promise<StatusPayload | ClosePayload | 
     if (values.stdin && positionals.length)
       failure("bad_args", "--stdin cannot be combined with git arguments");
     const includeUntracked = !values.stdin && positionals.length === 0;
-    let gitArgs = positionals;
-    if (includeUntracked) {
-      const head = Bun.spawnSync(["git", "rev-parse", "--verify", "HEAD"], {
-        cwd: root,
-        stdout: "ignore",
-        stderr: "ignore",
-      });
-      if (head.exitCode === 0) gitArgs = ["HEAD"];
-      else {
-        const emptyTree = Bun.spawnSync(["git", "hash-object", "-t", "tree", "/dev/null"], {
-          cwd: root,
-          stdout: "pipe",
-          stderr: "pipe",
-        });
-        if (emptyTree.exitCode !== 0) failure("bad_args", "could not derive the empty git tree");
-        gitArgs = [emptyTree.stdout.toString().trim()];
-      }
-    }
+    const gitArgs = includeUntracked ? defaultGitArgs(root) : positionals;
     creatingRepoRoots.add(root);
     try {
       const patch = values.stdin
@@ -250,11 +250,10 @@ async function handle(request: Request): Promise<StatusPayload | ClosePayload | 
       patch = request.stdin ?? "";
     } else {
       if (values.stdin) failure("bad_args", "git sessions refresh their recorded arguments");
-      patch = await gitPatch(
-        session.repoRoot,
-        session.source.args,
-        session.source.includeUntracked ?? false,
-      );
+      const args = session.source.includeUntracked
+        ? defaultGitArgs(session.repoRoot)
+        : session.source.args;
+      patch = await gitPatch(session.repoRoot, args, session.source.includeUntracked ?? false);
     }
     const refreshed = refreshSession(session, snapshot(patch));
     await persist(refreshed);
@@ -283,7 +282,7 @@ async function loadSessions(): Promise<void> {
     if (!file.endsWith(".json")) continue;
     try {
       const session = Schema.decodeUnknownSync(SessionSchema)(
-        JSON.parse(await readFile(join(dataDir(), file), "utf8")),
+        migratePersistedSession(JSON.parse(await readFile(join(dataDir(), file), "utf8"))),
       );
       sessions.set(session.id, session);
     } catch {
@@ -352,7 +351,7 @@ export async function runDaemon(): Promise<void> {
           socket.data.handled = true;
           const raw = socket.data.buffer.slice(0, newline);
           activeRequests++;
-          requests = requests.then(async () => {
+          const processRequest = async () => {
             let request: Request | undefined;
             let reply: Reply;
             try {
@@ -377,7 +376,8 @@ export async function runDaemon(): Promise<void> {
                   done.resolve();
                 }
               }, 20);
-          });
+          };
+          requests = requests.then(processRequest, processRequest);
         },
       },
     });

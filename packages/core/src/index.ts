@@ -99,6 +99,33 @@ export const SessionSchema = Schema.Struct({
 });
 export type Session = typeof SessionSchema.Type;
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+export function migratePersistedSession(value: unknown): unknown {
+  if (!isRecord(value)) return value;
+  const migrated = { ...value };
+  if (Array.isArray(value.hunks))
+    migrated.hunks = value.hunks.map((candidate) => {
+      if (!isRecord(candidate)) return candidate;
+      const patch = typeof candidate.patch === "string" ? candidate.patch : "";
+      return {
+        ...candidate,
+        contentHash: candidate.contentHash ?? hash(patch.slice(patch.indexOf("\n") + 1)),
+        accepted: candidate.accepted ?? false,
+      };
+    });
+  if (Array.isArray(value.groups))
+    migrated.groups = value.groups.map((candidate) =>
+      isRecord(candidate) ? { ...candidate, accepted: candidate.accepted ?? false } : candidate,
+    );
+  migrated.queue ??= [];
+  migrated.queueSet ??= false;
+  migrated.applyReceipts ??= [];
+  return migrated;
+}
+
 export const GroupCreateSchema = Schema.Struct({
   type: Schema.Literal("group.create"),
   id: Schema.String,
@@ -285,11 +312,15 @@ function visibleItemIds(session: Session): string[] {
 
 function reconcileQueue(session: MutableSession): void {
   const visible = visibleItemIds(session);
+  const visibleSet = new Set(visible);
   const available = new Set(visible);
   session.queue = [
     ...session.queue.filter((id) => available.delete(id)),
     ...visible.filter((id) => available.has(id)),
   ];
+  if (session.cursor.itemId !== null && !visibleSet.has(session.cursor.itemId)) {
+    session.cursor = { itemId: null, expanded: false };
+  }
 }
 
 export type ValidationDetail = { opIndex: number; message: string };
@@ -465,16 +496,22 @@ export function applyBatch(session: Session, envelope: ApplyEnvelope): ApplyResu
 export function refreshSession(session: Session, freshHunks: readonly Hunk[]): Session {
   const draft = structuredClone(session) as MutableSession;
   const oldByMatch = new Map<string, Hunk[]>();
+  const freshMatchCounts = new Map<string, number>();
   for (const hunk of session.hunks) {
     const key = `${hunk.file}\0${hunk.contentHash}`;
     const matches = oldByMatch.get(key) ?? [];
     matches.push(hunk);
     oldByMatch.set(key, matches);
   }
+  for (const hunk of freshHunks) {
+    const key = `${hunk.file}\0${hunk.contentHash}`;
+    freshMatchCounts.set(key, (freshMatchCounts.get(key) ?? 0) + 1);
+  }
   const survivingIds = new Set<string>();
   draft.hunks = freshHunks.map((fresh) => {
-    const matches = oldByMatch.get(`${fresh.file}\0${fresh.contentHash}`);
-    const old = matches?.shift();
+    const key = `${fresh.file}\0${fresh.contentHash}`;
+    const matches = oldByMatch.get(key);
+    const old = matches?.length === 1 && freshMatchCounts.get(key) === 1 ? matches[0] : undefined;
     if (!old) return { ...fresh, tldr: undefined, accepted: false };
     survivingIds.add(old.id);
     return { ...fresh, id: old.id, tldr: old.tldr, accepted: old.accepted };
