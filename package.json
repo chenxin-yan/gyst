@@ -8,7 +8,7 @@
   ],
   "scripts": {
     "build": "turbo run build",
-    "build:compile": "bun run --cwd apps/gyst build",
+    "build:compile": "cd apps/gyst && bun build --compile --minify --outfile ../../dist/gyst src/index.tsx && rm -rf ../../dist/skills && cp -R ../../skills ../../dist/skills",
     "check": "bun run check:boundaries && bun run check:types && bun run test && bun run smoke:compile",
     "check:boundaries": "bun scripts/check-core-boundaries.ts",
     "check:types": "turbo run check:types",
