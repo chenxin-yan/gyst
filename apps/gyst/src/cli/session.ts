@@ -52,7 +52,7 @@ async function requestDaemon(request: Request): Promise<Reply> {
   throw { code: "daemon_unreachable", message: "daemon did not become reachable" } satisfies ErrorPayload;
 }
 
-export async function runSessionCli(argv: string[]): Promise<void> {
+export async function runSessionCli(argv: string[], readStdin = false): Promise<void> {
   const [command, ...args] = argv;
   if (!command || !["create", "status", "diff", "close"].includes(command)) {
     throw { code: "bad_args", message: `unknown session command: ${command ?? ""}` } satisfies ErrorPayload;
@@ -61,7 +61,7 @@ export async function runSessionCli(argv: string[]): Promise<void> {
     command: command as Request["command"],
     cwd: process.cwd(),
     args,
-    ...(command === "create" && args.includes("--stdin") ? { stdin: await Bun.stdin.text() } : {}),
+    ...(readStdin ? { stdin: await Bun.stdin.text() } : {}),
   };
   const reply = await requestDaemon(request);
   if (!reply.ok) throw Schema.decodeUnknownSync(ErrorPayloadSchema)(reply.error);

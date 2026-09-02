@@ -29,7 +29,7 @@ const create = defineCommand("create", { description: "Create a session" }, (com
       "--",
       ...args.gitArgs,
       ...rawArgs,
-    ])),
+    ], flags.stdin)),
 );
 const status = defineCommand("status", { description: "Read session status" }, (command) =>
   command.flags(sessionFlag).action(({ flags }) => runSessionCli(["status", ...option("session", flags.session)])),
