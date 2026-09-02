@@ -1,4 +1,4 @@
-import { link, mkdir, open, readdir, readFile, realpath, rename, rm, writeFile } from "node:fs/promises";
+import { mkdir, readdir, readFile, realpath, rename, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { homedir } from "node:os";
 import { parseArgs } from "node:util";
@@ -16,13 +16,13 @@ import { Schema } from "effect";
 export type Request = { command: "create" | "status" | "diff" | "close"; cwd: string; args: string[]; stdin?: string };
 type Reply = { ok: true; value: unknown } | { ok: false; error: ErrorPayload };
 
-export function dataDir(): string {
+function dataDir(): string {
   return process.env.GYST_DATA_DIR ?? join(process.env.XDG_DATA_HOME ?? join(homedir(), ".local", "share"), "gyst");
 }
 export function socketPath(): string {
-  return process.env.GYST_SOCKET ?? join(dataDir(), "daemon.sock");
+  return join(dataDir(), "daemon.sock");
 }
-export function pidPath(): string {
+function pidPath(): string {
   return join(dataDir(), "daemon.pid");
 }
 function lockPath(): string {
@@ -52,8 +52,9 @@ function selectedSession(id: string | undefined, root: string): Session {
   return session;
 }
 
-async function gitPatch(root: string, args: string[], bare: boolean): Promise<string> {
+async function gitPatch(root: string, args: string[]): Promise<string> {
   if (args.some((arg) => arg.startsWith("-"))) failure("bad_args", "git revisions must not look like options");
+  const bare = args.length === 0;
   let diffArgs = args;
   if (bare) {
     const head = Bun.spawnSync(["git", "rev-parse", "--verify", "HEAD"], { cwd: root, stdout: "ignore", stderr: "ignore" });
@@ -101,7 +102,7 @@ async function handle(request: Request): Promise<unknown> {
     if (values.stdin && positionals.length) failure("bad_args", "--stdin cannot be combined with git arguments");
     creatingRepoRoots.add(root);
     try {
-      const patch = values.stdin ? (request.stdin ?? "") : await gitPatch(root, positionals, positionals.length === 0);
+      const patch = values.stdin ? (request.stdin ?? "") : await gitPatch(root, positionals);
       let hunks;
       try {
         hunks = parseSnapshot(patch);
@@ -172,25 +173,17 @@ function processIsAlive(pid: number): boolean {
   catch (error) { return (error as NodeJS.ErrnoException).code === "EPERM"; }
 }
 
-async function acquireDaemonLock() {
-  const candidate = `${lockPath()}.${process.pid}.${crypto.randomUUID()}`;
-  await writeFile(candidate, `${process.pid}\n`, { flag: "wx", mode: 0o600 });
-  try {
-    for (;;) {
-      try {
-        await link(candidate, lockPath());
-        const lock = await open(lockPath(), "r+");
-        await rm(candidate, { force: true });
-        return lock;
-      } catch (error) {
-        if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
-        const owner = Number(await readFile(lockPath(), "utf8").catch(() => ""));
-        if (Number.isInteger(owner) && owner > 0 && processIsAlive(owner)) return undefined;
-        await rm(lockPath(), { force: true });
-      }
+async function acquireDaemonLock(): Promise<boolean> {
+  for (;;) {
+    try {
+      await writeFile(lockPath(), `${process.pid}\n`, { flag: "wx", mode: 0o600 });
+      return true;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+      const owner = Number(await readFile(lockPath(), "utf8").catch(() => ""));
+      if (Number.isInteger(owner) && owner > 0 && processIsAlive(owner)) return false;
+      await rm(lockPath(), { force: true });
     }
-  } finally {
-    await rm(candidate, { force: true });
   }
 }
 
@@ -201,8 +194,7 @@ function errorPayload(error: unknown): ErrorPayload {
 
 export async function runDaemon(): Promise<void> {
   await mkdir(dataDir(), { recursive: true, mode: 0o700 });
-  const lock = await acquireDaemonLock();
-  if (!lock) return;
+  if (!await acquireDaemonLock()) return;
   try {
     await loadSessions();
     await rm(socketPath(), { force: true });
@@ -250,7 +242,6 @@ export async function runDaemon(): Promise<void> {
   } finally {
     await rm(pidPath(), { force: true });
     await rm(socketPath(), { force: true });
-    await lock.close();
     await rm(lockPath(), { force: true });
   }
 }
