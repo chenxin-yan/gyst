@@ -9,7 +9,12 @@ setting up gyst:
 
 ```sh
 export CRUST_CHECKOUT=/path/to/crust
-(cd "$CRUST_CHECKOUT" && bun install && bunx turbo run build --filter=@crustjs/core --filter=@crustjs/skills)
+(
+  cd "$CRUST_CHECKOUT"
+  bun install
+  bunx turbo run build --filter=@crustjs/core --filter=@crustjs/skills...
+  bun run --cwd packages/crust build:cli
+)
 
 bun run setup:crust
 bun install
@@ -22,3 +27,59 @@ and runs the actual `apps/gyst/dist/gyst` executable. The final smoke runs bare 
 `gyst --help`, and `gyst session --help`; it fails unless the compiled binary
 loads OpenTUI's native library, renders a Solid frame, exits cleanly, and prints
 help generated from the crust command tree.
+
+## Distribution
+
+Only `@gyst/cli` is published. `crust build --package` stages the root resolver
+and one npm package per OS/CPU under the app's `dist/npm`; the root's optional
+dependencies let npm select the platform package. Platform packages contain a
+standalone Bun-compiled `gyst`, not a JavaScript CLI that requires Bun.
+
+Local dry run for the current machine:
+
+```sh
+# Use bun-darwin-arm64 on an Apple Silicon Mac.
+cd apps/gyst
+bun run package -- --target bun-linux-x64-baseline
+bun run package:smoke
+bun run publish -- --dry-run
+```
+
+The smoke packs and inspects both tarballs, installs them globally under a
+temporary prefix, confirms no wrong-platform package appeared, removes Bun
+from `PATH`, and runs `gyst --help` through the packed resolver.
+
+### First prerelease
+
+One-time repository setup: create an npm automation token allowed to publish
+`@gyst/*` and save it as the GitHub Actions secret `NPM_TOKEN`. Then, from a
+clean `main` checkout:
+
+```sh
+# 1. Set apps/gyst/package.json version to the intended prerelease, for example
+#    0.1.0-alpha.0, and run the local gate above plus `bun run check`.
+git add apps/gyst/package.json bun.lock
+git commit -m "chore: release 0.1.0-alpha.0"
+git push origin main
+
+# 2. The tag must exactly be v<package version>; pushing it starts release.yml.
+git tag v0.1.0-alpha.0
+git push origin v0.1.0-alpha.0
+
+# 3. Watch both Linux x64 and Darwin arm64 cold-install checks, then publication.
+run_id=$(gh run list --repo chenxin-yan/gyst --workflow release.yml --limit 1 --json databaseId --jq '.[0].databaseId')
+gh run watch "$run_id" --repo chenxin-yan/gyst
+
+# 4. Verify the npm dist-tag and GitHub assets after the workflow succeeds.
+npm view @gyst/cli@next version
+npm install -g @gyst/cli@next
+gyst --help
+gh release view v0.1.0-alpha.0 --repo chenxin-yan/gyst
+```
+
+The tag workflow rejects `0.0.0` and mismatched tags, runs both host package
+smokes, publishes platform packages before the root via `crust publish`, uses
+the `next` npm tag for prereleases, and creates a GitHub prerelease containing
+all raw binaries, the POSIX/Windows resolvers, and the authored skill archive.
+Stable versions publish without an override (npm's `latest`). There is no curl
+installer or self-update; update through npm or replace the release binary.

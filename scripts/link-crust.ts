@@ -12,9 +12,10 @@ if (globalBin.exitCode !== 0) process.exit(globalBin.exitCode);
 const linkRoot = join(dirname(globalBin.stdout.toString().trim()), "install", "global", "node_modules", "@crustjs");
 mkdirSync(linkRoot, { recursive: true });
 
-for (const name of ["core", "extensions", "skills"]) {
+for (const name of ["core", "extensions", "skills", "crust"]) {
   const packageDir = join(checkout, "packages", name);
-  if (!existsSync(join(packageDir, "dist", "index.js"))) {
+  const builtEntry = name === "crust" ? join(packageDir, "dist", "cli.js") : join(packageDir, "dist", "index.js");
+  if (!existsSync(builtEntry)) {
     console.error(`Built crust package not found at ${packageDir}; install and build the crust workspace first`);
     process.exit(1);
   }
