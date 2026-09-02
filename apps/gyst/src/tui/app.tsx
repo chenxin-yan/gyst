@@ -39,7 +39,7 @@ function memberOf(hunk: Hunk): Member {
 function buildItems(status: StatusPayload, diff: DiffPayload): ViewItem[] {
   const hunks = new Map(diff.hunks.map((hunk) => [hunk.id, memberOf(hunk)]));
   const groups = status.groups.flatMap((group): ViewItem[] => {
-    const members = group.hunkIds.flatMap((id) => hunks.get(id) ? [hunks.get(id)!] : []);
+    const members = group.hunkIds.flatMap((id) => hunks.get(id) ?? []);
     const exemplar = hunks.get(group.exemplarHunkId);
     return members.length && exemplar ? [{ kind: "group", id: group.id, tldr: group.tldr, accepted: group.accepted, exemplar, members }] : [];
   });
@@ -131,20 +131,20 @@ function SplitHalf(props: { cell: SplitCell; width: number; side: "left" | "righ
   </Show>;
 }
 
-function FileHeader(props: { member: Member; tag?: string }) {
+function FileHeader(props: { member: Member }) {
   const added = () => props.member.lines.filter(({ sign }) => sign === "+").length;
   const removed = () => props.member.lines.filter(({ sign }) => sign === "-").length;
   return <box flexDirection="row" justifyContent="space-between" backgroundColor={C.panel} paddingLeft={1} paddingRight={1}>
-    <text><Sp fg={C.fg}>{props.member.file}</Sp><Show when={props.tag}><Sp fg={C.dim}>  {props.tag}</Sp></Show></text>
+    <text fg={C.fg}>{props.member.file}</text>
     <text><Show when={added()}><Sp fg={C.ok}>+{added()}</Sp></Show><Show when={removed()}><Sp fg={C.delBadge}> -{removed()}</Sp></Show></text>
   </box>;
 }
 
-function MemberDiff(props: { member: Member; layout: "split" | "stack"; tag?: string }) {
+function MemberDiff(props: { member: Member; layout: "split" | "stack" }) {
   const width = () => String(Math.max(props.member.oldStart, props.member.newStart) + props.member.lines.length).length;
   const numbered = () => numberLines(props.member);
   return <box flexDirection="column">
-    <FileHeader member={props.member} tag={props.tag} />
+    <FileHeader member={props.member} />
     <Show when={props.layout === "split"} fallback={<For each={stackRows(numbered())}>{(row) => <StackRow row={row} width={width()} />}</For>}>
       <For each={splitRows(numbered())}>{(row) => <box flexDirection="row">
         <SplitHalf cell={row.left} width={width()} side="left" /><text fg={C.border}>▌</text><SplitHalf cell={row.right} width={width()} side="right" />
@@ -293,7 +293,7 @@ export function App(props: { client: TuiClient; onQuit?: () => void; pollInterva
       <text fg={active() ? C.accent : C.panel} bg={active() ? C.panelAlt : C.panel}>▌</text>
       <box flexDirection="row" justifyContent="space-between" flexGrow={1} paddingRight={1}>
         <text fg={item.accepted ? C.ok : item.kind === "inbox" ? C.accent : active() ? C.fg : C.muted}>{item.accepted ? "✓" : item.kind === "inbox" ? "!" : "·"} {label.slice(0, 19)}</text>
-        <Show when={item.kind === "group"}><text fg={C.dim}>{item.kind === "group" ? item.members.length : ""}</text></Show>
+        {item.kind === "group" && <text fg={C.dim}>{item.members.length}</text>}
       </box>
     </box>;
   };
