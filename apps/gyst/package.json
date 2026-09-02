@@ -1,5 +1,6 @@
 {
   "name": "@gyst/cli",
+  "version": "0.0.0",
   "private": true,
   "type": "module",
   "scripts": {
@@ -9,6 +10,7 @@
   },
   "dependencies": {
     "@crustjs/core": "link:@crustjs/core",
+    "@crustjs/extensions": "link:@crustjs/extensions",
     "@gyst/core": "workspace:*",
     "@opentui/solid": "0.5.9",
     "solid-js": "1.9.12"
