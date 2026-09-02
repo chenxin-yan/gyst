@@ -12,6 +12,15 @@ describe("daemon wire envelopes", () => {
     expect(() => decodeReply({ ok: false, error: { message: "missing code" } })).toThrow();
   });
 
+  it("accepts typed human actions", () => {
+    expect(decodeRequest({ command: "tui.action", cwd: "/repo", args: [], action: { type: "expand.toggle" } })).toEqual({
+      command: "tui.action",
+      cwd: "/repo",
+      args: [],
+      action: { type: "expand.toggle" },
+    });
+  });
+
   it("accepts both reply variants", () => {
     expect(decodeReply({ ok: true, value: {} })).toEqual({ ok: true, value: {} });
     expect(decodeReply({ ok: false, error: { code: "bad_args", message: "bad request" } })).toEqual(
