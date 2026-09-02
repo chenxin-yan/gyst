@@ -133,5 +133,16 @@ await Bun.sleep(15);
 await resetTui.waitForFrame((value) => !value.includes("✓ accepted"));
 resetTui.renderer.destroy();
 
-console.log("TUI smoke OK — attach/wait, navigation, verdict/undo, expand, sidebar, layouts, help, refresh, reset sync");
+const mismatchedState = fixture();
+const mismatched = structuredClone(mismatchedState.status()) as any;
+mismatched.groups[0].hunkIds = ["missing-from-diff"];
+mismatched.groups[0].count = 1;
+mismatched.revision = 1;
+mismatchedState.setStatus(mismatched);
+const mismatchedTui = await testRender(() => <App client={mismatchedState.client} pollInterval={60_000} />, { width: 100, height: 30 });
+await mismatchedTui.waitForFrame((value) => value.includes("SPOTLIGHT"));
+assert(!mismatchedTui.captureCharFrame().includes("▍GROUP"), "groups absent from a non-atomic diff read are omitted");
+mismatchedTui.renderer.destroy();
+
+console.log("TUI smoke OK — attach/wait, navigation, verdict/undo, expand, sidebar, layouts, help, refresh, reset and mismatched sync");
 process.exit(0);

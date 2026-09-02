@@ -38,10 +38,10 @@ function memberOf(hunk: Hunk): Member {
 
 function buildItems(status: StatusPayload, diff: DiffPayload): ViewItem[] {
   const hunks = new Map(diff.hunks.map((hunk) => [hunk.id, memberOf(hunk)]));
-  const groups = status.groups.map((group): ViewItem => ({
-    kind: "group", id: group.id, tldr: group.tldr, accepted: group.accepted,
-    members: group.hunkIds.flatMap((id) => hunks.get(id) ? [hunks.get(id)!] : []),
-  }));
+  const groups = status.groups.flatMap((group): ViewItem[] => {
+    const members = group.hunkIds.flatMap((id) => hunks.get(id) ? [hunks.get(id)!] : []);
+    return members.length ? [{ kind: "group", id: group.id, tldr: group.tldr, accepted: group.accepted, members }] : [];
+  });
   const spotlight = status.spotlight.flatMap((hunk): ViewItem[] => {
     const member = hunks.get(hunk.id);
     return member ? [{ kind: "spotlight", id: hunk.id, tldr: hunk.tldr, accepted: hunk.accepted, member }] : [];
@@ -164,7 +164,7 @@ function VerdictTag(props: { accepted: boolean }) {
 
 function FocusCard(props: { item: ViewItem; expanded: boolean; layout: "split" | "stack" }) {
   if (props.item.kind === "group") return <box flexDirection="column">
-    <text><Sp fg={C.accent} attributes={1}>▍GROUP </Sp><Sp fg={C.fg} attributes={1}>{props.item.tldr}</Sp><Sp fg={C.dim}>  ×{props.item.members.length}</Sp><VerdictTag accepted={props.item.accepted} /></text>
+    <text><Sp fg={C.accent} attributes={1}>▍GROUP</Sp><Sp fg={C.dim}>  ×{props.item.members.length}</Sp><VerdictTag accepted={props.item.accepted} /></text>
     <Note text={props.item.tldr} /><text> </text>
     <Show when={props.expanded} fallback={<box flexDirection="column"><text fg={C.dim}>exemplar · 1 of {props.item.members.length}</text><MemberDiff member={props.item.members[0]!} layout={props.layout} /><text fg={C.dim}>(e to expand)</text></box>}>
       <box flexDirection="column"><text fg={C.dim}>all {props.item.members.length} members (e to fold)</text><For each={props.item.members}>{(member) => <box paddingBottom={1}><MemberDiff member={member} layout={props.layout} /></box>}</For></box>
@@ -203,10 +203,15 @@ export function App(props: { client: TuiClient; onQuit?: () => void; pollInterva
     syncing = true;
     try {
       const next = await props.client.status();
-      if (!status() || next.session.id !== status()!.session.id || next.revision !== status()!.revision) setDiff(await props.client.diff());
+      const previous = status();
+      let nextDiff = diff();
+      if (!previous || next.session.id !== previous.session.id || next.revision !== previous.revision || !nextDiff) nextDiff = await props.client.diff();
+      const latest = status();
+      if (latest && latest.session.id === next.session.id && latest.seq > next.seq) return;
+      setDiff(nextDiff);
       setStatus(next);
       setMessage("");
-      const nextItems = diff() ? buildItems(next, diff()!) : [];
+      const nextItems = nextDiff ? buildItems(next, nextDiff) : [];
       if (!next.cursor.itemId && nextItems[0]) setStatus(await props.client.action({ type: "cursor.move", itemId: nextItems[0].id }));
     } catch (error) {
       if (error instanceof TuiClientError && error.payload.code === "no_session") {
@@ -215,9 +220,24 @@ export function App(props: { client: TuiClient; onQuit?: () => void; pollInterva
     } finally { syncing = false; }
   }
 
-  async function action(next: Parameters<TuiClient["action"]>[0]): Promise<void> {
-    try { setStatus(await props.client.action(next)); setMessage(""); }
-    catch (error) { setMessage(error instanceof Error ? error.message : String(error)); }
+  async function refresh(): Promise<void> {
+    if (syncing || stopped) return;
+    syncing = true;
+    try {
+      const next = await props.client.refresh();
+      const nextDiff = await props.client.diff();
+      const latest = status();
+      if (!latest || latest.session.id !== next.session.id || latest.seq <= next.seq) {
+        setDiff(nextDiff); setStatus(next);
+      }
+      setMessage("snapshot refreshed");
+    } catch (error) { setMessage(error instanceof Error ? error.message : String(error)); }
+    finally { syncing = false; }
+  }
+
+  async function action(next: Parameters<TuiClient["action"]>[0]): Promise<boolean> {
+    try { setStatus(await props.client.action(next)); setMessage(""); return true; }
+    catch (error) { setMessage(error instanceof Error ? error.message : String(error)); return false; }
   }
 
   onMount(() => {
@@ -244,20 +264,24 @@ export function App(props: { client: TuiClient; onQuit?: () => void; pollInterva
     }
     if (key.name === "e" && item.kind === "group") return void action({ type: "expand.toggle" });
     if (key.name === "a" && item.kind !== "inbox") {
-      if (item.accepted) {
-        const index = undoStack.lastIndexOf(item.id);
-        if (index >= 0) undoStack.splice(index, 1);
-      } else undoStack.push(item.id);
-      return void action({ type: "verdict.toggle", itemId: item.id });
+      const wasAccepted = item.accepted;
+      return void action({ type: "verdict.toggle", itemId: item.id }).then((succeeded) => {
+        if (!succeeded) return;
+        if (wasAccepted) {
+          const index = undoStack.lastIndexOf(item.id);
+          if (index >= 0) undoStack.splice(index, 1);
+        } else undoStack.push(item.id);
+      });
     }
     if (key.name === "u") {
-      const itemId = undoStack.pop();
-      if (itemId) return void action({ type: "verdict.undo", itemId });
+      const itemId = undoStack.at(-1);
+      if (itemId) return void action({ type: "verdict.undo", itemId }).then((succeeded) => {
+        if (succeeded && undoStack.at(-1) === itemId) undoStack.pop();
+      });
     }
     if (key.name === "r") {
       if (status()!.session.source.kind === "stdin") return setMessage("stdin session — refresh it from the harness with gyst session refresh --stdin");
-      void props.client.refresh().then(async (next) => { setDiff(await props.client.diff()); setStatus(next); setMessage("snapshot refreshed"); })
-        .catch((error) => setMessage(error instanceof Error ? error.message : String(error)));
+      void refresh();
     }
   });
 
