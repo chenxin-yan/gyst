@@ -1,0 +1,117 @@
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  package-smoke:
+    name: package smoke (${{ matrix.alias }})
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: bun-linux-x64-baseline
+            alias: linux-x64
+          - os: macos-14
+            target: bun-darwin-arm64
+            alias: darwin-arm64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: chenxin-yan/crust
+          path: crust
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.0
+      - name: Build local crust dependencies
+        working-directory: crust
+        run: |
+          bun install --frozen-lockfile
+          bunx turbo run build --filter=@crustjs/core --filter=@crustjs/skills...
+          bun run --cwd packages/crust build:cli
+      - name: Link local crust dependencies
+        env:
+          CRUST_CHECKOUT: ${{ github.workspace }}/crust
+        run: bun run setup:crust
+      - run: bun install --frozen-lockfile --os='*' --cpu='*'
+      - name: Stage host npm packages
+        working-directory: apps/gyst
+        run: bun run package -- --target ${{ matrix.target }}
+      - name: Pack, install globally, and run without Bun on PATH
+        working-directory: apps/gyst
+        run: bun run package:smoke
+
+  publish:
+    needs: package-smoke
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: chenxin-yan/crust
+          path: crust
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          registry-url: https://registry.npmjs.org
+      - name: Build local crust dependencies
+        working-directory: crust
+        run: |
+          bun install --frozen-lockfile
+          bunx turbo run build --filter=@crustjs/core --filter=@crustjs/skills...
+          bun run --cwd packages/crust build:cli
+      - name: Link local crust dependencies
+        env:
+          CRUST_CHECKOUT: ${{ github.workspace }}/crust
+        run: bun run setup:crust
+      - run: bun install --frozen-lockfile --os='*' --cpu='*'
+      - name: Require the tag and package version to match
+        id: version
+        run: |
+          version=$(node -p "require('./apps/gyst/package.json').version")
+          test "$version" != "0.0.0"
+          test "$GITHUB_REF_NAME" = "v$version"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          if [[ "$version" == *-* ]]; then echo "prerelease=true" >> "$GITHUB_OUTPUT"; else echo "prerelease=false" >> "$GITHUB_OUTPUT"; fi
+      - run: bun run check
+      - name: Build raw release binaries and shell resolvers
+        working-directory: apps/gyst
+        run: bun run build:release
+      - name: Stage all npm platform packages
+        working-directory: apps/gyst
+        run: bun run package
+      - name: Verify publish order without network writes
+        working-directory: apps/gyst
+        run: bun run publish -- --dry-run
+      - name: Publish platform packages, then @gyst/cli
+        working-directory: apps/gyst
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          if [[ "${{ steps.version.outputs.prerelease }}" == "true" ]]; then
+            bun run publish -- --tag next
+          else
+            bun run publish
+          fi
+      - name: Archive the authored skill for raw binary installs
+        run: tar -C apps/gyst/dist/release -czf apps/gyst/dist/release/gyst-skills.tar.gz skills
+      - name: Create GitHub Release with raw binaries and resolvers
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          args=(--verify-tag --generate-notes)
+          if [[ "${{ steps.version.outputs.prerelease }}" == "true" ]]; then args+=(--prerelease); fi
+          gh release create "$GITHUB_REF_NAME" "${args[@]}" \
+            apps/gyst/dist/release/gyst \
+            apps/gyst/dist/release/gyst.cmd \
+            apps/gyst/dist/release/gyst-bun-* \
+            apps/gyst/dist/release/gyst-skills.tar.gz

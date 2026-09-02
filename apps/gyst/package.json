@@ -1,12 +1,32 @@
 {
   "name": "@gyst/cli",
   "version": "0.0.0",
-  "private": true,
+  "description": "Keyboard-centric agent/human co-review TUI",
+  "license": "MIT",
   "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/chenxin-yan/gyst.git"
+  },
+  "homepage": "https://github.com/chenxin-yan/gyst#readme",
+  "bugs": "https://github.com/chenxin-yan/gyst/issues",
+  "publishConfig": {
+    "access": "public"
+  },
+  "bin": {
+    "gyst": "dist/gyst"
+  },
   "scripts": {
     "build": "bun build --compile --minify --outfile dist/gyst src/index.tsx && bun scripts/build-skills.ts",
+    "build:release": "bun node_modules/@crustjs/crust/dist/cli.js build --entry src/index.tsx --name gyst --outdir dist/release --resolver gyst",
+    "package": "bun node_modules/@crustjs/crust/dist/cli.js build --package --entry src/index.tsx --name gyst --stage-dir dist/npm",
+    "package:smoke": "bun ../../scripts/package-smoke.ts",
+    "publish": "bun node_modules/@crustjs/crust/dist/cli.js publish --stage-dir dist/npm",
     "check:types": "tsc --noEmit",
     "test": "bun test && bun src/tui/smoke.tsx && bun src/tui/app-races.smoke.tsx"
+  },
+  "devDependencies": {
+    "@crustjs/crust": "link:@crustjs/crust"
   },
   "dependencies": {
     "@crustjs/core": "link:@crustjs/core",
