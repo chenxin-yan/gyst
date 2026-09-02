@@ -231,6 +231,7 @@ export async function runDaemon(): Promise<void> {
     await rm(socketPath(), { force: true });
     await writeFile(pidPath(), `${process.pid}\n`, { mode: 0o600 });
     const done = Promise.withResolvers<void>();
+    let requests = Promise.resolve();
     let activeRequests = 0;
     let stopping = false;
     const server = Bun.listen<{ buffer: string; decoder: TextDecoder; handled: boolean }>({
@@ -245,7 +246,7 @@ export async function runDaemon(): Promise<void> {
           socket.data.handled = true;
           const raw = socket.data.buffer.slice(0, newline);
           activeRequests++;
-          void (async () => {
+          requests = requests.then(async () => {
             let request: Request | undefined;
             let reply: Reply;
             try {
@@ -266,7 +267,7 @@ export async function runDaemon(): Promise<void> {
                 done.resolve();
               }
             }, 20);
-          })();
+          });
         },
       },
     });
