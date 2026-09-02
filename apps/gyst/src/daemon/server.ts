@@ -6,15 +6,15 @@ import {
   type DiffPayload,
   type ErrorPayload,
   ErrorPayloadSchema,
+  type Reply,
+  type Request,
+  RequestSchema,
   type Session,
   SessionSchema,
   parseSnapshot,
   statusOf,
 } from "@gyst/core";
 import { Schema } from "effect";
-
-export type Request = { command: "create" | "status" | "diff" | "close"; cwd: string; args: string[]; stdin?: string };
-type Reply = { ok: true; value: unknown } | { ok: false; error: ErrorPayload };
 
 function dataDir(): string {
   return process.env.GYST_DATA_DIR ?? join(process.env.XDG_DATA_HOME ?? join(homedir(), ".local", "share"), "gyst");
@@ -52,8 +52,7 @@ function selectedSession(id: string | undefined, root: string): Session {
   return session;
 }
 
-async function gitPatch(root: string, args: string[]): Promise<string> {
-  if (args.some((arg) => arg.startsWith("-"))) failure("bad_args", "git revisions must not look like options");
+async function gitPatch(root: string, args: readonly string[]): Promise<string> {
   const bare = args.length === 0;
   let diffArgs = args;
   if (bare) {
@@ -87,7 +86,7 @@ async function persist(session: Session): Promise<void> {
   await rename(temporary, destination);
 }
 
-async function handle(request: Request): Promise<unknown> {
+async function handle(request: Request): Promise<Record<string, unknown>> {
   if (request.command === "create") {
     const root = await repoRoot(request.cwd);
     const { values, positionals } = parseArgs({
@@ -218,7 +217,8 @@ export async function runDaemon(): Promise<void> {
             let request: Request | undefined;
             let reply: Reply;
             try {
-              request = JSON.parse(raw) as Request;
+              try { request = Schema.decodeUnknownSync(RequestSchema)(JSON.parse(raw)); }
+              catch (error) { failure("bad_args", "invalid daemon request", String(error)); }
               reply = { ok: true, value: await handle(request) };
             } catch (error) {
               reply = { ok: false, error: errorPayload(error) };

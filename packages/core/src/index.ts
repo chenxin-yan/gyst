@@ -86,6 +86,20 @@ export type DiffPayload = typeof DiffPayloadSchema.Type;
 export const ClosePayloadSchema = Schema.Struct({ closed: Schema.Literal(true), sessionId: Schema.String });
 export type ClosePayload = typeof ClosePayloadSchema.Type;
 
+export const RequestSchema = Schema.Struct({
+  command: Schema.Literal("create", "status", "diff", "close"),
+  cwd: Schema.String,
+  args: Schema.Array(Schema.String),
+  stdin: Schema.optional(Schema.String),
+});
+export type Request = typeof RequestSchema.Type;
+
+export const ReplySchema = Schema.Union(
+  Schema.Struct({ ok: Schema.Literal(true), value: Schema.Record({ key: Schema.String, value: Schema.Unknown }) }),
+  Schema.Struct({ ok: Schema.Literal(false), error: ErrorPayloadSchema }),
+);
+export type Reply = typeof ReplySchema.Type;
+
 export function parseSnapshot(patch: string): Hunk[] {
   const files = parsePatchFiles(patch, undefined, true).flatMap((parsed) => parsed.files);
   const unsupported = files.find((file) => file.hunks.length === 0);

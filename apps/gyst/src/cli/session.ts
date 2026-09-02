@@ -2,13 +2,14 @@ import {
   ClosePayloadSchema,
   DiffPayloadSchema,
   ErrorPayloadSchema,
+  ReplySchema,
   StatusPayloadSchema,
   type ErrorPayload,
+  type Reply,
+  type Request,
 } from "@gyst/core";
 import { Schema } from "effect";
-import { type Request, socketPath } from "../daemon/server.ts";
-
-type Reply = { ok: true; value: unknown } | { ok: false; error: unknown };
+import { socketPath } from "../daemon/server.ts";
 
 function exchange(request: Request): Promise<Reply> {
   return new Promise((resolve, reject) => {
@@ -22,7 +23,10 @@ function exchange(request: Request): Promise<Reply> {
         data(_socket, bytes) {
           buffer += decoder.decode(bytes, { stream: true });
           const newline = buffer.indexOf("\n");
-          if (newline >= 0) resolve(JSON.parse(buffer.slice(0, newline)) as Reply);
+          if (newline >= 0) {
+            try { resolve(Schema.decodeUnknownSync(ReplySchema)(JSON.parse(buffer.slice(0, newline)))); }
+            catch (error) { reject(error); }
+          }
         },
         error(_socket, error) { reject(error); },
         close() { if (!buffer) reject(new Error("daemon closed without a response")); },

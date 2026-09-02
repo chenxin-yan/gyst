@@ -23,7 +23,13 @@ const create = defineCommand("create", { description: "Create a session" }, (com
   command
     .flags({ name: "stdin", type: "boolean", description: "Read a unified diff from stdin" })
     .args(defineArg("gitArgs", { type: "string", variadic: true }))
-    .action(({ args, flags }) => runSessionCli(["create", ...(flags.stdin ? ["--stdin"] : []), "--", ...args.gitArgs])),
+    .action(({ args, flags, rawArgs }) => runSessionCli([
+      "create",
+      ...(flags.stdin ? ["--stdin"] : []),
+      "--",
+      ...args.gitArgs,
+      ...rawArgs,
+    ])),
 );
 const status = defineCommand("status", { description: "Read session status" }, (command) =>
   command.flags(sessionFlag).action(({ flags }) => runSessionCli(["status", ...option("session", flags.session)])),
