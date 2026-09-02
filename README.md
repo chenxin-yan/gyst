@@ -9,7 +9,7 @@ setting up gyst:
 
 ```sh
 export CRUST_CHECKOUT=/path/to/crust
-(cd "$CRUST_CHECKOUT" && bun install && bunx turbo run build --filter=@crustjs/core)
+(cd "$CRUST_CHECKOUT" && bun install && bunx turbo run build --filter=@crustjs/core --filter=@crustjs/skills)
 
 bun run setup:crust
 bun install

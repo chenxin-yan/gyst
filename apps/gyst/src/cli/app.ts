@@ -9,6 +9,9 @@ import { help, version } from "@crustjs/extensions";
 import { skill } from "@crustjs/skills";
 import { ErrorPayloadSchema, type ErrorPayload } from "@gyst/core";
 import { Schema } from "effect";
+import { existsSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import packageJson from "../../package.json" with { type: "json" };
 
 import { renderCompileSmoke } from "../tui/compile-smoke.tsx";
@@ -80,8 +83,9 @@ const jsonErrors = defineExtension(defineExtensionId("gyst-json-errors"), {
   },
 });
 
+const packagedSkills = join(dirname(process.execPath), "skills");
 const coReviewSkill = skill({
-  distDir: new URL("../../../../skills", import.meta.url),
+  distDir: existsSync(packagedSkills) ? packagedSkills : fileURLToPath(new URL("../../../../skills", import.meta.url)),
   defaultScope: "global",
 });
 
