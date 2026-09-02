@@ -51,6 +51,14 @@ const diff = defineCommand("diff", { description: "Read snapshot hunks" }, (comm
       ]),
     ),
 );
+const apply = defineCommand("apply", { description: "Apply one agent mutation batch from stdin" }, (command) =>
+  command.flags(sessionFlag).action(({ flags }) => runSessionCli(["apply", ...option("session", flags.session)], true)),
+);
+const refresh = defineCommand("refresh", { description: "Refresh the session snapshot" }, (command) =>
+  command
+    .flags(sessionFlag, { name: "stdin", type: "boolean", description: "Read the replacement unified diff from stdin" })
+    .action(({ flags }) => runSessionCli(["refresh", ...option("session", flags.session), ...(flags.stdin ? ["--stdin"] : [])], flags.stdin)),
+);
 const close = defineCommand("close", { description: "Close a session" }, (command) =>
   command
     .flags(sessionFlag)
@@ -58,7 +66,7 @@ const close = defineCommand("close", { description: "Close a session" }, (comman
 );
 
 const session = defineCommand("session", { description: "Manage a co-review session" }, (command) =>
-  command.add(create).add(status).add(diff).add(close),
+  command.add(create).add(status).add(diff).add(apply).add(refresh).add(close),
 );
 
 const jsonErrors = defineExtension(defineExtensionId("gyst-json-errors"), {

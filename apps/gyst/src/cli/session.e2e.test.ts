@@ -147,7 +147,13 @@ describe("gyst session CLI seam", () => {
     const statePath = join(data, `${status.session.id}.json`);
     const state = JSON.parse(await readFile(statePath, "utf8"));
     state.groups = [
-      { id: "group-1", tldr: "same edit", exemplarHunkId: hunkId, hunkIds: [hunkId] },
+      {
+        id: "group-1",
+        tldr: "same edit",
+        exemplarHunkId: hunkId,
+        hunkIds: [hunkId],
+        accepted: false,
+      },
     ];
     const spotlightHunk = state.hunks.find((hunk: { id: string }) => hunk.id !== hunkId);
     spotlightHunk.tldr = "needs human review";
@@ -348,6 +354,219 @@ new mode 100755
     await gyst(cwd, ["session", "close"]);
   }, 20_000);
 
+  it("applies batches atomically with revision, idempotency, and queue validation", async () => {
+    const cwd = await repo("apply");
+    await writeFile(join(cwd, "tracked.txt"), "one\ntwo\n");
+    await writeFile(join(cwd, "other.txt"), "new\n");
+    const created = JSON.parse((await gyst(cwd, ["session", "create"])).stdout);
+    const [first, second] = created.inbox;
+
+    const invalid = await gyst(
+      cwd,
+      ["session", "apply"],
+      JSON.stringify({
+        revision: 0,
+        idempotencyKey: "invalid-batch",
+        ops: [
+          {
+            type: "group.create",
+            id: "group-1",
+            tldr: "mechanical",
+            memberHunkIds: [first.id],
+            exemplarHunkId: first.id,
+          },
+          { type: "hunk.annotate", hunkId: "missing", tldr: "nope" },
+        ],
+      }),
+    );
+    expect(invalid.exitCode).toBe(1);
+    const invalidError = JSON.parse(invalid.stderr);
+    expect(invalidError.code).toBe("validation_failed");
+    expect(invalidError.detail).toEqual([expect.objectContaining({ opIndex: 1 })]);
+    expect(JSON.parse((await gyst(cwd, ["session", "status"])).stdout).groups).toEqual([]);
+
+    const incompleteQueue = await gyst(
+      cwd,
+      ["session", "apply"],
+      JSON.stringify({
+        revision: 0,
+        idempotencyKey: "bad-queue",
+        ops: [
+          { type: "hunk.annotate", hunkId: first.id, tldr: "first" },
+          { type: "hunk.annotate", hunkId: second.id, tldr: "second" },
+          { type: "queue.set", itemIds: [first.id] },
+        ],
+      }),
+    );
+    expect(incompleteQueue.exitCode).toBe(1);
+    expect(JSON.parse(incompleteQueue.stderr).detail.at(-1).message).toContain("exactly once");
+
+    const envelope = {
+      revision: 0,
+      idempotencyKey: "pre-pass",
+      ops: [
+        {
+          type: "group.create",
+          id: "group-1",
+          tldr: "mechanical",
+          memberHunkIds: [first.id],
+          exemplarHunkId: first.id,
+        },
+        { type: "hunk.annotate", hunkId: second.id, tldr: "read this" },
+        { type: "queue.set", itemIds: [second.id, "group-1"] },
+      ],
+    };
+    const applied = await gyst(cwd, ["session", "apply"], JSON.stringify(envelope));
+    expect(applied.exitCode).toBe(0);
+    const status = Schema.decodeUnknownSync(StatusPayloadSchema)(JSON.parse(applied.stdout));
+    expect(status.revision).toBe(1);
+    expect(status.groups).toHaveLength(1);
+    expect(status.spotlight).toHaveLength(1);
+    expect(status.inbox).toEqual([]);
+    expect(status.queue).toEqual([second.id, "group-1"]);
+    expect(status.queueSet).toBe(true);
+    expect(status.ready).toBe(true);
+
+    const stale = await gyst(
+      cwd,
+      ["session", "apply"],
+      JSON.stringify({ revision: 0, idempotencyKey: "stale", ops: [] }),
+    );
+    expect(stale.exitCode).toBe(1);
+    expect(JSON.parse(stale.stderr).code).toBe("stale_revision");
+
+    const changed = await gyst(
+      cwd,
+      ["session", "apply"],
+      JSON.stringify({
+        revision: 1,
+        idempotencyKey: "change",
+        ops: [{ type: "hunk.annotate", hunkId: second.id, tldr: "updated" }],
+      }),
+    );
+    expect(JSON.parse(changed.stdout).revision).toBe(2);
+    const replay = await gyst(cwd, ["session", "apply"], JSON.stringify(envelope));
+    expect(replay.exitCode).toBe(0);
+    expect(JSON.parse(replay.stdout)).toEqual(status);
+    expect(JSON.parse((await gyst(cwd, ["session", "status"])).stdout).revision).toBe(2);
+
+    const dissolved = await gyst(
+      cwd,
+      ["session", "apply"],
+      JSON.stringify({
+        revision: 2,
+        idempotencyKey: "dissolve",
+        ops: [
+          { type: "group.dissolve", id: "group-1" },
+          { type: "queue.set", itemIds: [second.id] },
+        ],
+      }),
+    );
+    expect(dissolved.exitCode).toBe(0);
+    expect(JSON.parse(dissolved.stdout)).toEqual(
+      expect.objectContaining({
+        groups: [],
+        queue: [second.id],
+        queueSet: true,
+        ready: false,
+      }),
+    );
+    await gyst(cwd, ["session", "close"]);
+  }, 20_000);
+
+  it("refreshes git and stdin snapshots while preserving only unchanged review work", async () => {
+    const cwd = await repo("refresh");
+    await writeFile(join(cwd, "tracked.txt"), "one\ntwo\n");
+    await writeFile(join(cwd, "second.txt"), "base\n");
+    git(cwd, "add", ".");
+    git(cwd, "commit", "-qm", "add second");
+    await writeFile(join(cwd, "tracked.txt"), "one\ntwo\nthree\n");
+    await writeFile(join(cwd, "second.txt"), "base\nfirst change\n");
+    const created = JSON.parse((await gyst(cwd, ["session", "create"])).stdout);
+    const first = created.inbox.find((hunk: { file: string }) => hunk.file === "tracked.txt");
+    const second = created.inbox.find((hunk: { file: string }) => hunk.file === "second.txt");
+    expect(first).toBeDefined();
+    expect(second).toBeDefined();
+    const applied = JSON.parse(
+      (
+        await gyst(
+          cwd,
+          ["session", "apply"],
+          JSON.stringify({
+            revision: 0,
+            idempotencyKey: "fold",
+            ops: [
+              {
+                type: "group.create",
+                id: "group-1",
+                tldr: "stable group",
+                memberHunkIds: [first.id],
+                exemplarHunkId: first.id,
+              },
+              { type: "hunk.annotate", hunkId: second.id, tldr: "stale spotlight" },
+              { type: "queue.set", itemIds: ["group-1", second.id] },
+            ],
+          }),
+        )
+      ).stdout,
+    );
+
+    const pid = Number(await readFile(join(data, "daemon.pid"), "utf8"));
+    process.kill(pid, "SIGKILL");
+    await Bun.sleep(50);
+    const statePath = join(data, `${applied.session.id}.json`);
+    const state = JSON.parse(await readFile(statePath, "utf8"));
+    state.groups[0].accepted = true;
+    await writeFile(statePath, JSON.stringify(state));
+
+    await writeFile(join(cwd, "second.txt"), "base\nreplacement change\n");
+    await writeFile(join(cwd, "new.txt"), "brand new\n");
+    const refresh = await gyst(cwd, ["session", "refresh"]);
+    expect(refresh.exitCode).toBe(0);
+    const refreshed = JSON.parse(refresh.stdout);
+    expect(refreshed.groups[0]).toEqual(
+      expect.objectContaining({ id: "group-1", accepted: true, hunkIds: [first.id] }),
+    );
+    expect(refreshed.spotlight).toEqual([]);
+    expect(refreshed.inbox).toHaveLength(2);
+    expect(refreshed.queue).toEqual([
+      "group-1",
+      ...refreshed.inbox.map((hunk: { id: string }) => hunk.id),
+    ]);
+    expect(refreshed.queueSet).toBe(false);
+    expect(refreshed.ready).toBe(false);
+
+    const updated = await gyst(
+      cwd,
+      ["session", "apply"],
+      JSON.stringify({
+        revision: refreshed.revision,
+        idempotencyKey: "update-group",
+        ops: [
+          { type: "group.update", id: "group-1", tldr: "updated group" },
+          { type: "queue.set", itemIds: ["group-1"] },
+        ],
+      }),
+    );
+    expect(updated.exitCode).toBe(0);
+    expect(JSON.parse(updated.stdout).groups[0].accepted).toBe(false);
+    await gyst(cwd, ["session", "close"]);
+
+    const stdinRepo = await repo("refresh-stdin");
+    const firstPatch = `diff --git a/a.txt b/a.txt\n--- a/a.txt\n+++ b/a.txt\n@@ -1 +1 @@\n-old\n+new\n`;
+    const secondPatch = `diff --git a/a.txt b/a.txt\n--- a/a.txt\n+++ b/a.txt\n@@ -1 +1 @@\n-old\n+newer\n`;
+    const stdinCreated = JSON.parse(
+      (await gyst(stdinRepo, ["session", "create", "--stdin"], firstPatch)).stdout,
+    );
+    const withoutPipe = await gyst(stdinRepo, ["session", "refresh"]);
+    expect(withoutPipe.exitCode).toBe(1);
+    expect(JSON.parse(withoutPipe.stderr).code).toBe("bad_args");
+    const stdinRefresh = await gyst(stdinRepo, ["session", "refresh", "--stdin"], secondPatch);
+    expect(stdinRefresh.exitCode).toBe(0);
+    expect(JSON.parse(stdinRefresh.stdout).inbox[0].id).not.toBe(stdinCreated.inbox[0].id);
+    await gyst(stdinRepo, ["session", "close"]);
+  }, 20_000);
+
   it("supports replayable git arguments, stdin patches, and no sole-session fallback", async () => {
     const argsRepo = await repo("args");
     await writeFile(join(argsRepo, "tracked.txt"), "two\n");
@@ -358,6 +577,11 @@ new mode 100755
       kind: "git",
       args: ["-p", "HEAD~1", "HEAD"],
     });
+    const argsRefreshed = await gyst(argsRepo, ["session", "refresh"]);
+    expect(argsRefreshed.exitCode).toBe(0);
+    expect(JSON.parse(argsRefreshed.stdout)).toEqual(
+      expect.objectContaining({ revision: 1, inbox: expect.any(Array) }),
+    );
 
     const other = await repo("other");
     const noFallback = await gyst(other, ["session", "status"]);
