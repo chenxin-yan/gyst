@@ -22,7 +22,7 @@ jobs:
         working-directory: crust
         run: |
           bun install --frozen-lockfile
-          bunx turbo run build --filter=@crustjs/core
+          bunx turbo run build --filter=@crustjs/core --filter=@crustjs/extensions
       - name: Link local crust dependency
         env:
           CRUST_CHECKOUT: ${{ github.workspace }}/crust
