@@ -289,9 +289,9 @@ new mode 100755
     const argsRepo = await repo("args");
     await writeFile(join(argsRepo, "tracked.txt"), "two\n");
     git(argsRepo, "commit", "-am", "second", "-q");
-    const argsCreated = await gyst(argsRepo, ["session", "create", "--", "HEAD~1", "HEAD"]);
+    const argsCreated = await gyst(argsRepo, ["session", "create", "--", "-p", "HEAD~1", "HEAD"]);
     expect(argsCreated.exitCode).toBe(0);
-    expect(JSON.parse(argsCreated.stdout).session.source).toEqual({ kind: "git", args: ["HEAD~1", "HEAD"] });
+    expect(JSON.parse(argsCreated.stdout).session.source).toEqual({ kind: "git", args: ["-p", "HEAD~1", "HEAD"] });
 
     const other = await repo("other");
     const noFallback = await gyst(other, ["session", "status"]);
