@@ -474,6 +474,32 @@ new mode 100755
     await gyst(cwd, ["session", "close"]);
   }, 20_000);
 
+  it("serializes concurrent mutations so revision checks prevent lost updates", async () => {
+    const cwd = await repo("concurrent-apply");
+    await writeFile(join(cwd, "tracked.txt"), "one\ntwo\n");
+    const created = JSON.parse((await gyst(cwd, ["session", "create"])).stdout);
+    const hunkId = created.inbox[0].id;
+
+    const results = await Promise.all([
+      gyst(cwd, ["session", "apply"], JSON.stringify({
+        revision: 0,
+        idempotencyKey: "concurrent-a",
+        ops: [{ type: "hunk.annotate", hunkId, tldr: "first" }],
+      })),
+      gyst(cwd, ["session", "apply"], JSON.stringify({
+        revision: 0,
+        idempotencyKey: "concurrent-b",
+        ops: [{ type: "hunk.annotate", hunkId, tldr: "second" }],
+      })),
+    ]);
+
+    expect(results.map(({ exitCode }) => exitCode).sort()).toEqual([0, 1]);
+    const rejected = results.find(({ exitCode }) => exitCode === 1)!;
+    expect(JSON.parse(rejected.stderr).code).toBe("stale_revision");
+    expect(JSON.parse((await gyst(cwd, ["session", "status"])).stdout).revision).toBe(1);
+    await gyst(cwd, ["session", "close"]);
+  }, 20_000);
+
   it("refreshes git and stdin snapshots while preserving only unchanged review work", async () => {
     const cwd = await repo("refresh");
     await writeFile(join(cwd, "tracked.txt"), "one\ntwo\n");
