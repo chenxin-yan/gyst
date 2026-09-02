@@ -11,6 +11,7 @@ import { Schema } from "effect";
 import packageJson from "../../package.json" with { type: "json" };
 
 import { renderCompileSmoke } from "../tui/compile-smoke.tsx";
+import { renderTui } from "../tui/render.tsx";
 import { runSessionCli } from "./session.ts";
 
 const sessionFlag = { name: "session", type: "string", description: "Select an exact session id" } as const;
@@ -83,4 +84,7 @@ export const app = new Crust("gyst", { description: "Keyboard-centric agent/huma
   .extend(help())
   .extend(version(packageJson.version))
   .add(session)
-  .action(renderCompileSmoke);
+  .action(async () => {
+    if (process.env.GYST_COMPILE_SMOKE === "1") return renderCompileSmoke();
+    await renderTui();
+  });

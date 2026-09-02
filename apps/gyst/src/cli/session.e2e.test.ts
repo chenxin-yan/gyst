@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { ErrorPayloadSchema, StatusPayloadSchema } from "@gyst/core";
 import { Schema } from "effect";
+import { daemonTuiClient } from "../tui/client.ts";
 
 const binary = join(tmpdir(), `gyst-e2e-${process.pid}`);
 let root: string;
@@ -46,6 +47,7 @@ async function gyst(cwd: string, args: string[], stdin?: string): Promise<Result
 beforeAll(async () => {
   root = await mkdtemp(join(tmpdir(), "gyst-e2e-"));
   data = join(root, "data");
+  process.env.GYST_DATA_DIR = data;
   const built = Bun.spawnSync(["bun", "build", "--compile", "--minify", "--outfile", binary, "src/index.tsx"], {
     cwd: join(import.meta.dir, "../.."), stdout: "pipe", stderr: "pipe",
   });
@@ -474,6 +476,39 @@ new mode 100755
     expect(stdinRefresh.exitCode).toBe(0);
     expect(JSON.parse(stdinRefresh.stdout).inbox[0].id).not.toBe(stdinCreated.inbox[0].id);
     await gyst(stdinRepo, ["session", "close"]);
+  }, 20_000);
+
+  it("persists human cursor, expand state, and verdicts through the daemon", async () => {
+    const cwd = await repo("human-actions");
+    await writeFile(join(cwd, "tracked.txt"), "one\ntwo\n");
+    await writeFile(join(cwd, "other.txt"), "new\n");
+    const created = JSON.parse((await gyst(cwd, ["session", "create"])).stdout);
+    const [first, second] = created.inbox;
+    await gyst(cwd, ["session", "apply"], JSON.stringify({
+      revision: 0, idempotencyKey: "human-session", ops: [
+        { type: "group.create", id: "group-1", tldr: "mechanical", memberHunkIds: [first.id], exemplarHunkId: first.id },
+        { type: "hunk.annotate", hunkId: second.id, tldr: "read this" },
+        { type: "queue.set", itemIds: ["group-1", second.id] },
+      ],
+    }));
+
+    const client = daemonTuiClient(cwd);
+    await client.action({ type: "cursor.move", itemId: "group-1" });
+    await client.action({ type: "expand.toggle" });
+    const accepted = await client.action({ type: "verdict.toggle", itemId: "group-1" });
+    expect(accepted.cursor).toEqual({ itemId: "group-1", expanded: true });
+    expect(accepted.groups[0]!.accepted).toBe(true);
+    expect(accepted.revision).toBe(2);
+    expect(accepted.seq).toBe(4);
+    expect(JSON.parse((await gyst(cwd, ["session", "status"])).stdout)).toEqual(accepted);
+
+    const pid = Number(await readFile(join(data, "daemon.pid"), "utf8"));
+    process.kill(pid, "SIGKILL");
+    await Bun.sleep(50);
+    const restored = JSON.parse((await gyst(cwd, ["session", "status"])).stdout);
+    expect(restored.cursor).toEqual({ itemId: "group-1", expanded: true });
+    expect(restored.groups[0]!.accepted).toBe(true);
+    await gyst(cwd, ["session", "close"]);
   }, 20_000);
 
   it("supports replayable git arguments, stdin patches, and no sole-session fallback", async () => {

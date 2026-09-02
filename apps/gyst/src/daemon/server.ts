@@ -4,6 +4,7 @@ import { homedir } from "node:os";
 import { parseArgs } from "node:util";
 import {
   ApplyEnvelopeSchema,
+  HumanActionSchema,
   type DiffPayload,
   type ErrorPayload,
   ErrorPayloadSchema,
@@ -13,6 +14,7 @@ import {
   type Session,
   SessionSchema,
   applyBatch,
+  applyHumanAction,
   migratePersistedSession,
   parseSnapshot,
   refreshSession,
@@ -136,6 +138,16 @@ async function handle(request: Request): Promise<Record<string, unknown>> {
   const root = values.session ? "" : await repoRoot(request.cwd);
   const session = selectedSession(values.session as string | undefined, root);
   if (request.command === "status") return statusOf(session);
+  if (request.command === "tui.action") {
+    let action;
+    try { action = Schema.decodeUnknownSync(HumanActionSchema)(request.action); }
+    catch (error) { failure("validation_failed", "invalid TUI action", String(error)); }
+    const updated = applyHumanAction(session, action);
+    if (!updated) failure("validation_failed", "TUI action does not apply to the current session");
+    await persist(updated);
+    sessions.set(session.id, updated);
+    return statusOf(updated);
+  }
   if (request.command === "close") {
     await rm(join(dataDir(), `${session.id}.json`), { force: true });
     sessions.delete(session.id);
