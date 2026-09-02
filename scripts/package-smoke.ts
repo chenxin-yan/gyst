@@ -1,6 +1,6 @@
-import { chmod, mkdtemp, mkdir, readFile, readdir, rm, symlink } from "node:fs/promises";
+import { chmod, mkdtemp, mkdir, readFile, readdir, readlink, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 
 const appDir = resolve(import.meta.dir, "../apps/gyst");
 const stageDir = join(appDir, "dist/npm");
@@ -105,7 +105,28 @@ try {
     throw new Error("installed compiled gyst did not print its help");
   }
 
-  console.log(`package smoke OK — packed, inspected, installed and ran ${platform.name} without Bun on PATH`);
+  await writeFile(join(runtimeBin, "claude"), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+  run([executable, "skill", "--all"], installDir, {
+    ...process.env,
+    PATH: systemPath,
+    HOME: home,
+    XDG_CONFIG_HOME: join(home, ".config"),
+    CLAUDE_CONFIG_DIR: join(home, ".claude"),
+  });
+  const platformInstall = join(installDir, "lib/node_modules", ...platform.name.split("/"));
+  for (const name of ["gyst", "gyst-ask"]) {
+    const packagedSkill = join(platformInstall, dirname(platform.bin), "skills", name);
+    for (const link of [join(home, ".agents/skills", name), join(home, ".claude/skills", name)]) {
+      if (resolve(dirname(link), await readlink(link)) !== packagedSkill) {
+        throw new Error(`${name} install does not target the packed platform skill`);
+      }
+      if (!(await readFile(join(link, "SKILL.md"), "utf8")).includes(`name: ${name}`)) {
+        throw new Error(`${name} packed skill is unreadable`);
+      }
+    }
+  }
+
+  console.log(`package smoke OK — packed, installed, ran ${platform.name} without Bun, and installed its authored skills`);
 } finally {
   await rm(temporary, { recursive: true, force: true });
 }
