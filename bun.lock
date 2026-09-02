@@ -17,8 +17,10 @@
     },
     "apps/gyst": {
       "name": "@gyst/cli",
+      "version": "0.0.0",
       "dependencies": {
         "@crustjs/core": "link:@crustjs/core",
+        "@crustjs/extensions": "link:@crustjs/extensions",
         "@crustjs/skills": "link:@crustjs/skills",
         "@gyst/core": "workspace:*",
         "@opentui/solid": "0.5.9",
@@ -94,6 +96,8 @@
     "@babel/types": ["@babel/types@7.29.8", "", { "dependencies": { "@babel/helper-string-parser": "^7.29.7", "@babel/helper-validator-identifier": "^7.29.7" } }, "sha512-Vj1jF3cPfxg7OAfoI7QnVKLoILlm2JF9pnVHrX8qx7AHMiYWT+NDAA7jChlNgRS4WTLc/fD1lXLmPixluj+3Gg=="],
 
     "@crustjs/core": ["@crustjs/core@link:@crustjs/core", {}],
+
+    "@crustjs/extensions": ["@crustjs/extensions@link:@crustjs/extensions", {}],
 
     "@crustjs/skills": ["@crustjs/skills@link:@crustjs/skills", {}],
 
