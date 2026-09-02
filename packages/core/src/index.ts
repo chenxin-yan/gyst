@@ -99,6 +99,7 @@ export const SessionSchema = Schema.Struct({
   groups: Schema.Array(GroupSchema),
   queue: Schema.Array(Schema.String),
   queueSet: Schema.Boolean,
+  acceptHistory: Schema.Array(Schema.String),
   applyReceipts: Schema.Array(ApplyReceiptSchema),
 });
 export type Session = typeof SessionSchema.Type;
@@ -118,6 +119,7 @@ export const PersistedSessionSchema = Schema.Struct({
   ),
   queue: Schema.optional(Schema.Array(Schema.String)),
   queueSet: Schema.optional(Schema.Boolean),
+  acceptHistory: Schema.optional(Schema.Array(Schema.String)),
   applyReceipts: Schema.optional(Schema.Array(ApplyReceiptSchema)),
 });
 export type PersistedSession = typeof PersistedSessionSchema.Type;
@@ -133,6 +135,7 @@ export function migratePersistedSession(persisted: PersistedSession): Session {
     groups: persisted.groups.map((group) => ({ ...group, accepted: group.accepted ?? false })),
     queue: persisted.queue ?? [],
     queueSet: persisted.queueSet ?? false,
+    acceptHistory: persisted.acceptHistory ?? [],
     applyReceipts: persisted.applyReceipts ?? [],
   };
 }
@@ -183,7 +186,7 @@ export const HumanActionSchema = Schema.Union(
   Schema.Struct({ type: Schema.Literal("cursor.move"), itemId: Schema.String }),
   Schema.Struct({ type: Schema.Literal("expand.toggle") }),
   Schema.Struct({ type: Schema.Literal("verdict.toggle"), itemId: Schema.String }),
-  Schema.Struct({ type: Schema.Literal("verdict.undo"), itemId: Schema.String }),
+  Schema.Struct({ type: Schema.Literal("verdict.undo") }),
 );
 export type HumanAction = typeof HumanActionSchema.Type;
 
@@ -272,10 +275,13 @@ export function parseSnapshot(patch: string): Hunk[] {
 type Mutable<T> = { -readonly [K in keyof T]: T[K] };
 type MutableHunk = Mutable<Hunk>;
 type MutableGroup = Mutable<Omit<Group, "hunkIds">> & { hunkIds: string[] };
-type MutableSession = Mutable<Omit<Session, "hunks" | "groups" | "queue" | "applyReceipts">> & {
+type MutableSession = Mutable<
+  Omit<Session, "hunks" | "groups" | "queue" | "acceptHistory" | "applyReceipts">
+> & {
   hunks: MutableHunk[];
   groups: MutableGroup[];
   queue: string[];
+  acceptHistory: string[];
   applyReceipts: Array<{ key: string; status: StatusPayload }>;
 };
 
@@ -338,6 +344,13 @@ function reconcileQueue(session: MutableSession): void {
     ...session.queue.filter((id) => available.delete(id)),
     ...visible.filter((id) => available.has(id)),
   ];
+  const accepted = new Set([
+    ...session.groups.filter(({ accepted }) => accepted).map(({ id }) => id),
+    ...session.hunks
+      .filter(({ accepted, tldr, id }) => accepted && tldr !== undefined && visibleSet.has(id))
+      .map(({ id }) => id),
+  ]);
+  session.acceptHistory = session.acceptHistory.filter((id) => accepted.has(id));
   if (session.cursor.itemId !== null && !visibleSet.has(session.cursor.itemId)) {
     session.cursor = { itemId: null, expanded: false };
   }
@@ -526,13 +539,24 @@ export function applyHumanAction(session: Session, action: HumanAction): Session
     draft.cursor = { ...draft.cursor, expanded: !draft.cursor.expanded };
     draft.seq++;
   } else {
-    const group = draft.groups.find(({ id }) => id === action.itemId);
+    const itemId = action.type === "verdict.undo" ? draft.acceptHistory.at(-1) : action.itemId;
+    if (!itemId) return;
+    const group = draft.groups.find(({ id }) => id === itemId);
     const grouped = groupedIds(draft);
-    const hunk = draft.hunks.find(({ id, tldr }) => id === action.itemId && tldr !== undefined && !grouped.has(id));
+    const hunk = draft.hunks.find(
+      ({ id, tldr }) => id === itemId && tldr !== undefined && !grouped.has(id),
+    );
     const item = group ?? hunk;
     if (!item || (action.type === "verdict.undo" && !item.accepted)) return;
-    item.accepted = action.type === "verdict.toggle" ? !item.accepted : false;
-    if (action.type === "verdict.undo") draft.cursor = { itemId: action.itemId, expanded: false };
+    if (action.type === "verdict.undo") {
+      item.accepted = false;
+      draft.acceptHistory.pop();
+      draft.cursor = { itemId, expanded: false };
+    } else {
+      item.accepted = !item.accepted;
+      draft.acceptHistory = draft.acceptHistory.filter((id) => id !== itemId);
+      if (item.accepted) draft.acceptHistory.push(itemId);
+    }
     draft.revision++;
     draft.seq++;
   }

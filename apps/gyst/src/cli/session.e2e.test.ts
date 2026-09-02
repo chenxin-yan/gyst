@@ -655,7 +655,7 @@ new mode 100755
       }),
     );
 
-    await expect(client.action({ type: "verdict.undo", itemId: second.id })).rejects.toThrow(
+    await expect(client.action({ type: "verdict.undo" })).rejects.toThrow(
       "TUI action does not apply",
     );
     await client.action({ type: "cursor.move", itemId: "group-1" });
@@ -673,6 +673,9 @@ new mode 100755
     const restored = JSON.parse((await gyst(cwd, ["session", "status"])).stdout);
     expect(restored.cursor).toEqual({ itemId: "group-1", expanded: true });
     expect(restored.groups[0]!.accepted).toBe(true);
+    const undone = await client.action({ type: "verdict.undo" });
+    expect(undone.cursor).toEqual({ itemId: "group-1", expanded: false });
+    expect(undone.groups[0]!.accepted).toBe(false);
     await gyst(cwd, ["session", "close"]);
   }, 20_000);
 

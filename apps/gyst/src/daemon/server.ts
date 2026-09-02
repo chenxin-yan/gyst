@@ -170,6 +170,7 @@ async function handle(request: Request): Promise<StatusPayload | ClosePayload | 
       groups: [],
       queue: [],
       queueSet: false,
+      acceptHistory: [],
       applyReceipts: [],
     };
     await persist(session);
