@@ -30,7 +30,7 @@ Work out the diff source from the request and repository state. Do not match use
 - Replayable git range: run `gyst session create -- <git diff args>`.
 - A unified diff you already obtained: pipe it to `gyst session create --stdin`.
 
-If create returns `session_exists`, preserve the human's work: refresh the existing session instead of closing or recreating it. Git-backed sessions use `gyst session refresh`; stdin-backed sessions accept a replacement patch through `gyst session refresh --stdin`.
+If create returns `session_exists`, read `gyst session status` before doing anything else. Refresh only when the existing session's recorded source describes the requested scope: git-backed sessions use `gyst session refresh`; stdin-backed sessions accept a replacement patch through `gyst session refresh --stdin`. If the requested scope differs, stop and ask the user whether to keep the existing session or explicitly close it and start the new scope. Never close or recreate a session automatically — verdicts are human labor.
 
 ### 2. Explore only to improve triage
 
@@ -59,11 +59,38 @@ Never treat contracts or definitions, behavior-changing conditions, transformati
 
 ### 4. Apply one complete batch
 
-Build one `gyst session apply` JSON envelope from the current `revision` and a fresh idempotency key. Submit all triage in that single batch:
+Build one `gyst session apply` JSON envelope from the current `revision` and a fresh idempotency key. Use these exact field names (choose a unique `id` for each group):
 
-- one `group.create` for each mechanical pattern, with a concise tldr, all member hunk ids, and a representative exemplar hunk id;
-- one `hunk.annotate` for every hunk left in spotlight — a tldr is mandatory for every spotlight hunk;
-- one `queue.set` containing every group id and spotlight hunk id exactly once, in your judged review order (use diff order when no better order exists).
+```json
+{
+  "revision": 0,
+  "idempotencyKey": "a-fresh-uuid",
+  "ops": [
+    {
+      "type": "group.create",
+      "id": "group-id",
+      "tldr": "Repeated mechanical change",
+      "memberHunkIds": ["hunk-1", "hunk-2"],
+      "exemplarHunkId": "hunk-1"
+    },
+    {
+      "type": "hunk.annotate",
+      "hunkId": "hunk-3",
+      "tldr": "Behavior that needs human review"
+    },
+    {
+      "type": "queue.set",
+      "itemIds": ["group-id", "hunk-3"]
+    }
+  ]
+}
+```
+
+Submit all triage in that single batch:
+
+- one `group.create` for each mechanical pattern, with a concise `tldr`, all `memberHunkIds`, and a representative `exemplarHunkId`;
+- one `hunk.annotate` for every hunk left in spotlight — a `tldr` is mandatory for every spotlight `hunkId`;
+- one `queue.set` whose `itemIds` contain every group id and spotlight hunk id exactly once, in your judged review order (use diff order when no better order exists).
 
 Do not submit partial batches. Do not write verdicts, cursor, or expand state. If apply returns `validation_failed`, fix the reported operations and retry the complete batch with a **new** idempotency key. If it returns `stale_revision`, read status and the affected hunks again before rebuilding the batch.
 

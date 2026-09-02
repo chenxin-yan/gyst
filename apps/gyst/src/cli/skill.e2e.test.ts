@@ -7,7 +7,7 @@ let root: string;
 let home: string;
 let env: Record<string, string | undefined>;
 const appDir = join(import.meta.dir, "../..");
-const source = resolve(appDir, "../../skills/gyst");
+const skills = resolve(appDir, "../../skills");
 
 async function gyst(...args: string[]) {
   const child = Bun.spawn(["bun", "src/index.tsx", ...args], {
@@ -26,10 +26,10 @@ async function gyst(...args: string[]) {
   return { stdout, stderr };
 }
 
-async function expectLink(path: string, target = source) {
+async function expectLink(path: string, name = "gyst") {
   expect((await lstat(path)).isSymbolicLink()).toBe(true);
-  expect(resolve(dirname(path), await readlink(path))).toBe(target);
-  expect(await readFile(join(path, "SKILL.md"), "utf8")).toContain("# Gyst co-review");
+  expect(resolve(dirname(path), await readlink(path))).toBe(join(skills, name));
+  expect(await readFile(join(path, "SKILL.md"), "utf8")).toContain(`name: ${name}`);
 }
 
 beforeAll(async () => {
@@ -54,11 +54,13 @@ afterAll(async () => {
 });
 
 describe("gyst skill installer", () => {
-  it("installs the authored /gyst skill for universal and Claude harnesses", async () => {
+  it("installs the authored /gyst and /gyst-ask skills for universal and Claude harnesses", async () => {
     await gyst("skill", "--all");
 
-    await expectLink(join(home, ".agents", "skills", "gyst"));
-    await expectLink(join(home, ".claude", "skills", "gyst"));
+    for (const name of ["gyst", "gyst-ask"]) {
+      await expectLink(join(home, ".agents", "skills", name), name);
+      await expectLink(join(home, ".claude", "skills", name), name);
+    }
   });
 
   it("repairs version-stale links explicitly and before ordinary commands", async () => {

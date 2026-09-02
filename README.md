@@ -9,7 +9,7 @@ Use Bun 1.4.2. Crust is unpublished; point `CRUST_CHECKOUT` at a checkout of
 
 ```sh
 export CRUST_CHECKOUT=/path/to/crust
-(cd "$CRUST_CHECKOUT" && bun install --frozen-lockfile && bunx turbo run build --filter=@crustjs/core --filter=@crustjs/extensions)
+(cd "$CRUST_CHECKOUT" && bun install --frozen-lockfile && bunx turbo run build --filter=@crustjs/core --filter=@crustjs/extensions --filter=@crustjs/skills)
 
 bun run setup:crust
 bun install --frozen-lockfile
