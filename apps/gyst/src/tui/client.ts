@@ -8,7 +8,7 @@ import {
   type Request,
   type StatusPayload,
 } from "@gyst/core";
-import { Effect, Schema } from "effect";
+import { Schema } from "effect";
 import { requestDaemon } from "../daemon/client.ts";
 
 export interface TuiClient {
@@ -26,8 +26,9 @@ export class TuiClientError extends Error {
 
 export function daemonTuiClient(cwd = process.cwd()): TuiClient {
   async function send(request: Request): Promise<unknown> {
-    // Effect owns transport failure at the client edge; Solid receives plain promises/data.
-    const reply = await Effect.runPromise(Effect.promise(() => requestDaemon(request)));
+    let reply;
+    try { reply = await requestDaemon(request); }
+    catch (error) { throw new TuiClientError(Schema.decodeUnknownSync(ErrorPayloadSchema)(error)); }
     if (!reply.ok) throw new TuiClientError(Schema.decodeUnknownSync(ErrorPayloadSchema)(reply.error));
     return reply.value;
   }

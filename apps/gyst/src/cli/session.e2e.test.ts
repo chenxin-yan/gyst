@@ -631,6 +631,10 @@ new mode 100755
     await writeFile(join(cwd, "other.txt"), "new\n");
     const created = JSON.parse((await gyst(cwd, ["session", "create"])).stdout);
     const [first, second] = created.inbox;
+    const client = daemonTuiClient(cwd);
+    await expect(client.action({ type: "verdict.toggle", itemId: first.id })).rejects.toThrow(
+      "TUI action does not apply",
+    );
     await gyst(
       cwd,
       ["session", "apply"],
@@ -651,7 +655,9 @@ new mode 100755
       }),
     );
 
-    const client = daemonTuiClient(cwd);
+    await expect(client.action({ type: "verdict.undo", itemId: second.id })).rejects.toThrow(
+      "TUI action does not apply",
+    );
     await client.action({ type: "cursor.move", itemId: "group-1" });
     await client.action({ type: "expand.toggle" });
     const accepted = await client.action({ type: "verdict.toggle", itemId: "group-1" });
