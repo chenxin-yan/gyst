@@ -15,6 +15,7 @@ describe("crust command help", () => {
     const snapshot = await app.snapshot();
     expect(buildCommandDocumentation(snapshot).children.map(({ name }) => name)).toEqual(["session", "skill"]);
     expect(await execute(["--help"])).toContain("Commands:");
+    expect(await execute(["--help"])).toContain("Agent skills");
     expect(await execute(["session", "--help"])).toContain("gyst session");
     expect(await execute(["session", "create", "--help"])).toContain("gyst session create");
   });
