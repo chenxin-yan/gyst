@@ -5,7 +5,7 @@ import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 
 const root = join(import.meta.dir, "..", "packages", "core", "src");
 // Exact specifiers only: subpaths of allowed packages are not audited as pure.
-const allowedBareImports = new Set(["path", "node:path", "effect"]);
+const allowedBareImports = new Set(["path", "node:path", "effect", "@pierre/diffs"]);
 
 function isForbidden(module: string, file: string): boolean {
   if (module.startsWith(".")) {
