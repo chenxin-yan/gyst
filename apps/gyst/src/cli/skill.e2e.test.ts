@@ -43,6 +43,7 @@ beforeAll(async () => {
   env = {
     ...process.env,
     HOME: home,
+    XDG_CONFIG_HOME: join(home, ".config"),
     CLAUDE_CONFIG_DIR: join(home, ".claude"),
     PATH: `${bin}:${process.env.PATH ?? ""}`,
   };
