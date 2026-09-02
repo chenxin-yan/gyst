@@ -10,23 +10,6 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/checkout@v4
-        with:
-          repository: chenxin-yan/crust
-          ref: 08901cd0e3dc3c17877d174d2e8a1b19982c8c18
-          path: crust
-      - uses: oven-sh/setup-bun@v2
-        with:
-          bun-version: 1.4.0
-      - name: Build local crust dependencies
-        working-directory: crust
-        run: |
-          bun install --frozen-lockfile
-          bunx turbo run build --filter=@crustjs/core --filter=@crustjs/extensions --filter=@crustjs/skills...
-          bun run --cwd packages/crust build:cli
-      - name: Link local crust dependency
-        env:
-          CRUST_CHECKOUT: ${{ github.workspace }}/crust
-        run: bun run setup:crust
+      - uses: ./.github/actions/setup-crust
       - run: bun install --frozen-lockfile
       - run: bun run check
