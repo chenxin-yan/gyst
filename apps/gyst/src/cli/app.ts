@@ -1,5 +1,6 @@
 import { Crust, defineArg, defineCommand, defineExtension, defineExtensionId } from "@crustjs/core";
 import { help, version } from "@crustjs/extensions";
+import { skill } from "@crustjs/skills";
 import { ErrorPayloadSchema, type ErrorPayload } from "@gyst/core";
 import { Schema } from "effect";
 import packageJson from "../../package.json" with { type: "json" };
@@ -105,11 +106,16 @@ const jsonErrors = defineExtension(defineExtensionId("gyst-json-errors"), {
   },
 });
 
+const coReviewSkill = skill({
+  distDir: new URL("../../../../skills", import.meta.url),
+  defaultScope: "global",
+});
+
 export const app = new Crust("gyst", {
   description: "Keyboard-centric agent/human co-review",
   version: packageJson.version,
 })
-  .extend(jsonErrors)
+  .extend(jsonErrors, coReviewSkill)
   .extend(help())
   .extend(version())
   .add(session)

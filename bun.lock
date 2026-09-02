@@ -17,10 +17,9 @@
     },
     "apps/gyst": {
       "name": "@gyst/cli",
-      "version": "0.0.0",
       "dependencies": {
         "@crustjs/core": "link:@crustjs/core",
-        "@crustjs/extensions": "link:@crustjs/extensions",
+        "@crustjs/skills": "link:@crustjs/skills",
         "@gyst/core": "workspace:*",
         "@opentui/solid": "0.5.9",
         "effect": "^3.22.1",
@@ -96,7 +95,7 @@
 
     "@crustjs/core": ["@crustjs/core@link:@crustjs/core", {}],
 
-    "@crustjs/extensions": ["@crustjs/extensions@link:@crustjs/extensions", {}],
+    "@crustjs/skills": ["@crustjs/skills@link:@crustjs/skills", {}],
 
     "@gyst/cli": ["@gyst/cli@workspace:apps/gyst"],
 

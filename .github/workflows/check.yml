@@ -27,11 +27,11 @@ jobs:
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: 1.4.2
-      - name: Build local crust dependency
+      - name: Build local crust dependencies
         working-directory: crust
         run: |
           bun install --frozen-lockfile
-          bunx turbo run build --filter=@crustjs/core --filter=@crustjs/extensions
+          bunx turbo run build --filter=@crustjs/core --filter=@crustjs/extensions --filter=@crustjs/skills...
       - name: Link local crust dependency
         env:
           CRUST_CHECKOUT: ${{ github.workspace }}/crust

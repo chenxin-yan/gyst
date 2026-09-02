@@ -32,7 +32,7 @@ type Result = { exitCode: number; stdout: string; stderr: string };
 async function gyst(cwd: string, args: string[], stdin?: string): Promise<Result> {
   const child = Bun.spawn([binary, ...args], {
     cwd,
-    env: { ...process.env, GYST_DATA_DIR: data },
+    env: { ...process.env, HOME: root, GYST_DATA_DIR: data },
     stdin: stdin === undefined ? "ignore" : new Blob([stdin]),
     stdout: "pipe",
     stderr: "pipe",
