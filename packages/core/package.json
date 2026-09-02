@@ -8,8 +8,5 @@
   "scripts": {
     "build": "bun build src/index.ts --outdir dist",
     "check:types": "tsc --noEmit"
-  },
-  "dependencies": {
-    "effect": "^3.19.13"
   }
 }
