@@ -1,10 +1,11 @@
-import { mkdir, readdir, readFile, realpath, rename, rm, writeFile } from "node:fs/promises";
+import { link, mkdir, open, readdir, readFile, realpath, rename, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { homedir } from "node:os";
 import { parseArgs } from "node:util";
 import {
   type DiffPayload,
   type ErrorPayload,
+  ErrorPayloadSchema,
   type Session,
   SessionSchema,
   parseSnapshot,
@@ -24,7 +25,11 @@ export function socketPath(): string {
 export function pidPath(): string {
   return join(dataDir(), "daemon.pid");
 }
+function lockPath(): string {
+  return join(dataDir(), "daemon.lock");
+}
 const sessions = new Map<string, Session>();
+const creatingRepoRoots = new Set<string>();
 
 function failure(code: ErrorPayload["code"], message: string, detail?: unknown): never {
   throw { code, message, ...(detail === undefined ? {} : { detail }) } satisfies ErrorPayload;
@@ -49,7 +54,17 @@ function selectedSession(id: string | undefined, root: string): Session {
 
 async function gitPatch(root: string, args: string[], bare: boolean): Promise<string> {
   if (args.some((arg) => arg.startsWith("-"))) failure("bad_args", "git revisions must not look like options");
-  const diff = Bun.spawnSync(["git", "diff", ...(bare ? ["HEAD"] : args)], { cwd: root, stdout: "pipe", stderr: "pipe" });
+  let diffArgs = args;
+  if (bare) {
+    const head = Bun.spawnSync(["git", "rev-parse", "--verify", "HEAD"], { cwd: root, stdout: "ignore", stderr: "ignore" });
+    if (head.exitCode === 0) diffArgs = ["HEAD"];
+    else {
+      const emptyTree = Bun.spawnSync(["git", "hash-object", "-t", "tree", "/dev/null"], { cwd: root, stdout: "pipe", stderr: "pipe" });
+      if (emptyTree.exitCode !== 0) failure("bad_args", "could not derive the empty git tree");
+      diffArgs = [emptyTree.stdout.toString().trim()];
+    }
+  }
+  const diff = Bun.spawnSync(["git", "diff", ...diffArgs], { cwd: root, stdout: "pipe", stderr: "pipe" });
   if (diff.exitCode !== 0) failure("bad_args", diff.stderr.toString().trim() || "git diff failed");
   let patch = diff.stdout.toString();
   if (bare) {
@@ -80,25 +95,32 @@ async function handle(request: Request): Promise<unknown> {
       allowPositionals: true,
       strict: true,
     });
-    if ([...sessions.values()].some((session) => session.repoRoot === root)) failure("session_exists", `a session already exists for ${root}`);
-    if (values.stdin && positionals.length) failure("bad_args", "--stdin cannot be combined with git arguments");
-    const patch = values.stdin ? (request.stdin ?? "") : await gitPatch(root, positionals, positionals.length === 0);
-    let hunks;
-    try {
-      hunks = parseSnapshot(patch);
-    } catch (error) {
-      failure("bad_args", "invalid unified diff", String(error));
+    if ([...sessions.values()].some((session) => session.repoRoot === root) || creatingRepoRoots.has(root)) {
+      failure("session_exists", `a session already exists for ${root}`);
     }
-    const now = new Date().toISOString();
-    const session: Session = {
-      id: crypto.randomUUID(), repoRoot: root,
-      source: values.stdin ? { kind: "stdin" } : { kind: "git", args: positionals.length ? positionals : ["HEAD"] },
-      createdAt: now, updatedAt: now, revision: 0, seq: 0,
-      cursor: { itemId: null, expanded: false }, hunks, groups: [],
-    };
-    sessions.set(session.id, session);
-    await persist(session);
-    return statusOf(session);
+    if (values.stdin && positionals.length) failure("bad_args", "--stdin cannot be combined with git arguments");
+    creatingRepoRoots.add(root);
+    try {
+      const patch = values.stdin ? (request.stdin ?? "") : await gitPatch(root, positionals, positionals.length === 0);
+      let hunks;
+      try {
+        hunks = parseSnapshot(patch);
+      } catch (error) {
+        failure("bad_args", "invalid unified diff", String(error));
+      }
+      const now = new Date().toISOString();
+      const session: Session = {
+        id: crypto.randomUUID(), repoRoot: root,
+        source: values.stdin ? { kind: "stdin" } : { kind: "git", args: positionals.length ? positionals : ["HEAD"] },
+        createdAt: now, updatedAt: now, revision: 0, seq: 0,
+        cursor: { itemId: null, expanded: false }, hunks, groups: [],
+      };
+      await persist(session);
+      sessions.set(session.id, session);
+      return statusOf(session);
+    } finally {
+      creatingRepoRoots.delete(root);
+    }
   }
 
   const { values } = parseArgs({
@@ -115,8 +137,8 @@ async function handle(request: Request): Promise<unknown> {
   const session = selectedSession(values.session, root);
   if (request.command === "status") return statusOf(session);
   if (request.command === "close") {
-    sessions.delete(session.id);
     await rm(join(dataDir(), `${session.id}.json`), { force: true });
+    sessions.delete(session.id);
     return { closed: true, sessionId: session.id };
   }
   const selectors = [values.hunk, values.group, values.file].filter(Boolean);
@@ -134,7 +156,6 @@ async function handle(request: Request): Promise<unknown> {
 }
 
 async function loadSessions(): Promise<void> {
-  await mkdir(dataDir(), { recursive: true, mode: 0o700 });
   for (const file of await readdir(dataDir())) {
     if (!file.endsWith(".json")) continue;
     try {
@@ -146,31 +167,90 @@ async function loadSessions(): Promise<void> {
   }
 }
 
+function processIsAlive(pid: number): boolean {
+  try { process.kill(pid, 0); return true; }
+  catch (error) { return (error as NodeJS.ErrnoException).code === "EPERM"; }
+}
+
+async function acquireDaemonLock() {
+  const candidate = `${lockPath()}.${process.pid}.${crypto.randomUUID()}`;
+  await writeFile(candidate, `${process.pid}\n`, { flag: "wx", mode: 0o600 });
+  try {
+    for (;;) {
+      try {
+        await link(candidate, lockPath());
+        const lock = await open(lockPath(), "r+");
+        await rm(candidate, { force: true });
+        return lock;
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+        const owner = Number(await readFile(lockPath(), "utf8").catch(() => ""));
+        if (Number.isInteger(owner) && owner > 0 && processIsAlive(owner)) return undefined;
+        await rm(lockPath(), { force: true });
+      }
+    }
+  } finally {
+    await rm(candidate, { force: true });
+  }
+}
+
+function errorPayload(error: unknown): ErrorPayload {
+  try { return Schema.decodeUnknownSync(ErrorPayloadSchema)(error); }
+  catch { return { code: "daemon_unreachable", message: "daemon request failed", detail: String(error) }; }
+}
+
 export async function runDaemon(): Promise<void> {
-  await loadSessions();
-  await rm(socketPath(), { force: true });
-  await writeFile(pidPath(), `${process.pid}\n`, { mode: 0o600 });
-  const done = Promise.withResolvers<void>();
-  const server = Bun.listen<{ buffer: string }>({
-    unix: socketPath(),
-    socket: {
-      open(socket) { socket.data = { buffer: "" }; },
-      data(socket, bytes) {
-        socket.data.buffer += bytes.toString();
-        const newline = socket.data.buffer.indexOf("\n");
-        if (newline < 0) return;
-        const raw = socket.data.buffer.slice(0, newline);
-        void (async () => {
-          let reply: Reply;
-          try { reply = { ok: true, value: await handle(JSON.parse(raw) as Request) }; }
-          catch (error) { reply = { ok: false, error: error as ErrorPayload }; }
-          socket.write(`${JSON.stringify(reply)}\n`);
-          socket.end();
-          if (sessions.size === 0 && JSON.parse(raw).command === "close") setTimeout(() => { server.stop(true); done.resolve(); }, 20);
-        })();
+  await mkdir(dataDir(), { recursive: true, mode: 0o700 });
+  const lock = await acquireDaemonLock();
+  if (!lock) return;
+  try {
+    await loadSessions();
+    await rm(socketPath(), { force: true });
+    await writeFile(pidPath(), `${process.pid}\n`, { mode: 0o600 });
+    const done = Promise.withResolvers<void>();
+    let activeRequests = 0;
+    let stopping = false;
+    const server = Bun.listen<{ buffer: string; decoder: TextDecoder; handled: boolean }>({
+      unix: socketPath(),
+      socket: {
+        open(socket) { socket.data = { buffer: "", decoder: new TextDecoder(), handled: false }; },
+        data(socket, bytes) {
+          if (socket.data.handled) return;
+          socket.data.buffer += socket.data.decoder.decode(bytes, { stream: true });
+          const newline = socket.data.buffer.indexOf("\n");
+          if (newline < 0) return;
+          socket.data.handled = true;
+          const raw = socket.data.buffer.slice(0, newline);
+          activeRequests++;
+          void (async () => {
+            let request: Request | undefined;
+            let reply: Reply;
+            try {
+              request = JSON.parse(raw) as Request;
+              reply = { ok: true, value: await handle(request) };
+            } catch (error) {
+              reply = { ok: false, error: errorPayload(error) };
+            } finally {
+              activeRequests--;
+            }
+            socket.write(`${JSON.stringify(reply)}\n`);
+            socket.end();
+            if (request?.command === "close") setTimeout(() => {
+              if (!stopping && activeRequests === 0 && sessions.size === 0) {
+                stopping = true;
+                server.stop(true);
+                done.resolve();
+              }
+            }, 20);
+          })();
+        },
       },
-    },
-  });
-  await done.promise;
-  await rm(pidPath(), { force: true });
+    });
+    await done.promise;
+  } finally {
+    await rm(pidPath(), { force: true });
+    await rm(socketPath(), { force: true });
+    await lock.close();
+    await rm(lockPath(), { force: true });
+  }
 }

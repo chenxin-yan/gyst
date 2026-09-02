@@ -13,13 +13,14 @@ type Reply = { ok: true; value: unknown } | { ok: false; error: unknown };
 function exchange(request: Request): Promise<Reply> {
   return new Promise((resolve, reject) => {
     let buffer = "";
+    const decoder = new TextDecoder();
     void Bun.connect<{ request: Request }>({
       unix: socketPath(),
       data: { request },
       socket: {
         open(socket) { socket.write(`${JSON.stringify(socket.data.request)}\n`); },
         data(_socket, bytes) {
-          buffer += bytes.toString();
+          buffer += decoder.decode(bytes, { stream: true });
           const newline = buffer.indexOf("\n");
           if (newline >= 0) resolve(JSON.parse(buffer.slice(0, newline)) as Reply);
         },
