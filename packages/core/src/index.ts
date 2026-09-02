@@ -66,13 +66,7 @@ const GroupSummarySchema = Schema.Struct({
 });
 const SpotlightSummarySchema = Schema.Struct({ id: Schema.String, file: Schema.String, tldr: Schema.String, accepted: Schema.Boolean });
 export const StatusPayloadSchema = Schema.Struct({
-  session: Schema.Struct({
-    id: Schema.String,
-    repoRoot: Schema.String,
-    source: SourceSchema,
-    createdAt: Schema.String,
-    updatedAt: Schema.String,
-  }),
+  session: SessionSchema.pick("id", "repoRoot", "source", "createdAt", "updatedAt"),
   revision: Schema.Number,
   seq: Schema.Number,
   cursor: Schema.Struct({ itemId: Schema.NullOr(Schema.String), expanded: Schema.Boolean }),
