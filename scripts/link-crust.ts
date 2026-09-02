@@ -1,4 +1,5 @@
 import { existsSync, lstatSync, mkdirSync, readlinkSync, symlinkSync } from "node:fs";
+import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 
 const checkout = process.env.CRUST_CHECKOUT;
@@ -7,15 +8,8 @@ if (!checkout) {
   process.exit(1);
 }
 
-const globalBin = Bun.spawnSync(["bun", "pm", "bin", "-g"], { stdout: "pipe", stderr: "inherit" });
-if (globalBin.exitCode !== 0) process.exit(globalBin.exitCode);
-const linkRoot = join(
-  dirname(globalBin.stdout.toString().trim()),
-  "install",
-  "global",
-  "node_modules",
-  "@crustjs",
-);
+const bunInstall = process.env.BUN_INSTALL ?? join(homedir(), ".bun");
+const linkRoot = join(bunInstall, "install", "global", "node_modules", "@crustjs");
 mkdirSync(linkRoot, { recursive: true });
 
 for (const name of ["core", "extensions", "skills"]) {
