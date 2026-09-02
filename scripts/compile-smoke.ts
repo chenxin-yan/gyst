@@ -1,10 +1,9 @@
-import { chmod, copyFile, mkdir, mkdtemp, rm } from "node:fs/promises";
+import { chmod, copyFile, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 const root = join(import.meta.dir, "..");
 const binary = join(root, "dist", "gyst");
-await mkdir(join(root, "dist"), { recursive: true });
 
 function run(command: string[], label: string, cwd = root): string {
   const result = Bun.spawnSync(command, { cwd, stdout: "pipe", stderr: "pipe" });

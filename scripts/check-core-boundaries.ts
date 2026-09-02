@@ -25,20 +25,12 @@ export function findForbiddenImports(source: string): string[] {
     .filter(isForbidden);
 }
 
-async function sourceFiles(directory: string): Promise<string[]> {
-  const entries = await readdir(directory, { withFileTypes: true });
-  const nested = await Promise.all(
-    entries.map((entry) => {
-      const path = join(directory, entry.name);
-      return entry.isDirectory() ? sourceFiles(path) : /\.[cm]?[jt]sx?$/.test(entry.name) ? [path] : [];
-    }),
-  );
-  return nested.flat();
-}
-
 if (import.meta.main) {
   const violations: string[] = [];
-  for (const file of await sourceFiles(root)) {
+  const files = (await readdir(root, { recursive: true }))
+    .filter((file) => /\.[cm]?[jt]sx?$/.test(file))
+    .map((file) => join(root, file));
+  for (const file of files) {
     if (findForbiddenImports(await Bun.file(file).text()).length > 0) {
       violations.push(relative(root, file));
     }
