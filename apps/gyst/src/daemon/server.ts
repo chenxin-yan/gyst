@@ -38,7 +38,6 @@ function lockPath(): string {
   return join(dataDir(), "daemon.lock");
 }
 const sessions = new Map<string, Session>();
-const creatingRepoRoots = new Set<string>();
 
 function failure(
   code: ErrorPayload["code"],
@@ -143,45 +142,37 @@ async function handle(request: Request): Promise<StatusPayload | ClosePayload | 
       allowPositionals: true,
       strict: true,
     });
-    if (
-      [...sessions.values()].some((session) => session.repoRoot === root) ||
-      creatingRepoRoots.has(root)
-    ) {
+    if ([...sessions.values()].some((session) => session.repoRoot === root)) {
       failure("session_exists", `a session already exists for ${root}`);
     }
     if (values.stdin && positionals.length)
       failure("bad_args", "--stdin cannot be combined with git arguments");
     const includeUntracked = !values.stdin && positionals.length === 0;
     const gitArgs = includeUntracked ? defaultGitArgs(root) : positionals;
-    creatingRepoRoots.add(root);
-    try {
-      const patch = values.stdin
-        ? (request.stdin ?? "")
-        : await gitPatch(root, gitArgs, includeUntracked);
-      const now = new Date().toISOString();
-      const session: Session = {
-        id: crypto.randomUUID(),
-        repoRoot: root,
-        source: values.stdin
-          ? { kind: "stdin" }
-          : { kind: "git", args: gitArgs, ...(includeUntracked ? { includeUntracked: true } : {}) },
-        createdAt: now,
-        updatedAt: now,
-        revision: 0,
-        seq: 0,
-        cursor: { itemId: null, expanded: false },
-        hunks: snapshot(patch),
-        groups: [],
-        queue: [],
-        queueSet: false,
-        applyReceipts: [],
-      };
-      await persist(session);
-      sessions.set(session.id, session);
-      return statusOf(session);
-    } finally {
-      creatingRepoRoots.delete(root);
-    }
+    const patch = values.stdin
+      ? (request.stdin ?? "")
+      : await gitPatch(root, gitArgs, includeUntracked);
+    const now = new Date().toISOString();
+    const session: Session = {
+      id: crypto.randomUUID(),
+      repoRoot: root,
+      source: values.stdin
+        ? { kind: "stdin" }
+        : { kind: "git", args: gitArgs, ...(includeUntracked ? { includeUntracked: true } : {}) },
+      createdAt: now,
+      updatedAt: now,
+      revision: 0,
+      seq: 0,
+      cursor: { itemId: null, expanded: false },
+      hunks: snapshot(patch),
+      groups: [],
+      queue: [],
+      queueSet: false,
+      applyReceipts: [],
+    };
+    await persist(session);
+    sessions.set(session.id, session);
+    return statusOf(session);
   }
 
   let values: { session?: string; hunk?: string; group?: string; file?: string; stdin?: boolean };
