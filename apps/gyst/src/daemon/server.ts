@@ -137,8 +137,12 @@ async function loadSessions(): Promise<void> {
   await mkdir(dataDir(), { recursive: true, mode: 0o700 });
   for (const file of await readdir(dataDir())) {
     if (!file.endsWith(".json")) continue;
-    const session = Schema.decodeUnknownSync(SessionSchema)(JSON.parse(await readFile(join(dataDir(), file), "utf8")));
-    sessions.set(session.id, session);
+    try {
+      const session = Schema.decodeUnknownSync(SessionSchema)(JSON.parse(await readFile(join(dataDir(), file), "utf8")));
+      sessions.set(session.id, session);
+    } catch {
+      // A corrupt or older session must not prevent the daemon serving valid sessions.
+    }
   }
 }
 
