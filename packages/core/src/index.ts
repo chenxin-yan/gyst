@@ -183,12 +183,7 @@ export const ReplySchema = Schema.Union(
 export type Reply = typeof ReplySchema.Type;
 
 function hash(input: string): string {
-  let value = 0xcbf29ce484222325n;
-  for (let offset = 0; offset < input.length; offset++) {
-    value ^= BigInt(input.charCodeAt(offset));
-    value = BigInt.asUintN(64, value * 0x100000001b3n);
-  }
-  return value.toString(16).padStart(16, "0");
+  return Bun.hash(input).toString(16).padStart(16, "0");
 }
 
 export function parseSnapshot(patch: string): Hunk[] {
