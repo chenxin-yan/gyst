@@ -15,7 +15,6 @@
       "dependencies": {
         "@crustjs/core": "link:@crustjs/core",
         "@gyst/core": "workspace:*",
-        "@opentui/core": "0.5.9",
         "@opentui/solid": "0.5.9",
         "solid-js": "1.9.12",
       },
