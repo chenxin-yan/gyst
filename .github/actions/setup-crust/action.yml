@@ -5,7 +5,7 @@ description: Build and link the pinned local crust dependencies
 inputs:
   rev:
     description: Crust revision
-    default: 08901cd0e3dc3c17877d174d2e8a1b19982c8c18
+    default: 3526708b3e95c214c4142c31caa106f845bd2fa4
 
 runs:
   using: composite
