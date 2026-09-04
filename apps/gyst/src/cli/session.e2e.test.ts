@@ -62,6 +62,13 @@ afterAll(async () => {
 });
 
 describe("gyst session CLI seam", () => {
+  it("rejects stray root positionals through the JSON error contract", async () => {
+    const cwd = await repo("stray-positional");
+    const result = await gyst(cwd, ["sesion"]);
+    expect(result.exitCode).toBe(1);
+    expect(Schema.decodeUnknownSync(ErrorPayloadSchema)(JSON.parse(result.stderr)).code).toBe("bad_args");
+  });
+
   it("serializes concurrent startup and create for one repository", async () => {
     const cwd = await repo("concurrent-create");
     await writeFile(join(cwd, "tracked.txt"), "changed\n");
