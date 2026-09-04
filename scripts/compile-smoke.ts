@@ -57,13 +57,14 @@ try {
     CLAUDE_CONFIG_DIR: join(home, ".claude"),
     PATH: `${bin}:${process.env.PATH ?? ""}`,
   });
-  for (const name of ["gyst", "gyst-ask"]) {
+  for (const [name, authoredText] of [["gyst", "Use gyst to prepare one diff"], ["gyst-ask", "Resolve `cursor.itemId`"]]) {
     const link = join(home, ".agents", "skills", name);
     if (resolve(dirname(link), await readlink(link)) !== join(isolated, "skills", name)) {
       throw new Error(`${name} install does not target packaged skills`);
     }
-    if (!(await readFile(join(link, "SKILL.md"), "utf8")).includes(`name: ${name}`)) {
-      throw new Error(`${name} packaged skill is unreadable`);
+    const contents = await readFile(join(link, "SKILL.md"), "utf8");
+    if (!contents.includes(`name: ${name}`) || !contents.includes(authoredText)) {
+      throw new Error(`${name} packaged skill is not the authored extra`);
     }
   }
 } finally {

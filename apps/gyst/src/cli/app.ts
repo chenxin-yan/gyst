@@ -110,8 +110,11 @@ const jsonErrors = defineExtension(defineExtensionId("gyst-json-errors"), {
 });
 
 const packagedSkills = join(dirname(process.execPath), "skills");
+const authoredSkills = fileURLToPath(new URL("../../../../skills", import.meta.url));
+export const authoredSkillDirs = [join(authoredSkills, "gyst"), join(authoredSkills, "gyst-ask")];
 const coReviewSkill = skill({
-  distDir: existsSync(packagedSkills) ? packagedSkills : fileURLToPath(new URL("../../../../skills", import.meta.url)),
+  distDir: existsSync(packagedSkills) ? packagedSkills : authoredSkills,
+  extras: authoredSkillDirs,
   defaultScope: "global",
 });
 
