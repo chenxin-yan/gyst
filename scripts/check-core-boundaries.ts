@@ -1,12 +1,18 @@
+import { parse } from "@babel/parser";
+import { traverseFast } from "@babel/types";
 import { builtinModules } from "node:module";
 import { readdir } from "node:fs/promises";
-import { join, relative } from "node:path";
+import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 
 const root = join(import.meta.dir, "..", "packages", "core", "src");
 const nodeBuiltins = new Set(builtinModules.map((name) => name.replace(/^node:/, "")));
 const pureNodeBuiltins = new Set(["path"]);
 
-function isForbidden(module: string): boolean {
+function isForbidden(module: string, file: string): boolean {
+  if (module.startsWith(".")) {
+    const target = relative(root, resolve(dirname(file), module));
+    if (target === ".." || target.startsWith(`..${sep}`) || isAbsolute(target)) return true;
+  }
   const bare = module.replace(/^node:/, "");
   return (
     (nodeBuiltins.has(bare) && !pureNodeBuiltins.has(bare)) ||
@@ -18,11 +24,42 @@ function isForbidden(module: string): boolean {
   );
 }
 
-export function findForbiddenImports(source: string): string[] {
-  return new Bun.Transpiler({ loader: "tsx" })
-    .scan(source)
-    .imports.map(({ path }) => path)
-    .filter(isForbidden);
+export function findForbiddenImports(source: string, file = join(root, "index.ts")): string[] {
+  const forbidden: string[] = [];
+  const ast = parse(source, {
+    sourceType: "module",
+    plugins: /\.[jt]sx$/.test(file) ? ["typescript", "jsx"] : ["typescript"],
+    createImportExpressions: true,
+  });
+  traverseFast(ast, (node) => {
+    if (
+      node.type !== "ImportDeclaration" && node.type !== "ExportNamedDeclaration" &&
+      node.type !== "ExportAllDeclaration" && node.type !== "ImportExpression"
+    ) return;
+    if (
+      ("importKind" in node && node.importKind === "type") ||
+      ("exportKind" in node && node.exportKind === "type")
+    ) return;
+    if (
+      "specifiers" in node && node.specifiers.length > 0 && node.specifiers.every((specifier) =>
+        (specifier.type === "ImportSpecifier" && specifier.importKind === "type") ||
+        (specifier.type === "ExportSpecifier" && specifier.exportKind === "type")
+      )
+    ) return;
+
+    const source = node.source;
+    const module = source?.type === "StringLiteral"
+      ? source.value
+      : source?.type === "TemplateLiteral" && source.expressions.length === 0
+        ? source.quasis[0]?.value.cooked
+        : undefined;
+    if (module != null) {
+      if (isForbidden(module, file)) forbidden.push(module);
+    } else if (node.type === "ImportExpression") {
+      forbidden.push("<computed import>");
+    }
+  });
+  return forbidden;
 }
 
 if (import.meta.main) {
@@ -31,7 +68,7 @@ if (import.meta.main) {
     .filter((file) => /\.[cm]?[jt]sx?$/.test(file))
     .map((file) => join(root, file));
   for (const file of files) {
-    if (findForbiddenImports(await Bun.file(file).text()).length > 0) {
+    if (findForbiddenImports(await Bun.file(file).text(), file).length > 0) {
       violations.push(relative(root, file));
     }
   }

@@ -3,7 +3,7 @@
   "tasks": {
     "build": {
       "dependsOn": ["^build"],
-      "outputs": ["dist/**"]
+      "outputs": ["$TURBO_ROOT$/dist/**"]
     },
     "check:types": {
       "dependsOn": ["^check:types"],

@@ -8,10 +8,15 @@ on:
 jobs:
   check:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - uses: actions/checkout@v4
         with:
+          persist-credentials: false
           repository: chenxin-yan/crust
           ref: 3526708b3e95c214c4142c31caa106f845bd2fa4
           path: crust
