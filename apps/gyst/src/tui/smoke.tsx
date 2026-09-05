@@ -19,13 +19,13 @@ function fixture() {
     inbox: [{ id: "d.ts", file: "d.ts" }], queue: ["group", "c.ts"], queueSet: false, ready: false,
     files: ["a.ts", "b.ts", "c.ts", "d.ts"].map((path) => ({ path, hunkCount: 1 })),
   };
-  const diff: DiffPayload = { sessionId: "session", hunks: [
+  const diff: DiffPayload = { sessionId: "session", revision: 0, hunks: [
     patch("a.ts", "const old = 1", "const new = 1"), patch("b.ts", "old()", "new()"),
     patch("c.ts", "stale", "fresh"), patch("d.ts", "before", "after"),
   ] };
   const client: TuiClient = {
     status: async () => structuredClone(status),
-    diff: async () => structuredClone(diff),
+    diff: async () => ({ ...structuredClone(diff), sessionId: status.session.id, revision: status.revision }),
     refresh: async () => structuredClone(status),
     action: async (action: HumanAction) => {
       actions.push(action);

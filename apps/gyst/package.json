@@ -6,7 +6,7 @@
   "scripts": {
     "build": "bun build --compile --minify --outfile ../../dist/gyst src/index.tsx",
     "check:types": "tsc --noEmit",
-    "test": "bun test && bun src/tui/smoke.tsx"
+    "test": "bun test && bun src/tui/smoke.tsx && bun src/tui/app-races.smoke.tsx"
   },
   "dependencies": {
     "@crustjs/core": "link:@crustjs/core",

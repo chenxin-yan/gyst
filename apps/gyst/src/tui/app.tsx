@@ -190,7 +190,8 @@ export function App(props: { client: TuiClient; onQuit?: () => void; pollInterva
   const [help, setHelp] = createSignal(false);
   const [layoutMode, setLayoutMode] = createSignal<LayoutMode>("auto");
   let stopped = false;
-  let syncing = false;
+  let syncQueued = false;
+  let latestStatus: StatusPayload | undefined;
   let inputs = Promise.resolve();
 
   const items = createMemo(() => status() && diff() ? buildItems(status()!, diff()!) : []);
@@ -199,57 +200,67 @@ export function App(props: { client: TuiClient; onQuit?: () => void; pollInterva
   const resolvedLayout = createMemo(() => layoutMode() === "auto" ? (dims().width >= 120 ? "split" : "stack") : layoutMode() as "split" | "stack");
   const allDone = createMemo(() => items().length > 0 && items().every((item) => item.kind !== "inbox" && item.accepted));
 
-  function publish(next: StatusPayload, nextDiff: DiffPayload): void {
+  function observe(next: StatusPayload): StatusPayload {
+    if (!latestStatus || latestStatus.session.id !== next.session.id || next.seq >= latestStatus.seq) latestStatus = next;
+    return latestStatus;
+  }
+
+  function matches(next: StatusPayload, nextDiff: DiffPayload | undefined): nextDiff is DiffPayload {
+    return nextDiff?.sessionId === next.session.id && nextDiff.revision === next.revision;
+  }
+
+  async function synchronize(next: StatusPayload): Promise<boolean> {
+    next = observe(next);
+    let nextDiff = diff();
+    if (!matches(next, nextDiff)) nextDiff = await props.client.diff();
+    if (!matches(next, nextDiff)) next = observe(await props.client.status());
+    // A harness may mutate between reads. Keep the last coherent frame and retry on the next poll.
+    if (stopped || !matches(next, nextDiff)) return false;
     batch(() => { setDiff(nextDiff); setStatus(next); setMessage(""); });
+    return true;
   }
 
   function enqueue(operation: () => Promise<void>): void {
-    inputs = inputs.then(operation, operation);
+    inputs = inputs.then(() => { if (!stopped) return operation(); });
   }
 
   async function sync(): Promise<void> {
-    if (syncing || stopped) return;
-    syncing = true;
     try {
-      const next = await props.client.status();
-      const previous = status();
-      let nextDiff = diff();
-      if (!previous || next.session.id !== previous.session.id || next.revision !== previous.revision || !nextDiff) nextDiff = await props.client.diff();
-      const latest = status();
-      if (latest && latest.session.id === next.session.id && latest.seq > next.seq) return;
-      publish(next, nextDiff);
-      const nextItems = buildItems(next, nextDiff);
+      if (!await synchronize(await props.client.status())) return;
+      const next = status()!;
+      const nextItems = items();
       if (!nextItems.some(({ id }) => id === next.cursor.itemId) && nextItems[0]) {
-        setStatus(await props.client.action({ type: "cursor.move", itemId: nextItems[0].id }));
+        await synchronize(await props.client.action({ type: "cursor.move", itemId: nextItems[0].id }));
       }
     } catch (error) {
       if (error instanceof TuiClientError && error.payload.code === "no_session") {
+        latestStatus = undefined;
         batch(() => { setStatus(undefined); setDiff(undefined); setMessage("no session for this repo — waiting… run /gyst in your harness"); });
       } else setMessage(error instanceof Error ? error.message : String(error));
-    } finally { syncing = false; }
+    }
+  }
+
+  function scheduleSync(): void {
+    if (syncQueued || stopped) return;
+    syncQueued = true;
+    enqueue(async () => { try { await sync(); } finally { syncQueued = false; } });
   }
 
   async function refresh(): Promise<void> {
-    if (syncing || stopped) return;
-    syncing = true;
     try {
-      await props.client.refresh();
-      const nextDiff = await props.client.diff();
-      const next = await props.client.status();
-      publish(next, nextDiff);
+      await synchronize(await props.client.refresh());
       setMessage("snapshot refreshed");
     } catch (error) { setMessage(error instanceof Error ? error.message : String(error)); }
-    finally { syncing = false; }
   }
 
   async function action(next: Parameters<TuiClient["action"]>[0]): Promise<void> {
-    try { setStatus(await props.client.action(next)); setMessage(""); }
+    try { await synchronize(await props.client.action(next)); }
     catch (error) { setMessage(error instanceof Error ? error.message : String(error)); }
   }
 
   onMount(() => {
-    void sync();
-    const timer = setInterval(() => void sync(), props.pollInterval ?? 250);
+    scheduleSync();
+    const timer = setInterval(scheduleSync, props.pollInterval ?? 250);
     onCleanup(() => { stopped = true; clearInterval(timer); });
   });
 
