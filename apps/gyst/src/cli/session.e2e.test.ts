@@ -2,7 +2,7 @@ import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import { chmod, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { ErrorPayloadSchema, StatusPayloadSchema } from "@gyst/core";
+import { DiffPayloadSchema, ErrorPayloadSchema, StatusPayloadSchema } from "@gyst/core";
 import { Schema } from "effect";
 
 const binary = join(tmpdir(), `gyst-e2e-${process.pid}`);
@@ -197,6 +197,25 @@ index 1234567..89abcde 100644
     expect(second.exitCode).toBe(0);
     const secondDiff = JSON.parse((await gyst(cwd, ["session", "diff"])).stdout);
     expect(secondDiff.hunks.map((hunk: { id: string }) => hunk.id)).toEqual(ids);
+    await gyst(cwd, ["session", "close"]);
+  }, 20_000);
+
+  it("extracts plain unified hunks by line counts, including header-like content and EOF markers", async () => {
+    const cwd = await repo("plain-unified");
+    const bodies = [
+      "@@ -1,2 +1,2 @@\n--- old content\n+++ new content\n context",
+      "@@ -8 +8 @@\n-old\n\\ No newline at end of file\n+new\n\\ No newline at end of file",
+      "@@ -0,0 +1 @@\n+added\n\\ No newline at end of file",
+    ];
+    const patch = `--- a/a.txt\n+++ b/a.txt\n${bodies[0]}\n${bodies[1]}\n--- /dev/null\n+++ b/b.txt\n${bodies[2]}\n`;
+    const created = await gyst(cwd, ["session", "create", "--stdin"], patch);
+    expect(created.exitCode).toBe(0);
+    const status = Schema.decodeUnknownSync(StatusPayloadSchema)(JSON.parse(created.stdout));
+    const diff = JSON.parse((await gyst(cwd, ["session", "diff"])).stdout);
+    expect(diff.hunks.map((hunk: { patch: string }) => hunk.patch)).toEqual(bodies);
+    expect(diff.sessionId).toBe(status.session.id);
+    expect(diff.revision).toBe(status.revision);
+    expect(Schema.decodeUnknownSync(DiffPayloadSchema)(diff)).toEqual(diff);
     await gyst(cwd, ["session", "close"]);
   }, 20_000);
 

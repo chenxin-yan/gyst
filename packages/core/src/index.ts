@@ -79,6 +79,7 @@ export type StatusPayload = typeof StatusPayloadSchema.Type;
 
 export const DiffPayloadSchema = Schema.Struct({
   sessionId: Schema.String,
+  revision: Schema.Number,
   hunks: Schema.Array(HunkSchema),
 });
 export type DiffPayload = typeof DiffPayloadSchema.Type;
@@ -112,7 +113,19 @@ export function parseSnapshot(patch: string): Hunk[] {
   const hunks: Hunk[] = [];
   for (const file of files) {
     for (const parsedHunk of file.hunks) {
-      const text = rawHunks[index++]!;
+      const lines = rawHunks[index++]!.split("\n");
+      let remainingOld = parsedHunk.deletionCount;
+      let remainingNew = parsedHunk.additionCount;
+      let end = 1;
+      // File headers can look like hunk content; only the declared counts end a hunk.
+      while (end < lines.length) {
+        const sign = lines[end]![0];
+        if (remainingOld === 0 && remainingNew === 0 && sign !== "\\") break;
+        if (sign === "-" || sign === " ") remainingOld--;
+        if (sign === "+" || sign === " ") remainingNew--;
+        end++;
+      }
+      const text = lines.slice(0, end).join("\n");
       const input = `${file.name}\0${text}`;
       let hash = 2166136261;
       for (let offset = 0; offset < input.length; offset++) hash = Math.imul(hash ^ input.charCodeAt(offset), 16777619);

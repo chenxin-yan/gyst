@@ -152,7 +152,7 @@ async function handle(request: Request): Promise<Record<string, unknown>> {
   }
   if (values.file) hunks = hunks.filter((hunk) => hunk.file === values.file);
   if ((values.hunk || values.group || values.file) && hunks.length === 0) failure("validation_failed", "diff selector matched nothing");
-  return { sessionId: session.id, hunks } satisfies DiffPayload;
+  return { sessionId: session.id, revision: session.revision, hunks } satisfies DiffPayload;
 }
 
 async function loadSessions(): Promise<void> {
