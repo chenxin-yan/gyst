@@ -502,11 +502,28 @@ export function refreshSession(session: Session, freshHunks: readonly Hunk[]): S
     const key = `${hunk.file}\0${hunk.contentHash}`;
     freshMatchCounts.set(key, (freshMatchCounts.get(key) ?? 0) + 1);
   }
+  const freshById = new Map(freshHunks.map((hunk) => [hunk.id, hunk]));
+  const stableDuplicates = new Map<string, Hunk>();
+  // An exact ID is safe for duplicates only when none of its peers moved or vanished.
+  for (const [key, matches] of oldByMatch) {
+    if (matches.length < 2 || matches.length !== freshMatchCounts.get(key)) continue;
+    if (
+      matches.every((old) => {
+        const fresh = freshById.get(old.id);
+        return fresh?.file === old.file && fresh.patch === old.patch;
+      })
+    ) {
+      for (const old of matches) stableDuplicates.set(old.id, old);
+    }
+  }
   const survivingIds = new Set<string>();
   draft.hunks = freshHunks.map((fresh) => {
     const key = `${fresh.file}\0${fresh.contentHash}`;
     const matches = oldByMatch.get(key);
-    const old = matches?.length === 1 && freshMatchCounts.get(key) === 1 ? matches[0] : undefined;
+    const old =
+      matches?.length === 1 && freshMatchCounts.get(key) === 1
+        ? matches[0]
+        : stableDuplicates.get(fresh.id);
     if (!old) return { ...fresh, tldr: undefined, accepted: false };
     survivingIds.add(old.id);
     return { ...fresh, id: old.id, tldr: old.tldr, accepted: old.accepted };
@@ -523,10 +540,7 @@ export function refreshSession(session: Session, freshHunks: readonly Hunk[]): S
       },
     ];
   });
-  const changed =
-    session.hunks.length !== freshHunks.length ||
-    session.hunks.some((hunk) => !survivingIds.has(hunk.id));
-  if (changed) draft.queueSet = false;
+  if (survivingIds.size !== freshHunks.length) draft.queueSet = false;
   reconcileQueue(draft);
   draft.revision++;
   draft.seq++;

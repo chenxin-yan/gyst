@@ -1,6 +1,6 @@
 import { describe, expect, it } from "bun:test";
 import type { Hunk, Session } from "../src/index.ts";
-import { refreshSession } from "../src/index.ts";
+import { parseSnapshot, refreshSession, statusOf } from "../src/index.ts";
 
 const hunk = (id: string, file: string, contentHash: string, tldr?: string, accepted = false): Hunk => ({
   id, file, contentHash, header: "@@ -1 +1 @@", patch: `@@ -1 +1 @@\n-${id}\n+${contentHash}`,
@@ -58,10 +58,36 @@ describe("refreshSession", () => {
     const refreshed = refreshSession(original, [hunk("fresh-a", "a.ts", "same")]);
     expect(refreshed.groups[0]).toEqual(expect.objectContaining({ exemplarHunkId: "old-a", hunkIds: ["old-a"], accepted: true }));
 
+    expect(refreshed.queue).toEqual(["group-1"]);
+    expect(refreshed.queueSet).toBe(true);
+    expect(statusOf(refreshed).ready).toBe(true);
+    expect(refreshSession({ ...original, queueSet: false }, [hunk("fresh-a", "a.ts", "same")]).queueSet).toBe(false);
+
     const empty = refreshSession(original, []);
     expect(empty.groups).toEqual([]);
     expect(empty.queue).toEqual([]);
     expect(empty.cursor).toEqual({ itemId: null, expanded: false });
+  });
+
+  it("preserves stable duplicate identities only when the whole duplicate set is unchanged", () => {
+    const patch = "diff --git a/same.ts b/same.ts\n--- a/same.ts\n+++ b/same.ts\n@@ -1 +1 @@\n-old\n+new\n@@ -20 +20 @@\n-old\n+new\n";
+    const fresh = parseSnapshot(patch);
+    const original: Session = {
+      ...session(),
+      hunks: fresh.map((hunk, index) => ({ ...hunk, tldr: `note ${index}`, accepted: index === 0 })),
+      groups: [], queue: fresh.map(({ id }) => id), cursor: { itemId: fresh[0]!.id, expanded: false },
+    };
+    const unchanged = refreshSession(original, parseSnapshot(patch));
+    expect(unchanged.hunks).toEqual(original.hunks);
+    expect(unchanged.queue).toEqual(original.queue);
+    expect(statusOf(unchanged).ready).toBe(true);
+
+    // A surviving ID alone does not prove which duplicate was removed or relocated.
+    for (const changed of [fresh.slice(0, 1), parseSnapshot(patch.replace("@@ -20 +20 @@", "@@ -30 +30 @@"))]) {
+      const refreshed = refreshSession(original, changed);
+      expect(refreshed.hunks.every((hunk) => !hunk.accepted && hunk.tldr === undefined)).toBe(true);
+      expect(refreshed.queueSet).toBe(false);
+    }
   });
 
   it("does not transfer review state between ambiguous duplicate hunks", () => {
