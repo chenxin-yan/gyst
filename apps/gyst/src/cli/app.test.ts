@@ -1,5 +1,6 @@
 import { describe, expect, it } from "bun:test";
 
+import packageJson from "../../package.json" with { type: "json" };
 import { app } from "./app.ts";
 
 async function execute(argv: string[]): Promise<string> {
@@ -15,6 +16,6 @@ describe("crust command help", () => {
   });
 
   it("reports the package version", async () => {
-    expect(await execute(["--version"])).toBe("gyst v0.0.0");
+    expect(await execute(["--version"])).toBe(`gyst v${packageJson.version}`);
   });
 });
