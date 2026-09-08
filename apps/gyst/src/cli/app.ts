@@ -8,8 +8,9 @@ const session = defineCommand("session", { description: "Manage a co-review sess
 
 export const app = new Crust("gyst", {
   description: "Keyboard-centric agent/human co-review",
+  version: packageJson.version,
 })
   .extend(help())
-  .extend(version(packageJson.version))
+  .extend(version())
   .add(session)
   .action(renderCompileSmoke);

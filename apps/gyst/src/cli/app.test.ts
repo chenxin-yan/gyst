@@ -15,7 +15,8 @@ describe("crust command help", () => {
     expect(await execute(["session", "--help"])).toContain("gyst session");
   });
 
-  it("reports the package version", async () => {
+  it("reports the package version in root metadata and CLI output", async () => {
+    expect((await app.snapshot()).meta.version).toBe(packageJson.version);
     expect(await execute(["--version"])).toBe(`gyst v${packageJson.version}`);
   });
 });

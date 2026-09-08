@@ -18,11 +18,11 @@ jobs:
         with:
           persist-credentials: false
           repository: chenxin-yan/crust
-          ref: 3526708b3e95c214c4142c31caa106f845bd2fa4
+          ref: cb0e9f1f0538c0576505534d429566ed29bcb996
           path: crust
       - uses: oven-sh/setup-bun@v2
         with:
-          bun-version: 1.4.0
+          bun-version: 1.4.2
       - name: Build local crust dependency
         working-directory: crust
         run: |
