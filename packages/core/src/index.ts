@@ -1,6 +1,10 @@
 import { parsePatchFiles } from "@pierre/diffs";
 import { Schema } from "effect";
 
+// Require only Bun's pure hash and structuredClone, without exposing ambient I/O APIs.
+declare const Bun: { hash(input: string): number | bigint };
+declare function structuredClone<T>(value: T): T;
+
 export const ErrorCodeSchema = Schema.Literal(
   "stale_revision",
   "validation_failed",
