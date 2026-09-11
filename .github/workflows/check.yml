@@ -18,7 +18,7 @@ jobs:
         with:
           persist-credentials: false
           repository: chenxin-yan/crust
-          ref: cb0e9f1f0538c0576505534d429566ed29bcb996
+          ref: 38e7298954c60ec0a45dcfa830b515b2bc32ece0
           path: crust
       - uses: oven-sh/setup-bun@v2
         with:

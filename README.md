@@ -5,7 +5,7 @@ Keyboard-centric agent/human co-review TUI.
 ## Local gate
 
 Use Bun 1.4.2. Crust is unpublished; point `CRUST_CHECKOUT` at a checkout of
-`cb0e9f1f0538c0576505534d429566ed29bcb996` before setting up gyst:
+`38e7298954c60ec0a45dcfa830b515b2bc32ece0` before setting up gyst:
 
 ```sh
 export CRUST_CHECKOUT=/path/to/crust
