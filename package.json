@@ -17,8 +17,7 @@
     "check:boundaries": "bun scripts/check-core-boundaries.ts",
     "check:types": "turbo run check:types",
     "test": "bun test scripts && turbo run test",
-    "smoke:compile": "bun scripts/compile-smoke.ts",
-    "setup:crust": "bun scripts/link-crust.ts"
+    "smoke:compile": "bun scripts/compile-smoke.ts"
   },
   "devDependencies": {
     "@babel/parser": "7.29.8",

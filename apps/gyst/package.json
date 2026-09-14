@@ -19,22 +19,23 @@
   },
   "scripts": {
     "build": "bun build --compile --minify --outfile dist/gyst src/index.tsx && bun scripts/build-skills.ts",
-    "build:release": "bun node_modules/@crustjs/crust/dist/cli.js build --entry src/index.tsx --name gyst --outdir dist/release --resolver gyst",
-    "package": "cp ../../LICENSE LICENSE && cp ../../README.md README.md && bun node_modules/@crustjs/crust/dist/cli.js build --package --entry src/index.tsx --name gyst --stage-dir dist/npm",
+    "build:release": "crust build --entry src/index.tsx --name gyst --outdir dist/release --resolver gyst",
+    "package": "cp ../../LICENSE LICENSE && cp ../../README.md README.md && crust build --package --entry src/index.tsx --name gyst --stage-dir dist/npm",
     "package:smoke": "bun ../../scripts/package-smoke.ts",
-    "publish": "bun node_modules/@crustjs/crust/dist/cli.js publish --stage-dir dist/npm",
+    "publish": "crust publish --stage-dir dist/npm",
     "check:types": "tsc --noEmit",
     "test": "bun test && bun src/tui/smoke.tsx && bun src/tui/app-races.smoke.tsx"
   },
   "devDependencies": {
-    "@crustjs/crust": "link:@crustjs/crust"
+    "@crustjs/crust": "0.2.0"
   },
   "dependencies": {
-    "@crustjs/core": "link:@crustjs/core",
-    "@crustjs/extensions": "link:@crustjs/extensions",
-    "@crustjs/skills": "link:@crustjs/skills",
+    "@crustjs/core": "0.2.0",
+    "@crustjs/extensions": "0.2.0",
+    "@crustjs/skills": "0.2.0",
+    "@crustjs/tui": "0.0.1",
     "@gyst/core": "workspace:*",
-    "@opentui/solid": "0.5.9",
+    "@opentui/solid": "0.5.11",
     "effect": "^3.22.1",
     "solid-js": "1.9.12"
   }
