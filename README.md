@@ -34,6 +34,11 @@ packages are published. `crust build --package` stages them under the app's
 package. Platform packages contain a
 standalone Bun-compiled `gyst`, not a JavaScript CLI that requires Bun.
 
+Every compiled build (`build`, `build:release`, `package`) goes through
+`crust build --bun-plugin @opentui/solid/bun-plugin` so the Solid JSX
+transform is applied at compile time; `bun src/index.tsx` and `bun test` get
+the same transform from the `bunfig.toml` preload.
+
 Local dry run for the current machine:
 
 ```sh

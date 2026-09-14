@@ -18,9 +18,9 @@
     "gyst": "dist/gyst"
   },
   "scripts": {
-    "build": "bun build --compile --minify --outfile dist/gyst src/index.tsx && bun scripts/build-skills.ts",
-    "build:release": "crust build --entry src/index.tsx --name gyst --outdir dist/release --resolver gyst",
-    "package": "cp ../../LICENSE LICENSE && cp ../../README.md README.md && crust build --package --entry src/index.tsx --name gyst --stage-dir dist/npm",
+    "build": "crust build --entry src/index.tsx --bun-plugin @opentui/solid/bun-plugin --minify --target bun-$(bun -p 'process.platform+\"-\"+process.arch') --outfile dist/gyst && bun scripts/build-skills.ts",
+    "build:release": "crust build --entry src/index.tsx --bun-plugin @opentui/solid/bun-plugin --name gyst --outdir dist/release --resolver gyst",
+    "package": "cp ../../LICENSE LICENSE && cp ../../README.md README.md && crust build --package --entry src/index.tsx --bun-plugin @opentui/solid/bun-plugin --name gyst --stage-dir dist/npm",
     "package:smoke": "bun ../../scripts/package-smoke.ts",
     "publish": "crust publish --stage-dir dist/npm",
     "check:types": "tsc --noEmit",
