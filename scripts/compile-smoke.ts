@@ -45,7 +45,7 @@ try {
   const frame = run([isolatedBinary], "compiled OpenTUI frame", isolated, {
     GYST_COMPILE_SMOKE: "1",
   });
-  if (!frame.includes("gyst · OpenTUI compile smoke")) throw new Error("compiled frame missing");
+  if (!frame.includes("gyst · Solid signal updated")) throw new Error("compiled frame missing");
 
   const rootHelp = run([isolatedBinary, "--help"], "compiled root help", isolated);
   if (!rootHelp.includes("Usage:") || !rootHelp.includes("session")) {
