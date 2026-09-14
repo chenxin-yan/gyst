@@ -14,7 +14,7 @@ jobs:
       matrix:
         include:
           - os: ubuntu-latest
-            target: bun-linux-x64-baseline
+            target: bun-linux-x64
             alias: linux-x64
           - os: macos-14
             target: bun-darwin-arm64
@@ -30,7 +30,7 @@ jobs:
       - run: bun install --frozen-lockfile --os='*' --cpu='*'
       - name: Stage host npm packages
         working-directory: apps/gyst
-        run: bun run package -- --target ${{ matrix.target }}
+        run: bun run package:host -- --target ${{ matrix.target }}
       - name: Pack, install globally, and run without Bun on PATH
         working-directory: apps/gyst
         run: bun run package:smoke

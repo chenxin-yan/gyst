@@ -37,18 +37,19 @@ standalone Bun-compiled `gyst`, not a JavaScript CLI that requires Bun.
 Every compiled build (`build`, `build:release`, `package`) goes through
 `crust build --bun-plugin @opentui/solid/bun-plugin` so the Solid JSX
 transform is applied at compile time; `bun src/index.tsx` and `bun test` get
-the same transform from the `bunfig.toml` preload.
+the same transform from the `bunfig.toml` preload. The six published targets
+are the glibc Linux, macOS, and Windows binaries; musl/Alpine is not published.
 
 Local dry run for the current machine:
 
 ```sh
 cd apps/gyst
 case "$(uname -s)-$(uname -m)" in
-  Linux-x86_64) target=bun-linux-x64-baseline ;;
+  Linux-x86_64) target=bun-linux-x64 ;;
   Darwin-arm64) target=bun-darwin-arm64 ;;
   *) echo "unsupported package-smoke host" >&2; exit 1 ;;
 esac
-bun run package -- --target "$target"
+bun run package:host -- --target "$target"
 bun run package:smoke
 bun run publish -- --dry-run
 ```
