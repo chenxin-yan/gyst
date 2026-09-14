@@ -488,7 +488,6 @@ export function App(props: { client: TuiClient; onQuit?: () => void; pollInterva
   });
 
   useKeyboard((key) => {
-    if (key.ctrl && key.name === "c") return props.onQuit?.();
     if (help()) {
       if (["?", "escape", "q"].includes(key.name)) setHelp(false);
       return;

@@ -91,9 +91,11 @@ const session = defineCommand("session", { description: "Manage a co-review sess
   command.add(create).add(status).add(diff).add(apply).add(refresh).add(close),
 );
 
-const jsonErrors = defineExtension(defineExtensionId("gyst-json-errors"), {
+export const jsonErrors = defineExtension(defineExtensionId("gyst-json-errors"), {
   hooks: {
     onError(cause, { stderr }) {
+      // Ctrl+C in the TUI: crust already exits 130; a cancellation is not an error to report.
+      if (cause instanceof Error && cause.name === "AbortError") return false;
       let error: ErrorPayload;
       try {
         error = Schema.decodeUnknownSync(ErrorPayloadSchema)(cause);
