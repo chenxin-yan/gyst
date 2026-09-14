@@ -18,7 +18,7 @@
     "gyst": "dist/gyst"
   },
   "scripts": {
-    "build": "crust build --entry src/index.tsx --bun-plugin @opentui/solid/bun-plugin --minify --target bun-$(bun -p 'process.platform+\"-\"+process.arch') --outfile dist/gyst && bun scripts/build-skills.ts",
+    "build": "crust build --entry src/index.tsx --bun-plugin @opentui/solid/bun-plugin --minify --target $(bun -p '\"bun-\"+(process.platform===\"win32\"?\"windows\":process.platform)+\"-\"+process.arch') --outfile dist/gyst && bun scripts/build-skills.ts",
     "build:release": "crust build --entry src/index.tsx --bun-plugin @opentui/solid/bun-plugin --name gyst --outdir dist/release --resolver gyst --target bun-linux-x64 --target bun-linux-arm64 --target bun-darwin-x64 --target bun-darwin-arm64 --target bun-windows-x64 --target bun-windows-arm64",
     "package": "bun run package:host -- --target bun-linux-x64 --target bun-linux-arm64 --target bun-darwin-x64 --target bun-darwin-arm64 --target bun-windows-x64 --target bun-windows-arm64",
     "package:host": "cp ../../LICENSE LICENSE && cp ../../README.md README.md && crust build --package --entry src/index.tsx --bun-plugin @opentui/solid/bun-plugin --name gyst --stage-dir dist/npm",
