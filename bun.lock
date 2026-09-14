@@ -22,17 +22,17 @@
         "gyst": "dist/gyst",
       },
       "dependencies": {
-        "@crustjs/core": "0.2.0",
-        "@crustjs/extensions": "0.2.0",
-        "@crustjs/skills": "0.2.0",
-        "@crustjs/tui": "0.0.1",
+        "@crustjs/core": "0.2.1",
+        "@crustjs/extensions": "0.2.1",
+        "@crustjs/skills": "0.2.1",
+        "@crustjs/tui": "0.0.2",
         "@gyst/core": "workspace:*",
         "@opentui/solid": "0.5.11",
         "effect": "^3.22.1",
         "solid-js": "1.9.12",
       },
       "devDependencies": {
-        "@crustjs/crust": "0.2.0",
+        "@crustjs/crust": "0.2.1",
       },
     },
     "packages/core": {
@@ -102,35 +102,39 @@
 
     "@babel/types": ["@babel/types@7.29.8", "", { "dependencies": { "@babel/helper-string-parser": "^7.29.7", "@babel/helper-validator-identifier": "^7.29.7" } }, "sha512-Vj1jF3cPfxg7OAfoI7QnVKLoILlm2JF9pnVHrX8qx7AHMiYWT+NDAA7jChlNgRS4WTLc/fD1lXLmPixluj+3Gg=="],
 
-    "@crustjs/core": ["@crustjs/core@0.2.0", "", { "peerDependencies": { "typescript": "^7.0.0" }, "optionalPeers": ["typescript"] }, "sha512-QBwxuvfcWQgxmJc/gvv0th5hvKW0s8QffBOmWamATxiXpQEZS/bgK/7wAR/pJC69Jlr10iOA4GdHh7W8JPE1EA=="],
+    "@crustjs/core": ["@crustjs/core@0.2.1", "", { "peerDependencies": { "typescript": "^7.0.0" }, "optionalPeers": ["typescript"] }, "sha512-9hMLZ71rIUrmfTAd0WlU7jJsc0boC+yX+R1/GJBoN0CeGo8VHZozPQrK9wyTjno1iy4DVf7wdi1JurdIZbBtMA=="],
 
-    "@crustjs/crust": ["@crustjs/crust@0.2.0", "", { "optionalDependencies": { "@crustjs/crust-darwin-arm64": "0.2.0", "@crustjs/crust-darwin-x64": "0.2.0", "@crustjs/crust-linux-arm64": "0.2.0", "@crustjs/crust-linux-x64": "0.2.0", "@crustjs/crust-windows-arm64": "0.2.0", "@crustjs/crust-windows-x64": "0.2.0" }, "bin": { "crust": "bin/crust.js" } }, "sha512-fIxNgwp9Pz+THiVXLhkvilpBFZDT974ecRScPAlz/ak6KrmnVvNTKJflSeHDoUg0iUvprJfSYik+j/kbi2/36g=="],
+    "@crustjs/crust": ["@crustjs/crust@0.2.1", "", { "optionalDependencies": { "@crustjs/crust-darwin-arm64": "0.2.1", "@crustjs/crust-darwin-x64": "0.2.1", "@crustjs/crust-linux-arm64": "0.2.1", "@crustjs/crust-linux-arm64-musl": "0.2.1", "@crustjs/crust-linux-x64": "0.2.1", "@crustjs/crust-linux-x64-musl": "0.2.1", "@crustjs/crust-windows-arm64": "0.2.1", "@crustjs/crust-windows-x64": "0.2.1" }, "bin": { "crust": "bin/crust.js" } }, "sha512-13eKcm/pDU0KVv6d6hHQQ83BA1niBuzTZRLCsAZBEgSj8/5ocFdBxtXV7lwMyAWWQRXWMm6fCormMaZIDSvuGg=="],
 
-    "@crustjs/crust-darwin-arm64": ["@crustjs/crust-darwin-arm64@0.2.0", "", { "os": "darwin", "cpu": "arm64", "bin": { "crust": "bin/crust-bun-darwin-arm64" } }, "sha512-/yflsCYkZ0CljF9SqqGqWHDHaN8g+mRfut6G3P8BTBLmddO26IoVetGoS0WQeTv76x4eM+5RMMrR+MxKfuN5Jg=="],
+    "@crustjs/crust-darwin-arm64": ["@crustjs/crust-darwin-arm64@0.2.1", "", { "os": "darwin", "cpu": "arm64", "bin": { "crust": "bin/crust-bun-darwin-arm64" } }, "sha512-epRrjEz1L2AE4YLdeSqcbbIaao9mlECibf5SWJlESKsU2fwLYtQDlrHbUvlOQ3HyeWdI46idsLOuB80yvBIHoQ=="],
 
-    "@crustjs/crust-darwin-x64": ["@crustjs/crust-darwin-x64@0.2.0", "", { "os": "darwin", "cpu": "x64", "bin": { "crust": "bin/crust-bun-darwin-x64" } }, "sha512-1hoMmEShUCtTSClMuiA83EDFXHEMcm1EaiU016HJ6/FscLZFWpjWQPalmGDtqmNTzFQmvdOK7hhHfd6l53LNeA=="],
+    "@crustjs/crust-darwin-x64": ["@crustjs/crust-darwin-x64@0.2.1", "", { "os": "darwin", "cpu": "x64", "bin": { "crust": "bin/crust-bun-darwin-x64" } }, "sha512-QHxiJgMs6dvB7YARZQr7P+pyenb/KV0D3d5bL9HNyJG1qjCaY3y21C03z7JH4utonsyuHdEDNWxeGNsPJ0XduQ=="],
 
-    "@crustjs/crust-linux-arm64": ["@crustjs/crust-linux-arm64@0.2.0", "", { "os": "linux", "cpu": "arm64", "bin": { "crust": "bin/crust-bun-linux-arm64" } }, "sha512-V1+qbgvTTqEqmgkvecSwWEzqzI92sDB9tM8p6WTm4M3odL0PndaoxA7eKc7XNpwfWR/Ybb4AeQRR7dPXmxHRyA=="],
+    "@crustjs/crust-linux-arm64": ["@crustjs/crust-linux-arm64@0.2.1", "", { "os": "linux", "cpu": "arm64", "bin": { "crust": "bin/crust-bun-linux-arm64" } }, "sha512-niOaIjwW7+CFGDuYThZa0IM0yC4xxiTv6e6e9fejDvXlIlpIQYNVjYXAW9zr18X2gNjTYWMISqwYVli//SGiPQ=="],
 
-    "@crustjs/crust-linux-x64": ["@crustjs/crust-linux-x64@0.2.0", "", { "os": "linux", "cpu": "x64", "bin": { "crust": "bin/crust-bun-linux-x64-baseline" } }, "sha512-CHaEsgGz7mlsLajJWd7CZEuPeiaOEhGSfNrrWYuxZcdNnEQMdJLT769nnTJK04LvA9lqBmsgXbmH/58n2Z6WEg=="],
+    "@crustjs/crust-linux-arm64-musl": ["@crustjs/crust-linux-arm64-musl@0.2.1", "", { "os": "linux", "cpu": "arm64", "bin": { "crust": "bin/crust-bun-linux-arm64-musl" } }, "sha512-rNNpCzYObYazso6WY6xiP9uzCMh/m46hSWFscq0Lptmt6NtfN0ep9xry3tal1f7A4gxu9nGR4KZadX7YKNfkvA=="],
 
-    "@crustjs/crust-windows-arm64": ["@crustjs/crust-windows-arm64@0.2.0", "", { "os": "win32", "cpu": "arm64", "bin": { "crust": "bin/crust-bun-windows-arm64.exe" } }, "sha512-4pVSQOSH5Va4MbFbjpkyTmm927jotW+YnKeuGU+JJdMlPketKBpUSGvORT7ZIdWnZLhB7XKYOSf3F8jlCn5oqA=="],
+    "@crustjs/crust-linux-x64": ["@crustjs/crust-linux-x64@0.2.1", "", { "os": "linux", "cpu": "x64", "bin": { "crust": "bin/crust-bun-linux-x64" } }, "sha512-1fv7ZgTwA4i9OQbcSNphlCLMEC/t8Xw1ihKXpY+DhNpR0zpioKwHuQ2tw4dl+ryWAsbGuRatljxf/YVzusyO5A=="],
 
-    "@crustjs/crust-windows-x64": ["@crustjs/crust-windows-x64@0.2.0", "", { "os": "win32", "cpu": "x64", "bin": { "crust": "bin/crust-bun-windows-x64-baseline.exe" } }, "sha512-zjyU7RJXKOe6I7ZR+OY4h463b03NDh4e7CG3E2lOApoSRZ4sYeJ60u1lIErfy88X3vmVOingFwDjaIzawWJ6XA=="],
+    "@crustjs/crust-linux-x64-musl": ["@crustjs/crust-linux-x64-musl@0.2.1", "", { "os": "linux", "cpu": "x64", "bin": { "crust": "bin/crust-bun-linux-x64-musl" } }, "sha512-NFYWZOB0pMp07ncEKcLGpkhXrAZr8ev4WM31FYHh8TgqOlK2nuHQvuM8M1VxOi6GAVrKQtOQF/ofMPYNjNxd5w=="],
 
-    "@crustjs/extensions": ["@crustjs/extensions@0.2.0", "", { "dependencies": { "@crustjs/store": "^0.3.0", "@crustjs/style": "^0.3.0" }, "peerDependencies": { "@crustjs/core": "^0.2.0", "typescript": "^7.0.0" }, "optionalPeers": ["typescript"] }, "sha512-AmqI3iNlwlogRGGGyYRIWl8V30orVxbd9eZlaKrYByONIC3BGhyRwEu6ehW6PEiknfp8Dv2c7YTtAy0Km8hvkw=="],
+    "@crustjs/crust-windows-arm64": ["@crustjs/crust-windows-arm64@0.2.1", "", { "os": "win32", "cpu": "arm64", "bin": { "crust": "bin/crust-bun-windows-arm64.exe" } }, "sha512-nQX8faysRTmtnhmFZurTAA+ScaywgAD+grGWoAfJgMrk6mvcWGbfiae/ZIecTNlZ1VetUOIu/8Aw5JxE9BBonQ=="],
 
-    "@crustjs/progress": ["@crustjs/progress@0.1.0", "", { "dependencies": { "@crustjs/style": "^0.3.0" }, "peerDependencies": { "typescript": "^7.0.0" }, "optionalPeers": ["typescript"] }, "sha512-QkLUTqetgcnHEg1i5WL+434clerKH08o04myym+42anTCDM9hgzdzvppVoBRMwGeI4aG+9qeTg8FK0H3QkB5iw=="],
+    "@crustjs/crust-windows-x64": ["@crustjs/crust-windows-x64@0.2.1", "", { "os": "win32", "cpu": "x64", "bin": { "crust": "bin/crust-bun-windows-x64.exe" } }, "sha512-/+c8B06OslSPQ78zYbZKf5YYRdzgAdn+CIePFv1ziwuKMySNWTs9/vdAop8ns8TEo2/2AHiJlau5faN+W988jg=="],
 
-    "@crustjs/prompts": ["@crustjs/prompts@0.2.0", "", { "dependencies": { "@crustjs/style": "^0.3.0" }, "peerDependencies": { "typescript": "^7.0.0" }, "optionalPeers": ["typescript"] }, "sha512-KTh9cyXXY3JdEKUmiDvtOmG/FwwuVtx7lYHW/9ofwZ4/cgZY4zOcNCXEPCjqdPrkPqsWM80uHiO0b7Ox17SJWw=="],
+    "@crustjs/extensions": ["@crustjs/extensions@0.2.1", "", { "dependencies": { "@crustjs/store": "^0.3.1", "@crustjs/style": "^0.3.1" }, "peerDependencies": { "@crustjs/core": "^0.2.1", "typescript": "^7.0.0" }, "optionalPeers": ["typescript"] }, "sha512-1btNzbf8hu2gIZzjriE+0NLRO0w3o0478yJOeJBXM6+qWzsEot+z4ffBhmPDCF+W/lFxNRxuSNyFPDGwwLwWtw=="],
 
-    "@crustjs/skills": ["@crustjs/skills@0.2.0", "", { "dependencies": { "@crustjs/progress": "^0.1.0", "@crustjs/prompts": "^0.2.0", "@crustjs/style": "^0.3.0" }, "peerDependencies": { "@crustjs/core": "^0.2.0", "typescript": "^7.0.0" }, "optionalPeers": ["typescript"] }, "sha512-+S8ZuFjlVFMXzv3yDkIrujoEWYk0KwH1js/WGB8T874HQwCUtJbJdQIw1uO3bXfiJMD7u5xImw1MVYwazXXMLQ=="],
+    "@crustjs/progress": ["@crustjs/progress@0.1.1", "", { "dependencies": { "@crustjs/style": "^0.3.1" }, "peerDependencies": { "typescript": "^7.0.0" }, "optionalPeers": ["typescript"] }, "sha512-gnt9Jr10c+jio+fJ1JYi2xcfZHI5Vd1lbByv38IZNDyTm9eikbfUADWJDlVloxCRDWNXrhAQqIhFdd1rkcParw=="],
 
-    "@crustjs/store": ["@crustjs/store@0.3.0", "", { "peerDependencies": { "typescript": "^7.0.0" }, "optionalPeers": ["typescript"] }, "sha512-rmJLGuXmu5fFcSdtGQS6wxQ5OvRyBVQkZlhPOXeTOFYPGo9H62tdNRlo4I1rzE9SeUnQrIp0yUKtGyWZkfARHA=="],
+    "@crustjs/prompts": ["@crustjs/prompts@0.2.1", "", { "dependencies": { "@crustjs/style": "^0.3.1" }, "peerDependencies": { "typescript": "^7.0.0" }, "optionalPeers": ["typescript"] }, "sha512-fsflo+wLEmgkXzchil5v0mNhmDKU/vQpFOZOemkoQhPo9D5nbbICPINKF7Rp1U3eBVadpY4S+ufXDYg5YcI+bg=="],
 
-    "@crustjs/style": ["@crustjs/style@0.3.0", "", { "peerDependencies": { "typescript": "^7.0.0" }, "optionalPeers": ["typescript"] }, "sha512-Vfml4Dfu63dyYxjxEp8rdiRi+espmYxfp1CvLe73iv2+LPY00qJv1SU+9YRsV99fGA35T+miHt4g8jeKJMDh2A=="],
+    "@crustjs/skills": ["@crustjs/skills@0.2.1", "", { "dependencies": { "@crustjs/progress": "^0.1.1", "@crustjs/prompts": "^0.2.1", "@crustjs/style": "^0.3.1" }, "peerDependencies": { "@crustjs/core": "^0.2.1", "typescript": "^7.0.0" }, "optionalPeers": ["typescript"] }, "sha512-7+ZWDv6Ndjm4At6epTx9Aw/5DV3hT2ENWIRmgM2Npu+QmabezIIc6FTWZ29v13tkSyf+Czz0UAs1mKz7ESKdiw=="],
 
-    "@crustjs/tui": ["@crustjs/tui@0.0.1", "", { "peerDependencies": { "@opentui/core": "^0.5.11", "typescript": "^7.0.0" }, "optionalPeers": ["typescript"] }, "sha512-iapAB2mha2+hf69xG6td02OQ5UkPYi7CeLWo5TaA49KRId9gNCV+z5nSnRLYdQxWXf7Ff8FszO5dext7ZQ8w4Q=="],
+    "@crustjs/store": ["@crustjs/store@0.3.1", "", { "peerDependencies": { "typescript": "^7.0.0" }, "optionalPeers": ["typescript"] }, "sha512-KEyvAg2m/mptnuSUhXzTc43LYXe6kpJ5sFD67lU8RNwwl1CLsVRnjfULXkOKxHwh+0YI+kU0uke7yIsPU4dMbg=="],
+
+    "@crustjs/style": ["@crustjs/style@0.3.1", "", { "peerDependencies": { "typescript": "^7.0.0" }, "optionalPeers": ["typescript"] }, "sha512-n4DqR8bwZsEtB8gfrTYe0a3/vcfK4r+bRvqCzu5rTpqMwzYVjstVkRNV7/thPEIZIJmScoBmFKm6/MZAQ1flhg=="],
+
+    "@crustjs/tui": ["@crustjs/tui@0.0.2", "", { "peerDependencies": { "@opentui/core": "^0.5.11", "typescript": "^7.0.0" }, "optionalPeers": ["typescript"] }, "sha512-1AI97dtJsP5PCFjNbUqFJSzfHFrX2TgGSUGhtpFVewy/Bh5+76shi+ENlRjlx7yoDXomZr4ES+feCJStJNEYuQ=="],
 
     "@gyst/cli": ["@gyst/cli@workspace:apps/gyst"],
 

@@ -27,13 +27,13 @@
     "test": "bun test && bun src/tui/smoke.tsx && bun src/tui/app-races.smoke.tsx"
   },
   "devDependencies": {
-    "@crustjs/crust": "0.2.0"
+    "@crustjs/crust": "0.2.1"
   },
   "dependencies": {
-    "@crustjs/core": "0.2.0",
-    "@crustjs/extensions": "0.2.0",
-    "@crustjs/skills": "0.2.0",
-    "@crustjs/tui": "0.0.1",
+    "@crustjs/core": "0.2.1",
+    "@crustjs/extensions": "0.2.1",
+    "@crustjs/skills": "0.2.1",
+    "@crustjs/tui": "0.0.2",
     "@gyst/core": "workspace:*",
     "@opentui/solid": "0.5.11",
     "effect": "^3.22.1",
