@@ -4,19 +4,9 @@ Keyboard-centric agent/human co-review TUI.
 
 ## Local gate
 
-Use Bun 1.4.2. Crust is unpublished; point `CRUST_CHECKOUT` at a checkout of
-`38e7298954c60ec0a45dcfa830b515b2bc32ece0` before setting up gyst:
+Use Bun 1.4.2:
 
 ```sh
-export CRUST_CHECKOUT=/path/to/crust
-(
-  cd "$CRUST_CHECKOUT"
-  bun install --frozen-lockfile
-  bunx turbo run build --filter=@crustjs/core --filter=@crustjs/extensions --filter=@crustjs/skills...
-  bun run --cwd packages/crust build:cli
-)
-
-bun run setup:crust
 bun install --frozen-lockfile
 bun run check
 ```
