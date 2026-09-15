@@ -5,7 +5,7 @@ on:
     tags: ["v*"]
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   package-smoke:
@@ -21,7 +21,9 @@ jobs:
             alias: darwin-arm64
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
       - uses: ./.github/actions/setup-crust
       - run: bun install --frozen-lockfile --os='*' --cpu='*'
       - name: Stage host npm packages
@@ -37,10 +39,14 @@ jobs:
     concurrency:
       group: gyst-npm-release
       cancel-in-progress: false
+    permissions:
+      contents: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
       - uses: ./.github/actions/setup-crust
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
           registry-url: https://registry.npmjs.org
@@ -91,6 +97,7 @@ jobs:
           args=(--verify-tag --generate-notes)
           if [[ "${{ steps.version.outputs.prerelease }}" == "true" ]]; then args+=(--prerelease); fi
           gh release create "$GITHUB_REF_NAME" "${args[@]}" \
+            LICENSE \
             apps/gyst/dist/release/gyst \
             apps/gyst/dist/release/gyst.cmd \
             apps/gyst/dist/release/gyst-bun-* \

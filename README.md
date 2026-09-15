@@ -99,7 +99,8 @@ The tag workflow rejects `0.0.0` and mismatched tags, runs both host package
 smokes, publishes platform packages before the root via `crust publish`, uses
 version-aware `next`/`latest` npm tags so older runs cannot move a channel
 backward, and creates a GitHub prerelease containing
-all raw binaries, the POSIX/Windows resolvers, and the authored skill archive.
+all raw binaries, the POSIX/Windows resolvers, the authored skill archive, and
+the MIT license.
 Stable versions publish without an override (npm's `latest`). There is no curl
 installer or self-update; update through npm or replace the release binary.
 
