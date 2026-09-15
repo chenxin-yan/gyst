@@ -70,7 +70,9 @@ clean `main` checkout:
 
 ```sh
 # 1. Set apps/gyst/package.json version to the intended prerelease, for example
-#    0.1.0-alpha.0, and run the local gate above plus `bun run check`.
+#    0.1.0-alpha.0, refresh the lockfile, and run the frozen-install gate above.
+bun install --lockfile-only
+bun run check
 git add apps/gyst/package.json bun.lock
 git commit -m "chore: release 0.1.0-alpha.0"
 git push origin main
@@ -103,6 +105,12 @@ all raw binaries, the POSIX/Windows resolvers, the authored skill archive, and
 the MIT license.
 Stable versions publish without an override (npm's `latest`). There is no curl
 installer or self-update; update through npm or replace the release binary.
+
+A partially completed publish is not safely rerunnable: `crust publish` stops
+on the first package whose version already exists on npm, and `gh release
+create` fails if the release exists. Inspect `npm view @gyst/cli-<platform>
+versions` for every platform package and the GitHub release before retrying
+a failed run; do not push a second tag for the same version.
 
 ## License
 
