@@ -15,7 +15,9 @@ mkdirSync(linkRoot, { recursive: true });
 for (const name of ["core", "extensions"]) {
   const packageDir = resolve(checkout, "packages", name);
   if (!existsSync(join(packageDir, "dist", "index.js"))) {
-    console.error(`Built crust package not found at ${packageDir}; install and build the crust workspace first`);
+    console.error(
+      `Built crust package not found at ${packageDir}; install and build the crust workspace first`,
+    );
     process.exit(1);
   }
 

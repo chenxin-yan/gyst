@@ -33,11 +33,7 @@ try {
     throw new Error("compiled root help missing crust output");
   }
 
-  const sessionHelp = run(
-    [isolatedBinary, "session", "--help"],
-    "compiled session help",
-    isolated,
-  );
+  const sessionHelp = run([isolatedBinary, "session", "--help"], "compiled session help", isolated);
   if (!sessionHelp.includes("Usage:") || !sessionHelp.includes("gyst session")) {
     throw new Error("compiled session help missing crust output");
   }

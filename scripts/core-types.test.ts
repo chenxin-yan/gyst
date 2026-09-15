@@ -7,19 +7,29 @@ test("core types allow ECMAScript but reject ambient I/O", async () => {
   const fixture = await mkdtemp(join(tmpdir(), "gyst-core-types-"));
   const root = join(import.meta.dir, "..");
   try {
-    await writeFile(join(fixture, "tsconfig.json"), JSON.stringify({
-      extends: join(root, "packages/core/tsconfig.json"),
-      include: ["probe.ts"],
-    }));
-    await writeFile(join(fixture, "probe.ts"), [
-      'export const values = new Map<string, Promise<number>>();',
-      'fetch("https://example.com");',
-      'new XMLHttpRequest();',
-      'new WebSocket("wss://example.com");',
-    ].join("\n"));
+    await writeFile(
+      join(fixture, "tsconfig.json"),
+      JSON.stringify({
+        extends: join(root, "packages/core/tsconfig.json"),
+        include: ["probe.ts"],
+      }),
+    );
+    await writeFile(
+      join(fixture, "probe.ts"),
+      [
+        "export const values = new Map<string, Promise<number>>();",
+        'fetch("https://example.com");',
+        "new XMLHttpRequest();",
+        'new WebSocket("wss://example.com");',
+      ].join("\n"),
+    );
     const result = Bun.spawnSync([
-      process.execPath, join(root, "node_modules/typescript/bin/tsc"),
-      "--project", join(fixture, "tsconfig.json"), "--pretty", "false",
+      process.execPath,
+      join(root, "node_modules/typescript/bin/tsc"),
+      "--project",
+      join(fixture, "tsconfig.json"),
+      "--pretty",
+      "false",
     ]);
     expect(result.exitCode).toBe(1);
     const output = result.stdout.toString();

@@ -4,7 +4,9 @@ import { findForbiddenImports } from "./check-core-boundaries";
 
 describe("core import boundary", () => {
   test("parses imports without matching comments", () => {
-    expect(findForbiddenImports('// from "node:fs"\nconst note = `import("node:http")`;')).toEqual([]);
+    expect(findForbiddenImports('// from "node:fs"\nconst note = `import("node:http")`;')).toEqual(
+      [],
+    );
     expect(findForbiddenImports('import /* comment */ { readFile } from "node:fs";')).toEqual([
       "node:fs",
     ]);
@@ -13,7 +15,9 @@ describe("core import boundary", () => {
   test("parses TypeScript assertions and TSX according to the filename", () => {
     expect(findForbiddenImports('const value = <number>1; import "node:fs";')).toEqual(["node:fs"]);
     const file = join(import.meta.dir, "../packages/core/src/view.tsx");
-    expect(findForbiddenImports('const view = <div />; import "node:fs";', file)).toEqual(["node:fs"]);
+    expect(findForbiddenImports('const view = <div />; import "node:fs";', file)).toEqual([
+      "node:fs",
+    ]);
   });
 
   test("blocks dynamic and effectful Node imports", () => {
@@ -22,16 +26,18 @@ describe("core import boundary", () => {
   });
 
   test("rejects computed imports without mistaking comments or strings for code", () => {
-    for (const source of ['import(name)', 'import(`node:${name}`)', 'import("node:" + name)']) {
+    for (const source of ["import(name)", "import(`node:${name}`)", 'import("node:" + name)']) {
       expect(findForbiddenImports(source)).toEqual(["<computed import>"]);
     }
     expect(findForbiddenImports('const note = "import(name)"; // import(name)')).toEqual([]);
-    expect(findForbiddenImports('import(`node:fs`)')).toEqual(["node:fs"]);
+    expect(findForbiddenImports("import(`node:fs`)")).toEqual(["node:fs"]);
   });
 
   test("resolves relative imports and re-exports from the importing file", () => {
     const file = join(import.meta.dir, "../packages/core/src/nested/module.ts");
-    expect(findForbiddenImports('import "../index.ts"; export * from "./local.ts"', file)).toEqual([]);
+    expect(findForbiddenImports('import "../index.ts"; export * from "./local.ts"', file)).toEqual(
+      [],
+    );
     for (const source of [
       'import "../../../../apps/gyst/src/tui/compile-smoke.tsx"',
       'export * from "../../outside.ts"',
@@ -42,13 +48,19 @@ describe("core import boundary", () => {
   });
 
   test("preserves type-only imports and checks runtime re-exports", () => {
-    expect(findForbiddenImports('import type { X } from "node:fs"; export type { Y } from "node:http"; import { type Z } from "node:os";')).toEqual([]);
-    expect(findForbiddenImports('export { readFile } from "node:fs"; export * from "node:http";').sort()).toEqual(["node:fs", "node:http"]);
+    expect(
+      findForbiddenImports(
+        'import type { X } from "node:fs"; export type { Y } from "node:http"; import { type Z } from "node:os";',
+      ),
+    ).toEqual([]);
+    expect(
+      findForbiddenImports('export { readFile } from "node:fs"; export * from "node:http";').sort(),
+    ).toEqual(["node:fs", "node:http"]);
   });
 
   test("allows pure domain dependencies", () => {
-    expect(findForbiddenImports('import { join } from "node:path"; import { Effect } from "effect";')).toEqual(
-      [],
-    );
+    expect(
+      findForbiddenImports('import { join } from "node:path"; import { Effect } from "effect";'),
+    ).toEqual([]);
   });
 });

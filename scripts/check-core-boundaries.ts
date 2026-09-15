@@ -33,26 +33,35 @@ export function findForbiddenImports(source: string, file = join(root, "index.ts
   });
   traverseFast(ast, (node) => {
     if (
-      node.type !== "ImportDeclaration" && node.type !== "ExportNamedDeclaration" &&
-      node.type !== "ExportAllDeclaration" && node.type !== "ImportExpression"
-    ) return;
+      node.type !== "ImportDeclaration" &&
+      node.type !== "ExportNamedDeclaration" &&
+      node.type !== "ExportAllDeclaration" &&
+      node.type !== "ImportExpression"
+    )
+      return;
     if (
       ("importKind" in node && node.importKind === "type") ||
       ("exportKind" in node && node.exportKind === "type")
-    ) return;
+    )
+      return;
     if (
-      "specifiers" in node && node.specifiers.length > 0 && node.specifiers.every((specifier) =>
-        (specifier.type === "ImportSpecifier" && specifier.importKind === "type") ||
-        (specifier.type === "ExportSpecifier" && specifier.exportKind === "type")
+      "specifiers" in node &&
+      node.specifiers.length > 0 &&
+      node.specifiers.every(
+        (specifier) =>
+          (specifier.type === "ImportSpecifier" && specifier.importKind === "type") ||
+          (specifier.type === "ExportSpecifier" && specifier.exportKind === "type"),
       )
-    ) return;
+    )
+      return;
 
     const source = node.source;
-    const module = source?.type === "StringLiteral"
-      ? source.value
-      : source?.type === "TemplateLiteral" && source.expressions.length === 0
-        ? source.quasis[0]?.value.cooked
-        : undefined;
+    const module =
+      source?.type === "StringLiteral"
+        ? source.value
+        : source?.type === "TemplateLiteral" && source.expressions.length === 0
+          ? source.quasis[0]?.value.cooked
+          : undefined;
     if (module != null) {
       if (isForbidden(module, file)) forbidden.push(module);
     } else if (node.type === "ImportExpression") {
@@ -74,7 +83,9 @@ if (import.meta.main) {
   }
 
   if (violations.length > 0) {
-    console.error(`packages/core must stay I/O-free; forbidden imports in: ${violations.join(", ")}`);
+    console.error(
+      `packages/core must stay I/O-free; forbidden imports in: ${violations.join(", ")}`,
+    );
     process.exit(1);
   }
   console.log("core boundary OK");
