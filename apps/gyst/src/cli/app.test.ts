@@ -33,10 +33,18 @@ describe("crust command help", () => {
 
 describe("tui entry", () => {
   it("refuses to run the TUI without a TTY", async () => {
-    const child = Bun.spawn(["bun", "src/index.tsx"], { cwd: join(import.meta.dir, "../.."), stdin: "pipe", stdout: "pipe", stderr: "pipe" });
+    const child = Bun.spawn(["bun", "src/index.tsx"], {
+      cwd: join(import.meta.dir, "../.."),
+      stdin: "pipe",
+      stdout: "pipe",
+      stderr: "pipe",
+    });
     const [exitCode, stderr] = await Promise.all([child.exited, new Response(child.stderr).text()]);
     expect(exitCode).toBe(1);
-    expect(JSON.parse(stderr)).toEqual({ code: "bad_args", message: "TUI requires an interactive terminal (TTY)." });
+    expect(JSON.parse(stderr)).toEqual({
+      code: "bad_args",
+      message: "TUI requires an interactive terminal (TTY).",
+    });
   });
 
   it("exits 130 silently when the TUI is cancelled", async () => {
@@ -45,8 +53,12 @@ describe("tui entry", () => {
       throw Object.assign(new Error("TUI cancelled"), { name: "AbortError" });
     });
     try {
-      expect(await cancelled.execute({ argv: [], io: { stderr: (line) => stderr.push(line) } })).toBe(130);
-    } finally { process.exitCode = 0; } // crust sets the runner's exitCode; Bun ignores assigning undefined
+      expect(
+        await cancelled.execute({ argv: [], io: { stderr: (line) => stderr.push(line) } }),
+      ).toBe(130);
+    } finally {
+      process.exitCode = 0;
+    } // crust sets the runner's exitCode; Bun ignores assigning undefined
     expect(stderr).toEqual([]);
   });
 });
