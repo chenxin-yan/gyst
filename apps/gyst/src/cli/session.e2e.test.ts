@@ -84,7 +84,7 @@ describe("gyst session CLI seam", () => {
       gyst(cwd, ["session", "create"]),
       gyst(cwd, ["session", "create"]),
     ]);
-    expect(results.map(({ exitCode }) => exitCode).sort()).toEqual([0, 1]);
+    expect(results.map(({ exitCode }) => exitCode).sort((a, b) => a - b)).toEqual([0, 1]);
     expect(JSON.parse(results.find(({ exitCode }) => exitCode === 1)!.stderr).code).toBe(
       "session_exists",
     );

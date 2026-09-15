@@ -3,6 +3,7 @@ import {
   DiffPayloadSchema,
   ErrorPayloadSchema,
   ReplySchema,
+  RequestSchema,
   StatusPayloadSchema,
   type ErrorPayload,
   type Reply,
@@ -75,16 +76,18 @@ async function requestDaemon(request: Request): Promise<Reply> {
   } satisfies ErrorPayload;
 }
 
+const isSessionCommand = Schema.is(RequestSchema.fields.command);
+
 export async function runSessionCli(argv: string[], readStdin = false): Promise<void> {
   const [command, ...args] = argv;
-  if (!command || !["create", "status", "diff", "close"].includes(command)) {
+  if (command === undefined || !isSessionCommand(command)) {
     throw {
       code: "bad_args",
       message: `unknown session command: ${command ?? ""}`,
     } satisfies ErrorPayload;
   }
   const request: Request = {
-    command: command as Request["command"],
+    command,
     cwd: process.cwd(),
     args,
     ...(readStdin ? { stdin: await Bun.stdin.text() } : {}),

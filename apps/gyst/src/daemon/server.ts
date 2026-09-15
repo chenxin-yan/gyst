@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { homedir } from "node:os";
 import { parseArgs } from "node:util";
 import {
+  type ClosePayload,
   type DiffPayload,
   type ErrorPayload,
   ErrorPayloadSchema,
@@ -11,6 +12,7 @@ import {
   RequestSchema,
   type Session,
   SessionSchema,
+  type StatusPayload,
   parseSnapshot,
   statusOf,
 } from "@gyst/core";
@@ -34,7 +36,11 @@ function lockPath(): string {
 const sessions = new Map<string, Session>();
 const creatingRepoRoots = new Set<string>();
 
-function failure(code: ErrorPayload["code"], message: string, detail?: unknown): never {
+function failure(
+  code: ErrorPayload["code"],
+  message: string,
+  detail?: ErrorPayload["detail"],
+): never {
   throw { code, message, ...(detail === undefined ? {} : { detail }) } satisfies ErrorPayload;
 }
 
@@ -115,7 +121,7 @@ async function persist(session: Session): Promise<void> {
   await rename(temporary, destination);
 }
 
-async function handle(request: Request): Promise<Record<string, unknown>> {
+async function handle(request: Request): Promise<StatusPayload | ClosePayload | DiffPayload> {
   if (request.command === "create") {
     const root = await repoRoot(request.cwd);
     const { values, positionals } = parseArgs({
@@ -180,7 +186,7 @@ async function handle(request: Request): Promise<Record<string, unknown>> {
   if (request.command === "close") {
     await rm(join(dataDir(), `${session.id}.json`), { force: true });
     sessions.delete(session.id);
-    return { closed: true, sessionId: session.id };
+    return { closed: true, sessionId: session.id } satisfies ClosePayload;
   }
   const selectors = [values.hunk, values.group, values.file].filter(Boolean);
   if (selectors.length > 1) failure("bad_args", "choose only one diff selector");
@@ -212,12 +218,16 @@ async function loadSessions(): Promise<void> {
   }
 }
 
+function isErrnoException(error: unknown): error is NodeJS.ErrnoException {
+  return error instanceof Error && "code" in error && typeof error.code === "string";
+}
+
 function processIsAlive(pid: number): boolean {
   try {
     process.kill(pid, 0);
     return true;
   } catch (error) {
-    return (error as NodeJS.ErrnoException).code === "EPERM";
+    return isErrnoException(error) && error.code === "EPERM";
   }
 }
 
@@ -227,7 +237,7 @@ async function acquireDaemonLock(): Promise<boolean> {
       await writeFile(lockPath(), `${process.pid}\n`, { flag: "wx", mode: 0o600 });
       return true;
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+      if (!isErrnoException(error) || error.code !== "EEXIST") throw error;
       const owner = Number(await readFile(lockPath(), "utf8").catch(() => ""));
       if (Number.isInteger(owner) && owner > 0 && processIsAlive(owner)) return false;
       await rm(lockPath(), { force: true });
@@ -235,7 +245,7 @@ async function acquireDaemonLock(): Promise<boolean> {
   }
 }
 
-function errorPayload(error: unknown): ErrorPayload {
+function parseErrorPayload(error: unknown): ErrorPayload {
   try {
     return Schema.decodeUnknownSync(ErrorPayloadSchema)(error);
   } catch {
@@ -278,7 +288,7 @@ export async function runDaemon(): Promise<void> {
               }
               reply = { ok: true, value: await handle(request) };
             } catch (error) {
-              reply = { ok: false, error: errorPayload(error) };
+              reply = { ok: false, error: parseErrorPayload(error) };
             } finally {
               activeRequests--;
             }
