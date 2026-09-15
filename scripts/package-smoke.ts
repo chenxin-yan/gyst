@@ -1,4 +1,14 @@
-import { chmod, mkdtemp, mkdir, readFile, readdir, readlink, rm, symlink, writeFile } from "node:fs/promises";
+import {
+  chmod,
+  mkdtemp,
+  mkdir,
+  readFile,
+  readdir,
+  readlink,
+  rm,
+  symlink,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 
@@ -16,7 +26,9 @@ type Manifest = {
 function run(command: string[], cwd: string, env = process.env): string {
   const result = Bun.spawnSync(command, { cwd, env, stdout: "pipe", stderr: "pipe" });
   if (result.exitCode !== 0) {
-    throw new Error(`${command.join(" ")} failed (${result.exitCode})\n${result.stdout}\n${result.stderr}`);
+    throw new Error(
+      `${command.join(" ")} failed (${result.exitCode})\n${result.stdout}\n${result.stderr}`,
+    );
   }
   return result.stdout.toString();
 }
@@ -33,10 +45,13 @@ try {
   if (manifest.root.name !== "@gyst/cli" || manifest.root.bin !== "gyst") {
     throw new Error("staged root package is not @gyst/cli with bin gyst");
   }
-  if (manifest.packages.length !== 1) throw new Error("host smoke expects exactly one platform package");
+  if (manifest.packages.length !== 1)
+    throw new Error("host smoke expects exactly one platform package");
   const platform = manifest.packages[0]!;
   if (platform.os !== process.platform || platform.cpu !== process.arch) {
-    throw new Error(`staged ${platform.os}-${platform.cpu}, running on ${process.platform}-${process.arch}`);
+    throw new Error(
+      `staged ${platform.os}-${platform.cpu}, running on ${process.platform}-${process.arch}`,
+    );
   }
   if (manifest.publishOrder.join(",") !== `${platform.dir},${manifest.root.dir}`) {
     throw new Error("platform package must publish before the root package");
@@ -60,13 +75,19 @@ try {
   const platformTarball = await pack(platformDir);
   const rootFiles = run(["tar", "-tf", rootTarball], temporary);
   const platformFiles = run(["tar", "-tf", platformTarball], temporary);
-  if (!rootFiles.includes("package/bin/gyst.js") || !rootFiles.includes("package/skills/gyst/SKILL.md")) {
+  if (
+    !rootFiles.includes("package/bin/gyst.js") ||
+    !rootFiles.includes("package/skills/gyst/SKILL.md")
+  ) {
     throw new Error("packed root is missing its resolver or authored skill");
   }
   if (rootFiles.includes("package/release/")) {
     throw new Error("packed root contains raw release binaries");
   }
-  if (!platformFiles.includes(`package/${platform.bin}`) || !platformFiles.includes("package/bin/skills/gyst/SKILL.md")) {
+  if (
+    !platformFiles.includes(`package/${platform.bin}`) ||
+    !platformFiles.includes("package/bin/skills/gyst/SKILL.md")
+  ) {
     throw new Error("packed platform package is missing its compiled binary or authored skill");
   }
   if (platformFiles.includes("package/bin/release/")) {
@@ -76,7 +97,19 @@ try {
   const installDir = join(temporary, "install");
   const home = join(temporary, "home");
   await mkdir(installDir, { recursive: true });
-  run(["npm", "install", "--global", "--prefix", installDir, "--ignore-scripts", rootTarball, platformTarball], installDir);
+  run(
+    [
+      "npm",
+      "install",
+      "--global",
+      "--prefix",
+      installDir,
+      "--ignore-scripts",
+      rootTarball,
+      platformTarball,
+    ],
+    installDir,
+  );
 
   const installed = (await readdir(join(installDir, "lib/node_modules/@gyst"))).sort();
   const expected = [manifest.root.name.split("/")[1]!, platform.name.split("/")[1]!].sort();
@@ -92,7 +125,10 @@ try {
   await mkdir(runtimeBin);
   await symlink(node, join(runtimeBin, "node"));
   const systemPath = [runtimeBin, "/usr/local/bin", "/usr/bin", "/bin"].join(":");
-  if (Bun.spawnSync(["sh", "-c", "command -v bun"], { env: { ...process.env, PATH: systemPath } }).exitCode === 0) {
+  if (
+    Bun.spawnSync(["sh", "-c", "command -v bun"], { env: { ...process.env, PATH: systemPath } })
+      .exitCode === 0
+  ) {
     throw new Error("package smoke PATH unexpectedly contains Bun");
   }
   const help = run([executable, "--help"], installDir, {
@@ -126,7 +162,9 @@ try {
     }
   }
 
-  console.log(`package smoke OK — packed, installed, ran ${platform.name} without Bun, and installed its authored skills`);
+  console.log(
+    `package smoke OK — packed, installed, ran ${platform.name} without Bun, and installed its authored skills`,
+  );
 } finally {
   await rm(temporary, { recursive: true, force: true });
 }
