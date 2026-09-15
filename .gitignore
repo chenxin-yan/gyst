@@ -2,3 +2,14 @@ node_modules/
 dist/
 .turbo/
 *.tsbuildinfo
+.env
+.env.*
+!.env.example
+.DS_Store
+coverage/
+*.lcov
+logs/
+*.log
+*.tgz
+.pi-subagents/
+.agent-sources/
