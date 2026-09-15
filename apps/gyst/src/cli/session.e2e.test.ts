@@ -523,7 +523,7 @@ new mode 100755
       ),
     ]);
 
-    expect(results.map(({ exitCode }) => exitCode).sort()).toEqual([0, 1]);
+    expect(results.map(({ exitCode }) => exitCode).sort((a, b) => a - b)).toEqual([0, 1]);
     const rejected = results.find(({ exitCode }) => exitCode === 1)!;
     expect(JSON.parse(rejected.stderr).code).toBe("stale_revision");
     expect(JSON.parse((await gyst(cwd, ["session", "status"])).stdout).revision).toBe(1);

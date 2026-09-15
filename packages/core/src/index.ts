@@ -103,31 +103,38 @@ export const SessionSchema = Schema.Struct({
 });
 export type Session = typeof SessionSchema.Type;
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
+/** On-disk session shape, including fields older daemons did not persist. */
+export const PersistedSessionSchema = Schema.Struct({
+  ...SessionSchema.fields,
+  hunks: Schema.Array(
+    Schema.Struct({
+      ...HunkSchema.fields,
+      contentHash: Schema.optional(Schema.String),
+      accepted: Schema.optional(Schema.Boolean),
+    }),
+  ),
+  groups: Schema.Array(
+    Schema.Struct({ ...GroupSchema.fields, accepted: Schema.optional(Schema.Boolean) }),
+  ),
+  queue: Schema.optional(Schema.Array(Schema.String)),
+  queueSet: Schema.optional(Schema.Boolean),
+  applyReceipts: Schema.optional(Schema.Array(ApplyReceiptSchema)),
+});
+export type PersistedSession = typeof PersistedSessionSchema.Type;
 
-export function migratePersistedSession(value: unknown): unknown {
-  if (!isRecord(value)) return value;
-  const migrated = { ...value };
-  if (Array.isArray(value.hunks))
-    migrated.hunks = value.hunks.map((candidate) => {
-      if (!isRecord(candidate)) return candidate;
-      const patch = typeof candidate.patch === "string" ? candidate.patch : "";
-      return {
-        ...candidate,
-        contentHash: candidate.contentHash ?? hash(patch.slice(patch.indexOf("\n") + 1)),
-        accepted: candidate.accepted ?? false,
-      };
-    });
-  if (Array.isArray(value.groups))
-    migrated.groups = value.groups.map((candidate) =>
-      isRecord(candidate) ? { ...candidate, accepted: candidate.accepted ?? false } : candidate,
-    );
-  migrated.queue ??= [];
-  migrated.queueSet ??= false;
-  migrated.applyReceipts ??= [];
-  return migrated;
+export function migratePersistedSession(persisted: PersistedSession): Session {
+  return {
+    ...persisted,
+    hunks: persisted.hunks.map((hunk) => ({
+      ...hunk,
+      contentHash: hunk.contentHash ?? hash(hunk.patch.slice(hunk.patch.indexOf("\n") + 1)),
+      accepted: hunk.accepted ?? false,
+    })),
+    groups: persisted.groups.map((group) => ({ ...group, accepted: group.accepted ?? false })),
+    queue: persisted.queue ?? [],
+    queueSet: persisted.queueSet ?? false,
+    applyReceipts: persisted.applyReceipts ?? [],
+  };
 }
 
 export const GroupCreateSchema = Schema.Struct({
@@ -263,6 +270,11 @@ type MutableSession = Mutable<Omit<Session, "hunks" | "groups" | "queue" | "appl
   applyReceipts: Array<{ key: string; status: StatusPayload }>;
 };
 
+function draftOf(session: Session): MutableSession {
+  // SAFETY: structuredClone returns a detached copy, so dropping readonly cannot alias the caller's session.
+  return structuredClone(session) as MutableSession;
+}
+
 function groupedIds(session: Session): Set<string> {
   return new Set(session.groups.flatMap((group) => [...group.hunkIds]));
 }
@@ -344,7 +356,7 @@ export function applyBatch(session: Session, envelope: ApplyEnvelope): ApplyResu
       ],
     };
 
-  const draft = structuredClone(session) as MutableSession;
+  const draft = draftOf(session);
   const errors: ValidationDetail[] = [];
   const fail = (opIndex: number, message: string) => errors.push({ opIndex, message });
   const hunkExists = (id: string) => draft.hunks.some((hunk) => hunk.id === id);
@@ -493,7 +505,7 @@ export function applyBatch(session: Session, envelope: ApplyEnvelope): ApplyResu
 }
 
 export function refreshSession(session: Session, freshHunks: readonly Hunk[]): Session {
-  const draft = structuredClone(session) as MutableSession;
+  const draft = draftOf(session);
   const oldByMatch = new Map<string, Hunk[]>();
   const freshMatchCounts = new Map<string, number>();
   for (const hunk of session.hunks) {

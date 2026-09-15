@@ -10,9 +10,9 @@ import {
   ErrorPayloadSchema,
   type Reply,
   type Request,
+  PersistedSessionSchema,
   RequestSchema,
   type Session,
-  SessionSchema,
   type StatusPayload,
   applyBatch,
   migratePersistedSession,
@@ -272,8 +272,10 @@ async function loadSessions(): Promise<void> {
   for (const file of await readdir(dataDir())) {
     if (!file.endsWith(".json")) continue;
     try {
-      const session = Schema.decodeUnknownSync(SessionSchema)(
-        migratePersistedSession(JSON.parse(await readFile(join(dataDir(), file), "utf8"))),
+      const session = migratePersistedSession(
+        Schema.decodeUnknownSync(PersistedSessionSchema)(
+          JSON.parse(await readFile(join(dataDir(), file), "utf8")),
+        ),
       );
       sessions.set(session.id, session);
     } catch {
