@@ -13,3 +13,4 @@ logs/
 *.tgz
 .pi-subagents/
 .agent-sources/
+/crust/
