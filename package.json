@@ -4,12 +4,18 @@
   "type": "module",
   "workspaces": [
     "apps/*",
-    "packages/*"
+    "packages/*",
+    "tools"
   ],
   "scripts": {
     "build": "turbo run build",
     "build:compile": "bun run --cwd apps/gyst build",
-    "check": "bun run check:boundaries && bun run check:types && bun run test && bun run smoke:compile",
+    "lint": "oxlint",
+    "lint:fix": "oxlint --fix",
+    "format": "oxfmt --check",
+    "format:fix": "oxfmt",
+    "check": "bun run lint && bun run format && bun run check:boundaries && bun run check:types && bun run test && bun run smoke:compile",
+    "check:fix": "bun run lint:fix && bun run format:fix",
     "check:boundaries": "bun scripts/check-core-boundaries.ts",
     "check:types": "turbo run check:types",
     "test": "bun test scripts && turbo run test",
@@ -20,6 +26,9 @@
     "@babel/parser": "7.29.8",
     "@babel/types": "7.29.8",
     "@types/bun": "^1.4.0",
+    "oxfmt": "^0.66.0",
+    "oxlint": "^1.81.0",
+    "oxlint-tsgolint": "^7.0.2001",
     "turbo": "^2.10.11",
     "typescript": "^7.0.2"
   },
