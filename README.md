@@ -16,9 +16,21 @@ bun install --frozen-lockfile
 bun run check
 ```
 
-`bun run check` enforces the
+`bun run check` lints with oxlint, checks formatting with oxfmt, enforces the
 pure-core import boundary, typechecks and tests all workspaces, then compiles
 and runs the actual `dist/gyst` executable. The final smoke runs bare `gyst`,
 `gyst --help`, and `gyst session --help`; it fails unless the compiled binary
 loads OpenTUI's native library, renders a Solid frame, exits cleanly, and prints
-help generated from the crust command tree.
+help generated from the crust command tree. `bun run check:fix` applies lint
+and format fixes.
+
+## Local build
+
+```sh
+bun run --cwd apps/gyst build
+./dist/gyst --help
+```
+
+## License
+
+[MIT](LICENSE)
