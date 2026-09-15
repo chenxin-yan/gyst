@@ -204,7 +204,7 @@ async function handle(request: Request): Promise<StatusPayload | ClosePayload | 
     failure("bad_args", error instanceof Error ? error.message : "invalid arguments");
   }
   const root = values.session ? "" : await repoRoot(request.cwd);
-  const session = selectedSession(values.session as string | undefined, root);
+  const session = selectedSession(values.session, root);
   if (request.command === "status") return statusOf(session);
   if (request.command === "close") {
     await rm(join(dataDir(), `${session.id}.json`), { force: true });

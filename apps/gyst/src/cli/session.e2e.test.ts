@@ -503,16 +503,24 @@ new mode 100755
     const hunkId = created.inbox[0].id;
 
     const results = await Promise.all([
-      gyst(cwd, ["session", "apply"], JSON.stringify({
-        revision: 0,
-        idempotencyKey: "concurrent-a",
-        ops: [{ type: "hunk.annotate", hunkId, tldr: "first" }],
-      })),
-      gyst(cwd, ["session", "apply"], JSON.stringify({
-        revision: 0,
-        idempotencyKey: "concurrent-b",
-        ops: [{ type: "hunk.annotate", hunkId, tldr: "second" }],
-      })),
+      gyst(
+        cwd,
+        ["session", "apply"],
+        JSON.stringify({
+          revision: 0,
+          idempotencyKey: "concurrent-a",
+          ops: [{ type: "hunk.annotate", hunkId, tldr: "first" }],
+        }),
+      ),
+      gyst(
+        cwd,
+        ["session", "apply"],
+        JSON.stringify({
+          revision: 0,
+          idempotencyKey: "concurrent-b",
+          ops: [{ type: "hunk.annotate", hunkId, tldr: "second" }],
+        }),
+      ),
     ]);
 
     expect(results.map(({ exitCode }) => exitCode).sort()).toEqual([0, 1]);

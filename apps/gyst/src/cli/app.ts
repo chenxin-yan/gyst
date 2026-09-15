@@ -51,13 +51,30 @@ const diff = defineCommand("diff", { description: "Read snapshot hunks" }, (comm
       ]),
     ),
 );
-const apply = defineCommand("apply", { description: "Apply one agent mutation batch from stdin" }, (command) =>
-  command.flags(sessionFlag).action(({ flags }) => runSessionCli(["apply", ...option("session", flags.session)], true)),
+const apply = defineCommand(
+  "apply",
+  { description: "Apply one agent mutation batch from stdin" },
+  (command) =>
+    command
+      .flags(sessionFlag)
+      .action(({ flags }) => runSessionCli(["apply", ...option("session", flags.session)], true)),
 );
-const refresh = defineCommand("refresh", { description: "Refresh the session snapshot" }, (command) =>
-  command
-    .flags(sessionFlag, { name: "stdin", type: "boolean", description: "Read the replacement unified diff from stdin" })
-    .action(({ flags }) => runSessionCli(["refresh", ...option("session", flags.session), ...(flags.stdin ? ["--stdin"] : [])], flags.stdin)),
+const refresh = defineCommand(
+  "refresh",
+  { description: "Refresh the session snapshot" },
+  (command) =>
+    command
+      .flags(sessionFlag, {
+        name: "stdin",
+        type: "boolean",
+        description: "Read the replacement unified diff from stdin",
+      })
+      .action(({ flags }) =>
+        runSessionCli(
+          ["refresh", ...option("session", flags.session), ...(flags.stdin ? ["--stdin"] : [])],
+          flags.stdin,
+        ),
+      ),
 );
 const close = defineCommand("close", { description: "Close a session" }, (command) =>
   command
