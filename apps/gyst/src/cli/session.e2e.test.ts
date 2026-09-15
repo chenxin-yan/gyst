@@ -46,9 +46,14 @@ async function gyst(cwd: string, args: string[], stdin?: string): Promise<Result
 beforeAll(async () => {
   root = await mkdtemp(join(tmpdir(), "gyst-e2e-"));
   data = join(root, "data");
-  const built = Bun.spawnSync(["bun", "build", "--compile", "--minify", "--outfile", binary, "src/index.tsx"], {
-    cwd: join(import.meta.dir, "../.."), stdout: "pipe", stderr: "pipe",
-  });
+  const built = Bun.spawnSync(
+    ["bun", "build", "--compile", "--minify", "--outfile", binary, "src/index.tsx"],
+    {
+      cwd: join(import.meta.dir, "../.."),
+      stdout: "pipe",
+      stderr: "pipe",
+    },
+  );
   if (built.exitCode !== 0) throw new Error(built.stderr.toString());
 });
 
@@ -66,7 +71,9 @@ describe("gyst session CLI seam", () => {
     const cwd = await repo("stray-positional");
     const result = await gyst(cwd, ["sesion"]);
     expect(result.exitCode).toBe(1);
-    expect(Schema.decodeUnknownSync(ErrorPayloadSchema)(JSON.parse(result.stderr)).code).toBe("bad_args");
+    expect(Schema.decodeUnknownSync(ErrorPayloadSchema)(JSON.parse(result.stderr)).code).toBe(
+      "bad_args",
+    );
   });
 
   it("serializes concurrent startup and create for one repository", async () => {
@@ -78,9 +85,13 @@ describe("gyst session CLI seam", () => {
       gyst(cwd, ["session", "create"]),
     ]);
     expect(results.map(({ exitCode }) => exitCode).sort()).toEqual([0, 1]);
-    expect(JSON.parse(results.find(({ exitCode }) => exitCode === 1)!.stderr).code).toBe("session_exists");
+    expect(JSON.parse(results.find(({ exitCode }) => exitCode === 1)!.stderr).code).toBe(
+      "session_exists",
+    );
     const status = JSON.parse((await gyst(cwd, ["session", "status"])).stdout);
-    expect((await readdir(data)).filter((file) => file.endsWith(".json"))).toEqual([`${status.session.id}.json`]);
+    expect((await readdir(data)).filter((file) => file.endsWith(".json"))).toEqual([
+      `${status.session.id}.json`,
+    ]);
     await gyst(cwd, ["session", "close"]);
   }, 20_000);
 
@@ -115,13 +126,19 @@ describe("gyst session CLI seam", () => {
     const hunkPayload = JSON.parse(oneHunk.stdout);
     expect(hunkPayload.hunks).toHaveLength(1);
     expect(hunkPayload.hunks[0].patch).toContain("@@");
-    const filePayload = JSON.parse((await gyst(cwd, ["session", "diff", "--file", status.inbox[0]!.file])).stdout);
-    expect(filePayload.hunks.every((hunk: { file: string }) => hunk.file === status.inbox[0]!.file)).toBe(true);
+    const filePayload = JSON.parse(
+      (await gyst(cwd, ["session", "diff", "--file", status.inbox[0]!.file])).stdout,
+    );
+    expect(
+      filePayload.hunks.every((hunk: { file: string }) => hunk.file === status.inbox[0]!.file),
+    ).toBe(true);
     expect(JSON.parse((await gyst(cwd, ["session", "diff"])).stdout).hunks).toHaveLength(2);
 
     const duplicate = await gyst(cwd, ["session", "create"]);
     expect(duplicate.exitCode).toBe(1);
-    expect(Schema.decodeUnknownSync(ErrorPayloadSchema)(JSON.parse(duplicate.stderr)).code).toBe("session_exists");
+    expect(Schema.decodeUnknownSync(ErrorPayloadSchema)(JSON.parse(duplicate.stderr)).code).toBe(
+      "session_exists",
+    );
 
     const pid = Number(await readFile(join(data, "daemon.pid"), "utf8"));
     process.kill(pid, "SIGKILL");
@@ -129,7 +146,9 @@ describe("gyst session CLI seam", () => {
     // #17 will author groups and tldrs through apply; seed persisted state here to exercise this ticket's reads.
     const statePath = join(data, `${status.session.id}.json`);
     const state = JSON.parse(await readFile(statePath, "utf8"));
-    state.groups = [{ id: "group-1", tldr: "same edit", exemplarHunkId: hunkId, hunkIds: [hunkId] }];
+    state.groups = [
+      { id: "group-1", tldr: "same edit", exemplarHunkId: hunkId, hunkIds: [hunkId] },
+    ];
     const spotlightHunk = state.hunks.find((hunk: { id: string }) => hunk.id !== hunkId);
     spotlightHunk.tldr = "needs human review";
     await writeFile(statePath, JSON.stringify(state));
@@ -139,14 +158,18 @@ describe("gyst session CLI seam", () => {
     const restoredStatus = JSON.parse(restored.stdout);
     expect(restoredStatus.session.id).toBe(status.session.id);
     expect(restoredStatus.groups[0].count).toBe(1);
-    expect(restoredStatus.spotlight).toEqual([{
-      id: spotlightHunk.id,
-      file: spotlightHunk.file,
-      tldr: "needs human review",
-      accepted: false,
-    }]);
+    expect(restoredStatus.spotlight).toEqual([
+      {
+        id: spotlightHunk.id,
+        file: spotlightHunk.file,
+        tldr: "needs human review",
+        accepted: false,
+      },
+    ]);
     expect(restoredStatus.inbox).toEqual([]);
-    expect(JSON.parse((await gyst(cwd, ["session", "diff", "--group", "group-1"])).stdout).hunks).toHaveLength(1);
+    expect(
+      JSON.parse((await gyst(cwd, ["session", "diff", "--group", "group-1"])).stdout).hunks,
+    ).toHaveLength(1);
 
     const outsider = join(root, "outside");
     await Bun.$`mkdir -p ${outsider}`.quiet();
@@ -183,7 +206,11 @@ index 1234567..89abcde 100644
     const first = JSON.parse((await gyst(cwd, ["session", "create", "--stdin"], patch)).stdout);
     const firstDiff = JSON.parse((await gyst(cwd, ["session", "diff"])).stdout);
     expect(first.inbox).toHaveLength(3);
-    expect(firstDiff.hunks.map((hunk: { file: string }) => hunk.file)).toEqual(["a.txt", "a.txt", "b.txt"]);
+    expect(firstDiff.hunks.map((hunk: { file: string }) => hunk.file)).toEqual([
+      "a.txt",
+      "a.txt",
+      "b.txt",
+    ]);
     expect(firstDiff.hunks.map((hunk: { patch: string }) => hunk.patch)).toEqual([
       expect.stringContaining("-alpha"),
       expect.stringContaining("-echo"),
@@ -229,13 +256,17 @@ new mode 100755
     expect(rejected.exitCode).toBe(1);
     expect(JSON.parse(rejected.stderr).code).toBe("bad_args");
 
-    const valid = await gyst(cwd, ["session", "create", "--stdin"], `diff --git a/tracked.txt b/tracked.txt
+    const valid = await gyst(
+      cwd,
+      ["session", "create", "--stdin"],
+      `diff --git a/tracked.txt b/tracked.txt
 --- a/tracked.txt
 +++ b/tracked.txt
 @@ -1 +1 @@
 -one
 +two
-`);
+`,
+    );
     expect(valid.exitCode).toBe(0);
     await gyst(cwd, ["session", "close"]);
   }, 20_000);
@@ -283,9 +314,13 @@ new mode 100755
 -one
 +café
 `;
-    const request = new TextEncoder().encode(`${JSON.stringify({ command: "create", cwd, args: ["--stdin"], stdin: patch })}\n`);
+    const request = new TextEncoder().encode(
+      `${JSON.stringify({ command: "create", cwd, args: ["--stdin"], stdin: patch })}\n`,
+    );
     const marker = new TextEncoder().encode("é");
-    const markerStart = request.findIndex((byte, index) => byte === marker[0] && request[index + 1] === marker[1]);
+    const markerStart = request.findIndex(
+      (byte, index) => byte === marker[0] && request[index + 1] === marker[1],
+    );
     expect(markerStart).toBeGreaterThan(0);
     const reply = await new Promise<string>((resolve, reject) => {
       let response = "";
@@ -301,7 +336,9 @@ new mode 100755
             response += decoder.decode(bytes, { stream: true });
             if (response.includes("\n")) resolve(response);
           },
-          error(_socket, error) { reject(error); },
+          error(_socket, error) {
+            reject(error);
+          },
         },
       }).catch(reject);
     });
@@ -317,7 +354,10 @@ new mode 100755
     git(argsRepo, "commit", "-am", "second", "-q");
     const argsCreated = await gyst(argsRepo, ["session", "create", "--", "-p", "HEAD~1", "HEAD"]);
     expect(argsCreated.exitCode).toBe(0);
-    expect(JSON.parse(argsCreated.stdout).session.source).toEqual({ kind: "git", args: ["-p", "HEAD~1", "HEAD"] });
+    expect(JSON.parse(argsCreated.stdout).session.source).toEqual({
+      kind: "git",
+      args: ["-p", "HEAD~1", "HEAD"],
+    });
 
     const other = await repo("other");
     const noFallback = await gyst(other, ["session", "status"]);
@@ -336,7 +376,12 @@ new mode 100755
 
     await gyst(argsRepo, ["session", "close"]);
     await gyst(stdinRepo, ["session", "close"]);
-    for (let attempt = 0; attempt < 20 && await Bun.file(join(data, "daemon.pid")).exists(); attempt++) await Bun.sleep(20);
+    for (
+      let attempt = 0;
+      attempt < 20 && (await Bun.file(join(data, "daemon.pid")).exists());
+      attempt++
+    )
+      await Bun.sleep(20);
     expect(await Bun.file(join(data, "daemon.pid")).exists()).toBe(false);
   }, 20_000);
 });

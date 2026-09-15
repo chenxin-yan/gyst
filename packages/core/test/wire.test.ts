@@ -14,9 +14,11 @@ describe("daemon wire envelopes", () => {
 
   it("accepts both reply variants", () => {
     expect(decodeReply({ ok: true, value: {} })).toEqual({ ok: true, value: {} });
-    expect(decodeReply({ ok: false, error: { code: "bad_args", message: "bad request" } })).toEqual({
-      ok: false,
-      error: { code: "bad_args", message: "bad request" },
-    });
+    expect(decodeReply({ ok: false, error: { code: "bad_args", message: "bad request" } })).toEqual(
+      {
+        ok: false,
+        error: { code: "bad_args", message: "bad request" },
+      },
+    );
   });
 });
