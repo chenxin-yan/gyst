@@ -535,7 +535,8 @@ export function applyHumanAction(session: Session, action: HumanAction): Session
     draft.cursor = { itemId: action.itemId, expanded: false };
     draft.seq++;
   } else if (action.type === "expand.toggle") {
-    if (!session.cursor.itemId || !session.groups.some(({ id }) => id === session.cursor.itemId)) return;
+    if (!session.cursor.itemId || !session.groups.some(({ id }) => id === session.cursor.itemId))
+      return;
     draft.cursor = { ...draft.cursor, expanded: !draft.cursor.expanded };
     draft.seq++;
   } else {

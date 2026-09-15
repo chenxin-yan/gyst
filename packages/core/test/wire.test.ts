@@ -13,7 +13,14 @@ describe("daemon wire envelopes", () => {
   });
 
   it("accepts typed human actions", () => {
-    expect(decodeRequest({ command: "tui.action", cwd: "/repo", args: [], action: { type: "expand.toggle" } })).toEqual({
+    expect(
+      decodeRequest({
+        command: "tui.action",
+        cwd: "/repo",
+        args: [],
+        action: { type: "expand.toggle" },
+      }),
+    ).toEqual({
       command: "tui.action",
       cwd: "/repo",
       args: [],

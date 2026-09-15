@@ -6,24 +6,60 @@ import type { TuiClient } from "./client.ts";
 
 function status(revision = 0, seq = revision, sessionId = "session"): StatusPayload {
   return {
-    session: { id: sessionId, repoRoot: "/repo", source: { kind: "git", args: ["HEAD"] }, createdAt: "now", updatedAt: "now" },
-    revision, seq, cursor: { itemId: "group", expanded: false },
-    groups: [{ id: "group", tldr: `review ${revision}`, exemplarHunkId: `hunk-${revision}`, hunkIds: [`hunk-${revision}`], count: 1, accepted: false }],
-    spotlight: [], inbox: [], queue: ["group"], queueSet: true, ready: true,
+    session: {
+      id: sessionId,
+      repoRoot: "/repo",
+      source: { kind: "git", args: ["HEAD"] },
+      createdAt: "now",
+      updatedAt: "now",
+    },
+    revision,
+    seq,
+    cursor: { itemId: "group", expanded: false },
+    groups: [
+      {
+        id: "group",
+        tldr: `review ${revision}`,
+        exemplarHunkId: `hunk-${revision}`,
+        hunkIds: [`hunk-${revision}`],
+        count: 1,
+        accepted: false,
+      },
+    ],
+    spotlight: [],
+    inbox: [],
+    queue: ["group"],
+    queueSet: true,
+    ready: true,
     files: [{ path: "a.ts", hunkCount: 1 }],
   };
 }
 function diff(revision = 0, sessionId = "session"): DiffPayload {
-  return { sessionId, revision, hunks: [{
-    id: `hunk-${revision}`, file: "a.ts", header: "@@ -1 +1 @@", contentHash: `${revision}`, accepted: false,
-    patch: `@@ -1 +1 @@\n-before\n+TEXT_${revision}`,
-  }] };
+  return {
+    sessionId,
+    revision,
+    hunks: [
+      {
+        id: `hunk-${revision}`,
+        file: "a.ts",
+        header: "@@ -1 +1 @@",
+        contentHash: `${revision}`,
+        accepted: false,
+        patch: `@@ -1 +1 @@\n-before\n+TEXT_${revision}`,
+      },
+    ],
+  };
 }
 
 const failures: string[] = [];
 async function check(name: string, run: () => Promise<void>) {
-  try { await run(); console.log(`PASS ${name}`); }
-  catch (error) { failures.push(name); console.error(`FAIL ${name}: ${error}`); }
+  try {
+    await run();
+    console.log(`PASS ${name}`);
+  } catch (error) {
+    failures.push(name);
+    console.error(`FAIL ${name}: ${error}`);
+  }
 }
 
 await check("poll/action overlap retains a matching diff and newer cursor", async () => {
@@ -33,9 +69,15 @@ await check("poll/action overlap retains a matching diff and newer cursor", asyn
   const started = Promise.withResolvers<void>();
   const release = Promise.withResolvers<void>();
   const client: TuiClient = {
-    status: async () => { if (++reads === 2) state = status(1); return structuredClone(state); },
+    status: async () => {
+      if (++reads === 2) state = status(1);
+      return structuredClone(state);
+    },
     diff: async () => {
-      if (++diffs === 2) { started.resolve(); await release.promise; }
+      if (++diffs === 2) {
+        started.resolve();
+        await release.promise;
+      }
       return diff(state.revision);
     },
     action: async () => {
@@ -44,7 +86,10 @@ await check("poll/action overlap retains a matching diff and newer cursor", asyn
     },
     refresh: async () => structuredClone(state),
   };
-  const tui = await testRender(() => <App client={client} pollInterval={20} />, { width: 100, height: 30 });
+  const tui = await testRender(() => <App client={client} pollInterval={20} />, {
+    width: 100,
+    height: 30,
+  });
   try {
     await tui.waitForFrame((frame) => frame.includes("TEXT_0"));
     await started.promise;
@@ -52,7 +97,10 @@ await check("poll/action overlap retains a matching diff and newer cursor", asyn
     await tui.renderOnce();
     release.resolve();
     await tui.waitForFrame((frame) => frame.includes("TEXT_1") && frame.includes("all 1 members"));
-  } finally { release.resolve(); tui.renderer.destroy(); }
+  } finally {
+    release.resolve();
+    tui.renderer.destroy();
+  }
 });
 
 await check("refresh requested during a poll is retained without repeated polling", async () => {
@@ -61,11 +109,24 @@ await check("refresh requested during a poll is retained without repeated pollin
   const started = Promise.withResolvers<void>();
   const release = Promise.withResolvers<void>();
   const client: TuiClient = {
-    status: async () => { if (++reads === 2) { started.resolve(); await release.promise; } return status(); },
-    diff: async () => diff(), action: async () => status(),
-    refresh: async () => { refreshes++; return status(); },
+    status: async () => {
+      if (++reads === 2) {
+        started.resolve();
+        await release.promise;
+      }
+      return status();
+    },
+    diff: async () => diff(),
+    action: async () => status(),
+    refresh: async () => {
+      refreshes++;
+      return status();
+    },
   };
-  const tui = await testRender(() => <App client={client} pollInterval={20} />, { width: 100, height: 30 });
+  const tui = await testRender(() => <App client={client} pollInterval={20} />, {
+    width: 100,
+    height: 30,
+  });
   try {
     await tui.waitForFrame((frame) => frame.includes("TEXT_0"));
     await started.promise;
@@ -75,65 +136,95 @@ await check("refresh requested during a poll is retained without repeated pollin
     release.resolve();
     await tui.waitForFrame(() => refreshes === 1);
     assert.equal(refreshes, 1);
-  } finally { release.resolve(); tui.renderer.destroy(); }
+  } finally {
+    release.resolve();
+    tui.renderer.destroy();
+  }
 });
 
 for (const replaceSession of [false, true]) {
-  await check(`refresh diff/status race stays coherent${replaceSession ? " across session replacement" : ""}`, async () => {
-    let state = status();
-    let diffReads = 0;
-    const started = Promise.withResolvers<void>();
-    const release = Promise.withResolvers<void>();
-    const client: TuiClient = {
-      status: async () => structuredClone(state),
-      diff: async () => {
-        if (++diffReads === 2) {
-          // Another harness refresh wins between independently requested snapshots.
-          state = status(2);
-          const captured = diff(2);
-          started.resolve();
-          await release.promise;
-          state = status(3, 3, replaceSession ? "replacement" : "session");
-          return captured;
-        }
-        return diff(state.revision, state.session.id);
-      },
-      refresh: async () => { state = status(1); return structuredClone(state); },
-      action: async () => structuredClone(state),
-    };
-    const tui = await testRender(() => <App client={client} pollInterval={20} />, { width: 100, height: 30 });
-    try {
-      await tui.waitForFrame((frame) => frame.includes("TEXT_0"));
-      await tui.mockInput.pressKey("r");
-      await started.promise;
-      release.resolve();
-      await tui.waitForFrame((frame) => {
-        assert(!frame.includes("no review items"), "never combine status with another diff revision/session");
-        return frame.includes("TEXT_3");
+  await check(
+    `refresh diff/status race stays coherent${replaceSession ? " across session replacement" : ""}`,
+    async () => {
+      let state = status();
+      let diffReads = 0;
+      const started = Promise.withResolvers<void>();
+      const release = Promise.withResolvers<void>();
+      const client: TuiClient = {
+        status: async () => structuredClone(state),
+        diff: async () => {
+          if (++diffReads === 2) {
+            // Another harness refresh wins between independently requested snapshots.
+            state = status(2);
+            const captured = diff(2);
+            started.resolve();
+            await release.promise;
+            state = status(3, 3, replaceSession ? "replacement" : "session");
+            return captured;
+          }
+          return diff(state.revision, state.session.id);
+        },
+        refresh: async () => {
+          state = status(1);
+          return structuredClone(state);
+        },
+        action: async () => structuredClone(state),
+      };
+      const tui = await testRender(() => <App client={client} pollInterval={20} />, {
+        width: 100,
+        height: 30,
       });
-      assert(diffReads >= 3, "retry uses actual cached diff identity, not status alone");
-    } finally { release.resolve(); tui.renderer.destroy(); }
-  });
+      try {
+        await tui.waitForFrame((frame) => frame.includes("TEXT_0"));
+        await tui.mockInput.pressKey("r");
+        await started.promise;
+        release.resolve();
+        await tui.waitForFrame((frame) => {
+          assert(
+            !frame.includes("no review items"),
+            "never combine status with another diff revision/session",
+          );
+          return frame.includes("TEXT_3");
+        });
+        assert(diffReads >= 3, "retry uses actual cached diff identity, not status alone");
+      } finally {
+        release.resolve();
+        tui.renderer.destroy();
+      }
+    },
+  );
 }
 
 await check("older same-session action and poll statuses cannot roll back the view", async () => {
   let stale = false;
   const current = { ...status(1, 5), cursor: { itemId: "group", expanded: true } };
   const client: TuiClient = {
-    status: async () => stale ? status(1, 3) : current,
-    diff: async () => diff(1), refresh: async () => current,
-    action: async () => { stale = true; return status(1, 4); },
+    status: async () => (stale ? status(1, 3) : current),
+    diff: async () => diff(1),
+    refresh: async () => current,
+    action: async () => {
+      stale = true;
+      return status(1, 4);
+    },
   };
-  const tui = await testRender(() => <App client={client} pollInterval={20} />, { width: 100, height: 30 });
+  const tui = await testRender(() => <App client={client} pollInterval={20} />, {
+    width: 100,
+    height: 30,
+  });
   try {
     await tui.waitForFrame((frame) => frame.includes("all 1 members"));
     await tui.mockInput.pressKey("e");
     await Bun.sleep(60);
     await tui.renderOnce();
     assert(tui.captureCharFrame().includes("all 1 members"));
-  } finally { tui.renderer.destroy(); }
+  } finally {
+    tui.renderer.destroy();
+  }
 });
 
-if (failures.length) { console.error("TUI snapshot race regressions:", failures); process.exit(1); }
+if (failures.length) {
+  console.error("TUI snapshot race regressions:", failures);
+  process.exit(1);
+}
 console.log("TUI snapshot races OK");
 process.exit(0);
