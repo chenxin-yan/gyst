@@ -55,12 +55,12 @@ export function findForbiddenImports(source: string, file = join(root, "index.ts
     )
       return;
 
-    const source = node.source;
+    const moduleSource = node.source;
     const module =
-      source?.type === "StringLiteral"
-        ? source.value
-        : source?.type === "TemplateLiteral" && source.expressions.length === 0
-          ? source.quasis[0]?.value.cooked
+      moduleSource?.type === "StringLiteral"
+        ? moduleSource.value
+        : moduleSource?.type === "TemplateLiteral" && moduleSource.expressions.length === 0
+          ? moduleSource.quasis[0]?.value.cooked
           : undefined;
     if (module != null) {
       if (isForbidden(module, file)) forbidden.push(module);
