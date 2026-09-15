@@ -5,7 +5,7 @@ import { dirname, join, resolve } from "node:path";
 
 let root: string;
 let home: string;
-let env: Record<string, string | undefined>;
+let env: NodeJS.ProcessEnv;
 const appDir = join(import.meta.dir, "../..");
 const skills = resolve(appDir, "../../skills");
 
