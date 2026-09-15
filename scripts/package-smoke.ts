@@ -41,6 +41,7 @@ async function pack(directory: string): Promise<string> {
 }
 
 try {
+  // SAFETY: crust build --package wrote this manifest in the same run; the checks below fail on any field mismatch.
   const manifest = JSON.parse(await readFile(join(stageDir, "manifest.json"), "utf8")) as Manifest;
   if (manifest.root.name !== "@gyst/cli" || manifest.root.bin !== "gyst") {
     throw new Error("staged root package is not @gyst/cli with bin gyst");
