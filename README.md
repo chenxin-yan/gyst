@@ -60,8 +60,24 @@ from `PATH`, and runs `gyst --help` through the packed resolver.
 
 ### First prerelease
 
-One-time repository setup: create an npm automation token allowed to publish
-`@gyst/*` and save it as the GitHub Actions secret `NPM_TOKEN`. Then, from a
+One-time npm setup: publishing uses npm trusted publishing (OIDC), not a
+stored token. On npmjs.com, add a GitHub Actions trusted publisher with
+repository `chenxin-yan/gyst` and workflow `release.yml` to each of the seven
+packages: `@gyst/cli`, `@gyst/cli-linux-x64`, `@gyst/cli-linux-arm64`,
+`@gyst/cli-darwin-x64`, `@gyst/cli-darwin-arm64`, `@gyst/cli-windows-x64`,
+and `@gyst/cli-windows-arm64`. npm only lets you configure a trusted publisher
+on a package that already exists, so bootstrap each package once by hand from
+a shell where `npm whoami` succeeds, using a throwaway prerelease version that
+no tag will ever reuse:
+
+```sh
+# apps/gyst/package.json version: 0.0.1-bootstrap.0 (do not commit)
+cd apps/gyst
+bun run package
+bun run publish -- --tag bootstrap
+```
+
+Configure the seven trusted publishers, revert the version edit, then, from a
 clean `main` checkout:
 
 ```sh

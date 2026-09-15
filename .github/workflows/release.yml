@@ -42,7 +42,8 @@ jobs:
       group: gyst-npm-release
       cancel-in-progress: false
     permissions:
-      contents: write
+      contents: write # GitHub release
+      id-token: write # npm trusted publishing (OIDC)
     steps:
       - uses: actions/checkout@v7
         with:
@@ -50,10 +51,13 @@ jobs:
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: 1.4.2
+      # npm >= 11.5.1 for trusted publishing; Node 24 bundles it. No token, no
+      # .npmrc: every published package needs a trusted publisher on npmjs.com for
+      # chenxin-yan/gyst + release.yml, and a new package is published by hand once.
       - uses: actions/setup-node@v7
         with:
-          node-version: 22
-          registry-url: https://registry.npmjs.org
+          node-version: 24
+          package-manager-cache: false
       - run: bun install --frozen-lockfile --os='*' --cpu='*'
       - name: Require the tag and package version to match
         id: version
@@ -75,8 +79,6 @@ jobs:
         run: bun run publish -- --dry-run
       - name: Choose a version-aware npm dist-tag
         id: dist-tag
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
           version="${{ steps.version.outputs.version }}"
           channel=latest
@@ -89,8 +91,6 @@ jobs:
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
       - name: Publish platform packages, then @gyst/cli
         working-directory: apps/gyst
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: bun run publish -- --tag "${{ steps.dist-tag.outputs.tag }}"
       - name: Archive the authored skill for raw binary installs
         run: tar -C apps/gyst/dist/release -czf apps/gyst/dist/release/gyst-skills.tar.gz skills
