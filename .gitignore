@@ -1,5 +1,7 @@
 node_modules/
 dist/
+/apps/gyst/LICENSE
+/apps/gyst/README.md
 .turbo/
 *.tsbuildinfo
 .env

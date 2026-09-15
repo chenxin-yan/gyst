@@ -6,7 +6,8 @@
   "type": "module",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/chenxin-yan/gyst.git"
+    "url": "git+https://github.com/chenxin-yan/gyst.git",
+    "directory": "apps/gyst"
   },
   "homepage": "https://github.com/chenxin-yan/gyst#readme",
   "bugs": "https://github.com/chenxin-yan/gyst/issues",
@@ -19,7 +20,7 @@
   "scripts": {
     "build": "bun build --compile --minify --outfile dist/gyst src/index.tsx && bun scripts/build-skills.ts",
     "build:release": "bun node_modules/@crustjs/crust/dist/cli.js build --entry src/index.tsx --name gyst --outdir dist/release --resolver gyst",
-    "package": "bun node_modules/@crustjs/crust/dist/cli.js build --package --entry src/index.tsx --name gyst --stage-dir dist/npm",
+    "package": "cp ../../LICENSE LICENSE && cp ../../README.md README.md && bun node_modules/@crustjs/crust/dist/cli.js build --package --entry src/index.tsx --name gyst --stage-dir dist/npm",
     "package:smoke": "bun ../../scripts/package-smoke.ts",
     "publish": "bun node_modules/@crustjs/crust/dist/cli.js publish --stage-dir dist/npm",
     "check:types": "tsc --noEmit",

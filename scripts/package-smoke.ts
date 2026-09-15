@@ -14,6 +14,7 @@ import { dirname, join, resolve } from "node:path";
 
 const appDir = resolve(import.meta.dir, "../apps/gyst");
 const stageDir = join(appDir, "dist/npm");
+const rootLicense = await readFile(resolve(import.meta.dir, "../LICENSE"), "utf8");
 const temporary = await mkdtemp(join(tmpdir(), "gyst-package-smoke-"));
 
 type Manifest = {
@@ -93,6 +94,20 @@ try {
   }
   if (platformFiles.includes("package/bin/release/")) {
     throw new Error("packed platform package contains raw release binaries");
+  }
+  for (const [tarball, files] of [
+    [rootTarball, rootFiles],
+    [platformTarball, platformFiles],
+  ]) {
+    if (!files.includes("package/LICENSE")) {
+      throw new Error(`${tarball} is missing LICENSE`);
+    }
+    if (run(["tar", "-xOf", tarball, "package/LICENSE"], temporary) !== rootLicense) {
+      throw new Error(`${tarball} LICENSE differs from the repository LICENSE`);
+    }
+  }
+  if (!rootFiles.includes("package/README.md")) {
+    throw new Error("packed root is missing README.md");
   }
 
   const installDir = join(temporary, "install");
