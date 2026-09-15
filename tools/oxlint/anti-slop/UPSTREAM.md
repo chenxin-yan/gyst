@@ -44,8 +44,13 @@ Gyst-specific:
 
 ## Intentionally not vendored
 
-- Upstream's 2026-08-31 semantic fixes to the ten original rules (crust measured zero
-  enforcement change; a three-way merge into customized files is not worth it).
+- Upstream's 2026-08-31 semantic fixes to the ten original rules (`63d6966`..`298c993`). Measured
+  on gyst 2026-09-15 at stack tip `258cbf2`: `oxlint --format=json` over the whole repo with the
+  vendored rules, then again with upstream `c44ef22` `src/` rules registered under the same
+  thirteen names. No diagnostic delta on gyst code (0 → 0). Upstream cannot run this config as-is
+  (`no-unknown-parameters` has no `allowInBoundaryFunctions`); with that option held out on both
+  sides the only change is upstream exempting a type-predicate subject the option already covers.
+  A three-way merge into customized files is not worth zero enforcement change.
 - `require-readable-spacing` (+ vendored eslint-stylistic): formatting is `oxfmt`'s job.
 - `no-shape-in-symbol-names`, `no-conditional-empty-object-spread`: `...(cond ? { k } : {})` is
   the accepted idiom here.
