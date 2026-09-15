@@ -344,13 +344,13 @@ function reconcileQueue(session: MutableSession): void {
     ...session.queue.filter((id) => available.delete(id)),
     ...visible.filter((id) => available.has(id)),
   ];
-  const accepted = new Set([
+  const acceptedIds = new Set([
     ...session.groups.filter(({ accepted }) => accepted).map(({ id }) => id),
     ...session.hunks
       .filter(({ accepted, tldr, id }) => accepted && tldr !== undefined && visibleSet.has(id))
       .map(({ id }) => id),
   ]);
-  session.acceptHistory = session.acceptHistory.filter((id) => accepted.has(id));
+  session.acceptHistory = session.acceptHistory.filter((id) => acceptedIds.has(id));
   if (session.cursor.itemId !== null && !visibleSet.has(session.cursor.itemId)) {
     session.cursor = { itemId: null, expanded: false };
   }
@@ -527,7 +527,7 @@ export function applyBatch(session: Session, envelope: ApplyEnvelope): ApplyResu
 }
 
 export function applyHumanAction(session: Session, action: HumanAction): Session | undefined {
-  const draft = structuredClone(session) as MutableSession;
+  const draft = draftOf(session);
   const visibleIds = new Set(visibleItemIds(session));
 
   if (action.type === "cursor.move") {

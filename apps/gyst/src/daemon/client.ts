@@ -16,7 +16,7 @@ function exchange(request: Request): Promise<Reply> {
     let buffer = "";
     let requestSent = false;
     const decoder = new TextDecoder();
-    const fail = (error: unknown) => reject(new ExchangeError(error, requestSent));
+    const fail = (cause: unknown) => reject(new ExchangeError(cause, requestSent));
     void Bun.connect<{ request: Request }>({
       unix: socketPath(),
       data: { request },
@@ -46,11 +46,11 @@ function exchange(request: Request): Promise<Reply> {
   });
 }
 
-function unreachable(message: string, detail?: unknown): ErrorPayload {
+function unreachable(message: string, cause?: unknown): ErrorPayload {
   return {
     code: "daemon_unreachable",
     message,
-    ...(detail === undefined ? {} : { detail: String(detail) }),
+    ...(cause === undefined ? {} : { detail: String(cause) }),
   };
 }
 

@@ -1,5 +1,5 @@
 import type { DiffPayload, Hunk, StatusPayload } from "@gyst/core";
-import { useKeyboard, useTerminalDimensions } from "@opentui/solid";
+import { useKeyboard, useTerminalDimensions, type SpanProps } from "@opentui/solid";
 import { For, Show, batch, createMemo, createSignal, onCleanup, onMount } from "solid-js";
 import type { TuiClient } from "./client.ts";
 import { TuiClientError } from "./client.ts";
@@ -24,8 +24,10 @@ const C = {
   delBadge: "#fa8e89",
 };
 
-// SpanProps omits fg/bg while OpenTUI applies them at runtime (confirmed by the prototype).
-const Sp = (props: Record<string, unknown>) => <span {...(props as object)} />;
+// SpanProps omits fg/bg/attributes while OpenTUI applies them at runtime (confirmed by the prototype).
+const Sp = (props: SpanProps & { fg?: string; bg?: string; attributes?: number }) => (
+  <span {...props} />
+);
 
 type DiffLine = { sign: " " | "+" | "-"; text: string };
 type Member = {
@@ -57,8 +59,10 @@ function memberOf(hunk: Hunk): Member {
   const match = /^@@ -(\d+)(?:,\d+)? \+(\d+)/.exec(header);
   const lines = (firstNewline < 0 ? "" : hunk.patch.slice(firstNewline + 1))
     .split("\n")
-    .filter((line) => /^[ +-]/.test(line))
-    .map((line) => ({ sign: line[0] as DiffLine["sign"], text: line.slice(1) }));
+    .flatMap((line): DiffLine[] => {
+      const sign = line[0];
+      return sign === " " || sign === "+" || sign === "-" ? [{ sign, text: line.slice(1) }] : [];
+    });
   return {
     id: hunk.id,
     file: hunk.file,
@@ -377,13 +381,10 @@ export function App(props: { client: TuiClient; onQuit?: () => void; pollInterva
     ),
   );
   const current = createMemo(() => items()[currentIndex()]);
-  const resolvedLayout = createMemo(() =>
-    layoutMode() === "auto"
-      ? dims().width >= 120
-        ? "split"
-        : "stack"
-      : (layoutMode() as "split" | "stack"),
-  );
+  const resolvedLayout = createMemo(() => {
+    const mode = layoutMode();
+    return mode === "auto" ? (dims().width >= 120 ? "split" : "stack") : mode;
+  });
   const allDone = createMemo(
     () => items().length > 0 && items().every((item) => item.kind !== "inbox" && item.accepted),
   );
