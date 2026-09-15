@@ -1,4 +1,14 @@
-import { chmod, copyFile, cp, mkdir, mkdtemp, readFile, readlink, rm, writeFile } from "node:fs/promises";
+import {
+  chmod,
+  copyFile,
+  cp,
+  mkdir,
+  mkdtemp,
+  readFile,
+  readlink,
+  rm,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 
@@ -57,7 +67,10 @@ try {
     CLAUDE_CONFIG_DIR: join(home, ".claude"),
     PATH: `${bin}:${process.env.PATH ?? ""}`,
   });
-  for (const [name, authoredText] of [["gyst", "Use gyst to prepare one diff"], ["gyst-ask", "Resolve `cursor.itemId`"]]) {
+  for (const [name, authoredText] of [
+    ["gyst", "Use gyst to prepare one diff"],
+    ["gyst-ask", "Resolve `cursor.itemId`"],
+  ]) {
     const link = join(home, ".agents", "skills", name);
     if (resolve(dirname(link), await readlink(link)) !== join(isolated, "skills", name)) {
       throw new Error(`${name} install does not target packaged skills`);

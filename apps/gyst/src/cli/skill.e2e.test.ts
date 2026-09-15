@@ -22,7 +22,8 @@ async function gyst(...args: string[]) {
     new Response(child.stdout).text(),
     new Response(child.stderr).text(),
   ]);
-  if (exitCode !== 0) throw new Error(`gyst ${args.join(" ")} failed (${exitCode}):\n${stdout}\n${stderr}`);
+  if (exitCode !== 0)
+    throw new Error(`gyst ${args.join(" ")} failed (${exitCode}):\n${stdout}\n${stderr}`);
   return { stdout, stderr };
 }
 

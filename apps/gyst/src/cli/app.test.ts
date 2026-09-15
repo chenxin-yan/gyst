@@ -13,7 +13,10 @@ async function execute(argv: string[]): Promise<string> {
 describe("crust command help", () => {
   it("describes the root, session, and skill command tree", async () => {
     const snapshot = await app.snapshot();
-    expect(buildCommandDocumentation(snapshot).children.map(({ name }) => name)).toEqual(["session", "skill"]);
+    expect(buildCommandDocumentation(snapshot).children.map(({ name }) => name)).toEqual([
+      "session",
+      "skill",
+    ]);
     expect(await execute(["--help"])).toContain("Commands:");
     expect(await execute(["--help"])).toContain("Agent skills");
     expect(await execute(["session", "--help"])).toContain("gyst session");
