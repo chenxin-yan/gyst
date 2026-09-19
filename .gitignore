@@ -1,5 +1,6 @@
 node_modules/
 dist/
+.crust/
 /apps/gyst/LICENSE
 /apps/gyst/README.md
 .turbo/

@@ -3,8 +3,7 @@ import { help, version } from "@crustjs/extensions";
 import { skill } from "@crustjs/skills";
 import { ErrorPayloadSchema, type ErrorPayload } from "@gyst/core";
 import { Schema } from "effect";
-import { existsSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import packageJson from "../../package.json" with { type: "json" };
 
@@ -111,12 +110,9 @@ export const jsonErrors = defineExtension(defineExtensionId("gyst-json-errors"),
   },
 });
 
-const packagedSkills = join(dirname(process.execPath), "skills");
 const authoredSkills = fileURLToPath(new URL("../../../../skills", import.meta.url));
-export const authoredSkillDirs = [join(authoredSkills, "gyst"), join(authoredSkills, "gyst-ask")];
 const coReviewSkill = skill({
-  distDir: existsSync(packagedSkills) ? packagedSkills : authoredSkills,
-  extras: authoredSkillDirs,
+  extras: [join(authoredSkills, "gyst"), join(authoredSkills, "gyst-ask")],
   defaultScope: "global",
 });
 

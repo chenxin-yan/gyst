@@ -3,5 +3,11 @@
   "useTabs": false,
   "tabWidth": 2,
   "sortPackageJson": false,
-  "ignorePatterns": ["**/dist/", "**/.turbo/", ".agent-sources/", ".github/workflows/pullfrog.yml"]
+  "ignorePatterns": [
+    "**/dist/",
+    "**/.crust/",
+    "**/.turbo/",
+    ".agent-sources/",
+    ".github/workflows/pullfrog.yml"
+  ]
 }

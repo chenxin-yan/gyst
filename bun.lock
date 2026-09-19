@@ -19,7 +19,7 @@
       "name": "@gyst/cli",
       "version": "0.0.0",
       "bin": {
-        "gyst": "dist/gyst",
+        "gyst": "src/index.tsx",
       },
       "dependencies": {
         "@crustjs/core": "0.3.1",
