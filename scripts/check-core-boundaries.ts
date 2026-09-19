@@ -1,27 +1,19 @@
 import { parse } from "@babel/parser";
 import { traverseFast } from "@babel/types";
-import { builtinModules } from "node:module";
 import { readdir } from "node:fs/promises";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 
 const root = join(import.meta.dir, "..", "packages", "core", "src");
-const nodeBuiltins = new Set(builtinModules.map((name) => name.replace(/^node:/, "")));
-const pureNodeBuiltins = new Set(["path"]);
+// Exact specifiers only: subpaths of allowed packages are not audited as pure.
+const allowedBareImports = new Set(["path", "node:path", "effect"]);
 
 function isForbidden(module: string, file: string): boolean {
   if (module.startsWith(".")) {
     const target = relative(root, resolve(dirname(file), module));
-    if (target === ".." || target.startsWith(`..${sep}`) || isAbsolute(target)) return true;
+    return target === ".." || target.startsWith(`..${sep}`) || isAbsolute(target);
   }
-  const bare = module.replace(/^node:/, "");
-  return (
-    (nodeBuiltins.has(bare) && !pureNodeBuiltins.has(bare)) ||
-    module === "bun" ||
-    module.startsWith("bun:") ||
-    module === "solid-js" ||
-    module.startsWith("solid-js/") ||
-    module.startsWith("@opentui/")
-  );
+  if (isAbsolute(module)) return true;
+  return !allowedBareImports.has(module);
 }
 
 export function findForbiddenImports(source: string, file = join(root, "index.ts")): string[] {

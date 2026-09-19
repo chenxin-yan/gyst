@@ -47,6 +47,37 @@ describe("core import boundary", () => {
     }
   });
 
+  test("rejects absolute imports, re-exports, and dynamic imports", () => {
+    const outside = JSON.stringify(
+      join(import.meta.dir, "..", "apps", "gyst", "src", "tui", "compile-smoke.tsx"),
+    );
+    for (const source of [
+      `import ${outside}`,
+      `export * from ${outside}`,
+      `await import(${outside})`,
+    ]) {
+      expect(findForbiddenImports(source)).toEqual([JSON.parse(outside)]);
+    }
+  });
+
+  test("rejects bare packages and subpaths outside the allowlist", () => {
+    const source = [
+      'import "oxfmt"',
+      'export * from "typescript"',
+      'await import("effect/Schema")',
+      'import "node:path/posix"',
+    ].join(";");
+    expect(findForbiddenImports(source).sort()).toEqual([
+      "effect/Schema",
+      "node:path/posix",
+      "oxfmt",
+      "typescript",
+    ]);
+    expect(
+      findForbiddenImports('import type { X } from "solid-js"; import type { Y } from "oxfmt";'),
+    ).toEqual([]);
+  });
+
   test("preserves type-only imports and checks runtime re-exports", () => {
     expect(
       findForbiddenImports(
