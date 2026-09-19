@@ -1,6 +1,6 @@
-import { existsSync, mkdirSync, rmSync, symlinkSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, readlinkSync, symlinkSync } from "node:fs";
 import { homedir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 
 const checkout = process.env.CRUST_CHECKOUT;
 if (!checkout) {
@@ -22,7 +22,22 @@ for (const name of ["core", "extensions"]) {
   }
 
   const target = join(linkRoot, name);
-  rmSync(target, { recursive: true, force: true });
+  const existing = lstatSync(target, { throwIfNoEntry: false });
+  if (existing?.isSymbolicLink() && resolve(dirname(target), readlinkSync(target)) === packageDir) {
+    console.log(`already linked @crustjs/${name} from ${packageDir}`);
+    continue;
+  }
+  if (existing) {
+    const kind = existing.isSymbolicLink()
+      ? `a link to ${readlinkSync(target)}`
+      : existing.isDirectory()
+        ? "a directory"
+        : "a file";
+    console.error(
+      `${target} already exists and is ${kind}; remove it or set an isolated BUN_INSTALL before linking @crustjs/${name}`,
+    );
+    process.exit(1);
+  }
   symlinkSync(packageDir, target, "dir");
   console.log(`linked @crustjs/${name} from ${packageDir}`);
 }
