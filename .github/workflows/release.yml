@@ -9,16 +9,10 @@ permissions:
 
 jobs:
   package-smoke:
-    name: package smoke (${{ matrix.alias }})
+    name: package smoke (${{ matrix.os }})
     strategy:
       matrix:
-        include:
-          - os: ubuntu-latest
-            target: bun-linux-x64
-            alias: linux-x64
-          - os: macos-14
-            target: bun-darwin-arm64
-            alias: darwin-arm64
+        os: [ubuntu-latest, macos-14]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v7
@@ -28,9 +22,9 @@ jobs:
         with:
           bun-version: 1.4.2
       - run: bun install --frozen-lockfile --os='*' --cpu='*'
-      - name: Stage host npm packages
+      - name: Stage the host npm packages
         working-directory: apps/gyst
-        run: bun run package:host -- --target ${{ matrix.target }}
+        run: bun run build
       - name: Pack, install globally, and run without Bun on PATH
         working-directory: apps/gyst
         run: bun run package:smoke
@@ -68,15 +62,12 @@ jobs:
           echo "version=$version" >> "$GITHUB_OUTPUT"
           if [[ "$version" == *-* ]]; then echo "prerelease=true" >> "$GITHUB_OUTPUT"; else echo "prerelease=false" >> "$GITHUB_OUTPUT"; fi
       - run: bun run check
-      - name: Stage all npm platform packages
-        working-directory: apps/gyst
-        run: bun run package
-      - name: Build raw release binaries and shell resolvers
+      - name: Stage every platform package
         working-directory: apps/gyst
         run: bun run build:release
       - name: Verify publish order without network writes
         working-directory: apps/gyst
-        run: bun run publish -- --dry-run
+        run: bun run release -- --dry-run
       - name: Choose a version-aware npm dist-tag
         id: dist-tag
         run: |
@@ -91,10 +82,10 @@ jobs:
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
       - name: Publish platform packages, then @gyst/cli
         working-directory: apps/gyst
-        run: bun run publish -- --tag "${{ steps.dist-tag.outputs.tag }}"
+        run: bun run release -- --tag "${{ steps.dist-tag.outputs.tag }}"
       - name: Archive the authored skill for raw binary installs
-        run: tar -C apps/gyst/dist/release -czf apps/gyst/dist/release/gyst-skills.tar.gz skills
-      - name: Create GitHub Release with raw binaries and resolvers
+        run: tar -C apps/gyst/.crust/root -czf apps/gyst/.crust/gyst-skills.tar.gz skills
+      - name: Create GitHub Release with raw binaries
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -102,7 +93,5 @@ jobs:
           if [[ "${{ steps.version.outputs.prerelease }}" == "true" ]]; then args+=(--prerelease); fi
           gh release create "$GITHUB_REF_NAME" "${args[@]}" \
             LICENSE \
-            apps/gyst/dist/release/gyst \
-            apps/gyst/dist/release/gyst.cmd \
-            apps/gyst/dist/release/gyst-bun-* \
-            apps/gyst/dist/release/gyst-skills.tar.gz
+            apps/gyst/.crust/*/bin/gyst-bun-* \
+            apps/gyst/.crust/gyst-skills.tar.gz

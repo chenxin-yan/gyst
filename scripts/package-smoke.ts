@@ -13,14 +13,20 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 
 const appDir = resolve(import.meta.dir, "../apps/gyst");
-const stageDir = join(appDir, "dist/npm");
+const stageDir = join(appDir, ".crust");
 const rootLicense = await readFile(resolve(import.meta.dir, "../LICENSE"), "utf8");
 const temporary = await mkdtemp(join(tmpdir(), "gyst-package-smoke-"));
 
 type Manifest = {
   version: string;
-  root: { name: string; dir: string; bin: string };
-  packages: Array<{ name: string; dir: string; os: string; cpu: string; bin: string }>;
+  root: { name: string; dir: string; bins: string[] };
+  packages: Array<{
+    name: string;
+    dir: string;
+    os: string;
+    cpu: string;
+    bins: Record<string, string>;
+  }>;
   publishOrder: string[];
 };
 
@@ -42,14 +48,19 @@ async function pack(directory: string): Promise<string> {
 }
 
 try {
-  // SAFETY: crust build --package wrote this manifest in the same run; the checks below fail on any field mismatch.
+  // SAFETY: crust build wrote this manifest in the same run; the checks below fail on any field mismatch.
   const manifest = JSON.parse(await readFile(join(stageDir, "manifest.json"), "utf8")) as Manifest;
-  if (manifest.root.name !== "@gyst/cli" || manifest.root.bin !== "gyst") {
+  if (manifest.root.name !== "@gyst/cli" || manifest.root.bins.join(",") !== "gyst") {
     throw new Error("staged root package is not @gyst/cli with bin gyst");
   }
   if (manifest.packages.length !== 1)
     throw new Error("host smoke expects exactly one platform package");
   const platform = manifest.packages[0]!;
+  const platformBin = platform.bins.gyst;
+  const binarySuffix = process.platform === "win32" ? ".exe" : "";
+  if (platformBin !== `bin/gyst-bun-${platform.dir}${binarySuffix}`) {
+    throw new Error(`platform binary is ${platformBin}, not the canonical target name`);
+  }
   if (platform.os !== process.platform || platform.cpu !== process.arch) {
     throw new Error(
       `staged ${platform.os}-${platform.cpu}, running on ${process.platform}-${process.arch}`,
@@ -83,17 +94,11 @@ try {
   ) {
     throw new Error("packed root is missing its resolver or authored skill");
   }
-  if (rootFiles.includes("package/release/")) {
-    throw new Error("packed root contains raw release binaries");
-  }
   if (
-    !platformFiles.includes(`package/${platform.bin}`) ||
+    !platformFiles.includes(`package/${platformBin}`) ||
     !platformFiles.includes("package/bin/skills/gyst/SKILL.md")
   ) {
     throw new Error("packed platform package is missing its compiled binary or authored skill");
-  }
-  if (platformFiles.includes("package/bin/release/")) {
-    throw new Error("packed platform package contains raw release binaries");
   }
   for (const [tarball, files] of [
     [rootTarball, rootFiles],
@@ -167,7 +172,7 @@ try {
   });
   const platformInstall = join(installDir, "lib/node_modules", ...platform.name.split("/"));
   for (const name of ["gyst", "gyst-ask"]) {
-    const packagedSkill = join(platformInstall, dirname(platform.bin), "skills", name);
+    const packagedSkill = join(platformInstall, dirname(platformBin), "skills", name);
     for (const link of [join(home, ".agents/skills", name), join(home, ".claude/skills", name)]) {
       if (resolve(dirname(link), await readlink(link)) !== packagedSkill) {
         throw new Error(`${name} install does not target the packed platform skill`);
