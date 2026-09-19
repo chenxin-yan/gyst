@@ -14,7 +14,9 @@ import { dirname, join, resolve } from "node:path";
 
 const root = join(import.meta.dir, "..");
 const app = join(root, "apps", "gyst");
-const binary = join(app, "dist", "gyst");
+const stageDir = join(app, ".crust");
+
+type Manifest = { packages: Array<{ dir: string; bins: Record<string, string> }> };
 
 function run(command: string[], label: string, cwd = root, env?: Record<string, string>): string {
   const result = Bun.spawnSync(command, {
@@ -32,14 +34,22 @@ function run(command: string[], label: string, cwd = root, env?: Record<string, 
   return stdout;
 }
 
-run(["bun", "run", "build"], "bun build --compile", app);
+run(["bun", "run", "build"], "crust build --target host", app);
+// SAFETY: crust build wrote this manifest in the same run; a shape mismatch fails the smoke below.
+const manifest = JSON.parse(await readFile(join(stageDir, "manifest.json"), "utf8")) as Manifest;
+const platform = manifest.packages[0];
+if (manifest.packages.length !== 1 || !platform?.bins.gyst) {
+  throw new Error("host build must stage exactly one platform package with a gyst binary");
+}
+const binary = join(stageDir, platform.dir, platform.bins.gyst);
 
 // Run a copied binary away from this checkout so node_modules cannot mask missing embedded natives.
 const isolated = await mkdtemp(join(tmpdir(), "gyst-compile-smoke-"));
 const isolatedBinary = join(isolated, "gyst");
 try {
   await copyFile(binary, isolatedBinary);
-  await cp(join(app, "dist", "skills"), join(isolated, "skills"), { recursive: true });
+  // The binary resolves packaged skills beside itself, where crust stages them.
+  await cp(join(dirname(binary), "skills"), join(isolated, "skills"), { recursive: true });
   await chmod(isolatedBinary, 0o755);
 
   const frame = run([isolatedBinary], "compiled OpenTUI frame", isolated, {

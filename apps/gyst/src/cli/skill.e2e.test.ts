@@ -7,7 +7,8 @@ let root: string;
 let home: string;
 let env: NodeJS.ProcessEnv;
 const appDir = join(import.meta.dir, "../..");
-const skills = resolve(appDir, "../../skills");
+// Source runs resolve packaged skills at the staged root, so the test builds first.
+const skills = join(appDir, ".crust/root/skills");
 
 async function gyst(...args: string[]) {
   const child = Bun.spawn(["bun", "src/index.tsx", ...args], {
@@ -46,6 +47,12 @@ beforeAll(async () => {
     CLAUDE_CONFIG_DIR: join(home, ".claude"),
     PATH: `${bin}:${process.env.PATH ?? ""}`,
   };
+  const build = Bun.spawnSync(["bun", "run", "build"], {
+    cwd: appDir,
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+  if (build.exitCode !== 0) throw new Error(`crust build failed:\n${build.stderr}`);
 });
 
 afterAll(async () => {
