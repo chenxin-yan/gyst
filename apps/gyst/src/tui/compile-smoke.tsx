@@ -12,8 +12,12 @@ export async function renderCompileSmoke(): Promise<void> {
     { width: 40, height: 5 },
   );
 
-  await renderer.renderOnce();
-  const frame = renderer.captureCharFrame();
-  if (!frame.includes(FRAME_TEXT)) throw new Error("OpenTUI smoke frame did not render");
-  console.log(frame.trimEnd());
+  try {
+    await renderer.renderOnce();
+    const frame = renderer.captureCharFrame();
+    if (!frame.includes(FRAME_TEXT)) throw new Error("OpenTUI smoke frame did not render");
+    console.log(frame.trimEnd());
+  } finally {
+    renderer.renderer.destroy();
+  }
 }
