@@ -12,8 +12,8 @@ bun run check
 ```
 
 `bun run check` lints with oxlint, checks formatting with oxfmt, enforces the
-pure-core import boundary, typechecks and tests all workspaces, then compiles
-and runs the actual `apps/gyst/dist/gyst` executable. The final smoke runs bare `gyst`,
+pure-core import boundary, typechecks and tests all workspaces, then builds
+and runs the actual compiled `gyst` executable. The final smoke runs bare `gyst`,
 `gyst --help`, and `gyst session --help`; it fails unless the compiled binary
 loads OpenTUI's native library, renders a Solid frame, exits cleanly, and prints
 help generated from the crust command tree. `bun run check:fix` applies lint
@@ -23,40 +23,42 @@ and format fixes.
 
 ```sh
 bun run --cwd apps/gyst build
-./apps/gyst/dist/gyst --help
+./apps/gyst/.crust/linux-x64/bin/gyst-bun-linux-x64 --help   # or darwin-arm64/..., see .crust/manifest.json
 ```
+
+`crust build` stages the npm packages under `apps/gyst/.crust/`: `root/` holds
+`@gyst/cli` with its Node launcher `bin/gyst.js` and the packaged skills,
+and each `<os>-<arch>/` directory holds the platform package with the compiled
+`bin/gyst-bun-<os>-<arch>` binary. `manifest.json` indexes them. `build`
+stages the current machine (`--target host`); `build:release` stages the six
+published targets.
 
 ## Distribution
 
 The root `@gyst/cli` package and its platform-specific optional-dependency
-packages are published. `crust build --package` stages them under the app's
-`dist/npm`; the root's optional dependencies let npm select the platform
-package. Platform packages contain a
-standalone Bun-compiled `gyst`, not a JavaScript CLI that requires Bun.
+packages are published from `.crust/`; the root's optional dependencies let npm
+select the platform package. Platform packages contain a standalone
+Bun-compiled `gyst`, not a JavaScript CLI that requires Bun.
 
-Every compiled build (`build`, `build:release`, `package`) goes through
-`crust build --bun-plugin @opentui/solid/bun-plugin` so the Solid JSX
-transform is applied at compile time; `bun src/index.tsx` and `bun test` get
-the same transform from the `bunfig.toml` preload. The six published targets
-are the glibc Linux, macOS, and Windows binaries; musl/Alpine is not published.
+The build is configured by the `crust` block in `apps/gyst/package.json`:
+`crust.bunPlugins` lists `@opentui/solid/bun-plugin` so the Solid JSX
+transform is applied at compile time; `bun src/index.tsx`, `bun test`, and
+crust's build-time validation run of the entry get the same transform from the
+`bunfig.toml` preload. The six published targets are the glibc Linux, macOS,
+and Windows binaries; musl/Alpine is not published.
 
 Local dry run for the current machine:
 
 ```sh
 cd apps/gyst
-case "$(uname -s)-$(uname -m)" in
-  Linux-x86_64) target=bun-linux-x64 ;;
-  Darwin-arm64) target=bun-darwin-arm64 ;;
-  *) echo "unsupported package-smoke host" >&2; exit 1 ;;
-esac
-bun run package:host -- --target "$target"
+bun run build
 bun run package:smoke
-bun run publish -- --dry-run
+bun run release -- --dry-run
 ```
 
 The smoke packs and inspects both tarballs, installs them globally under a
 temporary prefix, confirms no wrong-platform package appeared, removes Bun
-from `PATH`, and runs `gyst --help` through the packed resolver.
+from `PATH`, and runs `gyst --help` through the packed Node launcher.
 
 ### First prerelease
 
@@ -73,8 +75,8 @@ no tag will ever reuse:
 ```sh
 # apps/gyst/package.json version: 0.0.1-bootstrap.0 (do not commit)
 cd apps/gyst
-bun run package
-bun run publish -- --tag bootstrap
+bun run build:release
+bun run release -- --tag bootstrap
 ```
 
 Configure the seven trusted publishers, revert the version edit, then, from a
@@ -112,9 +114,8 @@ gh release view v0.1.0-alpha.0 --repo chenxin-yan/gyst
 The tag workflow rejects `0.0.0` and mismatched tags, runs both host package
 smokes, publishes platform packages before the root via `crust publish`, uses
 version-aware `next`/`latest` npm tags so older runs cannot move a channel
-backward, and creates a GitHub prerelease containing
-all raw binaries, the POSIX/Windows resolvers, the authored skill archive, and
-the MIT license.
+backward, and creates a GitHub prerelease containing the six raw binaries, the
+authored skill archive, and the MIT license.
 Stable versions publish without an override (npm's `latest`). There is no curl
 installer or self-update; update through npm or replace the release binary.
 
