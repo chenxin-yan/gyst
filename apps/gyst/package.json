@@ -21,13 +21,16 @@
     "test": "bun test"
   },
   "devDependencies": {
-    "@crustjs/crust": "0.3.1"
+    "@crustjs/crust": "0.3.4"
   },
   "dependencies": {
-    "@crustjs/core": "0.3.1",
-    "@crustjs/extensions": "0.3.1",
+    "@crustjs/core": "0.3.4",
+    "@crustjs/effect": "0.1.1",
+    "@crustjs/extensions": "0.3.4",
+    "@effect/platform-bun": "4.0.0-rc.116",
     "@gyst/core": "workspace:*",
     "@opentui/solid": "0.5.11",
+    "effect": "4.0.0-rc.116",
     "solid-js": "1.9.12"
   }
 }

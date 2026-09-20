@@ -28,6 +28,7 @@
         "message": "Replace `Reflect.set` with typed property assignment. Parse dynamic input into a named domain type before writing it."
       }
     ],
+    "eslint/no-underscore-dangle": ["error", { "allow": ["_tag"] }],
     "unicorn/no-array-sort": "off",
     "unicorn/consistent-function-scoping": "off",
     "typescript/no-unsafe-type-assertion": "off",
