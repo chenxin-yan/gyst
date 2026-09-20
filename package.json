@@ -8,6 +8,8 @@
   ],
   "scripts": {
     "build": "turbo run build",
+    "build:docs": "turbo run build --filter=@gyst/docs",
+    "dev:docs": "turbo run dev --filter=@gyst/docs",
     "lint": "oxlint",
     "lint:fix": "oxlint --fix",
     "format": "oxfmt --check",

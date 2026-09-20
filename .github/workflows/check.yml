@@ -27,3 +27,4 @@ jobs:
           restore-keys: turbo-check-${{ runner.os }}-
       - run: bun run check
       - run: bun run test
+      - run: bun run build:docs

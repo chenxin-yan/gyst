@@ -3,5 +3,5 @@
   "useTabs": false,
   "tabWidth": 2,
   "sortPackageJson": false,
-  "ignorePatterns": [".github/workflows/pullfrog.yml"]
+  "ignorePatterns": [".github/workflows/pullfrog.yml", "apps/docs/src/routeTree.gen.ts"]
 }
