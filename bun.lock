@@ -23,6 +23,7 @@
         "@crustjs/core": "0.3.4",
         "@crustjs/effect": "0.1.1",
         "@crustjs/extensions": "0.3.4",
+        "@crustjs/skills": "0.3.4",
         "@crustjs/tui": "0.0.2",
         "@effect/platform-bun": "4.0.0-rc.116",
         "@gyst/core": "workspace:*",
@@ -124,6 +125,12 @@
     "@crustjs/effect": ["@crustjs/effect@0.1.1", "", { "peerDependencies": { "@crustjs/core": "^0.3.4", "effect": "^4.0.0-rc.115", "typescript": "^7.0.0" }, "optionalPeers": ["typescript"] }, "sha512-I0OkIWUXdmwwU5oBeF9VPGLy7990Ol6o6GERgpAxJsNtaQMO2rcDz4q3yjErh9QfCUQb7HqwcddtdM5ysLBGpg=="],
 
     "@crustjs/extensions": ["@crustjs/extensions@0.3.4", "", { "dependencies": { "@crustjs/store": "^0.4.1", "@crustjs/style": "^0.3.3", "@crustjs/utils": "^0.1.0" }, "peerDependencies": { "@crustjs/core": "^0.3.4", "typescript": "^7.0.0" }, "optionalPeers": ["typescript"] }, "sha512-mkuGowG82eW+BVHhyIuw9bJjTVHv5YCgIpyll7Tq167J9QU5bOe8weYTaz2w+sRAPvyGntjoi3L+zAtcJHTUag=="],
+
+    "@crustjs/progress": ["@crustjs/progress@0.1.2", "", { "dependencies": { "@crustjs/style": "^0.3.3", "@crustjs/utils": "^0.1.0" }, "peerDependencies": { "typescript": "^7.0.0" }, "optionalPeers": ["typescript"] }, "sha512-6foAsLFUOdxPvRJh32qfdlLfWeB2Zf4R4Hm+Mp6SKCmtsbHqXS13+q7NV/AsWqPzghty4yc6sakGrBeKzEk+Cg=="],
+
+    "@crustjs/prompts": ["@crustjs/prompts@0.2.3", "", { "dependencies": { "@crustjs/style": "^0.3.3", "@crustjs/utils": "^0.1.0" }, "peerDependencies": { "typescript": "^7.0.0" }, "optionalPeers": ["typescript"] }, "sha512-odYsw3HWoUnmk5cgVrG7I5PejeiKvw8FNk3OEpV3hx0B26H4lqGo8mMI45QtRlgBZ2zHsLCzk1pnaFdU/f919A=="],
+
+    "@crustjs/skills": ["@crustjs/skills@0.3.4", "", { "dependencies": { "@crustjs/progress": "^0.1.2", "@crustjs/prompts": "^0.2.3", "@crustjs/style": "^0.3.3", "@crustjs/utils": "^0.1.0" }, "peerDependencies": { "@crustjs/core": "^0.3.4", "typescript": "^7.0.0" }, "optionalPeers": ["typescript"] }, "sha512-gsc1LsXa6LnWOZTOGd7XNhFN+7m0Miu+sMF/dLLEdunghicveFl9W4mIqX759XwmUfPToJhccJ/CCVv0xD4zDA=="],
 
     "@crustjs/store": ["@crustjs/store@0.4.1", "", { "dependencies": { "@crustjs/utils": "^0.1.0" }, "peerDependencies": { "typescript": "^7.0.0" }, "optionalPeers": ["typescript"] }, "sha512-os2pBAHAg+Gu0aj8NiiwDko3s5wBVpAIaslgB9wVm0xEIrWR0e9zwFlObz6n1sAFXOnl7qeGJz8kRxwPVk/Iqg=="],
 

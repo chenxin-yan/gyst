@@ -22,7 +22,8 @@ bun run --cwd apps/gyst build
 ```
 
 `crust build` stages the npm packages under `apps/gyst/.crust/`: `root/` holds
-`@gyst/cli` with its Node launcher `bin/gyst.js`,
+`@gyst/cli` with its Node launcher `bin/gyst.js` and the agent skills (authored in
+`apps/gyst/skills/`, plus the generated `gyst-cli` command reference),
 and each `<os>-<arch>/` directory holds the platform package with the compiled
 `bin/gyst-bun-<os>-<arch>` binary. `manifest.json` indexes them.
 
