@@ -1,0 +1,36 @@
+name: changeset status
+
+# Non-blocking, as changesets recommends: comment on each PR whether it carries a changeset.
+# pull_request_target has write access, so this only checks out and reads the PR; nothing runs.
+on:
+  pull_request_target:
+
+permissions: {}
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number }}
+
+jobs:
+  pr-status:
+    if: ${{ !startsWith(github.head_ref, 'changeset-release/') }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      comment-body: ${{ steps.pr-status.outputs.comment-body }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - id: pr-status
+        uses: changesets/action/pr-status@v2
+
+  pr-comment:
+    needs: pr-status
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
+    steps:
+      - uses: changesets/action/pr-comment@v2
+        with:
+          body: ${{ needs.pr-status.outputs.comment-body }}
