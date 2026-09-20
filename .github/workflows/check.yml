@@ -1,0 +1,29 @@
+name: check
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@v2
+      - run: bun install --frozen-lockfile
+      - uses: actions/cache@v6
+        with:
+          path: .turbo
+          key: turbo-check-${{ runner.os }}-${{ github.sha }}
+          restore-keys: turbo-check-${{ runner.os }}-
+      - run: bun run check
+      - run: bun run test
