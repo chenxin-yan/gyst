@@ -52,6 +52,7 @@ function session(): Session {
     ],
     queue: ["old-b", "group-1", "old-c", "old-d"],
     queueSet: true,
+    acceptHistory: ["group-1"],
     applyReceipts: [],
   };
 }
@@ -83,6 +84,7 @@ describe("refreshSession", () => {
       expect.objectContaining({ id: "group-1", hunkIds: ["old-a"], accepted: true }),
     ]);
     expect(refreshed.queue).toEqual(["group-1", "old-d", "fresh-b", "fresh-d", "fresh-cross-file"]);
+    expect(refreshed.acceptHistory).toEqual(["group-1"]);
     expect(refreshed.queueSet).toBe(false);
     expect(refreshed.revision).toBe(5);
     expect(refreshed.seq).toBe(8);
@@ -107,6 +109,7 @@ describe("refreshSession", () => {
     expect(refreshed.groups[0]).toEqual(
       expect.objectContaining({ exemplarHunkId: "old-a", hunkIds: ["old-a"], accepted: false }),
     );
+    expect(refreshed.acceptHistory).toEqual([]);
     expect(
       refreshSession(
         { ...original, groups: [{ ...original.groups[0]!, exemplarHunkId: "old-a" }] },
@@ -126,6 +129,7 @@ describe("refreshSession", () => {
     const empty = refreshSession(original, [], LATER);
     expect(empty.groups).toEqual([]);
     expect(empty.queue).toEqual([]);
+    expect(empty.acceptHistory).toEqual([]);
     expect(empty.cursor).toEqual({ itemId: null, expanded: false });
   });
 

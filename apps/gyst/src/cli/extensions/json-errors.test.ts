@@ -1,6 +1,7 @@
 import { describe, expect, it } from "bun:test";
 import { Crust } from "@crustjs/core";
 import { handler } from "@crustjs/effect";
+import { NonInteractiveError } from "@crustjs/tui";
 import { NoSession } from "@gyst/core";
 import { Effect } from "effect";
 import { jsonErrors } from "./json-errors.ts";
@@ -39,6 +40,17 @@ describe("jsonErrors", () => {
     expect(JSON.parse(stderr[0]!)).toEqual({
       code: "bad_args",
       message: expect.stringContaining("no-such-flag"),
+    });
+  });
+
+  it("reports the TUI's TTY refusal as bad_args", async () => {
+    const { exitCode, stderr } = await run(() => {
+      throw new NonInteractiveError("TUI requires an interactive terminal (TTY).");
+    });
+    expect(exitCode).toBe(1);
+    expect(JSON.parse(stderr[0]!)).toEqual({
+      code: "bad_args",
+      message: "TUI requires an interactive terminal (TTY).",
     });
   });
 

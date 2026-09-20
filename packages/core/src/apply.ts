@@ -201,7 +201,11 @@ export function applyBatch(
       }
       const wasInbox = hunk.tldr === undefined && !hunkInOtherGroup(hunk.id);
       // A re-worded annotation is a new claim; the verdict on the old wording no longer applies.
-      if (hunk.tldr !== op.tldr) hunk.accepted = false;
+      // Pruned here because a finalized queue skips the end-of-batch reconcile.
+      if (hunk.tldr !== op.tldr) {
+        hunk.accepted = false;
+        draft.acceptHistory = draft.acceptHistory.filter((id) => id !== hunk.id);
+      }
       hunk.tldr = op.tldr;
       if (wasInbox) draft.queueSet = false;
       continue;
