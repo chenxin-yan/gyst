@@ -1,0 +1,13 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "gyst-docs",
+  "compatibility_date": "2026-09-14",
+  "compatibility_flags": ["nodejs_compat"],
+  "main": "@tanstack/react-start/server-entry",
+  // Opt out of uploading dependency metadata (enabled by default since Wrangler ~4.110)
+  "dependencies_instrumentation": {
+    "enabled": false,
+  },
+  // No custom domain yet. Once Cloudflare is set up, add:
+  // "routes": [{ "pattern": "<docs domain>", "custom_domain": true }],
+}

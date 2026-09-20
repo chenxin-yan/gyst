@@ -28,6 +28,11 @@ and each `<os>-<arch>/` directory holds the platform package with the compiled
 stages the current machine (`--target host`); `build:release` stages the six
 published targets.
 
+## Docs
+
+`bun run dev:docs` serves the fumadocs site in `apps/docs`; `bun run build:docs` builds it.
+Deploy is manual (`bun run --cwd apps/docs deploy`) until Cloudflare is set up.
+
 ## Distribution
 
 The root `@gyst/cli` package and its platform-specific optional-dependency
