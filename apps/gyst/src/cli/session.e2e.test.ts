@@ -8,6 +8,7 @@ import { ConfigProvider, Layer, ManagedRuntime, Schema } from "effect";
 import { DaemonClient } from "../daemon/client.ts";
 import { Paths } from "../daemon/paths.ts";
 import { daemonTuiClient } from "../tui/client.ts";
+import { isolatedHome } from "./test-env.ts";
 
 const binary = join(tmpdir(), `gyst-e2e-${process.pid}`);
 let root: string;
@@ -44,7 +45,7 @@ type Result = { exitCode: number; stdout: string; stderr: string };
 async function gyst(cwd: string, args: string[], stdin?: string): Promise<Result> {
   const child = Bun.spawn([binary, ...args], {
     cwd,
-    env: { ...process.env, GYST_DATA_DIR: data },
+    env: { ...isolatedHome(root), GYST_DATA_DIR: data },
     stdin: stdin === undefined ? "ignore" : new Blob([stdin]),
     stdout: "pipe",
     stderr: "pipe",
@@ -623,7 +624,7 @@ describe("gyst session CLI seam", () => {
     // From apps/gyst, as `bun run dev` is: bunfig.toml supplies the JSX preload.
     const child = Bun.spawn(["bun", "src/index.tsx", "session", "status"], {
       cwd: join(import.meta.dir, "../.."),
-      env: { ...process.env, GYST_DATA_DIR: sourceData },
+      env: { ...isolatedHome(root), GYST_DATA_DIR: sourceData },
       stdin: "ignore",
       stdout: "pipe",
       stderr: "pipe",

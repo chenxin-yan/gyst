@@ -1,35 +1,60 @@
-import { describe, expect, it } from "bun:test";
+import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import { Crust } from "@crustjs/core";
+import { buildCommandDocumentation } from "@crustjs/core/tooling";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import packageJson from "../../package.json" with { type: "json" };
 import { app } from "./app.ts";
 import { jsonErrors } from "./extensions/json-errors.ts";
+import { isolatedHome } from "./test-env.ts";
 
+let home: string;
+
+beforeAll(async () => {
+  home = await mkdtemp(join(tmpdir(), "gyst-app-"));
+});
+
+afterAll(async () => {
+  await rm(home, { recursive: true, force: true });
+});
+
+// Runs the real app as a subprocess so skill auto-repair sees the isolated home, never the host's.
 async function execute(
   argv: string[],
 ): Promise<{ stdout: string; stderr: string; exitCode: number }> {
-  const stdout: string[] = [];
-  const stderr: string[] = [];
-  const previousExitCode = process.exitCode;
-  const exitCode = await app.execute({
-    argv,
-    io: { stdout: (line) => stdout.push(line), stderr: (line) => stderr.push(line) },
+  const child = Bun.spawn(["bun", "src/index.tsx", ...argv], {
+    cwd: join(import.meta.dir, "../.."),
+    env: isolatedHome(home),
+    stdin: "ignore",
+    stdout: "pipe",
+    stderr: "pipe",
   });
-  // execute() sets the exit status for the real CLI; the test runner keeps its own.
-  process.exitCode = previousExitCode ?? 0;
-  return { stdout: stdout.join("\n"), stderr: stderr.join("\n"), exitCode };
+  const [exitCode, stdout, stderr] = await Promise.all([
+    child.exited,
+    new Response(child.stdout).text(),
+    new Response(child.stderr).text(),
+  ]);
+  return { stdout: stdout.trim(), stderr: stderr.trim(), exitCode };
 }
 
 describe("crust command help", () => {
-  it("describes the root and session command tree", async () => {
-    expect((await execute(["--help"])).stdout).toContain("Commands:");
+  it("describes the root, session, and skills command tree", async () => {
+    const snapshot = await app.snapshot();
+    expect(buildCommandDocumentation(snapshot).children.map(({ name }) => name)).toEqual([
+      "session",
+      "skills",
+    ]);
+    const help = (await execute(["--help"])).stdout;
+    expect(help).toContain("Commands:");
+    expect(help).toContain("Agent skills");
+    expect(help).not.toContain("daemon");
     expect((await execute(["session", "--help"])).stdout).toContain("gyst session");
     expect((await execute(["session", "create", "--help"])).stdout).toContain(
       "gyst session create",
     );
-    expect((await execute(["--help"])).stdout).not.toContain("daemon");
-  });
+  }, 20_000);
 
   it("reports the package version in root metadata and CLI output", async () => {
     expect((await app.snapshot()).meta.version).toBe(packageJson.version);
@@ -48,13 +73,7 @@ describe("crust command help", () => {
 
 describe("tui entry", () => {
   it("refuses to run the TUI without a TTY", async () => {
-    const child = Bun.spawn(["bun", "src/index.tsx"], {
-      cwd: join(import.meta.dir, "../.."),
-      stdin: "pipe",
-      stdout: "pipe",
-      stderr: "pipe",
-    });
-    const [exitCode, stderr] = await Promise.all([child.exited, new Response(child.stderr).text()]);
+    const { exitCode, stderr } = await execute([]);
     expect(exitCode).toBe(1);
     expect(JSON.parse(stderr)).toEqual({
       code: "bad_args",
