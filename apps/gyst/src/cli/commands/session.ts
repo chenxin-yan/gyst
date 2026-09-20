@@ -84,6 +84,42 @@ const diff = defineCommand("diff", { description: "Read snapshot hunks" }, (comm
       ),
     ),
 );
+const apply = defineCommand(
+  "apply",
+  { description: "Apply one agent mutation batch from stdin" },
+  (command) =>
+    command
+      .use(daemonClient)
+      .flags(sessionFlag)
+      .action(
+        handler(function* ({ flags, stdout }) {
+          yield* call("apply", option("session", flags.session), stdout, yield* readStdin);
+        }),
+      ),
+);
+const refresh = defineCommand(
+  "refresh",
+  { description: "Refresh the session snapshot" },
+  (command) =>
+    command
+      .use(daemonClient)
+      .flags(sessionFlag, {
+        name: "stdin",
+        type: "boolean",
+        description: "Read the replacement unified diff from stdin",
+      })
+      .action(
+        handler(function* ({ flags, stdout }) {
+          const stdin = flags.stdin ? yield* readStdin : undefined;
+          yield* call(
+            "refresh",
+            [...option("session", flags.session), ...(flags.stdin ? ["--stdin"] : [])],
+            stdout,
+            stdin,
+          );
+        }),
+      ),
+);
 const close = defineCommand("close", { description: "Close a session" }, (command) =>
   command
     .use(daemonClient)
@@ -96,5 +132,13 @@ const close = defineCommand("close", { description: "Close a session" }, (comman
 export const session = defineCommand(
   "session",
   { description: "Manage a co-review session" },
-  (command) => command.provide(daemonClient()).add(create).add(status).add(diff).add(close),
+  (command) =>
+    command
+      .provide(daemonClient())
+      .add(create)
+      .add(status)
+      .add(diff)
+      .add(apply)
+      .add(refresh)
+      .add(close),
 );
