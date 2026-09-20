@@ -1,6 +1,7 @@
 import {
   applyBatch,
   ApplyEnvelopeSchema,
+  applyHumanAction,
   BadArgs,
   type ClosePayload,
   type DiffPayload,
@@ -10,7 +11,7 @@ import {
   type Request,
   type Session,
   SessionExists,
-  type StaleRevision,
+  StaleRevision,
   type StatusPayload,
   statusOf,
   ValidationFailed,
@@ -61,6 +62,10 @@ export class Sessions extends Context.Service<
     ): Effect.Effect<StatusPayload, BadArgs | NoSession | StaleRevision | ValidationFailed>;
     /** Re-reads the recorded source (or `--stdin`); unchanged hunks keep their group and verdict. */
     refresh(request: Request): Effect.Effect<StatusPayload, BadArgs | NoSession>;
+    /** One human review step from `request.action`; the daemon owns the reducer so every TUI sees the same state. */
+    tuiAction(
+      request: Request,
+    ): Effect.Effect<StatusPayload, BadArgs | NoSession | StaleRevision | ValidationFailed>;
     close(request: Request): Effect.Effect<ClosePayload, BadArgs | NoSession>;
     /**
      * Replaces the in-memory sessions with the persisted ones. The daemon calls it once it owns
@@ -150,6 +155,7 @@ export class Sessions extends Context.Service<
           groups: [],
           queue: [],
           queueSet: false,
+          acceptHistory: [],
           applyReceipts: [],
         };
         yield* store.save(session).pipe(Effect.orDie);
@@ -240,6 +246,34 @@ export class Sessions extends Context.Service<
         return statusOf(refreshed);
       }, Semaphore.withPermit(lock));
 
+      const tuiAction = Effect.fn("Sessions.tuiAction")(function* (request: Request) {
+        const { session } = yield* selected(request.cwd, request.args, sessionOptions);
+        if (!request.action)
+          return yield* new ValidationFailed({
+            message: "invalid TUI action",
+            detail: "tui.action requires an action",
+          });
+        // A verdict is a ruling on the frame the human saw; checked under the permit so no mutation slips between.
+        if (
+          (request.action.type === "verdict.toggle" || request.action.type === "verdict.undo") &&
+          (request.action.sessionId !== session.id || request.action.revision !== session.revision)
+        )
+          return yield* new StaleRevision({
+            message: "verdict targets a stale snapshot",
+            detail: {
+              sessionId: session.id,
+              revision: session.revision,
+              seen: { sessionId: request.action.sessionId, revision: request.action.revision },
+            },
+          });
+        const updated = yield* Effect.fromResult(
+          applyHumanAction(session, request.action, DateTime.formatIso(yield* DateTime.now)),
+        );
+        yield* store.save(updated).pipe(Effect.orDie);
+        sessions.set(session.id, updated);
+        return statusOf(updated);
+      }, Semaphore.withPermit(lock));
+
       const close = Effect.fn("Sessions.close")(function* (request: Request) {
         const { session } = yield* selected(request.cwd, request.args, sessionOptions);
         yield* store.remove(session.id).pipe(Effect.orDie);
@@ -254,6 +288,7 @@ export class Sessions extends Context.Service<
         diff,
         apply,
         refresh,
+        tuiAction,
         close,
         load,
         idle: idle.await,

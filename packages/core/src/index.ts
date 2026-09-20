@@ -17,6 +17,7 @@ export {
   DaemonError,
   DaemonUnreachable,
   ErrorCodeSchema,
+  type ErrorPayload,
   ErrorPayloadSchema,
   InternalError,
   NoSession,
@@ -24,6 +25,7 @@ export {
   StaleRevision,
   ValidationFailed,
 } from "./errors.ts";
+export { applyHumanAction, type HumanAction, HumanActionSchema } from "./human-action.ts";
 export { refreshSession } from "./refresh.ts";
 export {
   type Group,

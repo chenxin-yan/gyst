@@ -15,6 +15,33 @@ describe("daemon wire envelopes", () => {
     expect(() => decodeReply({ ok: false, error: { _tag: "bad_args", message: "x" } })).toThrow();
   });
 
+  it("accepts typed human actions", () => {
+    const request = {
+      command: "tui.action",
+      cwd: "/repo",
+      args: [],
+      action: { type: "expand.toggle" },
+    } as const;
+    expect(decodeRequest(request)).toEqual(request);
+    expect(() =>
+      decodeRequest({
+        command: "tui.action",
+        cwd: "/repo",
+        args: [],
+        action: { type: "cursor.move" },
+      }),
+    ).toThrow();
+    // A verdict must name the frame the human saw.
+    expect(() =>
+      decodeRequest({
+        command: "tui.action",
+        cwd: "/repo",
+        args: [],
+        action: { type: "verdict.toggle", itemId: "g1" },
+      }),
+    ).toThrow();
+  });
+
   it("accepts both reply variants", () => {
     expect(decodeReply({ ok: true, value: {} })).toEqual({ ok: true, value: {} });
     const failed = decodeReply({ ok: false, error: { code: "bad_args", message: "bad request" } });

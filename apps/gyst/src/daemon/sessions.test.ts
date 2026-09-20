@@ -1,5 +1,11 @@
 import { beforeEach, describe, expect, it } from "bun:test";
-import { type ApplyEnvelope, BadArgs, type Request, type Session } from "@gyst/core";
+import {
+  type ApplyEnvelope,
+  BadArgs,
+  type HumanAction,
+  type Request,
+  type Session,
+} from "@gyst/core";
 import { Crypto, Effect, Exit, Layer, PlatformError } from "effect";
 import { Git } from "./git.ts";
 import { Sessions } from "./sessions.ts";
@@ -126,6 +132,7 @@ const persisted: Session = {
   groups: [{ id: "g1", tldr: "same edit", exemplarHunkId: "h1", hunkIds: ["h1"], accepted: true }],
   queue: ["h2", "g1", "h3"],
   queueSet: false,
+  acceptHistory: ["h2", "g1"],
   applyReceipts: [],
 };
 
@@ -512,6 +519,105 @@ describe("Sessions.load", () => {
         const stale = yield* Effect.flip(sessions.status(request("status", [], otherRoot)));
         expect(stale._tag).toBe("no_session");
         expect((yield* sessions.status(request("status"))).session.id).toBe("fresh");
+      }),
+    );
+  });
+});
+
+describe("Sessions.tuiAction", () => {
+  const frame = (revision: number) => ({ sessionId: "persisted", revision });
+  const act = (action: HumanAction | undefined, args: string[] = []) =>
+    Sessions.use((s) =>
+      s.tuiAction({ command: "tui.action", cwd: otherRoot, args, ...(action ? { action } : {}) }),
+    );
+
+  it("moves and folds the cursor on seq only, persisting each step", async () => {
+    await run(
+      Effect.gen(function* () {
+        const sessions = yield* Sessions;
+        const moved = yield* act({ type: "cursor.move", itemId: "g1" });
+        expect(moved.cursor).toEqual({ itemId: "g1", expanded: false });
+        expect(moved).toMatchObject({ revision: 3, seq: 2 });
+        expect(files.get("persisted")?.cursor).toEqual({ itemId: "g1", expanded: false });
+        const expanded = yield* act({ type: "expand.toggle" });
+        expect(expanded.cursor).toEqual({ itemId: "g1", expanded: true });
+        expect(expanded).toMatchObject({ revision: 3, seq: 3 });
+        yield* act({ type: "cursor.move", itemId: "h3" });
+        const onHunk = yield* Effect.flip(act({ type: "expand.toggle" }));
+        expect(onHunk._tag).toBe("validation_failed");
+        expect(onHunk.message).toBe("TUI action does not apply to the current session");
+        // The fixture's queue is not finalized, so verdicts wait for the pre-pass.
+        const early = yield* Effect.flip(
+          act({ type: "verdict.toggle", itemId: "g1", ...frame(3) }),
+        );
+        expect(early).toMatchObject({
+          _tag: "validation_failed",
+          message: "review queue is not set",
+        });
+        expect((yield* sessions.status(request("status", [], otherRoot))).seq).toBe(4);
+      }),
+    );
+  });
+
+  it("toggles verdicts on the revision and undoes them in accept order", async () => {
+    files.set(persisted.id, { ...persisted, queueSet: true });
+    await run(
+      Effect.gen(function* () {
+        const sessions = yield* Sessions;
+        const undone = yield* act({ type: "verdict.undo", ...frame(3) });
+        expect(undone.groups[0]).toMatchObject({ id: "g1", accepted: false });
+        expect(undone.cursor).toEqual({ itemId: "g1", expanded: false });
+        expect(undone).toMatchObject({ revision: 4, seq: 2 });
+        const undoneAgain = yield* act({ type: "verdict.undo", ...frame(4) });
+        expect(undoneAgain.spotlight[0]).toMatchObject({ id: "h2", accepted: false });
+        expect(undoneAgain.cursor.itemId).toBe("h2");
+        const exhausted = yield* Effect.flip(act({ type: "verdict.undo", ...frame(5) }));
+        expect(exhausted._tag).toBe("validation_failed");
+        const accepted = yield* act({ type: "verdict.toggle", itemId: "g1", ...frame(5) }, [
+          "--session",
+          "persisted",
+        ]);
+        expect(accepted.groups[0]?.accepted).toBe(true);
+        expect(accepted).toMatchObject({ revision: 6, seq: 4 });
+        expect(files.get("persisted")).toMatchObject({ revision: 6, acceptHistory: ["g1"] });
+        const inbox = yield* Effect.flip(
+          act({ type: "verdict.toggle", itemId: "h3", ...frame(6) }),
+        );
+        expect(inbox._tag).toBe("validation_failed");
+        const missing = yield* Effect.flip(act(undefined));
+        expect(missing._tag).toBe("validation_failed");
+        expect(missing.message).toBe("invalid TUI action");
+        const bogus = yield* Effect.flip(
+          act({ type: "verdict.undo", ...frame(6) }, ["--hunk", "h1"]),
+        );
+        expect(bogus._tag).toBe("bad_args");
+        expect((yield* sessions.status(request("status", [], otherRoot))).revision).toBe(6);
+      }),
+    );
+  });
+
+  it("rejects a verdict on a frame the human did not see", async () => {
+    files.set(persisted.id, { ...persisted, queueSet: true });
+    await run(
+      Effect.gen(function* () {
+        const sessions = yield* Sessions;
+        for (const seen of [
+          { sessionId: "persisted", revision: 2 },
+          { sessionId: "replaced", revision: 3 },
+        ]) {
+          const stale = yield* Effect.flip(act({ type: "verdict.toggle", itemId: "g1", ...seen }));
+          expect(stale).toMatchObject({
+            _tag: "stale_revision",
+            detail: { sessionId: "persisted", revision: 3, seen },
+          });
+        }
+        const staleUndo = yield* Effect.flip(
+          act({ type: "verdict.undo", sessionId: "persisted", revision: 2 }),
+        );
+        expect(staleUndo._tag).toBe("stale_revision");
+        const status = yield* sessions.status(request("status", [], otherRoot));
+        expect(status).toMatchObject({ revision: 3, seq: 1 });
+        expect(status.groups[0]?.accepted).toBe(true);
       }),
     );
   });

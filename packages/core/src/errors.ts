@@ -54,3 +54,4 @@ export const ErrorPayloadSchema = Schema.Struct({ code: ErrorCodeSchema, ...erro
     encode: SchemaGetter.transform(({ _tag, ...rest }) => ({ code: _tag, ...rest })),
   }),
 );
+export type ErrorPayload = typeof ErrorPayloadSchema.Encoded;
