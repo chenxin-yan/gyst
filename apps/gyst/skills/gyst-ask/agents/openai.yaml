@@ -1,0 +1,5 @@
+interface:
+  display_name: "Gyst Ask"
+  short_description: "Answer a question about the reviewer's current item"
+policy:
+  allow_implicit_invocation: false

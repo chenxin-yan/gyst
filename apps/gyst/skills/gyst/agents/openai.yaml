@@ -1,0 +1,5 @@
+interface:
+  display_name: "Gyst"
+  short_description: "Pre-pass a diff for human co-review"
+policy:
+  allow_implicit_invocation: false

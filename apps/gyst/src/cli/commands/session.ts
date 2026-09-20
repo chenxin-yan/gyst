@@ -39,7 +39,13 @@ const create = defineCommand("create", { description: "Create a session" }, (com
   command
     .use(daemonClient)
     .flags({ name: "stdin", type: "boolean", description: "Read a unified diff from stdin" })
-    .args(defineArg("gitArgs", { type: "string", variadic: true }))
+    .args(
+      defineArg("gitArgs", {
+        type: "string",
+        variadic: true,
+        description: "Git revisions, then `--` and pathspecs; git options are rejected",
+      }),
+    )
     .action(
       handler(function* ({ args, flags, rawArgs, stdout }) {
         const stdin = flags.stdin ? yield* readStdin : undefined;
