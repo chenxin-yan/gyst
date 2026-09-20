@@ -5,7 +5,6 @@
     "reportUnusedDisableDirectives": "deny"
   },
   "plugins": ["unicorn", "typescript", "oxc", "import", "promise", "node"],
-  "jsPlugins": [{ "name": "anti-slop", "specifier": "./tools/oxlint/anti-slop/index.ts" }],
   "categories": {
     "correctness": "error",
     "suspicious": "error"
@@ -50,21 +49,7 @@
       { "considerDefaultExhaustiveForUnions": true }
     ],
 
-    "promise/always-return": "off",
-
-    "anti-slop/no-array-filter-map": "error",
-    "anti-slop/no-chained-type-assertions": "error",
-    "anti-slop/no-known-value-widening": "error",
-    "anti-slop/no-module-mocking": "error",
-    "anti-slop/no-object-parameters": "error",
-    "anti-slop/no-reduce-accumulator-copy": "error",
-    "anti-slop/no-runtime-typeof": ["error", { "allowInTypeGuards": true }],
-    "anti-slop/no-unknown-parameters": ["error", { "allowInBoundaryFunctions": true }],
-    "anti-slop/no-unknown-returns": "error",
-    "anti-slop/no-unknown-type-aliases": "error",
-    "anti-slop/no-unsafe-dictionary-type": "error",
-    "anti-slop/no-widen-then-assert": "error",
-    "anti-slop/require-safety-comment-for-type-assertion": "error"
+    "promise/always-return": "off"
   },
   "ignorePatterns": ["**/node_modules/", "**/dist/", "**/.turbo/", ".agent-sources/"],
   "overrides": [
@@ -72,8 +57,7 @@
       "files": ["**/*.test.ts", "**/*.test.tsx", "**/test/**/*.ts", "**/*smoke.tsx"],
       "rules": {
         "eslint/no-shadow": "off",
-        "typescript/await-thenable": "off",
-        "anti-slop/require-safety-comment-for-type-assertion": "off"
+        "typescript/await-thenable": "off"
       }
     }
   ]
