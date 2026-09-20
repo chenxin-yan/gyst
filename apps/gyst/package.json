@@ -1,0 +1,33 @@
+{
+  "$schema": "./node_modules/@crustjs/crust/schema/package.json",
+  "name": "@gyst/cli",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "crust": {
+    "runtime": "bun",
+    "bunPlugins": [
+      "@opentui/solid/bun-plugin"
+    ]
+  },
+  "bin": {
+    "gyst": "src/index.tsx"
+  },
+  "scripts": {
+    "dev": "bun run src/index.tsx",
+    "build": "cp ../../LICENSE LICENSE && cp ../../README.md README.md && crust build --target host",
+    "start": "bun .crust/root/bin/gyst.js",
+    "check:types": "tsc --noEmit",
+    "test": "bun test"
+  },
+  "devDependencies": {
+    "@crustjs/crust": "0.3.1"
+  },
+  "dependencies": {
+    "@crustjs/core": "0.3.1",
+    "@crustjs/extensions": "0.3.1",
+    "@gyst/core": "workspace:*",
+    "@opentui/solid": "0.5.11",
+    "solid-js": "1.9.12"
+  }
+}

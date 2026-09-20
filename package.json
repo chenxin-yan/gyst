@@ -1,0 +1,28 @@
+{
+  "name": "gyst",
+  "private": true,
+  "type": "module",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "build": "turbo run build",
+    "lint": "oxlint",
+    "lint:fix": "oxlint --fix",
+    "format": "oxfmt --check",
+    "format:fix": "oxfmt",
+    "check": "turbo run //#lint //#format check:types",
+    "check:fix": "oxlint --fix && oxfmt",
+    "test": "turbo run test"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.4.0",
+    "oxfmt": "^0.66.0",
+    "oxlint": "^1.81.0",
+    "oxlint-tsgolint": "^7.0.2001",
+    "turbo": "^2.10.11",
+    "typescript": "^7.0.2"
+  },
+  "packageManager": "bun@1.4.2"
+}
