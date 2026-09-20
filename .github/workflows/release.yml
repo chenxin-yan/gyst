@@ -1,0 +1,109 @@
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+jobs:
+  package-smoke:
+    name: package smoke (${{ matrix.os }})
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-14]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@v2
+      - run: bun install --frozen-lockfile --os='*' --cpu='*'
+      - name: Stage the host npm packages
+        working-directory: apps/gyst
+        run: bun run build
+      - name: Pack, install globally, and run without Bun on PATH
+        working-directory: apps/gyst
+        run: bun run package:smoke
+
+  publish:
+    needs: package-smoke
+    runs-on: ubuntu-latest
+    concurrency:
+      group: gyst-npm-release
+      cancel-in-progress: false
+    permissions:
+      contents: write # GitHub release
+      id-token: write # npm trusted publishing (OIDC)
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@v2
+      # npm >= 11.5.1 for trusted publishing; Node 24 bundles it. No token, no
+      # .npmrc: every published package needs a trusted publisher on npmjs.com for
+      # chenxin-yan/gyst + release.yml, and a new package is published by hand once.
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          package-manager-cache: false
+      # Shallow checkout only has the tag commit; fetching main fills in main's
+      # history down to that commit, so the ancestry test is exact.
+      - name: Require the tag to point at a commit on main
+        run: |
+          git fetch --no-tags origin main
+          if ! git merge-base --is-ancestor "$GITHUB_SHA" FETCH_HEAD; then
+            echo "::error::$GITHUB_REF_NAME points at $GITHUB_SHA, which is not contained in main; releases are cut from main only"
+            exit 1
+          fi
+      - run: bun install --frozen-lockfile --os='*' --cpu='*'
+      - name: Require the tag and package version to match
+        id: version
+        run: |
+          version=$(node -p "require('./apps/gyst/package.json').version")
+          test "$version" != "0.0.0"
+          test "$GITHUB_REF_NAME" = "v$version"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          if [[ "$version" == *-* ]]; then echo "prerelease=true" >> "$GITHUB_OUTPUT"; else echo "prerelease=false" >> "$GITHUB_OUTPUT"; fi
+      - run: bun run check
+      - name: Stage every platform package
+        working-directory: apps/gyst
+        run: bun run build:release
+      - name: Verify publish order without network writes
+        working-directory: apps/gyst
+        run: bun run release -- --dry-run
+      - name: Choose a version-aware npm dist-tag
+        id: dist-tag
+        run: |
+          version="${{ steps.version.outputs.version }}"
+          channel=latest
+          if [[ "${{ steps.version.outputs.prerelease }}" == "true" ]]; then channel=next; fi
+          # A failed lookup must not read as "channel absent": that would let an
+          # older run move latest/next backward. Only a successful dist-tags
+          # response that lacks the channel counts as absent.
+          if ! dist_tags=$(npm view @gyst/cli dist-tags --json); then
+            echo "::error::npm dist-tag lookup for @gyst/cli failed; refusing to guess the $channel channel"
+            exit 1
+          fi
+          current=$(jq -r --arg channel "$channel" '.[$channel] // empty' <<<"$dist_tags")
+          tag="$channel"
+          if [[ -n "$current" ]] && ! bun -e 'process.exit(Bun.semver.order(process.argv[1], process.argv[2]) >= 0 ? 0 : 1)' "$version" "$current"; then
+            tag="release-$(printf '%s' "$version" | tr '.+' '--')"
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+      - name: Publish platform packages, then @gyst/cli
+        working-directory: apps/gyst
+        run: bun run release -- --tag "${{ steps.dist-tag.outputs.tag }}"
+      - name: Archive the authored skill for raw binary installs
+        run: tar -C apps/gyst/.crust/root -czf apps/gyst/.crust/gyst-skills.tar.gz skills
+      - name: Create GitHub Release with raw binaries
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          args=(--verify-tag --generate-notes)
+          if [[ "${{ steps.version.outputs.prerelease }}" == "true" ]]; then args+=(--prerelease); fi
+          gh release create "$GITHUB_REF_NAME" "${args[@]}" \
+            LICENSE \
+            apps/gyst/.crust/*/bin/gyst-bun-* \
+            apps/gyst/.crust/gyst-skills.tar.gz
