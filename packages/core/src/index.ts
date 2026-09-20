@@ -1,4 +1,18 @@
 export {
+  applyBatch,
+  type ApplyEnvelope,
+  ApplyEnvelopeSchema,
+  type ApplyOp,
+  ApplyOpSchema,
+  type ApplyOutcome,
+  GroupCreateSchema,
+  GroupDissolveSchema,
+  GroupUpdateSchema,
+  HunkAnnotateSchema,
+  QueueSetSchema,
+  type ValidationDetail,
+} from "./apply.ts";
+export {
   BadArgs,
   DaemonError,
   DaemonUnreachable,
@@ -10,6 +24,7 @@ export {
   StaleRevision,
   ValidationFailed,
 } from "./errors.ts";
+export { refreshSession } from "./refresh.ts";
 export {
   type Group,
   GroupSchema,

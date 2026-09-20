@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it } from "bun:test";
-import { BadArgs, type Request, type Session } from "@gyst/core";
+import { type ApplyEnvelope, BadArgs, type Request, type Session } from "@gyst/core";
 import { Crypto, Effect, Exit, Layer, PlatformError } from "effect";
 import { Git } from "./git.ts";
 import { Sessions } from "./sessions.ts";
@@ -30,6 +30,7 @@ let patchCalls: Array<{
 }>;
 let saveFails: boolean;
 let nextId: number;
+let gitPatch: string;
 
 // Deterministic bytes: the n-th id is `nnnnnnnn-nnnn-4nnn-8nnn-nnnnnnnnnnnn` in hex.
 const crypto = Layer.succeed(
@@ -48,7 +49,7 @@ const git = Layer.succeed(Git, {
   patch: (root, cwd, args, includeUntracked) =>
     Effect.sync(() => {
       patchCalls.push({ root, cwd, args, includeUntracked });
-      return patch;
+      return gitPatch;
     }),
 });
 
@@ -96,17 +97,36 @@ const persisted: Session = {
   seq: 1,
   cursor: { itemId: null, expanded: false },
   hunks: [
-    { id: "h1", file: "x.txt", header: "@@ -1 +1 @@", patch: "@@ -1 +1 @@\n-a\n+b" },
+    {
+      id: "h1",
+      file: "x.txt",
+      header: "@@ -1 +1 @@",
+      patch: "@@ -1 +1 @@\n-a\n+b",
+      contentHash: "ab",
+      accepted: false,
+    },
     {
       id: "h2",
       file: "y.txt",
       header: "@@ -1 +1 @@",
       patch: "@@ -1 +1 @@\n-c\n+d",
+      contentHash: "cd",
       tldr: "read me",
+      accepted: true,
     },
-    { id: "h3", file: "y.txt", header: "@@ -5 +5 @@", patch: "@@ -5 +5 @@\n-e\n+f" },
+    {
+      id: "h3",
+      file: "y.txt",
+      header: "@@ -5 +5 @@",
+      patch: "@@ -5 +5 @@\n-e\n+f",
+      contentHash: "ef",
+      accepted: false,
+    },
   ],
-  groups: [{ id: "g1", tldr: "same edit", exemplarHunkId: "h1", hunkIds: ["h1"] }],
+  groups: [{ id: "g1", tldr: "same edit", exemplarHunkId: "h1", hunkIds: ["h1"], accepted: true }],
+  queue: ["h2", "g1", "h3"],
+  queueSet: false,
+  applyReceipts: [],
 };
 
 beforeEach(() => {
@@ -114,6 +134,7 @@ beforeEach(() => {
   patchCalls = [];
   saveFails = false;
   nextId = 0;
+  gitPatch = patch;
 });
 
 describe("Sessions.create", () => {
@@ -122,11 +143,19 @@ describe("Sessions.create", () => {
       Sessions.use((s) => s.create(request("create", ["--"], `${root}/sub`))),
     );
     expect(status.inbox.map((hunk) => hunk.file)).toEqual(["a.txt", "b.txt"]);
-    expect(status.session.source).toEqual({ kind: "git", args: ["HEAD"], cwd: `${root}/sub` });
+    expect(status.session.source).toEqual({
+      kind: "git",
+      args: ["HEAD"],
+      cwd: `${root}/sub`,
+      includeUntracked: true,
+    });
     expect(patchCalls).toEqual([{ root, cwd: `${root}/sub`, args: [], includeUntracked: true }]);
     expect(status.session.id).toBe("01010101-0101-4101-8101-010101010101");
     expect(files.get(status.session.id)?.hunks).toHaveLength(2);
     expect(status.revision).toBe(0);
+    expect(status.queue).toEqual([]);
+    expect(status.queueSet).toBe(false);
+    expect(status.ready).toBe(false);
   });
 
   it("replays explicit revisions and pathspecs from the caller's directory", async () => {
@@ -201,8 +230,9 @@ describe("Sessions reads", () => {
     const byRepo = await run(Sessions.use((s) => s.status(request("status", [], otherRoot))));
     expect(byRepo.session.id).toBe("persisted");
     expect(byRepo.groups[0]?.count).toBe(1);
+    expect(byRepo.groups[0]?.accepted).toBe(true);
     expect(byRepo.spotlight).toEqual([
-      { id: "h2", file: "y.txt", tldr: "read me", accepted: false },
+      { id: "h2", file: "y.txt", tldr: "read me", accepted: true },
     ]);
     expect(byRepo.inbox).toEqual([{ id: "h3", file: "y.txt" }]);
     const byId = await run(
@@ -230,6 +260,243 @@ describe("Sessions reads", () => {
     expect((await failure(diff(["--group", "missing"])))._tag).toBe("validation_failed");
     expect((await failure(diff(["--hunk", "missing"])))._tag).toBe("validation_failed");
     expect((await failure(diff(["--bogus"])))._tag).toBe("bad_args");
+  });
+
+  it("rejects options another command owns and leaves the session untouched", async () => {
+    const apply = await failure(
+      Sessions.use((s) =>
+        s.apply(
+          request(
+            "apply",
+            ["--file", "x.txt"],
+            otherRoot,
+            JSON.stringify({ revision: 3, idempotencyKey: "flagged", ops: [] }),
+          ),
+        ),
+      ),
+    );
+    expect(apply._tag).toBe("bad_args");
+    const status = await failure(Sessions.use((s) => s.status(request("status", ["--stdin"]))));
+    expect(status._tag).toBe("bad_args");
+    const refresh = await failure(
+      Sessions.use((s) => s.refresh(request("refresh", ["--hunk", "h1"], otherRoot))),
+    );
+    expect(refresh._tag).toBe("bad_args");
+    expect(files.get("persisted")).toEqual(persisted);
+    expect(patchCalls).toEqual([]);
+  });
+});
+
+describe("Sessions.apply", () => {
+  const apply = (envelope: unknown, cwd = otherRoot) =>
+    Sessions.use((s) =>
+      s.apply(
+        request(
+          "apply",
+          [],
+          cwd,
+          typeof envelope === "string" ? envelope : JSON.stringify(envelope),
+        ),
+      ),
+    );
+  const envelope: ApplyEnvelope = {
+    revision: 3,
+    idempotencyKey: "first-pass",
+    ops: [
+      { type: "hunk.annotate", hunkId: "h3", tldr: "third" },
+      { type: "queue.set", itemIds: ["g1", "h2", "h3"] },
+    ],
+  };
+
+  it("applies a validated batch, bumps the revision, and persists a durable receipt", async () => {
+    const status = await run(apply(envelope));
+    expect(status.revision).toBe(4);
+    expect(status.seq).toBe(2);
+    expect(status.inbox).toEqual([]);
+    expect(status.spotlight.map((hunk) => hunk.id)).toEqual(["h2", "h3"]);
+    expect(status).toMatchObject({ queue: ["g1", "h2", "h3"], queueSet: true, ready: true });
+    const saved = files.get("persisted")!;
+    expect(saved.applyReceipts).toEqual([
+      { key: "first-pass", digest: expect.any(String), status },
+    ]);
+    expect(saved.hunks[2]?.tldr).toBe("third");
+    // The receipt answers a replay before the revision check, so a retried batch is a no-op.
+    expect(await run(apply(envelope))).toEqual(status);
+    expect(files.get("persisted")?.revision).toBe(4);
+  });
+
+  it("rejects the whole batch on any invalid op, an incomplete queue, or a stale revision", async () => {
+    const invalid = await failure(
+      apply({
+        revision: 3,
+        idempotencyKey: "invalid",
+        ops: [
+          {
+            type: "group.create",
+            id: "g2",
+            tldr: "mechanical",
+            memberHunkIds: ["h3"],
+            exemplarHunkId: "h3",
+          },
+          { type: "hunk.annotate", hunkId: "missing", tldr: "nope" },
+        ],
+      }),
+    );
+    expect(invalid._tag).toBe("validation_failed");
+    expect(invalid.detail).toEqual([{ opIndex: 1, message: "hunk missing does not exist" }]);
+    const incomplete = await failure(
+      apply({
+        revision: 3,
+        idempotencyKey: "incomplete",
+        ops: [{ type: "queue.set", itemIds: ["g1"] }],
+      }),
+    );
+    expect(incomplete._tag).toBe("validation_failed");
+    expect((incomplete.detail as Array<{ message: string }>).at(-1)?.message).toContain(
+      "exactly once",
+    );
+    const stale = await failure(apply({ revision: 0, idempotencyKey: "stale", ops: [] }));
+    expect(stale._tag).toBe("stale_revision");
+    expect(stale.detail).toEqual([expect.objectContaining({ opIndex: -1 })]);
+    const malformed = await failure(apply("not json"));
+    expect(malformed._tag).toBe("validation_failed");
+    expect(malformed.message).toBe("invalid apply envelope");
+    expect(malformed.detail).toEqual([{ opIndex: -1, message: expect.any(String) }]);
+    const missing = await failure(Sessions.use((s) => s.apply(request("apply", [], otherRoot))));
+    expect(missing._tag).toBe("validation_failed");
+    expect(files.get("persisted")).toEqual(persisted);
+  });
+
+  it("serializes concurrent batches so the second sees a stale revision", async () => {
+    const results = await run(
+      Effect.all(
+        [
+          Effect.exit(apply(envelope)),
+          Effect.exit(apply({ ...envelope, idempotencyKey: "second-pass" })),
+        ],
+        { concurrency: "unbounded" },
+      ),
+    );
+    expect(results.map(Exit.isSuccess)).toEqual([true, false]);
+    expect(
+      await run(Effect.flip(apply({ ...envelope, idempotencyKey: "third-pass" }))),
+    ).toMatchObject({
+      _tag: "stale_revision",
+    });
+    expect(files.get("persisted")?.revision).toBe(4);
+  });
+});
+
+describe("Sessions.refresh", () => {
+  const changed = `diff --git a/a.txt b/a.txt
+--- a/a.txt
++++ b/a.txt
+@@ -3 +3 @@
+-one
++two
+diff --git a/b.txt b/b.txt
+--- a/b.txt
++++ b/b.txt
+@@ -1 +1 @@
+-three
++FOUR
+diff --git a/c.txt b/c.txt
+--- a/c.txt
++++ b/c.txt
+@@ -1 +1 @@
+-five
++six
+`;
+
+  it("re-reads a bare git session from its recorded source, keeping only unchanged work", async () => {
+    await run(
+      Effect.gen(function* () {
+        const sessions = yield* Sessions;
+        const created = yield* sessions.create(request("create", ["--"], `${root}/sub`));
+        const [a, b] = created.inbox.map((hunk) => hunk.id);
+        yield* sessions.apply(
+          request(
+            "apply",
+            [],
+            root,
+            JSON.stringify({
+              revision: 0,
+              idempotencyKey: "fold",
+              ops: [
+                {
+                  type: "group.create",
+                  id: "g",
+                  tldr: "same",
+                  memberHunkIds: [a],
+                  exemplarHunkId: a,
+                },
+                { type: "hunk.annotate", hunkId: b, tldr: "stale note" },
+                { type: "queue.set", itemIds: ["g", b] },
+              ],
+            }),
+          ),
+        );
+        gitPatch = changed;
+        const refreshed = yield* sessions.refresh(request("refresh", [], root));
+        expect(patchCalls[1]).toEqual({
+          root,
+          cwd: `${root}/sub`,
+          args: [],
+          includeUntracked: true,
+        });
+        expect(refreshed.revision).toBe(2);
+        expect(refreshed.groups).toEqual([
+          expect.objectContaining({ id: "g", hunkIds: [a], accepted: false }),
+        ]);
+        expect(refreshed.spotlight).toEqual([]);
+        expect(refreshed.inbox.map((hunk) => hunk.file)).toEqual(["b.txt", "c.txt"]);
+        expect(refreshed.inbox.map((hunk) => hunk.id)).not.toContain(b);
+        expect(refreshed.queue).toEqual(["g", ...refreshed.inbox.map((hunk) => hunk.id)]);
+        expect(refreshed).toMatchObject({ queueSet: false, ready: false });
+        expect(files.get(created.session.id)?.revision).toBe(2);
+      }),
+    );
+  });
+
+  it("replays explicit git arguments and refuses --stdin for git sessions", async () => {
+    await run(
+      Effect.gen(function* () {
+        const sessions = yield* Sessions;
+        yield* sessions.create(request("create", ["--", "HEAD~1", "HEAD"]));
+        const refreshed = yield* sessions.refresh(request("refresh", [], `${root}/sub`));
+        expect(refreshed.revision).toBe(1);
+        expect(patchCalls[1]).toEqual({
+          root,
+          cwd: root,
+          args: ["HEAD~1", "HEAD"],
+          includeUntracked: false,
+        });
+        const piped = yield* Effect.flip(
+          sessions.refresh(request("refresh", ["--stdin"], root, patch)),
+        );
+        expect(piped._tag).toBe("bad_args");
+        expect(piped.message).toBe("git sessions refresh their recorded arguments");
+      }),
+    );
+  });
+
+  it("refreshes stdin sessions only from a new --stdin patch", async () => {
+    const withoutPipe = await failure(
+      Sessions.use((s) => s.refresh(request("refresh", [], otherRoot))),
+    );
+    expect(withoutPipe._tag).toBe("bad_args");
+    expect(withoutPipe.message).toBe("stdin sessions must be refreshed with --stdin");
+    const notAPatch = await failure(
+      Sessions.use((s) => s.refresh(request("refresh", ["--stdin"], otherRoot, "text\n"))),
+    );
+    expect(notAPatch._tag).toBe("bad_args");
+    const refreshed = await run(
+      Sessions.use((s) => s.refresh(request("refresh", ["--stdin"], otherRoot, patch))),
+    );
+    expect(refreshed.revision).toBe(4);
+    expect(refreshed.groups).toEqual([]);
+    expect(refreshed.inbox.map((hunk) => hunk.file)).toEqual(["a.txt", "b.txt"]);
+    expect(patchCalls).toEqual([]);
   });
 });
 

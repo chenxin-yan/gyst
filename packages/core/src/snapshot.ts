@@ -1,6 +1,7 @@
 import { parsePatchFiles } from "@pierre/diffs";
 import { Result } from "effect";
 import { BadArgs } from "./errors.ts";
+import { hash } from "./hash.ts";
 import type { Hunk } from "./session.ts";
 
 const invalidDiff = (detail: string) =>
@@ -35,8 +36,8 @@ function hunksOf(
   if (rawHunks.length !== parsedHunkCount)
     return invalidDiff("parsed hunk count does not match unified diff");
   let index = 0;
+  const occurrences = new Map<string, number>();
   const hunks: Hunk[] = [];
-  const ids = new Set<string>();
   for (const file of files) {
     for (const parsedHunk of file.hunks) {
       const lines = rawHunks[index++]!.split("\n");
@@ -52,16 +53,18 @@ function hunksOf(
         end++;
       }
       const text = lines.slice(0, end).join("\n");
-      const digest = Bun.hash(`${file.name}\0${text}`).toString(16).padStart(16, "0");
-      // Ids are the agent's handles; a collision must not make two hunks one.
-      let id = digest;
-      for (let n = 2; ids.has(id); n++) id = `${digest}-${n}`;
-      ids.add(id);
+      // The body hash matches a hunk across refreshes even when its line numbers moved; the
+      // occurrence index keeps identical hunks distinct so ids stay stable and unique.
+      const identity = `${file.name}\0${text}`;
+      const occurrence = occurrences.get(identity) ?? 0;
+      occurrences.set(identity, occurrence + 1);
       hunks.push({
-        id,
+        id: hash(`${identity}\0${occurrence}`),
         file: file.name,
         header: (parsedHunk.hunkSpecs ?? "").trimEnd(),
         patch: text,
+        contentHash: hash(text.slice(text.indexOf("\n") + 1)),
+        accepted: false,
       });
     }
   }
