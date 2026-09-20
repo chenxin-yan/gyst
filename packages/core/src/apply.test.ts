@@ -26,6 +26,7 @@ const session: Session = {
   groups: [],
   queue: ["h1", "h2", "h3"],
   queueSet: false,
+  acceptHistory: ["h1", "h2"],
   applyReceipts: [],
 };
 
@@ -49,9 +50,20 @@ describe("applyBatch", () => {
       expect.objectContaining({ tldr: "reworded", accepted: false }),
     );
     expect(reworded.hunks[1]?.accepted).toBe(true);
+    expect(reworded.acceptHistory).toEqual(["h2"]);
 
     const repeated = applied([{ type: "hunk.annotate", hunkId: "h1", tldr: "first" }]);
     expect(repeated.hunks[0]).toEqual(expect.objectContaining({ tldr: "first", accepted: true }));
+    expect(repeated.acceptHistory).toEqual(["h1", "h2"]);
+
+    // A finalized queue survives a re-wording, so the history must be pruned even then.
+    const finalized = applied([{ type: "hunk.annotate", hunkId: "h1", tldr: "reworded" }], {
+      ...session,
+      hunks: [session.hunks[0]!, session.hunks[1]!],
+      queue: ["h1", "h2"],
+      queueSet: true,
+    });
+    expect(finalized).toMatchObject({ queueSet: true, acceptHistory: ["h2"] });
   });
 
   it("rejects an empty group id and leaves the batch unapplied", () => {
@@ -80,6 +92,7 @@ describe("applyBatch", () => {
     ]);
     expect(grouped.hunks[0]?.accepted).toBe(false);
     expect(grouped.hunks[1]?.accepted).toBe(true);
+    expect(grouped.acceptHistory).toEqual(["h2"]);
 
     const widened = applied(
       [{ type: "group.update", id: "g1", memberHunkIds: ["h1", "h2"] }],
@@ -87,6 +100,7 @@ describe("applyBatch", () => {
       "widen",
     );
     expect(widened.hunks.map(({ accepted }) => accepted)).toEqual([false, false, false]);
+    expect(widened.acceptHistory).toEqual([]);
   });
 
   it("replays only an identical envelope under a reused idempotency key", () => {

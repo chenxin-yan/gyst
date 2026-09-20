@@ -18,7 +18,7 @@
     "build": "cp ../../LICENSE LICENSE && cp ../../README.md README.md && crust build --target host",
     "start": "bun .crust/root/bin/gyst.js",
     "check:types": "tsc --noEmit",
-    "test": "bun test"
+    "test": "bun test && bun src/tui/smoke.tsx && bun src/tui/app-races.smoke.tsx"
   },
   "devDependencies": {
     "@crustjs/crust": "0.3.4"
@@ -27,6 +27,7 @@
     "@crustjs/core": "0.3.4",
     "@crustjs/effect": "0.1.1",
     "@crustjs/extensions": "0.3.4",
+    "@crustjs/tui": "0.0.2",
     "@effect/platform-bun": "4.0.0-rc.116",
     "@gyst/core": "workspace:*",
     "@opentui/solid": "0.5.11",

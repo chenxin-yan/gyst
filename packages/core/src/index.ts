@@ -50,6 +50,7 @@ export const ErrorPayloadSchema = Schema.Struct({ code: ErrorCodeSchema, ...erro
     encode: SchemaGetter.transform(({ _tag, ...rest }) => ({ code: _tag, ...rest })),
   }),
 );
+export type ErrorPayload = typeof ErrorPayloadSchema.Encoded;
 
 export const HunkSchema = Schema.Struct({
   id: Schema.String,
@@ -138,6 +139,7 @@ export const SessionSchema = Schema.Struct({
   groups: Schema.Array(GroupSchema),
   queue: Schema.Array(Schema.String),
   queueSet: Schema.Boolean,
+  acceptHistory: Schema.Array(Schema.String),
   applyReceipts: Schema.Array(ApplyReceiptSchema),
 });
 export type Session = typeof SessionSchema.Type;
@@ -184,6 +186,20 @@ export const ApplyEnvelopeSchema = Schema.Struct({
 });
 export type ApplyEnvelope = typeof ApplyEnvelopeSchema.Type;
 
+// A verdict names the frame the human saw; the daemon rejects it once that frame is stale.
+const verdictFrameFields = { sessionId: Schema.String, revision: Schema.Number };
+export const HumanActionSchema = Schema.Union([
+  Schema.Struct({ type: Schema.Literal("cursor.move"), itemId: Schema.String }),
+  Schema.Struct({ type: Schema.Literal("expand.toggle") }),
+  Schema.Struct({
+    type: Schema.Literal("verdict.toggle"),
+    itemId: Schema.String,
+    ...verdictFrameFields,
+  }),
+  Schema.Struct({ type: Schema.Literal("verdict.undo"), ...verdictFrameFields }),
+]);
+export type HumanAction = typeof HumanActionSchema.Type;
+
 export const DiffPayloadSchema = Schema.Struct({
   sessionId: Schema.String,
   revision: Schema.Number,
@@ -198,10 +214,11 @@ export const ClosePayloadSchema = Schema.Struct({
 export type ClosePayload = typeof ClosePayloadSchema.Type;
 
 export const RequestSchema = Schema.Struct({
-  command: Schema.Literals(["create", "status", "diff", "apply", "refresh", "close"]),
+  command: Schema.Literals(["create", "status", "diff", "apply", "refresh", "close", "tui.action"]),
   cwd: Schema.String,
   args: Schema.Array(Schema.String),
   stdin: Schema.optional(Schema.String),
+  action: Schema.optional(HumanActionSchema),
 });
 export type Request = typeof RequestSchema.Type;
 
@@ -281,10 +298,13 @@ function hunksOf(
 type Mutable<T> = { -readonly [K in keyof T]: T[K] };
 type MutableHunk = Mutable<Hunk>;
 type MutableGroup = Mutable<Omit<Group, "hunkIds">> & { hunkIds: string[] };
-type MutableSession = Mutable<Omit<Session, "hunks" | "groups" | "queue" | "applyReceipts">> & {
+type MutableSession = Mutable<
+  Omit<Session, "hunks" | "groups" | "queue" | "acceptHistory" | "applyReceipts">
+> & {
   hunks: MutableHunk[];
   groups: MutableGroup[];
   queue: string[];
+  acceptHistory: string[];
   applyReceipts: Array<{ key: string; digest: string; status: StatusPayload }>;
 };
 
@@ -343,6 +363,13 @@ function reconcileQueue(session: MutableSession): void {
   ];
   // A grouped hunk is reviewed through its group, so a verdict of its own would be unreachable.
   for (const hunk of session.hunks) if (!visibleSet.has(hunk.id)) hunk.accepted = false;
+  const acceptedIds = new Set([
+    ...session.groups.filter(({ accepted }) => accepted).map(({ id }) => id),
+    ...session.hunks
+      .filter(({ accepted, tldr, id }) => accepted && tldr !== undefined && visibleSet.has(id))
+      .map(({ id }) => id),
+  ]);
+  session.acceptHistory = session.acceptHistory.filter((id) => acceptedIds.has(id));
   if (session.cursor.itemId !== null && !visibleSet.has(session.cursor.itemId)) {
     session.cursor = { itemId: null, expanded: false };
   }
@@ -502,7 +529,11 @@ export function applyBatch(
       }
       const wasInbox = hunk.tldr === undefined && !hunkInOtherGroup(hunk.id);
       // A re-worded annotation is a new claim; the verdict on the old wording no longer applies.
-      if (hunk.tldr !== op.tldr) hunk.accepted = false;
+      // Pruned here because a finalized queue skips the end-of-batch reconcile.
+      if (hunk.tldr !== op.tldr) {
+        hunk.accepted = false;
+        draft.acceptHistory = draft.acceptHistory.filter((id) => id !== hunk.id);
+      }
       hunk.tldr = op.tldr;
       if (wasInbox) draft.queueSet = false;
       continue;
@@ -545,6 +576,54 @@ export function applyBatch(
   const status = statusOf(draft);
   draft.applyReceipts.push({ key: envelope.idempotencyKey, digest, status });
   return Result.succeed({ session: draft, status });
+}
+
+/** Cursor moves and folds bump only `seq`; verdicts are review state and bump `revision` too. */
+export function applyHumanAction(
+  session: Session,
+  action: HumanAction,
+): Result.Result<Session, ValidationFailed> {
+  const inapplicable = Result.fail(
+    new ValidationFailed({ message: "TUI action does not apply to the current session" }),
+  );
+  const draft = draftOf(session);
+  const visibleIds = new Set(visibleItemIds(session));
+
+  if (action.type === "cursor.move") {
+    if (!visibleIds.has(action.itemId)) return inapplicable;
+    draft.cursor = { itemId: action.itemId, expanded: false };
+  } else if (action.type === "expand.toggle") {
+    if (!session.cursor.itemId || !session.groups.some(({ id }) => id === session.cursor.itemId))
+      return inapplicable;
+    draft.cursor = { ...draft.cursor, expanded: !draft.cursor.expanded };
+  } else {
+    // Until the pre-pass finalizes the queue, the human is not looking at the reviewable set.
+    if (!session.queueSet)
+      return Result.fail(new ValidationFailed({ message: "review queue is not set" }));
+    const itemId = action.type === "verdict.undo" ? draft.acceptHistory.at(-1) : action.itemId;
+    if (!itemId) return inapplicable;
+    const group = draft.groups.find(({ id }) => id === itemId);
+    const grouped = groupedIds(draft);
+    const hunk = draft.hunks.find(
+      ({ id, tldr }) => id === itemId && tldr !== undefined && !grouped.has(id),
+    );
+    const item = group ?? hunk;
+    if (!item || (action.type === "verdict.undo" && !item.accepted)) return inapplicable;
+    if (action.type === "verdict.undo") {
+      item.accepted = false;
+      draft.acceptHistory.pop();
+      draft.cursor = { itemId, expanded: false };
+    } else {
+      item.accepted = !item.accepted;
+      draft.acceptHistory = draft.acceptHistory.filter((id) => id !== itemId);
+      if (item.accepted) draft.acceptHistory.push(itemId);
+    }
+    draft.revision++;
+  }
+
+  draft.seq++;
+  draft.updatedAt = new Date().toISOString();
+  return Result.succeed(draft);
 }
 
 export function refreshSession(session: Session, freshHunks: readonly Hunk[]): Session {

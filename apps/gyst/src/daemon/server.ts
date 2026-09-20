@@ -125,7 +125,7 @@ export class DaemonServer extends Context.Service<
       const handlers: Record<
         Request["command"],
         (request: Request) => Effect.Effect<unknown, DaemonError>
-      > = sessions;
+      > = { ...sessions, "tui.action": (request) => sessions.tuiAction(request) };
       // Accepted connections that have not replied yet; idle shutdown must not interrupt them.
       const active = yield* Ref.make(0);
       const handleConnection = Effect.fnUntraced(

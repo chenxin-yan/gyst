@@ -2,8 +2,12 @@ import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import { chmod, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { BunServices } from "@effect/platform-bun";
 import { StatusPayloadSchema } from "@gyst/core";
-import { Schema } from "effect";
+import { ConfigProvider, Layer, ManagedRuntime, Schema } from "effect";
+import { DaemonClient } from "../daemon/client.ts";
+import { Paths } from "../daemon/paths.ts";
+import { daemonTuiClient } from "../tui/client.ts";
 
 const binary = join(tmpdir(), `gyst-e2e-${process.pid}`);
 let root: string;
@@ -541,6 +545,77 @@ describe("gyst session CLI seam", () => {
     expect(stdinRefresh.exitCode).toBe(0);
     expect(JSON.parse(stdinRefresh.stdout).inbox[0].id).not.toBe(stdinCreated.inbox[0].id);
     await gyst(stdinRepo, ["session", "close"]);
+  }, 20_000);
+
+  it("persists human cursor, expand state, and verdicts through the daemon", async () => {
+    const cwd = await repo("human-actions");
+    await writeFile(join(cwd, "tracked.txt"), "one\ntwo\n");
+    await writeFile(join(cwd, "other.txt"), "new\n");
+    const created = JSON.parse((await gyst(cwd, ["session", "create"])).stdout);
+    const [first, second] = created.inbox;
+    // The TUI's runtime, pointed at this test's data dir; the daemon is already up, so nothing spawns.
+    await using runtime = ManagedRuntime.make(
+      DaemonClient.layer.pipe(
+        Layer.provide(Paths.layer),
+        Layer.provide(BunServices.layer),
+        Layer.provide(ConfigProvider.layer(ConfigProvider.fromUnknown({ GYST_DATA_DIR: data }))),
+      ),
+    );
+    const client = daemonTuiClient(runtime, cwd);
+    const frame = (revision: number) => ({ sessionId: created.session.id, revision });
+    await expect(
+      client.action({ type: "verdict.toggle", itemId: first.id, ...frame(0) }),
+    ).rejects.toThrow("review queue is not set");
+    await gyst(
+      cwd,
+      ["session", "apply"],
+      JSON.stringify({
+        revision: 0,
+        idempotencyKey: "human-session",
+        ops: [
+          {
+            type: "group.create",
+            id: "group-1",
+            tldr: "mechanical",
+            memberHunkIds: [first.id],
+            exemplarHunkId: first.id,
+          },
+          { type: "hunk.annotate", hunkId: second.id, tldr: "read this" },
+          { type: "queue.set", itemIds: ["group-1", second.id] },
+        ],
+      }),
+    );
+
+    await expect(client.action({ type: "verdict.undo", ...frame(1) })).rejects.toThrow(
+      "TUI action does not apply",
+    );
+    await client.action({ type: "cursor.move", itemId: "group-1" });
+    await client.action({ type: "expand.toggle" });
+    // The frame the human saw is stale once the pre-pass moved the revision on.
+    await expect(
+      client.action({ type: "verdict.toggle", itemId: "group-1", ...frame(0) }),
+    ).rejects.toThrow("verdict targets a stale snapshot");
+    const accepted = await client.action({
+      type: "verdict.toggle",
+      itemId: "group-1",
+      ...frame(1),
+    });
+    expect(accepted.cursor).toEqual({ itemId: "group-1", expanded: true });
+    expect(accepted.groups[0]!.accepted).toBe(true);
+    expect(accepted.revision).toBe(2);
+    expect(accepted.seq).toBe(4);
+    expect(JSON.parse((await gyst(cwd, ["session", "status"])).stdout)).toEqual(accepted);
+
+    const pid = Number(await readFile(join(data, "daemon.pid"), "utf8"));
+    process.kill(pid, "SIGKILL");
+    await Bun.sleep(50);
+    const restored = JSON.parse((await gyst(cwd, ["session", "status"])).stdout);
+    expect(restored.cursor).toEqual({ itemId: "group-1", expanded: true });
+    expect(restored.groups[0]!.accepted).toBe(true);
+    const undone = await client.action({ type: "verdict.undo", ...frame(2) });
+    expect(undone.cursor).toEqual({ itemId: "group-1", expanded: false });
+    expect(undone.groups[0]!.accepted).toBe(false);
+    await gyst(cwd, ["session", "close"]);
   }, 20_000);
 
   it("starts the daemon when run from source under bun", async () => {
