@@ -130,16 +130,20 @@ function buildItems(status: StatusPayload, hunks: Map<string, Member>): ViewItem
   });
 }
 
-function FileHeader(props: { member: Member }) {
+function FileHeader(props: { member: Member; focused: boolean }) {
   return (
     <box
       flexDirection="row"
       justifyContent="space-between"
-      backgroundColor={C.panel}
-      paddingLeft={1}
+      backgroundColor={props.focused ? C.panelAlt : C.panel}
       paddingRight={1}
     >
-      <text fg={C.fg}>{props.member.file}</text>
+      <text>
+        <Sp fg={props.focused ? C.accent : C.panel}>▌</Sp>
+        <Sp fg={C.fg} attributes={props.focused ? 1 : 0}>
+          {props.member.file}
+        </Sp>
+      </text>
       <text>
         <Show when={props.member.added}>
           <Sp fg={C.ok}>+{props.member.added}</Sp>
@@ -152,10 +156,13 @@ function FileHeader(props: { member: Member }) {
   );
 }
 
-function MemberDiff(props: { member: Member; layout: "split" | "stack" }) {
+/** The box id lets the focus card scroll a focused member into view. */
+const memberElementId = (hunkId: string) => `hunk:${hunkId}`;
+
+function MemberDiff(props: { member: Member; layout: "split" | "stack"; focused: boolean }) {
   return (
-    <box flexDirection="column">
-      <FileHeader member={props.member} />
+    <box flexDirection="column" id={memberElementId(props.member.id)}>
+      <FileHeader member={props.member} focused={props.focused} />
       <diff
         diff={props.member.patch}
         view={props.layout === "split" ? "split" : "unified"}
@@ -200,7 +207,13 @@ function VerdictTag(props: { accepted: boolean }) {
   );
 }
 
-function FocusCard(props: { item: ViewItem; expanded: boolean; layout: "split" | "stack" }) {
+function FocusCard(props: {
+  item: ViewItem;
+  expanded: boolean;
+  focusedHunk: string | undefined;
+  layout: "split" | "stack";
+}) {
+  const focused = (member: Member) => member.id === props.focusedHunk;
   if (props.item.kind === "group")
     return (
       <box flexDirection="column">
@@ -218,17 +231,27 @@ function FocusCard(props: { item: ViewItem; expanded: boolean; layout: "split" |
           fallback={
             <box flexDirection="column">
               <text fg={C.dim}>exemplar · 1 of {props.item.members.length}</text>
-              <MemberDiff member={props.item.exemplar} layout={props.layout} />
+              <MemberDiff
+                member={props.item.exemplar}
+                layout={props.layout}
+                focused={focused(props.item.exemplar)}
+              />
               <text fg={C.dim}>(e to expand)</text>
             </box>
           }
         >
           <box flexDirection="column">
-            <text fg={C.dim}>all {props.item.members.length} members (e to fold)</text>
+            <text fg={C.dim}>
+              all {props.item.members.length} members (e to fold
+              {props.focusedHunk === undefined
+                ? ", enter to step through"
+                : ", j/k to step, esc to leave"}
+              )
+            </text>
             <For each={props.item.members}>
               {(member) => (
                 <box paddingBottom={1}>
-                  <MemberDiff member={member} layout={props.layout} />
+                  <MemberDiff member={member} layout={props.layout} focused={focused(member)} />
                 </box>
               )}
             </For>
@@ -253,7 +276,11 @@ function FocusCard(props: { item: ViewItem; expanded: boolean; layout: "split" |
         </text>
         <Note text={props.item.tldr} />
         <text> </text>
-        <MemberDiff member={props.item.member} layout={props.layout} />
+        <MemberDiff
+          member={props.item.member}
+          layout={props.layout}
+          focused={focused(props.item.member)}
+        />
       </box>
     );
   return (
@@ -271,7 +298,11 @@ function FocusCard(props: { item: ViewItem; expanded: boolean; layout: "split" |
         {props.item.member.header}
       </text>
       <text> </text>
-      <MemberDiff member={props.item.member} layout={props.layout} />
+      <MemberDiff
+        member={props.item.member}
+        layout={props.layout}
+        focused={focused(props.item.member)}
+      />
     </box>
   );
 }
@@ -331,6 +362,13 @@ export function App(props: {
     const item = current();
     return item && `${item.kind}:${item.id}`;
   });
+  const focusedHunk = () => status()?.cursor.hunkId;
+  // Hunks the focused cursor can step through: a group's members in order, or the lone hunk.
+  const focusable = createMemo(() => {
+    const item = current();
+    if (!item) return [];
+    return item.kind === "group" ? item.members.map(({ id }) => id) : [item.id];
+  });
   const resolvedLayout = createMemo(() => {
     const mode = layoutMode();
     return mode === "auto" ? (dims().width >= 120 ? "split" : "stack") : mode;
@@ -344,6 +382,11 @@ export function App(props: {
       () => current()?.id,
       () => focusCard?.scrollTo(0),
     ),
+  );
+  createEffect(
+    on(focusedHunk, (hunkId) => {
+      if (hunkId !== undefined) focusCard?.scrollChildIntoView(memberElementId(hunkId));
+    }),
   );
 
   function observe(next: StatusPayload): StatusPayload {
@@ -481,11 +524,29 @@ export function App(props: {
         }
         await refresh();
       });
+    if (key.name === "return")
+      return enqueue(async () => {
+        const first = focusable()[0];
+        if (first !== undefined && focusedHunk() === undefined)
+          await action({ type: "cursor.focus", hunkId: first });
+      });
+    if (key.name === "escape")
+      return enqueue(async () => {
+        if (focusedHunk() !== undefined) await action({ type: "cursor.focus", hunkId: null });
+      });
     if (key.name === "j" || key.name === "k")
       return enqueue(async () => {
+        const delta = key.name === "j" ? 1 : -1;
+        const focused = focusedHunk();
+        if (focused !== undefined) {
+          const ids = focusable();
+          if (ids.length < 2) return;
+          const next = ids[(ids.indexOf(focused) + delta + ids.length) % ids.length]!;
+          await action({ type: "cursor.focus", hunkId: next });
+          return;
+        }
         const visible = items();
         if (!visible.length) return;
-        const delta = key.name === "j" ? 1 : -1;
         const destination = visible[(currentIndex() + delta + visible.length) % visible.length]!;
         await action({ type: "cursor.move", itemId: destination.id });
       });
@@ -588,6 +649,7 @@ export function App(props: {
                   <FocusCard
                     item={current()!}
                     expanded={status()!.cursor.expanded}
+                    focusedHunk={focusedHunk()}
                     layout={resolvedLayout()}
                   />
                 </Show>
@@ -602,9 +664,9 @@ export function App(props: {
       <Show when={help()}>
         <box
           position="absolute"
-          left={Math.max(0, Math.floor((dims().width - 48) / 2))}
+          left={Math.max(0, Math.floor((dims().width - 60) / 2))}
           top={4}
-          width={48}
+          width={60}
           zIndex={10}
           backgroundColor={C.panel}
           border
@@ -624,7 +686,8 @@ export function App(props: {
           <text> </text>
           <For
             each={[
-              ["j / k", "next / previous item"],
+              ["j / k", "next / previous item, or hunk when focused"],
+              ["enter / esc", "focus / leave the diff pane"],
               ["^d / ^u", "scroll item down / up (PgDn / PgUp)"],
               ["a", "accept — done reviewing (toggle)"],
               ["e", "expand group members (toggle)"],
@@ -637,7 +700,7 @@ export function App(props: {
           >
             {([key, description]) => (
               <text>
-                <Sp fg={C.accent}>{key!.padEnd(11)}</Sp>
+                <Sp fg={C.accent}>{key!.padEnd(13)}</Sp>
                 <Sp fg={C.muted}>{description}</Sp>
               </text>
             )}

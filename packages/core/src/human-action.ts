@@ -1,5 +1,5 @@
 import { Result, Schema } from "effect";
-import { draftOf, groupedIds, visibleItemIds } from "./draft.ts";
+import { draftOf, focusableHunkIds, groupedIds, visibleItemIds } from "./draft.ts";
 import { ValidationFailed } from "./errors.ts";
 import type { Session } from "./session.ts";
 
@@ -8,6 +8,8 @@ const verdictFrameFields = { sessionId: Schema.String, revision: Schema.Number }
 export const HumanActionSchema = Schema.Union([
   Schema.Struct({ type: Schema.Literal("cursor.move"), itemId: Schema.String }),
   Schema.Struct({ type: Schema.Literal("expand.toggle") }),
+  // `null` returns focus to the sidebar; a hunk id focuses that hunk inside the current item.
+  Schema.Struct({ type: Schema.Literal("cursor.focus"), hunkId: Schema.NullOr(Schema.String) }),
   Schema.Struct({
     type: Schema.Literal("verdict.toggle"),
     itemId: Schema.String,
@@ -34,7 +36,23 @@ export function applyHumanAction(
   } else if (action.type === "expand.toggle") {
     if (!session.cursor.itemId || !session.groups.some(({ id }) => id === session.cursor.itemId))
       return inapplicable;
-    draft.cursor = { ...draft.cursor, expanded: !draft.cursor.expanded };
+    const expanded = !session.cursor.expanded;
+    // Folding hides the members, so it also drops the focus on one of them.
+    draft.cursor = expanded
+      ? { ...draft.cursor, expanded }
+      : { itemId: session.cursor.itemId, expanded };
+  } else if (action.type === "cursor.focus") {
+    const { itemId, expanded } = session.cursor;
+    if (itemId === null) return inapplicable;
+    if (action.hunkId === null) draft.cursor = { itemId, expanded };
+    else if (focusableHunkIds(session, itemId).includes(action.hunkId))
+      // A focused member has to be visible, so focusing inside a group expands it.
+      draft.cursor = {
+        itemId,
+        expanded: expanded || session.groups.some(({ id }) => id === itemId),
+        hunkId: action.hunkId,
+      };
+    else return inapplicable;
   } else {
     // Until the pre-pass finalizes the queue, the human is not looking at the reviewable set.
     if (!session.queueSet)

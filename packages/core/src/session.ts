@@ -43,6 +43,8 @@ const sessionSummaryFields = {
 const cursorSchema = Schema.Struct({
   itemId: Schema.NullOr(Schema.String),
   expanded: Schema.Boolean,
+  // Set while the human reads inside the item: one of its hunks, absent while the sidebar has focus.
+  hunkId: Schema.optional(Schema.String),
 });
 
 const HunkSummarySchema = Schema.Struct({ id: Schema.String, file: Schema.String });

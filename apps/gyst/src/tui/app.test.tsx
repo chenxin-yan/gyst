@@ -82,6 +82,13 @@ function fixture() {
         next.cursor.expanded = !next.cursor.expanded;
         next.seq++;
       }
+      if (action.type === "cursor.focus") {
+        next.cursor =
+          action.hunkId === null
+            ? { itemId: next.cursor.itemId, expanded: next.cursor.expanded }
+            : { itemId: next.cursor.itemId, expanded: true, hunkId: action.hunkId };
+        next.seq++;
+      }
       if (action.type === "verdict.toggle") {
         const item =
           next.groups.find((value: { id: string }) => value.id === action.itemId) ??
@@ -123,6 +130,8 @@ async function press(
   modifiers?: { ctrl?: boolean },
 ) {
   await tui.mockInput.pressKey(key, modifiers);
+  // A lone ESC is held back until the stdin parser's sequence timeout (20ms) rules out a longer sequence.
+  if (key === "ESCAPE") await Bun.sleep(30);
   await tui.renderOnce();
   await Promise.resolve();
   await tui.renderOnce();
@@ -229,6 +238,88 @@ describe("TUI", () => {
     assert.equal(state.actions.length, actionsBeforeStale + 1, "stale verdict was sent once");
     assert(!state.status().groups[0]!.accepted, "stale verdict is not applied");
     assert(tui.captureCharFrame().includes("(reworded)"), "stale verdict re-syncs the view");
+    tui.renderer.destroy();
+  });
+
+  it("enters the diff pane with Enter, steps a group's hunks with j/k, and leaves with Esc", async () => {
+    const state = fixture();
+    const tui = await testRender(() => <App client={state.client} pollInterval={60_000} />, {
+      width: 100,
+      height: 30,
+    });
+    await tui.waitForFrame((frame) => frame.includes("▍GROUP"));
+    await press(tui, "RETURN");
+    assert.deepEqual(
+      state.actions.at(-1),
+      { type: "cursor.focus", hunkId: "b.ts" },
+      "Enter focuses the group's first member",
+    );
+    let frame = tui.captureCharFrame();
+    assert(frame.includes("all 2 members"), "focusing a group expands it");
+    assert(frame.includes("j/k to step, esc to leave"), "focused card names the pane keys");
+    await press(tui, "j");
+    assert.deepEqual(state.actions.at(-1), { type: "cursor.focus", hunkId: "a.ts" });
+    await press(tui, "j");
+    assert.deepEqual(state.actions.at(-1), { type: "cursor.focus", hunkId: "b.ts" }, "j wraps");
+    await press(tui, "k");
+    assert.deepEqual(
+      state.actions.at(-1),
+      { type: "cursor.focus", hunkId: "a.ts" },
+      "k steps back",
+    );
+    assert(tui.captureCharFrame().includes("▍GROUP"), "stepping hunks keeps the item");
+    await press(tui, "ESCAPE");
+    assert.deepEqual(state.actions.at(-1), { type: "cursor.focus", hunkId: null });
+    frame = tui.captureCharFrame();
+    assert(frame.includes("all 2 members"), "leaving keeps the group expanded");
+    assert(frame.includes("enter to step through"), "unfocused card offers Enter");
+    await press(tui, "j");
+    assert.deepEqual(
+      state.actions.at(-1),
+      { type: "cursor.move", itemId: "c.ts" },
+      "j moves items again",
+    );
+    await press(tui, "RETURN");
+    assert.deepEqual(state.actions.at(-1), { type: "cursor.focus", hunkId: "c.ts" });
+    const before = state.actions.length;
+    await press(tui, "j");
+    await press(tui, "k");
+    assert.equal(state.actions.length, before, "a lone hunk has nothing to step through");
+    await press(tui, "ESCAPE");
+    assert.deepEqual(state.actions.at(-1), { type: "cursor.focus", hunkId: null });
+    tui.renderer.destroy();
+  });
+
+  it("scrolls the focused member into view", async () => {
+    const state = fixture();
+    const longLines = Array.from({ length: 60 }, (_, index) => `+first_${index}`).join("\n");
+    const client: TuiClient = {
+      ...state.client,
+      diff: async () => {
+        const value = await state.client.diff();
+        return {
+          ...value,
+          hunks: value.hunks.map((hunk) =>
+            hunk.id === "b.ts" ? { ...hunk, patch: `@@ -1 +1,60 @@\n${longLines}` } : hunk,
+          ),
+        };
+      },
+    };
+    const tui = await testRender(() => <App client={client} pollInterval={60_000} />, {
+      width: 100,
+      height: 30,
+    });
+    await tui.waitForFrame((frame) => frame.includes("▍GROUP"));
+    await press(tui, "RETURN");
+    await tui.waitForFrame((frame) => frame.includes("first_0"));
+    assert(
+      !tui.captureCharFrame().includes("const old = 1"),
+      "the second member starts off-screen",
+    );
+    await press(tui, "j");
+    await tui.waitForFrame((frame) => frame.includes("const old = 1"));
+    await press(tui, "k");
+    await tui.waitForFrame((frame) => frame.includes("first_0"));
     tui.renderer.destroy();
   });
 
