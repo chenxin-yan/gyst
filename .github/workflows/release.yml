@@ -1,0 +1,100 @@
+name: release
+
+# Changesets flow: a merged PR carrying a changeset opens or updates the "Version Packages" PR;
+# merging that PR publishes. Versions move only through that PR, so main is the release source.
+on:
+  push:
+    branches: [main]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+# Reset at the top; each job declares what it needs. Only `publish` gets id-token: write.
+permissions: {}
+
+jobs:
+  check:
+    uses: ./.github/workflows/check.yml
+    permissions:
+      contents: read
+
+  select-mode:
+    needs: check
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      mode: ${{ steps.select-mode.outputs.mode }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@v2
+      - run: bun install --frozen-lockfile
+      - id: select-mode
+        uses: changesets/action/select-mode@v2
+
+  version:
+    if: needs.select-mode.outputs.mode == 'version'
+    needs: select-mode
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # commit the version bump
+      pull-requests: write # open or update the release PR
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@v2
+      - run: bun install --frozen-lockfile
+      - uses: changesets/action/version@v2
+        with:
+          pr-title: "chore: release @gyst/cli"
+          commit-message: "chore: version packages"
+          script: bun run release:version
+
+  publish:
+    if: needs.select-mode.outputs.mode == 'publish'
+    needs: select-mode
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # git tags, GitHub release and its assets
+      id-token: write # npm trusted publishing (OIDC)
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # `changeset git-tag` needs existing tags to skip already-tagged versions.
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@v2
+      # npm >= 11.5.1 for trusted publishing; Node 24 bundles it. No token, no .npmrc: every
+      # published package needs a trusted publisher on npmjs.com for chenxin-yan/gyst + release.yml.
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          package-manager-cache: false
+      - run: bun install --frozen-lockfile --os='*' --cpu='*'
+      - name: Stage every platform package
+        working-directory: apps/gyst
+        run: bun run build
+      - name: Verify publish order without network writes
+        working-directory: apps/gyst
+        run: bun run release -- --dry-run
+      - name: Publish platform packages, then @gyst/cli, then tag and release
+        id: publish
+        uses: changesets/action/publish@v2
+        with:
+          script: bun run release:publish
+      - name: Attach raw binaries and the skills archive to the GitHub release
+        if: steps.publish.outputs.published == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PUBLISHED: ${{ steps.publish.outputs.published-packages }}
+        run: |
+          tar -C apps/gyst/.crust/root -czf apps/gyst/.crust/gyst-skills.tar.gz skills
+          version=$(jq -r '.[] | select(.name == "@gyst/cli") | .version' <<<"$PUBLISHED")
+          gh release upload "@gyst/cli@$version" --clobber \
+            LICENSE \
+            apps/gyst/.crust/*/bin/gyst-bun-* \
+            apps/gyst/.crust/gyst-skills.tar.gz

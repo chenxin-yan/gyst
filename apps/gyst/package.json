@@ -2,10 +2,29 @@
   "$schema": "./node_modules/@crustjs/crust/schema/package.json",
   "name": "@gyst/cli",
   "version": "0.0.0",
-  "private": true,
+  "description": "Keyboard-centric agent/human co-review TUI",
+  "license": "MIT",
   "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/chenxin-yan/gyst.git",
+    "directory": "apps/gyst"
+  },
+  "homepage": "https://github.com/chenxin-yan/gyst#readme",
+  "bugs": "https://github.com/chenxin-yan/gyst/issues",
+  "publishConfig": {
+    "access": "public"
+  },
   "crust": {
     "runtime": "bun",
+    "targets": [
+      "bun-linux-x64",
+      "bun-linux-arm64",
+      "bun-darwin-x64",
+      "bun-darwin-arm64",
+      "bun-windows-x64",
+      "bun-windows-arm64"
+    ],
     "bunPlugins": [
       "@opentui/solid/bun-plugin"
     ]
@@ -16,8 +35,9 @@
   "scripts": {
     "dev": "bun run src/index.tsx",
     "prebuild": "cp ../../LICENSE ../../README.md .",
-    "build": "crust build --target host",
+    "build": "crust build",
     "start": "bun .crust/root/bin/gyst.js",
+    "release": "crust publish",
     "check:types": "tsc --noEmit",
     "test": "bun test"
   },

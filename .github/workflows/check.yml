@@ -2,8 +2,8 @@ name: check
 
 on:
   pull_request:
-  push:
-    branches: [main]
+  # release.yml runs this on main before versioning or publishing.
+  workflow_call:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
