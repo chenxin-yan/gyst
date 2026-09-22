@@ -62,6 +62,49 @@ describe("applyHumanAction", () => {
     });
   });
 
+  it("focuses a hunk inside the current item, expanding groups, and drops focus on fold, move and leave", () => {
+    const focused = Result.getOrThrow(
+      applyHumanAction(unready, { type: "cursor.focus", hunkId: "h1" }, LATER),
+    );
+    expect(focused).toMatchObject({
+      cursor: { itemId: "g1", expanded: true, hunkId: "h1" },
+      revision: 3,
+      seq: 4,
+    });
+    expect(
+      failure(applyHumanAction(unready, { type: "cursor.focus", hunkId: "h2" }, LATER)),
+    ).toMatchObject({ _tag: "validation_failed" });
+    expect(
+      Result.getOrThrow(applyHumanAction(focused, { type: "cursor.focus", hunkId: null }, LATER))
+        .cursor,
+    ).toEqual({ itemId: "g1", expanded: true });
+    expect(
+      Result.getOrThrow(applyHumanAction(focused, { type: "expand.toggle" }, LATER)).cursor,
+    ).toEqual({ itemId: "g1", expanded: false });
+    expect(
+      Result.getOrThrow(applyHumanAction(focused, { type: "cursor.move", itemId: "h2" }, LATER))
+        .cursor,
+    ).toEqual({ itemId: "h2", expanded: false });
+    // A lone hunk is its own focus target and needs no expansion.
+    const spotlight = Result.getOrThrow(
+      applyHumanAction(
+        { ...unready, cursor: { itemId: "h2", expanded: false } },
+        { type: "cursor.focus", hunkId: "h2" },
+        LATER,
+      ),
+    );
+    expect(spotlight.cursor).toEqual({ itemId: "h2", expanded: false, hunkId: "h2" });
+    expect(
+      failure(
+        applyHumanAction(
+          { ...unready, cursor: { itemId: null, expanded: false } },
+          { type: "cursor.focus", hunkId: "h1" },
+          LATER,
+        ),
+      ),
+    ).toMatchObject({ _tag: "validation_failed" });
+  });
+
   it("toggles and undoes verdicts on a ready session, bumping seq exactly once per step", () => {
     const accepted = Result.getOrThrow(
       applyHumanAction(ready, { type: "verdict.toggle", itemId: "g1", ...frame }, LATER),

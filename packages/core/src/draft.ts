@@ -29,6 +29,13 @@ export function visibleItemIds(session: Session): string[] {
   ];
 }
 
+/** Hunks the human can focus inside an item: a group's members, or the hunk itself. */
+export function focusableHunkIds(session: Session, itemId: string): readonly string[] {
+  const group = session.groups.find(({ id }) => id === itemId);
+  if (group) return group.hunkIds;
+  return visibleItemIds(session).includes(itemId) ? [itemId] : [];
+}
+
 export function reconcileQueue(session: MutableSession): void {
   const visible = visibleItemIds(session);
   const visibleSet = new Set(visible);
@@ -46,7 +53,14 @@ export function reconcileQueue(session: MutableSession): void {
       .map(({ id }) => id),
   ]);
   session.acceptHistory = session.acceptHistory.filter((id) => acceptedIds.has(id));
-  if (session.cursor.itemId !== null && !visibleSet.has(session.cursor.itemId)) {
+  const { itemId, expanded, hunkId } = session.cursor;
+  if (itemId !== null && !visibleSet.has(itemId)) {
     session.cursor = { itemId: null, expanded: false };
+  } else if (
+    itemId !== null &&
+    hunkId !== undefined &&
+    !focusableHunkIds(session, itemId).includes(hunkId)
+  ) {
+    session.cursor = { itemId, expanded };
   }
 }

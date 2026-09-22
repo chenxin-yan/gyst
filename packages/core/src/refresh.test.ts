@@ -131,6 +131,14 @@ describe("refreshSession", () => {
     expect(empty.queue).toEqual([]);
     expect(empty.acceptHistory).toEqual([]);
     expect(empty.cursor).toEqual({ itemId: null, expanded: false });
+
+    // The focused member vanished with the refresh; focus returns to the item without leaving it.
+    const focused = refreshSession(
+      { ...original, cursor: { itemId: "group-1", expanded: true, hunkId: "old-c" } },
+      [hunk("fresh-a", "a.ts", "same")],
+      LATER,
+    );
+    expect(focused.cursor).toEqual({ itemId: "group-1", expanded: true });
   });
 
   it("preserves stable duplicate identities only when the whole duplicate set is unchanged", () => {
