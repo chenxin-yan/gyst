@@ -45,7 +45,7 @@ function fixture() {
     ready: false,
     files: ["a.ts", "b.ts", "c.ts", "d.ts"].map((path) => ({ path, hunkCount: 1 })),
   };
-  const diff: DiffPayload = {
+  let diff: DiffPayload = {
     sessionId: "session",
     revision: 0,
     hunks: [
@@ -110,6 +110,9 @@ function fixture() {
     status: () => status,
     setStatus: (next: StatusPayload) => {
       status = next;
+    },
+    setDiff: (map: (hunk: DiffPayload["hunks"][number]) => DiffPayload["hunks"][number]) => {
+      diff = { ...diff, hunks: diff.hunks.map(map) };
     },
   };
 }
@@ -439,6 +442,54 @@ describe("TUI", () => {
     await press(longTui, "\u001b[5~");
     await longTui.waitForFrame((value) => value.includes("line_0"));
     longTui.renderer.destroy();
+  });
+
+  it("wraps long diff lines instead of clipping them", async () => {
+    const state = fixture();
+    const tail = "TAIL_OF_A_VERY_LONG_LINE";
+    const long = `+${"x".repeat(150)} ${tail}`;
+    const client: TuiClient = {
+      ...state.client,
+      diff: async () => {
+        const value = await state.client.diff();
+        return {
+          ...value,
+          hunks: value.hunks.map((hunk) =>
+            hunk.id === "c.ts" ? { ...hunk, patch: `@@ -1 +1 @@\n-short\n${long}` } : hunk,
+          ),
+        };
+      },
+    };
+    const tui = await testRender(() => <App client={client} pollInterval={60_000} />, {
+      width: 100,
+      height: 30,
+    });
+    await tui.waitForFrame((frame) => frame.includes("▍GROUP"));
+    await press(tui, "j");
+    await tui.waitForFrame((frame) => frame.includes(tail));
+    await press(tui, "1");
+    await tui.waitForFrame((frame) => frame.includes(tail));
+    tui.renderer.destroy();
+  });
+
+  it("re-renders a hunk whose line numbers moved under a preserved id", async () => {
+    // refreshSession keeps a hunk's id when only its coordinates change; the view must follow the patch.
+    const state = fixture();
+    const tui = await testRender(() => <App client={state.client} pollInterval={5} />, {
+      width: 100,
+      height: 30,
+    });
+    await tui.waitForFrame((frame) => frame.includes("▍GROUP"));
+    await press(tui, "j");
+    await tui.waitForFrame((frame) => frame.includes("SPOTLIGHT") && frame.includes("1 - stale"));
+    const moved = structuredClone(state.status()) as any;
+    moved.revision++;
+    state.setStatus(moved);
+    state.setDiff((hunk) =>
+      hunk.id === "c.ts" ? { ...hunk, patch: "@@ -100 +100 @@\n-stale\n+fresh" } : hunk,
+    );
+    await tui.waitForFrame((frame) => frame.includes("100 - stale"));
+    tui.renderer.destroy();
   });
 
   it("drops a verdict mark when the harness resets the group", async () => {
