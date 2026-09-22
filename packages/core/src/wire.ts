@@ -16,7 +16,7 @@ export const ClosePayloadSchema = Schema.Struct({
 export type ClosePayload = typeof ClosePayloadSchema.Type;
 
 export const RequestSchema = Schema.Struct({
-  command: Schema.Literals(["create", "status", "diff", "close"]),
+  command: Schema.Literals(["create", "status", "diff", "apply", "refresh", "close"]),
   cwd: Schema.String,
   args: Schema.Array(Schema.String),
   stdin: Schema.optional(Schema.String),

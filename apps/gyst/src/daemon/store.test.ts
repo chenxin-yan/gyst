@@ -21,6 +21,9 @@ const session = (id: string): Session => ({
   cursor: { itemId: null, expanded: false },
   hunks: [],
   groups: [],
+  queue: [],
+  queueSet: false,
+  applyReceipts: [],
 });
 
 const run = <A, E>(effect: Effect.Effect<A, E, SessionStore>) =>
@@ -54,6 +57,11 @@ describe("SessionStore", () => {
   it("skips undecodable session files but keeps the valid ones", async () => {
     await writeFile(join(dataDir, "corrupt.json"), "{not json");
     await writeFile(join(dataDir, "wrong-shape.json"), JSON.stringify({ id: "x" }));
+    // The schema is the contract: a file missing a review field is not migrated, it is skipped.
+    await writeFile(
+      join(dataDir, "older.json"),
+      JSON.stringify({ ...session("older"), queue: undefined }),
+    );
     const loaded = await run(SessionStore.use((s) => s.loadAll));
     expect(loaded.map((loadedSession) => loadedSession.id)).toEqual(["a"]);
   });
