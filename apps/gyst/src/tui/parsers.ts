@@ -1,4 +1,18 @@
-import type { FiletypeParserOptions } from "@opentui/core";
+import { addDefaultParsers, extensionToFiletype, type FiletypeParserOptions } from "@opentui/core";
+
+/** Makes the downloadable grammars available to every tree-sitter client created afterwards. */
+export function registerParsers(): void {
+  addDefaultParsers(downloadableParsers);
+  // OpenTUI's resolver has no entries for these languages, so their files would never reach the parser.
+  for (const [extension, filetype] of [
+    ["hcl", "hcl"],
+    ["tf", "hcl"],
+    ["tfvars", "hcl"],
+    ["nix", "nix"],
+    ["agda", "agda"],
+  ] as const)
+    extensionToFiletype.set(extension, filetype);
+}
 
 /**
  * Parsers beyond OpenTUI's bundled JavaScript, TypeScript, Markdown and Zig. Each grammar and
@@ -6,7 +20,7 @@ import type { FiletypeParserOptions } from "@opentui/core";
  * leaves that file unhighlighted. The list mirrors opencode's parsers-config.ts (MIT, anomalyco/opencode)
  * because those wasm/query pairs are known to load under web-tree-sitter.
  */
-export const downloadableParsers: FiletypeParserOptions[] = [
+const downloadableParsers: FiletypeParserOptions[] = [
   {
     filetype: "python",
     wasm: "https://github.com/tree-sitter/tree-sitter-python/releases/download/v0.23.6/tree-sitter-python.wasm",
@@ -39,6 +53,8 @@ export const downloadableParsers: FiletypeParserOptions[] = [
     wasm: "https://github.com/tree-sitter/tree-sitter-cpp/releases/download/v0.23.4/tree-sitter-cpp.wasm",
     queries: {
       highlights: [
+        // The C++ query begins with `; inherits: c`, which OpenTUI does not resolve; concatenating the C query first has the same effect.
+        "https://raw.githubusercontent.com/nvim-treesitter/nvim-treesitter/refs/heads/master/queries/c/highlights.scm",
         "https://raw.githubusercontent.com/nvim-treesitter/nvim-treesitter/refs/heads/master/queries/cpp/highlights.scm",
       ],
     },
@@ -220,7 +236,7 @@ export const downloadableParsers: FiletypeParserOptions[] = [
     wasm: "https://github.com/alex-pinkus/tree-sitter-swift/releases/download/0.7.1/tree-sitter-swift.wasm",
     queries: {
       highlights: [
-        "https://raw.githubusercontent.com/alex-pinkus/tree-sitter-swift/main/queries/highlights.scm",
+        "https://raw.githubusercontent.com/alex-pinkus/tree-sitter-swift/0.7.1/queries/highlights.scm",
       ],
     },
   },

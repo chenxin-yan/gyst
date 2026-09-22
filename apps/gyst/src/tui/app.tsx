@@ -159,6 +159,7 @@ function MemberDiff(props: { member: Member; layout: "split" | "stack" }) {
       <diff
         diff={props.member.patch}
         view={props.layout === "split" ? "split" : "unified"}
+        wrapMode="word"
         filetype={pathToFiletype(props.member.file)}
         syntaxStyle={syntax()}
         fg={C.fg}
@@ -303,14 +304,15 @@ export function App(props: {
   let inputs = Promise.resolve();
   let focusCard: ScrollBoxRenderable | undefined;
 
-  // A hunk id hashes its file and patch, so a member never goes stale; reusing it keeps the rendered
-  // diffs (and their highlighting) in place across polls and verdicts.
+  // Reusing a member across polls keeps its rendered diff (and highlighting) in place. A refresh keeps a
+  // hunk's id when only its line numbers moved, so the patch text decides whether the member is still current.
   const members = new Map<string, Member>();
   const hunks = createMemo(
     () =>
       new Map(
         (diff()?.hunks ?? []).map((hunk) => {
-          const member = members.get(hunk.id) ?? memberOf(hunk);
+          const cached = members.get(hunk.id);
+          const member = cached?.patch === hunk.patch ? cached : memberOf(hunk);
           members.set(hunk.id, member);
           return [hunk.id, member];
         }),
