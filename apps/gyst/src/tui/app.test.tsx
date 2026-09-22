@@ -114,8 +114,12 @@ function fixture() {
   };
 }
 
-async function press(tui: Awaited<ReturnType<typeof testRender>>, key: string) {
-  await tui.mockInput.pressKey(key);
+async function press(
+  tui: Awaited<ReturnType<typeof testRender>>,
+  key: string,
+  modifiers?: { ctrl?: boolean },
+) {
+  await tui.mockInput.pressKey(key, modifiers);
   await tui.renderOnce();
   await Promise.resolve();
   await tui.renderOnce();
@@ -189,7 +193,7 @@ describe("TUI", () => {
     await press(tui, "s");
     await press(tui, "?");
     assert(tui.captureCharFrame().includes("undo last accept"), "? opens help");
-    assert(tui.captureCharFrame().includes("J / K"), "help lists the scroll keys");
+    assert(tui.captureCharFrame().includes("^d / ^u"), "help lists the scroll keys");
     await press(tui, "j");
     assert(tui.captureCharFrame().includes("undo last accept"), "help blocks navigation");
     await press(tui, "q");
@@ -396,7 +400,7 @@ describe("TUI", () => {
     readyEmptyTui.renderer.destroy();
   });
 
-  it("scrolls a long spotlight with J/K and snaps back on the next item", async () => {
+  it("scrolls a long spotlight with Ctrl+D/Ctrl+U and snaps back on the next item", async () => {
     // A long spotlight scrolls from the keyboard and snaps back to the top on the next item.
     const longState = fixture();
     const long = structuredClone(longState.status()) as any;
@@ -421,11 +425,11 @@ describe("TUI", () => {
     });
     await longTui.waitForFrame((value) => value.includes("line_0"));
     assert(!longTui.captureCharFrame().includes("line_59"), "the tail starts off-screen");
-    await press(longTui, "J");
+    await press(longTui, "d", { ctrl: true });
     await longTui.waitForFrame((value) => !value.includes("line_0"));
-    for (let presses = 0; presses < 5; presses++) await press(longTui, "J");
+    for (let presses = 0; presses < 5; presses++) await press(longTui, "d", { ctrl: true });
     await longTui.waitForFrame((value) => value.includes("line_59"));
-    await press(longTui, "K");
+    await press(longTui, "u", { ctrl: true });
     await longTui.waitForFrame((value) => !value.includes("line_59"));
     await press(longTui, "j");
     await press(longTui, "k");
