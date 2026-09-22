@@ -23,6 +23,7 @@ const session = (id: string): Session => ({
   groups: [],
   queue: [],
   queueSet: false,
+  acceptHistory: [],
   applyReceipts: [],
 });
 

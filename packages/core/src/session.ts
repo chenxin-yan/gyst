@@ -87,6 +87,7 @@ export const SessionSchema = Schema.Struct({
   groups: Schema.Array(GroupSchema),
   queue: Schema.Array(Schema.String),
   queueSet: Schema.Boolean,
+  acceptHistory: Schema.Array(Schema.String),
   applyReceipts: Schema.Array(ApplyReceiptSchema),
 });
 export type Session = typeof SessionSchema.Type;

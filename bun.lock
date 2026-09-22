@@ -23,6 +23,7 @@
         "@crustjs/core": "0.3.5",
         "@crustjs/effect": "0.1.1",
         "@crustjs/extensions": "0.3.5",
+        "@crustjs/tui": "0.0.2",
         "@effect/platform-bun": "4.0.0-rc.116",
         "@gyst/core": "workspace:*",
         "@opentui/solid": "0.5.11",
@@ -127,6 +128,8 @@
     "@crustjs/store": ["@crustjs/store@0.4.1", "", { "dependencies": { "@crustjs/utils": "^0.1.0" }, "peerDependencies": { "typescript": "^7.0.0" }, "optionalPeers": ["typescript"] }, "sha512-os2pBAHAg+Gu0aj8NiiwDko3s5wBVpAIaslgB9wVm0xEIrWR0e9zwFlObz6n1sAFXOnl7qeGJz8kRxwPVk/Iqg=="],
 
     "@crustjs/style": ["@crustjs/style@0.3.3", "", { "peerDependencies": { "typescript": "^7.0.0" }, "optionalPeers": ["typescript"] }, "sha512-ngNzgsJ2kvBlSZTOyLzKP0ZCyEIgXyEq3cQ7CqWSp01rdIrbPeuAViLq4+FBftcW6l1yD+mOUJv/Qbdqd9ZVWA=="],
+
+    "@crustjs/tui": ["@crustjs/tui@0.0.2", "", { "peerDependencies": { "@opentui/core": "^0.5.11", "typescript": "^7.0.0" }, "optionalPeers": ["typescript"] }, "sha512-1AI97dtJsP5PCFjNbUqFJSzfHFrX2TgGSUGhtpFVewy/Bh5+76shi+ENlRjlx7yoDXomZr4ES+feCJStJNEYuQ=="],
 
     "@crustjs/utils": ["@crustjs/utils@0.1.0", "", {}, "sha512-ZaXOk77fUogEtjoboQOb/sXGwWl+DWDGl3dZcZ9il9BN1NJ56hTe83CvxazM+9LsfDzgvllufTH71rYTW2SxNQ=="],
 

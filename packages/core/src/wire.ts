@@ -1,5 +1,6 @@
 import { Schema } from "effect";
 import { ErrorPayloadSchema } from "./errors.ts";
+import { HumanActionSchema } from "./human-action.ts";
 import { HunkSchema } from "./session.ts";
 
 export const DiffPayloadSchema = Schema.Struct({
@@ -16,10 +17,11 @@ export const ClosePayloadSchema = Schema.Struct({
 export type ClosePayload = typeof ClosePayloadSchema.Type;
 
 export const RequestSchema = Schema.Struct({
-  command: Schema.Literals(["create", "status", "diff", "apply", "refresh", "close"]),
+  command: Schema.Literals(["create", "status", "diff", "apply", "refresh", "close", "tui.action"]),
   cwd: Schema.String,
   args: Schema.Array(Schema.String),
   stdin: Schema.optional(Schema.String),
+  action: Schema.optional(HumanActionSchema),
 });
 export type Request = typeof RequestSchema.Type;
 
