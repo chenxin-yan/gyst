@@ -29,6 +29,7 @@
         "@crustjs/tui": "0.0.2",
         "@effect/platform-bun": "4.0.0-rc.116",
         "@gyst/core": "workspace:*",
+        "@opentui/core": "0.5.11",
         "@opentui/solid": "0.5.11",
         "effect": "4.0.0-rc.116",
         "solid-js": "1.9.12",

@@ -1,10 +1,6 @@
 import type { DiffPayload, Hunk, Source, StatusPayload } from "@gyst/core";
-import {
-  useKeyboard,
-  useTerminalDimensions,
-  type ScrollBoxProps,
-  type SpanProps,
-} from "@opentui/solid";
+import { pathToFiletype, SyntaxStyle, type ScrollBoxRenderable } from "@opentui/core";
+import { useKeyboard, useTerminalDimensions, type SpanProps } from "@opentui/solid";
 import {
   For,
   Show,
@@ -38,19 +34,40 @@ const C = {
   okBadge: "#7fd88f",
   delBadge: "#fa8e89",
 };
+// Tree-sitter capture names; dotted captures fall back to their prefix inside OpenTUI.
+let syntaxStyle: SyntaxStyle | undefined;
+const syntax = () =>
+  (syntaxStyle ??= SyntaxStyle.fromStyles({
+    default: { fg: C.fg },
+    keyword: { fg: "#ff7b72" },
+    string: { fg: "#a5d6ff" },
+    comment: { fg: C.dim, italic: true },
+    function: { fg: "#d2a8ff" },
+    method: { fg: "#d2a8ff" },
+    type: { fg: "#ffa657" },
+    constructor: { fg: "#ffa657" },
+    constant: { fg: "#79c0ff" },
+    number: { fg: "#79c0ff" },
+    boolean: { fg: "#79c0ff" },
+    property: { fg: "#79c0ff" },
+    attribute: { fg: "#79c0ff" },
+    tag: { fg: "#7ee787" },
+    operator: { fg: C.muted },
+    punctuation: { fg: C.muted },
+  }));
 
 // SpanProps omits fg/bg/attributes while OpenTUI applies them at runtime (confirmed by the prototype).
 const Sp = (props: SpanProps & { fg?: string; bg?: string; attributes?: number }) => (
   <span {...props} />
 );
 
-type DiffLine = { sign: " " | "+" | "-"; text: string };
 type Member = {
+  id: string;
   file: string;
   header: string;
-  oldStart: number;
-  newStart: number;
-  lines: DiffLine[];
+  patch: string;
+  added: number;
+  removed: number;
 };
 type ViewItem =
   | {
@@ -64,29 +81,20 @@ type ViewItem =
   | { kind: "spotlight"; id: string; tldr: string; accepted: boolean; member: Member }
   | { kind: "inbox"; id: string; accepted: false; member: Member };
 type LayoutMode = "auto" | "split" | "stack";
-// `@opentui/core` is not a direct dependency; the renderable type is recovered from the element's ref.
-type ScrollBoxRenderable = Exclude<NonNullable<ScrollBoxProps["ref"]>, (...args: never[]) => void>;
-type NumberedLine = DiffLine & { oldNo: number | null; newNo: number | null };
-type SplitCell = NumberedLine | null;
 
 function memberOf(hunk: Hunk): Member {
   const [header = "", ...body] = hunk.patch.split("\n");
-  const match = /^@@ -(\d+)(?:,\d+)? \+(\d+)/.exec(header);
-  const lines = body.flatMap((line): DiffLine[] => {
-    const sign = line[0];
-    return sign === " " || sign === "+" || sign === "-" ? [{ sign, text: line.slice(1) }] : [];
-  });
   return {
+    id: hunk.id,
     file: hunk.file,
     header,
-    oldStart: Number(match?.[1] ?? 1),
-    newStart: Number(match?.[2] ?? 1),
-    lines,
+    patch: hunk.patch,
+    added: body.filter((line) => line.startsWith("+")).length,
+    removed: body.filter((line) => line.startsWith("-")).length,
   };
 }
 
-function buildItems(status: StatusPayload, diff: DiffPayload): ViewItem[] {
-  const hunks = new Map(diff.hunks.map((hunk) => [hunk.id, memberOf(hunk)]));
+function buildItems(status: StatusPayload, hunks: Map<string, Member>): ViewItem[] {
   const groups = status.groups.flatMap((group): ViewItem[] => {
     const members = group.hunkIds.flatMap((id) => hunks.get(id) ?? []);
     const exemplar = hunks.get(group.exemplarHunkId);
@@ -122,103 +130,7 @@ function buildItems(status: StatusPayload, diff: DiffPayload): ViewItem[] {
   });
 }
 
-function numberLines(member: Member): NumberedLine[] {
-  let oldNo = member.oldStart;
-  let newNo = member.newStart;
-  return member.lines.map((line) => {
-    if (line.sign === " ") return { ...line, oldNo: oldNo++, newNo: newNo++ };
-    if (line.sign === "-") return { ...line, oldNo: oldNo++, newNo: null };
-    return { ...line, oldNo: null, newNo: newNo++ };
-  });
-}
-
-function splitRows(lines: NumberedLine[]): Array<{ left: SplitCell; right: SplitCell }> {
-  const rows: Array<{ left: SplitCell; right: SplitCell }> = [];
-  let index = 0;
-  while (index < lines.length) {
-    if (lines[index]!.sign === " ") {
-      rows.push({ left: lines[index]!, right: lines[index]! });
-      index++;
-      continue;
-    }
-    const removed: NumberedLine[] = [];
-    const added: NumberedLine[] = [];
-    while (index < lines.length && lines[index]!.sign !== " ") {
-      (lines[index]!.sign === "-" ? removed : added).push(lines[index]!);
-      index++;
-    }
-    for (let offset = 0; offset < Math.max(removed.length, added.length); offset++) {
-      rows.push({ left: removed[offset] ?? null, right: added[offset] ?? null });
-    }
-  }
-  return rows;
-}
-
-function stackRows(lines: NumberedLine[]): NumberedLine[] {
-  const rows: NumberedLine[] = [];
-  let index = 0;
-  while (index < lines.length) {
-    if (lines[index]!.sign === " ") {
-      rows.push(lines[index]!);
-      index++;
-      continue;
-    }
-    const removed: NumberedLine[] = [];
-    const added: NumberedLine[] = [];
-    while (index < lines.length && lines[index]!.sign !== " ") {
-      (lines[index]!.sign === "-" ? removed : added).push(lines[index]!);
-      index++;
-    }
-    rows.push(...removed, ...added);
-  }
-  return rows;
-}
-
-const rowBg = (sign: DiffLine["sign"]) => (sign === "+" ? C.addBg : sign === "-" ? C.delBg : C.bg);
-const gutterBg = (sign: DiffLine["sign"]) =>
-  sign === "+" ? C.addGutterBg : sign === "-" ? C.delGutterBg : C.bg;
-const signFg = (sign: DiffLine["sign"]) =>
-  sign === "+" ? C.addSign : sign === "-" ? C.delSign : C.dim;
-const pad = (line: number | null, width: number) =>
-  (line === null ? "" : String(line)).padStart(width);
-
-function StackRow(props: { row: NumberedLine; width: number }) {
-  return (
-    <box flexDirection="row" backgroundColor={rowBg(props.row.sign)}>
-      <text fg={signFg(props.row.sign)} bg={gutterBg(props.row.sign)}>
-        {pad(props.row.oldNo, props.width)} {pad(props.row.newNo, props.width)}{" "}
-        {props.row.sign}{" "}
-      </text>
-      <text fg={props.row.sign === " " ? C.muted : C.fg}> {props.row.text}</text>
-    </box>
-  );
-}
-
-function SplitHalf(props: { cell: SplitCell; width: number; side: "left" | "right" }) {
-  const number = () => (props.side === "left" ? props.cell!.oldNo : props.cell!.newNo);
-  const sign = () => props.cell!.sign;
-  return (
-    <Show
-      when={props.cell}
-      fallback={
-        <box flexGrow={1} flexBasis={0} backgroundColor={C.panelAlt}>
-          <text> </text>
-        </box>
-      }
-    >
-      <box flexGrow={1} flexBasis={0} flexDirection="row" backgroundColor={rowBg(sign())}>
-        <text fg={signFg(sign())} bg={gutterBg(sign())}>
-          {pad(number(), props.width)} {sign()}{" "}
-        </text>
-        <text fg={props.cell!.sign === " " ? C.muted : C.fg}> {props.cell!.text}</text>
-      </box>
-    </Show>
-  );
-}
-
 function FileHeader(props: { member: Member }) {
-  const added = () => props.member.lines.filter(({ sign }) => sign === "+").length;
-  const removed = () => props.member.lines.filter(({ sign }) => sign === "-").length;
   return (
     <box
       flexDirection="row"
@@ -229,11 +141,11 @@ function FileHeader(props: { member: Member }) {
     >
       <text fg={C.fg}>{props.member.file}</text>
       <text>
-        <Show when={added()}>
-          <Sp fg={C.ok}>+{added()}</Sp>
+        <Show when={props.member.added}>
+          <Sp fg={C.ok}>+{props.member.added}</Sp>
         </Show>
-        <Show when={removed()}>
-          <Sp fg={C.delBadge}> -{removed()}</Sp>
+        <Show when={props.member.removed}>
+          <Sp fg={C.delBadge}> -{props.member.removed}</Sp>
         </Show>
       </text>
     </box>
@@ -241,29 +153,24 @@ function FileHeader(props: { member: Member }) {
 }
 
 function MemberDiff(props: { member: Member; layout: "split" | "stack" }) {
-  const width = () =>
-    String(Math.max(props.member.oldStart, props.member.newStart) + props.member.lines.length)
-      .length;
-  const numbered = () => numberLines(props.member);
   return (
     <box flexDirection="column">
       <FileHeader member={props.member} />
-      <Show
-        when={props.layout === "split"}
-        fallback={
-          <For each={stackRows(numbered())}>{(row) => <StackRow row={row} width={width()} />}</For>
-        }
-      >
-        <For each={splitRows(numbered())}>
-          {(row) => (
-            <box flexDirection="row">
-              <SplitHalf cell={row.left} width={width()} side="left" />
-              <text fg={C.border}>▌</text>
-              <SplitHalf cell={row.right} width={width()} side="right" />
-            </box>
-          )}
-        </For>
-      </Show>
+      <diff
+        diff={props.member.patch}
+        view={props.layout === "split" ? "split" : "unified"}
+        filetype={pathToFiletype(props.member.file)}
+        syntaxStyle={syntax()}
+        fg={C.fg}
+        lineNumberFg={C.dim}
+        contextBg={C.bg}
+        addedBg={C.addBg}
+        removedBg={C.delBg}
+        addedSignColor={C.addSign}
+        removedSignColor={C.delSign}
+        addedLineNumberBg={C.addGutterBg}
+        removedLineNumberBg={C.delGutterBg}
+      />
     </box>
   );
 }
@@ -396,7 +303,20 @@ export function App(props: {
   let inputs = Promise.resolve();
   let focusCard: ScrollBoxRenderable | undefined;
 
-  const items = createMemo(() => (status() && diff() ? buildItems(status()!, diff()!) : []));
+  // A hunk id hashes its file and patch, so a member never goes stale; reusing it keeps the rendered
+  // diffs (and their highlighting) in place across polls and verdicts.
+  const members = new Map<string, Member>();
+  const hunks = createMemo(
+    () =>
+      new Map(
+        (diff()?.hunks ?? []).map((hunk) => {
+          const member = members.get(hunk.id) ?? memberOf(hunk);
+          members.set(hunk.id, member);
+          return [hunk.id, member];
+        }),
+      ),
+  );
+  const items = createMemo(() => (status() ? buildItems(status()!, hunks()) : []));
   const currentIndex = createMemo(() =>
     Math.max(
       0,
@@ -404,6 +324,11 @@ export function App(props: {
     ),
   );
   const current = createMemo(() => items()[currentIndex()]);
+  // The focus card is rebuilt only when the item or its kind changes, not on every poll.
+  const currentKey = createMemo(() => {
+    const item = current();
+    return item && `${item.kind}:${item.id}`;
+  });
   const resolvedLayout = createMemo(() => {
     const mode = layoutMode();
     return mode === "auto" ? (dims().width >= 120 ? "split" : "stack") : mode;
@@ -657,14 +582,12 @@ export function App(props: {
                 paddingRight={2}
                 flexDirection="column"
               >
-                <Show when={current()} keyed fallback={<text>no review items</text>}>
-                  {(item) => (
-                    <FocusCard
-                      item={item}
-                      expanded={status()!.cursor.expanded}
-                      layout={resolvedLayout()}
-                    />
-                  )}
+                <Show when={currentKey()} keyed fallback={<text>no review items</text>}>
+                  <FocusCard
+                    item={current()!}
+                    expanded={status()!.cursor.expanded}
+                    layout={resolvedLayout()}
+                  />
                 </Show>
               </scrollbox>
             </Show>
