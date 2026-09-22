@@ -1,87 +1,59 @@
-# Development and releases
+# Contributing
 
-## Local gate
+Run commands from the repository root. Use the Bun version in
+[`package.json`](package.json) (`mise` reads it automatically).
 
-Bun's version comes from `packageManager` in `package.json`; `mise` reads it too.
+## Develop
 
 ```sh
 bun install --frozen-lockfile
-bun run check  # oxlint, oxfmt, typecheck
-bun run test   # workspace tests
+bun run --cwd apps/gyst dev --help
+bun run check
+bun run test
 ```
 
-`bun run check:fix` applies lint and format fixes.
+`check` runs lint, formatting, and type checks. `bun run check:fix` fixes lint and
+formatting issues. Run both checks and tests before opening a PR.
 
-## Local build
+## Build
+
+Build for your machine:
 
 ```sh
-bun install --frozen-lockfile --os='*' --cpu='*'    # every platform's native deps, needed to cross-compile
-bun run --cwd apps/gyst build                       # the six published targets
-bunx --cwd apps/gyst crust build --target host      # just this machine, faster
-./apps/gyst/.crust/linux-x64/bin/gyst-bun-linux-x64 --help   # or darwin-arm64/..., see .crust/manifest.json
+bun run --cwd apps/gyst build --target host
+bun run --cwd apps/gyst start --help
 ```
 
-`crust build` stages the npm packages under `apps/gyst/.crust/`: `root/` holds
-`@gyst/cli` with its Node launcher `bin/gyst.js` and the agent skills (authored in
-`apps/gyst/skills/`, plus the generated `gyst-cli` command reference),
-and each `<os>-<arch>/` directory holds the platform package with the compiled
-`bin/gyst-bun-<os>-<arch>` binary. `manifest.json` indexes them. The
-`prebuild` hook copies the repository `LICENSE` and `README.md` into
-`apps/gyst/` (gitignored) so `crust build` ships them in the packages.
-
-## Distribution
-
-The root `@gyst/cli` package and its platform-specific optional-dependency
-packages are published from `.crust/`; the root's optional dependencies let npm
-select the platform package. Platform packages contain a standalone
-Bun-compiled `gyst`, not a JavaScript CLI that requires Bun.
-
-The build is configured by the `crust` block in `apps/gyst/package.json`:
-`crust.bunPlugins` lists `@opentui/solid/bun-plugin` so the Solid JSX
-transform is applied at compile time; `bun src/index.tsx`, `bun test`, and
-crust's build-time validation run of the entry get the same transform from the
-`bunfig.toml` preload. `crust.targets` lists the six published targets, the
-glibc Linux, macOS, and Windows binaries, so a bare `crust build` stages exactly
-those; musl/Alpine is not published because OpenTUI selects its musl native
-only through `OPENTUI_LIBC` at run time.
-
-Local dry run:
+Build all configured release targets and inspect the publish plan without publishing:
 
 ```sh
-cd apps/gyst
-bun run build
-bun run release -- --dry-run   # crust publish order, nothing written
+bun install --frozen-lockfile --os='*' --cpu='*'
+bun run --cwd apps/gyst build
+bun run --cwd apps/gyst release -- --dry-run
 ```
 
-### Releasing
+Output is in `apps/gyst/.crust/`. Targets and build settings live in
+[`apps/gyst/package.json`](apps/gyst/package.json).
 
-Releases follow [changesets](https://changesets.dev): a PR that changes `@gyst/cli`
-adds a changeset, the merge opens (or updates) a `chore: release @gyst/cli` PR, and
-merging that PR publishes. Versions move only through that PR.
+## Releases
+
+For changes to the CLI, add a changeset and commit the generated file:
 
 ```sh
-bun run changeset        # pick the bump, describe the change; commit the .changeset/*.md file
+bun run changeset
 ```
 
-`release.yml` runs `check` on every push to `main`, then:
+Merging the change opens or updates the release PR. Merging that PR publishes the
+platform packages and CLI, creates the Git tag and GitHub Release, and attaches
+binaries, skills, and the license. Do not bump versions or create release tags by hand.
 
-- with pending changesets, `changesets/action/version` runs `release:version`
-  (`changeset version` + lockfile refresh) and pushes the release PR;
-- with none pending and a version not yet on npm, it stages every platform package
-  and `changesets/action/publish` runs
-  `release:publish`: `crust publish` (platform packages before the root, versions
-  already on the registry skipped, so a rerun after a partial failure finishes the
-  cohort), then `changeset git-tag`, from which the action pushes the
-  `@gyst/cli@<version>` tag and creates the GitHub release with the changelog entry.
-  The six raw binaries, the skills archive, and the MIT license are attached to it.
+For prereleases, use `bun run changeset pre enter <tag>`; publication uses that npm
+dist-tag. The [release workflow](.github/workflows/release.yml) owns the automation.
 
-Prerelease mode (`bun run changeset pre enter <tag>`) publishes under that npm
-dist-tag; stable versions publish to `latest`. There is no curl installer or
-self-update; update through npm or replace the release binary.
+### Maintainer setup (once)
 
-One-time setup: enable **Allow GitHub Actions to create and approve pull requests**
-(Settings → Actions → General), and give each of the seven packages (`@gyst/cli` and
-`@gyst/cli-{linux,darwin,windows}-{x64,arm64}`) a GitHub Actions trusted publisher on
-npmjs.com for repository `chenxin-yan/gyst` and workflow `release.yml`. npm only
-accepts a trusted publisher on an existing package, so a brand-new package is
-published once by hand from a shell where `npm whoami` succeeds.
+- Enable **Allow GitHub Actions to create and approve pull requests** in repository settings.
+- Configure npm trusted publishing on `@gyst/cli` and all six platform packages:
+  repository `chenxin-yan/gyst`, workflow `release.yml`, no environment restriction,
+  with direct publishing allowed. New packages need an initial manual publish before
+  npm allows this setup.
