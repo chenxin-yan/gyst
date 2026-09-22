@@ -290,10 +290,10 @@ describe("TUI", () => {
     tui.renderer.destroy();
   });
 
-  it("scrolls the focused member into view", async () => {
-    const state = fixture();
+  // The group's first member is 60 lines, so its second member starts below the viewport.
+  function tallGroup(state: ReturnType<typeof fixture>): TuiClient {
     const longLines = Array.from({ length: 60 }, (_, index) => `+first_${index}`).join("\n");
-    const client: TuiClient = {
+    return {
       ...state.client,
       diff: async () => {
         const value = await state.client.diff();
@@ -305,7 +305,11 @@ describe("TUI", () => {
         };
       },
     };
-    const tui = await testRender(() => <App client={client} pollInterval={60_000} />, {
+  }
+
+  it("scrolls the focused member into view", async () => {
+    const state = fixture();
+    const tui = await testRender(() => <App client={tallGroup(state)} pollInterval={60_000} />, {
       width: 100,
       height: 30,
     });
@@ -320,6 +324,29 @@ describe("TUI", () => {
     await tui.waitForFrame((frame) => frame.includes("const old = 1"));
     await press(tui, "k");
     await tui.waitForFrame((frame) => frame.includes("first_0"));
+    tui.renderer.destroy();
+  });
+
+  it("reveals a persisted focus on attach and keeps manual scrolling across unchanged polls", async () => {
+    const state = fixture();
+    const focused = structuredClone(state.status()) as any;
+    focused.cursor = { itemId: "group", expanded: true, hunkId: "a.ts" };
+    state.setStatus(focused);
+    const tui = await testRender(() => <App client={tallGroup(state)} pollInterval={5} />, {
+      width: 100,
+      height: 30,
+    });
+    await tui.waitForFrame((frame) => frame.includes("const old = 1"));
+    await press(tui, "u", { ctrl: true });
+    await tui.waitForFrame((frame) => !frame.includes("const old = 1"));
+    // Several polls return a fresh copy of the same status; none of them may snap the viewport back.
+    await Bun.sleep(40);
+    await tui.renderOnce();
+    await tui.renderOnce();
+    assert(
+      !tui.captureCharFrame().includes("const old = 1"),
+      "an unchanged poll must not scroll the focused member back into view",
+    );
     tui.renderer.destroy();
   });
 

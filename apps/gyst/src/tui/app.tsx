@@ -1,6 +1,6 @@
 import type { DiffPayload, Hunk, Source, StatusPayload } from "@gyst/core";
 import { pathToFiletype, SyntaxStyle, type ScrollBoxRenderable } from "@opentui/core";
-import { useKeyboard, useTerminalDimensions, type SpanProps } from "@opentui/solid";
+import { useKeyboard, useRenderer, useTerminalDimensions, type SpanProps } from "@opentui/solid";
 import {
   For,
   Show,
@@ -321,6 +321,7 @@ export function App(props: {
   pollInterval?: number;
 }) {
   const dims = useTerminalDimensions();
+  const renderer = useRenderer();
   const [status, setStatus] = createSignal<StatusPayload>();
   const [diff, setDiff] = createSignal<DiffPayload>();
   const [message, setMessage] = createSignal("attaching…");
@@ -362,7 +363,8 @@ export function App(props: {
     const item = current();
     return item && `${item.kind}:${item.id}`;
   });
-  const focusedHunk = () => status()?.cursor.hunkId;
+  // A memo, so a poll that returns the same focus does not re-run the reveal below.
+  const focusedHunk = createMemo(() => status()?.cursor.hunkId);
   // Hunks the focused cursor can step through: a group's members in order, or the lone hunk.
   const focusable = createMemo(() => {
     const item = current();
@@ -377,15 +379,24 @@ export function App(props: {
   const allDone = createMemo(
     () => status()?.ready === true && items().every((item) => item.accepted),
   );
+  // Keyed on the id, not the item object: every poll rebuilds the items, and only a move should reset the scroll.
+  createEffect(on(currentKey, () => focusCard?.scrollTo(0)));
+  // Reveal the focused member when the focus moves or its card is (re)mounted. Positions exist only
+  // after layout, which happens inside a render, so the scroll waits for the next rendered frame.
   createEffect(
-    on(
-      () => current()?.id,
-      () => focusCard?.scrollTo(0),
-    ),
-  );
-  createEffect(
-    on(focusedHunk, (hunkId) => {
-      if (hunkId !== undefined) focusCard?.scrollChildIntoView(memberElementId(hunkId));
+    on([focusedHunk, currentKey], ([hunkId]) => {
+      if (hunkId === undefined) return;
+      // A hunk that does not fit goes to the top of the viewport: reading starts at its header, and a
+      // hunk taller than the viewport would otherwise be revealed by its tail.
+      const reveal = () => {
+        const member = focusCard?.findDescendantById(memberElementId(hunkId));
+        if (!focusCard || !member) return;
+        const top = member.y - focusCard.viewport.y;
+        if (top < 0 || top + member.height > focusCard.viewport.height) focusCard.scrollBy(top);
+      };
+      renderer.once("frame", reveal);
+      renderer.requestRender();
+      onCleanup(() => renderer.off("frame", reveal));
     }),
   );
 
