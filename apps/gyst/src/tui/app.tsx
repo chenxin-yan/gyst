@@ -540,9 +540,9 @@ export function App(props: {
     if (key.name === "0") return setLayoutMode("auto");
     if (key.name === "s") return setSidebar(!sidebar());
     if (key.name === "q") return quit(false);
-    if (key.name === "pagedown" || (key.name === "j" && key.shift))
+    if (key.name === "pagedown" || (key.name === "d" && key.ctrl))
       return focusCard?.scrollBy(0.5, "viewport");
-    if (key.name === "pageup" || (key.name === "k" && key.shift))
+    if (key.name === "pageup" || (key.name === "u" && key.ctrl))
       return focusCard?.scrollBy(-0.5, "viewport");
     if (key.name === "r")
       return enqueue(async () => {
@@ -700,7 +700,7 @@ export function App(props: {
           <For
             each={[
               ["j / k", "next / previous item"],
-              ["J / K", "scroll item down / up (PgDn / PgUp)"],
+              ["^d / ^u", "scroll item down / up (PgDn / PgUp)"],
               ["a", "accept — done reviewing (toggle)"],
               ["e", "expand group members (toggle)"],
               ["u", "undo last accept"],

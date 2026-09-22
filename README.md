@@ -39,15 +39,16 @@ Use `/gyst-ask <question>` in your agent's chat to ask about the current review 
 
 ## Review keys
 
-| Key       | Action                      |
-| --------- | --------------------------- |
-| `j` / `k` | Next / previous item        |
-| `e`       | Expand / collapse a group   |
-| `a`       | Toggle accepted             |
-| `u`       | Undo the last verdict       |
-| `r`       | Refresh the diff from Git   |
-| `?`       | Show all keyboard shortcuts |
-| `q`       | Quit and keep the session   |
+| Key                 | Action                      |
+| ------------------- | --------------------------- |
+| `j` / `k`           | Next / previous item        |
+| `Ctrl+D` / `Ctrl+U` | Scroll the diff down / up   |
+| `e`                 | Expand / collapse a group   |
+| `a`                 | Toggle accepted             |
+| `u`                 | Undo the last verdict       |
+| `r`                 | Refresh the diff from Git   |
+| `?`                 | Show all keyboard shortcuts |
+| `q`                 | Quit and keep the session   |
 
 ## Sessions
 
