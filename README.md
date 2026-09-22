@@ -8,9 +8,6 @@ commit, or modify your code.
 
 ## Install
 
-Early preview for macOS and Linux (glibc), on x64 and arm64. Requires Node.js and
-npm; Bun is not required. Windows runtime support is not yet verified.
-
 ```sh
 npm install -g @gyst/cli
 ```
