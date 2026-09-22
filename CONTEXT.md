@@ -8,13 +8,20 @@ A keyboard-centric co-review TUI: the user's coding-agent harness pre-folds a di
 One live review of one diff range, held by the gyst daemon and rendered in the TUI. The unit both the human and the agent operate on.
 _Avoid_: Review, instance
 
+**Hunk**:
+One `@@` text block of the diff, addressed by a stable id. Gyst reviews text hunks only: mode bits, renames and binary content are not part of a session, and a file that changes nothing else is rejected.
+
 **Group**:
 An agent-proposed set of hunks sharing one mechanical pattern, shown folded as a single exemplar plus an occurrence count.
 _Avoid_: Pattern, cluster, fold
 
 **Spotlight**:
-The residual set of hunks the human must read in full — everything not folded into a group.
+An ungrouped hunk with an agent-written tldr, left for the human to read in full.
 _Avoid_: Meat, important hunks
+
+**Inbox**:
+An ungrouped hunk without a tldr that still needs agent triage. An empty inbox plus a set review queue means the session is ready for the human.
+_Avoid_: Spotlight, unreviewed hunks
 
 **Verdict**:
 The human's single ruling on a group or spotlight hunk: accept — "done reviewing this part". Expanding a group is a view action, not a verdict; there is no flag. Verdicts live in the session; they are never exported.
