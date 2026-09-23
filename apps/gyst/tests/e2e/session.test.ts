@@ -558,7 +558,7 @@ describe("gyst session CLI seam", () => {
     await gyst(stdinRepo, ["session", "close"]);
   }, 20_000);
 
-  it("persists human cursor, expand state, and verdicts through the daemon", async () => {
+  it("persists human cursor, pane state, and verdicts through the daemon", async () => {
     const cwd = await repo("human-actions");
     await writeFile(join(cwd, "tracked.txt"), "one\ntwo\n");
     await writeFile(join(cwd, "other.txt"), "new\n");

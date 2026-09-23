@@ -50,20 +50,7 @@ Use `/gyst-ask <question>` in your agent's chat to ask about the current review 
 | `Ctrl+D` / `Ctrl+U`, `PgDn` / `PgUp` | Scroll diff preview half a page             | Scroll diff half a page           | Scroll overview half a page   |
 | `a`                                  | Toggle whole-item acceptance                | Same, including all group members | Same                          |
 | `u`                                  | Undo last acceptance and return to its item | Same, staying zoomed              | Same, returning to diff focus |
-
-Accepting advances atomically to the next unaccepted published item, wrapping once.
-If none remain, the current view stays put; later arrivals do not steal focus.
-Unaccepting does not advance. Inbox hunks can be inspected but not accepted.
-
-`1` / `2` / `0` select split / unified / automatic diff layout. Auto uses the
-available diff-pane width (120 columns), not the terminal width. Zoom hides the
-queue and shows diff plus Markdown overview side by side at 120 terminal columns
-or wider; narrower terminals show only the active pane. Each pane keeps its scroll
-position across Tab and polls. Escape hides the overview; re-entering starts at
-the first hunk and top of the overview.
-
-`r` explicitly refreshes the Git snapshot (stdin snapshots must be replaced by the
-harness). `?` shows help. `q` quits and keeps the session; `Ctrl+C` cancels.
+| `o`                                  | No-op                                       | Open selected working-tree file   | Open retained selected file   |
 
 ## Sessions
 
@@ -75,19 +62,6 @@ gyst session close
 ```
 
 For CLI options, run `gyst --help` or `gyst session --help`.
-
-Published items can be accepted while the inbox still contains hunks. Reviewing
-all prepared items is not completion until preparation finishes. Refresh preserves
-unchanged work; changing or removing any group member resets that group's verdict.
-Titles and overviews are proposals, not correctness claims. Overviews show native
-Markdown headings, lists, code, references and tables. References are displayed
-context, not automatic navigation. Mermaid remains ordinary fenced source text;
-no diagram rendering is provided.
-
-## Persistence
-
-Sessions are saved on disk and survive daemon restarts. Saved files that fail schema
-validation are skipped without being changed or migrated.
 
 ## More
 

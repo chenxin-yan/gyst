@@ -170,6 +170,201 @@ function emptyStatus(base: StatusPayload): StatusPayload {
 }
 
 describe("TUI", () => {
+  it("captures the editor target, gates every input and poll, and recovers without refreshing", async () => {
+    const state = fixture();
+    let reads = 0;
+    let refreshes = 0;
+    let quits = 0;
+    const requests: unknown[] = [];
+    const release = Promise.withResolvers<void>();
+    const client: TuiClient = {
+      ...state.client,
+      status: async () => {
+        reads++;
+        return state.client.status();
+      },
+      refresh: async () => {
+        refreshes++;
+        return state.client.refresh();
+      },
+    };
+    const tui = await testRender(
+      () => (
+        <App
+          client={client}
+          pollInterval={5}
+          onQuit={() => {
+            quits++;
+          }}
+          onEdit={async (request) => {
+            requests.push(request);
+            await release.promise;
+            throw new Error("editor failed");
+          }}
+        />
+      ),
+      { width: 120, height: 30, exitOnCtrlC: false },
+    );
+    try {
+      await tui.waitForFrame((frame) => frame.includes("▍GROUP"));
+      await press(tui, "o");
+      assert.equal(requests.length, 0, "browse does not edit");
+      await press(tui, "RETURN");
+      await press(tui, "TAB");
+      await press(tui, "o");
+      await tui.waitFor(() => requests.length === 1);
+      assert.deepEqual(requests[0], {
+        sessionId: "session",
+        revision: 0,
+        repoRoot: "/repo",
+        file: "b.ts",
+        cursor: { itemId: "group", pane: "overview", hunkId: "b.ts" },
+      });
+      const before = reads;
+      for (const key of ["o", "j", "a", "u", "r", "?", "1", "TAB", "q"]) await press(tui, key);
+      await press(tui, "c", { ctrl: true });
+      await press(tui, "d", { ctrl: true });
+      await Bun.sleep(25);
+      assert.equal(reads, before, "polling is gated throughout the callback");
+      assert.equal(quits, 0);
+      assert.equal(requests.length, 1);
+      assert.equal(state.actions.length, 2);
+      release.resolve();
+      await tui.waitForFrame((frame) => frame.includes("editor failed"));
+      await Bun.sleep(25);
+      await tui.renderOnce();
+      assert(tui.captureCharFrame().includes("harness"), "stdin guidance survives polls");
+      assert.equal(refreshes, 0);
+      await press(tui, "ESCAPE");
+      await press(tui, "j");
+      assert.equal(state.status().cursor.itemId, "c.ts", "rejection did not poison inputs");
+      await press(tui, "q");
+      assert.equal(quits, 1);
+    } finally {
+      release.resolve();
+      tui.renderer.destroy();
+    }
+  });
+
+  it("does not retarget an edit queued behind navigation, and synchronizes a successful return", async () => {
+    const state = fixture();
+    state.setStatus({
+      ...state.status(),
+      cursor: { itemId: "group", pane: "diff", hunkId: "b.ts" },
+    });
+    const started = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    const requests: string[] = [];
+    let refreshes = 0;
+    let delay = true;
+    const client: TuiClient = {
+      ...state.client,
+      action: async (action) => {
+        if (delay) {
+          delay = false;
+          started.resolve();
+          await release.promise;
+        }
+        return state.client.action(action);
+      },
+      refresh: async () => {
+        refreshes++;
+        return state.client.refresh();
+      },
+    };
+    const tui = await testRender(
+      () => (
+        <App
+          client={client}
+          pollInterval={60_000}
+          onEdit={async (request) => {
+            requests.push(request.file);
+            const next = structuredClone(state.status()) as any;
+            next.groups[0].title = "Updated while editing";
+            next.revision++;
+            next.seq++;
+            state.setStatus(next);
+          }}
+        />
+      ),
+      { width: 120, height: 30 },
+    );
+    try {
+      await tui.waitForFrame((frame) => frame.includes("[diff]"));
+      await tui.mockInput.pressKey("j");
+      await started.promise;
+      await press(tui, "o");
+      release.resolve();
+      await tui.waitForFrame((frame) => frame.includes("edit target changed"));
+      assert.deepEqual(requests, []);
+      await press(tui, "o");
+      await tui.waitForFrame((frame) => frame.includes("Updated while editing"));
+      assert.deepEqual(requests, ["a.ts"]);
+      assert.equal(refreshes, 0);
+    } finally {
+      release.resolve();
+      tui.renderer.destroy();
+    }
+  });
+
+  for (const change of ["session", "revision", "cursor"] as const) {
+    it(`rejects an editor target when shared ${change} changes before dequeue`, async () => {
+      const state = fixture();
+      state.setStatus({
+        ...state.status(),
+        cursor: { itemId: "group", pane: "diff", hunkId: "b.ts" },
+      });
+      const started = Promise.withResolvers<void>();
+      const release = Promise.withResolvers<void>();
+      let reads = 0;
+      let edits = 0;
+      const client: TuiClient = {
+        ...state.client,
+        status: async () => {
+          if (++reads === 2) {
+            started.resolve();
+            await release.promise;
+          }
+          return state.client.status();
+        },
+      };
+      const tui = await testRender(
+        () => (
+          <App
+            client={client}
+            pollInterval={5}
+            onEdit={async () => {
+              edits++;
+            }}
+          />
+        ),
+        { width: 120, height: 30 },
+      );
+      try {
+        await tui.waitForFrame((frame) => frame.includes("[diff]"));
+        await started.promise;
+        await press(tui, "o");
+        const next = structuredClone(state.status()) as any;
+        if (change === "session") next.session.id = "replacement";
+        if (change === "revision") {
+          next.revision++;
+          next.seq++;
+        }
+        if (change === "cursor") {
+          next.cursor.hunkId = "a.ts";
+          next.seq++;
+        }
+        state.setStatus(next);
+        release.resolve();
+        await tui.waitForFrame((frame) => frame.includes("edit target changed"));
+        assert.equal(edits, 0, "must not edit either stale or newly selected file");
+      } finally {
+        release.resolve();
+        tui.renderer.destroy();
+      }
+    });
+  }
+
   it("walks groups, verdicts, layouts, help, inbox guard and stale verdicts from the keyboard", async () => {
     const state = fixture();
     const tui = await testRender(() => <App client={state.client} pollInterval={60_000} />, {
