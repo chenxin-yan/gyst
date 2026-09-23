@@ -156,6 +156,11 @@ async function markdownFrame(tui: Awaited<ReturnType<typeof testRender>>, text: 
   assert.fail(`Markdown did not render ${text}:\n${tui.captureCharFrame()}`);
 }
 
+// The group list shows only while browsing; reading replaces it with the diff.
+const browsing = (tui: Awaited<ReturnType<typeof testRender>>) =>
+  (tui.renderer.root.findDescendantById("group-list") as ScrollBoxRenderable | undefined)
+    ?.visible === true;
+
 function emptyStatus(base: StatusPayload): StatusPayload {
   const empty = structuredClone(base) as any;
   empty.session.source = { kind: "git", args: ["HEAD"], cwd: "/repo", patchHash: "snapshot" };
@@ -204,7 +209,7 @@ describe("TUI", () => {
       { width: 120, height: 30, exitOnCtrlC: false },
     );
     try {
-      await tui.waitForFrame((frame) => frame.includes("▍GROUP"));
+      await tui.waitForFrame((frame) => frame.includes("rename old to new"));
       await press(tui, "o");
       assert.equal(requests.length, 0, "browse does not edit");
       await press(tui, "RETURN");
@@ -288,8 +293,8 @@ describe("TUI", () => {
       { width: 120, height: 30 },
     );
     try {
-      await tui.waitForFrame((frame) => frame.includes("[diff]"));
-      await tui.mockInput.pressKey("j");
+      await tui.waitForFrame((frame) => frame.includes("▍diff"));
+      await tui.mockInput.pressKey("]");
       await started.promise;
       await press(tui, "o");
       release.resolve();
@@ -339,7 +344,7 @@ describe("TUI", () => {
         { width: 120, height: 30 },
       );
       try {
-        await tui.waitForFrame((frame) => frame.includes("[diff]"));
+        await tui.waitForFrame((frame) => frame.includes("▍diff"));
         await started.promise;
         await press(tui, "o");
         const next = structuredClone(state.status()) as any;
@@ -369,17 +374,21 @@ describe("TUI", () => {
       width: 100,
       height: 30,
     });
-    await tui.waitForFrame((frame) => frame.includes("REVIEW QUEUE"));
+    await tui.waitForFrame((frame) => frame.includes("rename old to new"));
     let frame = tui.captureCharFrame();
-    assert(frame.includes("  stdin"), "header names the stdin scope");
-    assert(frame.includes("rename old to new"));
-    assert(frame.includes("all 2 members"));
-    assert(
-      frame.includes("const old = 1") && frame.includes("old()"),
-      "all members render in publication order",
+    assert(browsing(tui));
+    assert(frame.split("\n")[0]!.startsWith(" stdin"), "browse header names the scope, once");
+    assert.equal(
+      (frame.match(/stdin/g) ?? []).length,
+      2,
+      "scope in the header and the source notice only",
     );
-    assert(frame.indexOf("old()") < frame.indexOf("const old = 1"));
-    assert(!frame.includes("Rename entry point"), "browse does not render the overview");
+    assert(frame.includes("enter review · ? help"), "browse hint");
+    assert(frame.includes("· rename old to new") && frame.includes("· cache behavior changed"));
+    assert(frame.includes("1/3 · 0/2 done"), "header shows position and progress");
+    assert(!frame.includes("GROUP") && !frame.includes("QUEUE"), "no chrome labels");
+    assert(!frame.includes("old()"), "narrow browse shows the list, not the diff");
+    assert(!frame.includes("Rename entry point"), "narrow browse has no room for the overview");
     assert(frame.includes("! d.ts"), "inbox is visibly distinct");
 
     await press(tui, "e");
@@ -387,6 +396,7 @@ describe("TUI", () => {
     await press(tui, "a");
     frame = tui.captureCharFrame();
     assert(frame.includes("✓ rename"));
+    assert(frame.includes("1/2 done"));
     assert(frame.includes("cache behavior changed"), "accept advances atomically");
     assert.equal(state.status().revision, 1, "verdict bumps revision");
     assert.deepEqual(
@@ -396,12 +406,25 @@ describe("TUI", () => {
     );
     const seqBeforeMove = state.status().seq;
     await press(tui, "j");
-    assert(tui.captureCharFrame().includes("INBOX"));
+    assert.equal(state.status().cursor.itemId, "d.ts");
+    assert(tui.captureCharFrame().includes("! d.ts"));
     assert.equal(state.status().seq, seqBeforeMove + 1, "cursor bumps seq once");
     await press(tui, "u");
-    assert(tui.captureCharFrame().includes("all 2 members"), "undo returns to accepted item");
-    assert(!tui.captureCharFrame().includes("✓ accepted"), "undo clears verdict");
+    assert(
+      tui.captureCharFrame().includes("· rename old to new"),
+      "undo returns to the item and clears its verdict",
+    );
+    assert(!tui.captureCharFrame().includes("✓ rename"), "undo clears verdict");
 
+    await press(tui, "RETURN");
+    assert(!browsing(tui), "Enter replaces the list with the diff");
+    frame = tui.captureCharFrame();
+    assert(
+      frame.includes("const old = 1") && frame.includes("old()"),
+      "all members render in publication order",
+    );
+    assert(frame.indexOf("old()") < frame.indexOf("const old = 1"));
+    assert(frame.includes("hunk 1/2"), "header shows the hunk position");
     const paired = (value: string) =>
       value
         .split("\n")
@@ -410,23 +433,31 @@ describe("TUI", () => {
     await press(tui, "1");
     assert(paired(tui.captureCharFrame()), "split pairs deletion/addition");
     await press(tui, "0");
-    tui.resize(200, 30);
+    tui.resize(240, 30);
     await tui.renderOnce();
     await tui.renderOnce();
     assert(paired(tui.captureCharFrame()), "auto splits when the diff pane has 120 columns");
     await press(tui, "s");
-    assert(tui.captureCharFrame().includes("REVIEW QUEUE"), "obsolete s is inert");
+    assert(!browsing(tui) && paired(tui.captureCharFrame()), "obsolete s is inert");
     await press(tui, "?");
-    assert(tui.captureCharFrame().includes("undo last accept"), "? opens help");
+    assert(tui.captureCharFrame().includes("undo the last verdict"), "? opens help");
     assert(tui.captureCharFrame().includes("^d / ^u"), "help lists the scroll keys");
+    assert(tui.captureCharFrame().includes("[ / ]"), "help lists the hunk keys");
     await press(tui, "j");
-    assert(tui.captureCharFrame().includes("undo last accept"), "help blocks navigation");
+    assert(tui.captureCharFrame().includes("undo the last verdict"), "help blocks navigation");
     await press(tui, "q");
-    assert(!tui.captureCharFrame().includes("undo last accept"), "q closes help");
+    assert(!tui.captureCharFrame().includes("undo the last verdict"), "q closes help");
+    await press(tui, "ESCAPE");
+    assert(browsing(tui), "Esc returns to the list");
     await press(tui, "j");
     await press(tui, "j");
-    assert(tui.captureCharFrame().includes("INBOX"));
+    assert.equal(state.status().cursor.itemId, "d.ts");
     await press(tui, "RETURN");
+    assert(
+      tui.captureCharFrame().includes("d.ts · unprepared"),
+      "reading header names the inbox hunk",
+    );
+    assert(tui.captureCharFrame().includes("no verdict (inbox) · tab pane · ? help"), "inbox hint");
     await press(tui, "TAB");
     await markdownFrame(tui, "Unprepared hunk");
     assert.deepEqual(state.status().cursor, { itemId: "d.ts", pane: "overview", hunkId: "d.ts" });
@@ -445,7 +476,7 @@ describe("TUI", () => {
     // The harness moves the revision on without the TUI polling; the next verdict names the old frame.
     await press(tui, "k");
     await press(tui, "k");
-    assert(tui.captureCharFrame().includes("▍GROUP"));
+    assert(tui.captureCharFrame().includes(" rename old to new "));
     const moved = structuredClone(state.status()) as any;
     moved.groups[0].title = "rename old to new (reworded)";
     moved.revision++;
@@ -459,13 +490,16 @@ describe("TUI", () => {
     tui.renderer.destroy();
   });
 
-  it("enters the diff pane with Enter, steps a group's hunks with j/k, and leaves with Esc", async () => {
+  it("opens the diff with Enter, jumps hunks with [ / ], groups with p / n, and leaves with Esc", async () => {
     const state = fixture();
     const tui = await testRender(() => <App client={state.client} pollInterval={60_000} />, {
       width: 100,
       height: 30,
     });
-    await tui.waitForFrame((frame) => frame.includes("▍GROUP"));
+    await tui.waitForFrame((frame) => frame.includes("rename old to new"));
+    await press(tui, "]");
+    await press(tui, "TAB");
+    assert.equal(state.actions.length, 0, "hunk and pane keys are inert while browsing");
     await press(tui, "RETURN");
     assert.deepEqual(
       state.actions.at(-1),
@@ -473,37 +507,50 @@ describe("TUI", () => {
       "Enter focuses the group's first member",
     );
     let frame = tui.captureCharFrame();
-    assert(frame.includes("all 2 members"), "focusing retains all members");
-    assert(frame.includes("j/k to step, esc to leave"), "focused card names the pane keys");
-    await press(tui, "j");
+    assert(frame.includes("old()") && frame.includes("const old = 1"), "all members render");
+    assert(frame.includes("▍diff") && !frame.includes("j/k to step"), "no instruction chrome");
+    await press(tui, "]");
     assert.deepEqual(state.actions.at(-1), {
       type: "cursor.focus",
       itemId: "group",
       pane: "diff",
       hunkId: "a.ts",
     });
-    await press(tui, "j");
+    assert(tui.captureCharFrame().includes("hunk 2/2"));
+    await press(tui, "]");
     assert.deepEqual(
       state.actions.at(-1),
       { type: "cursor.focus", itemId: "group", pane: "diff", hunkId: "b.ts" },
-      "j wraps",
+      "] wraps",
     );
-    await press(tui, "k");
+    await press(tui, "[");
     assert.deepEqual(
       state.actions.at(-1),
       { type: "cursor.focus", itemId: "group", pane: "diff", hunkId: "a.ts" },
-      "k steps back",
+      "[ steps back",
     );
-    assert(tui.captureCharFrame().includes("▍GROUP"), "stepping hunks keeps the item");
+    assert(tui.captureCharFrame().includes(" rename old to new "), "stepping hunks keeps the item");
+    const revisionBefore = state.status().revision;
+    await press(tui, "n");
+    assert.deepEqual(
+      state.actions.at(-1),
+      { type: "cursor.focus", itemId: "cache", pane: "diff", hunkId: "c.ts" },
+      "n opens the next group without a verdict",
+    );
+    await press(tui, "p");
+    assert.deepEqual(
+      state.actions.at(-1),
+      { type: "cursor.focus", itemId: "group", pane: "diff", hunkId: "b.ts" },
+      "p returns to the previous group's first hunk",
+    );
+    assert.equal(state.status().revision, revisionBefore, "navigation never verdicts");
     await press(tui, "ESCAPE");
     assert.deepEqual(state.actions.at(-1), {
       type: "cursor.focus",
       itemId: "group",
       pane: "queue",
     });
-    frame = tui.captureCharFrame();
-    assert(frame.includes("all 2 members"), "leaving retains all members");
-    assert(frame.includes("enter to step through"), "unfocused card offers Enter");
+    assert(browsing(tui), "leaving shows the list");
     await press(tui, "j");
     assert.deepEqual(
       state.actions.at(-1),
@@ -518,9 +565,11 @@ describe("TUI", () => {
       hunkId: "c.ts",
     });
     const before = state.actions.length;
-    await press(tui, "j");
-    await press(tui, "k");
+    await press(tui, "]");
+    await press(tui, "[");
     assert.equal(state.actions.length, before, "a lone hunk has nothing to step through");
+    frame = tui.captureCharFrame();
+    assert(!frame.includes("hunk 1/1"), "a lone hunk shows no hunk position");
     await press(tui, "ESCAPE");
     assert.deepEqual(state.actions.at(-1), {
       type: "cursor.focus",
@@ -544,23 +593,26 @@ describe("TUI", () => {
       });
       const pane = (id: string) => tui.renderer.root.findDescendantById(id) as ScrollBoxRenderable;
       try {
-        await tui.waitForFrame((frame) => frame.includes("first_0"));
+        await tui.waitForFrame((frame) => frame.includes("rename old to new"));
+        assert(browsing(tui) && !tui.captureCharFrame().includes("first_0"));
+        if (width >= 120) await markdownFrame(tui, "Intent");
+        else assert(!tui.captureCharFrame().includes("Intent"), "narrow browse is the list");
         await press(tui, "TAB");
-        assert.equal(state.actions.length, 0, "Tab in queue is inert");
+        assert.equal(state.actions.length, 0, "Tab in the list is inert");
         await press(tui, "RETURN");
-        await tui.waitForFrame((frame) => frame.includes("[diff]"));
-        assert(!tui.captureCharFrame().includes("REVIEW QUEUE"));
+        await tui.waitForFrame((frame) => frame.includes("▍diff") && frame.includes("first_0"));
+        assert(!browsing(tui));
         if (width >= 120) await markdownFrame(tui, "Intent");
         else assert(!tui.captureCharFrame().includes("Intent"));
         await press(tui, "d", { ctrl: true });
         const diffTop = pane("diff-pane").scrollTop;
         assert(diffTop > 0);
         assert(
-          tui.captureCharFrame().split("\n")[0]!.startsWith("rename old to new — b.ts"),
+          tui.captureCharFrame().split("\n")[0]!.startsWith(" rename old to new "),
           "scrolling cannot paint over the compact header",
         );
         await press(tui, "TAB");
-        await tui.waitForFrame((frame) => frame.includes("[overview]"));
+        await tui.waitForFrame((frame) => frame.includes("▍overview"));
         assert.deepEqual(state.status().cursor, {
           itemId: "group",
           pane: "overview",
@@ -603,7 +655,11 @@ describe("TUI", () => {
         published.ready = true;
         state.setStatus(published);
         await Bun.sleep(15);
-        await tui.waitForFrame((frame) => frame.includes("0 hunks awaiting preparation"));
+        await tui.waitForFrame((frame) => frame.includes("0/3 done"));
+        assert(
+          !tui.captureCharFrame().includes("awaiting preparation"),
+          "an empty inbox needs no readiness line",
+        );
         assert.equal(state.status().cursor.pane, "overview");
         assert.equal(pane("overview-pane").scrollTop, overviewTop);
         assert.equal(pane("diff-pane").scrollTop, diffTop);
@@ -613,11 +669,19 @@ describe("TUI", () => {
           await tui.renderOnce();
           assert.equal(state.status().cursor.pane, "overview");
           assert.equal(pane("overview-pane").scrollTop, overviewTop);
-          assert(!tui.captureCharFrame().includes("REVIEW QUEUE"));
+          assert(!browsing(tui));
         }
+        await press(tui, "z");
+        assert(!pane("diff-pane").visible, "z expands the focused overview");
+        assert.equal(pane("overview-pane").scrollTop, overviewTop, "expansion keeps the position");
         await press(tui, "ESCAPE");
-        assert(tui.captureCharFrame().includes("REVIEW QUEUE"));
-        assert(!tui.captureCharFrame().includes("Paragraph"));
+        assert(!browsing(tui), "Esc restores the split before leaving");
+        assert(pane("diff-pane").visible);
+        assert.equal(pane("overview-pane").scrollTop, overviewTop, "restoring keeps the position");
+        assert.equal(pane("diff-pane").scrollTop, diffTop, "the hidden pane keeps its position");
+        await press(tui, "ESCAPE");
+        assert(browsing(tui));
+        assert(!tui.captureCharFrame().includes("first_"), "the list replaces the diff");
         await press(tui, "RETURN");
         assert.equal(state.status().cursor.hunkId, "b.ts");
         assert.equal(pane("overview-pane").scrollTop, 0);
@@ -640,10 +704,10 @@ describe("TUI", () => {
         .split("\n")
         .some((line) => line.includes("const old = 1") && line.includes("const new = 1"));
     try {
-      await tui.waitForFrame(() => paired());
+      await tui.waitForFrame((frame) => frame.includes("rename old to new"));
       await press(tui, "RETURN");
-      await tui.renderOnce();
-      assert(!paired(), "200-column zoom diff is less than 120 usable columns");
+      await tui.waitForFrame((frame) => frame.includes("const old = 1"));
+      assert(!paired(), "200-column reading diff is less than 120 usable columns");
       await press(tui, "1");
       assert(paired(), "explicit split overrides narrow pane");
       await press(tui, "2");
@@ -652,6 +716,14 @@ describe("TUI", () => {
       tui.resize(240, 30);
       await tui.waitForFrame(() => paired());
       tui.resize(120, 30);
+      await tui.waitForFrame(() => !paired());
+      tui.resize(130, 30);
+      await tui.renderOnce();
+      await tui.renderOnce();
+      assert(!paired(), "a 130-column split pane is still narrow");
+      await press(tui, "z");
+      await tui.waitForFrame(() => paired()); // expanding the diff to full width splits it
+      await press(tui, "z");
       await tui.waitForFrame(() => !paired());
       const finiteGeometry = (node: any) => {
         if (typeof node.width === "number") assert(Number.isFinite(node.width), node.id);
@@ -693,7 +765,7 @@ describe("TUI", () => {
       height: 30,
     });
     try {
-      await tui.waitForFrame((frame) => frame.includes("▍GROUP"));
+      await tui.waitForFrame((frame) => frame.includes("rename old to new"));
       await tui.mockInput.pressKey("a");
       await started.promise;
       await tui.mockInput.pressKey("a");
@@ -734,8 +806,9 @@ describe("TUI", () => {
     });
     const pane = (id: string) => tui.renderer.root.findDescendantById(id) as ScrollBoxRenderable;
     try {
-      await tui.waitForFrame((frame) => frame.includes("first_0"));
+      await tui.waitForFrame((frame) => frame.includes("rename old to new"));
       await press(tui, "RETURN");
+      await tui.waitForFrame((frame) => frame.includes("first_0"));
       await markdownFrame(tui, "Paragraph 0");
       await press(tui, "d", { ctrl: true });
       await press(tui, "TAB");
@@ -774,7 +847,7 @@ describe("TUI", () => {
       height: 40,
     });
     try {
-      await tui.waitForFrame((frame) => frame.includes("▍GROUP"));
+      await tui.waitForFrame((frame) => frame.includes("rename old to new"));
       await press(tui, "RETURN");
       await press(tui, "TAB");
       const first = await markdownFrame(tui, "Intent");
@@ -810,7 +883,7 @@ describe("TUI", () => {
       height: 30,
     });
     try {
-      await tui.waitForFrame((frame) => frame.includes("▍GROUP"));
+      await tui.waitForFrame((frame) => frame.includes("rename old to new"));
       await press(tui, "RETURN");
       await press(tui, "TAB");
       await press(tui, "a");
@@ -836,16 +909,17 @@ describe("TUI", () => {
       next.ready = true;
       state.setStatus(next);
       await Bun.sleep(15);
-      await tui.waitForFrame((frame) => frame.includes("0 hunks awaiting preparation"));
+      await tui.waitForFrame((frame) => frame.includes("2/3 done"));
+      assert(!tui.captureCharFrame().includes("awaiting preparation"));
       assert.equal(state.status().cursor.itemId, "cache");
       assert.equal(state.status().cursor.pane, "overview");
       await press(tui, "ESCAPE");
       await press(tui, "j");
       await press(tui, "RETURN");
       await press(tui, "a");
-      assert(tui.captureCharFrame().includes("review complete"));
+      assert(tui.captureCharFrame().includes("review complete \u2014 3/3 done"));
       await markdownFrame(tui, "New item");
-      assert(!tui.captureCharFrame().includes("REVIEW QUEUE"));
+      assert(!browsing(tui));
       await press(tui, "u");
       assert.equal(state.status().cursor.pane, "diff");
       assert(!tui.captureCharFrame().includes("review complete"));
@@ -871,24 +945,613 @@ describe("TUI", () => {
     };
   }
 
+  it("gives a long hunk the whole diff pane height on a tall terminal", async () => {
+    // The ScrollBox root must keep OpenTUI's row layout: a column root parks the vertical scrollbar
+    // below the viewport, shortening it and leaving blank rows above the footer.
+    const state = fixture();
+    const focused = structuredClone(state.status()) as any;
+    focused.cursor = { itemId: "cache", pane: "diff", hunkId: "c.ts" };
+    state.setStatus(focused);
+    const lines = Array.from({ length: 263 }, (_, i) => `+export const line_${i} = ${i};`).join(
+      "\n",
+    );
+    const client: TuiClient = {
+      ...state.client,
+      diff: async () => {
+        const value = await state.client.diff();
+        return {
+          ...value,
+          hunks: value.hunks.map((hunk) =>
+            hunk.id === "c.ts" ? { ...hunk, patch: `@@ -0,0 +1,263 @@\n${lines}` } : hunk,
+          ),
+        };
+      },
+    };
+    const tui = await testRender(() => <App client={client} pollInterval={60_000} />, {
+      width: 200,
+      height: 60,
+    });
+    try {
+      await tui.waitForFrame((frame) => frame.includes("line_0"));
+      await tui.renderOnce();
+      const pane = tui.renderer.root.findDescendantById("diff-pane") as ScrollBoxRenderable;
+      // The pane's only chrome is its one-row caption border.
+      assert.equal(pane.viewport.height, pane.height - 1, "viewport spans the pane");
+      assert.equal(pane.verticalScrollBar.height, pane.viewport.height, "scrollbar is beside");
+      const rows = tui.captureCharFrame().split("\n");
+      const last = rows.findLastIndex((row) => row.includes("line_"));
+      const footer = rows.findIndex((row, index) => index > last && row.trim().length > 0);
+      assert.equal(
+        footer,
+        last + 1,
+        `blank rows between the diff and the footer:\n${rows.join("\n")}`,
+      );
+      assert(rows.filter((row) => row.includes("line_")).length >= pane.height - 4);
+    } finally {
+      tui.renderer.destroy();
+    }
+  });
+
   it("scrolls the focused member into view", async () => {
     const state = fixture();
     const tui = await testRender(() => <App client={tallGroup(state)} pollInterval={60_000} />, {
       width: 100,
       height: 30,
     });
-    await tui.waitForFrame((frame) => frame.includes("▍GROUP"));
+    await tui.waitForFrame((frame) => frame.includes("rename old to new"));
     await press(tui, "RETURN");
     await tui.waitForFrame((frame) => frame.includes("first_0"));
     assert(
       !tui.captureCharFrame().includes("const old = 1"),
       "the second member starts off-screen",
     );
-    await press(tui, "j");
+    await press(tui, "]");
     await tui.waitForFrame((frame) => frame.includes("const old = 1"));
-    await press(tui, "k");
+    await press(tui, "[");
     await tui.waitForFrame((frame) => frame.includes("first_0"));
     tui.renderer.destroy();
+  });
+
+  it("moves the shared focus to the hunk heading the viewport while scrolling, without snapping", async () => {
+    const state = fixture();
+    // Both members are taller than the viewport, so either can head it.
+    const tall = (prefix: string) =>
+      `@@ -1 +1,60 @@\n${Array.from({ length: 60 }, (_, i) => `+${prefix}_${i}`).join("\n")}`;
+    const client: TuiClient = {
+      ...state.client,
+      diff: async () => {
+        const value = await state.client.diff();
+        return {
+          ...value,
+          hunks: value.hunks.map((hunk) =>
+            hunk.id === "b.ts"
+              ? { ...hunk, patch: tall("first") }
+              : hunk.id === "a.ts"
+                ? { ...hunk, patch: tall("second") }
+                : hunk,
+          ),
+        };
+      },
+    };
+    const tui = await testRender(() => <App client={client} pollInterval={5} />, {
+      width: 100,
+      height: 30,
+    });
+    const pane = () => tui.renderer.root.findDescendantById("diff-pane") as ScrollBoxRenderable;
+    const settled = async () => {
+      for (let i = 0; i < 6; i++) {
+        await tui.renderOnce();
+        await Bun.sleep(10);
+      }
+    };
+    try {
+      await tui.waitForFrame((frame) => frame.includes("rename old to new"));
+      await press(tui, "RETURN");
+      await tui.waitForFrame((frame) => frame.includes("first_0"));
+      // j scrolls one line; the 60-line first member still heads the viewport.
+      for (let i = 0; i < 5; i++) await press(tui, "j");
+      await settled();
+      assert.equal(pane().scrollTop, 5);
+      assert.equal(state.status().cursor.hunkId, "b.ts");
+      assert.equal(state.status().revision, 0, "scrolling never verdicts");
+      // Scroll past the first member: the second heads the viewport and becomes the shared focus.
+      for (let i = 0; i < 6; i++) await press(tui, "d", { ctrl: true });
+      await tui.waitFor(() => state.status().cursor.hunkId === "a.ts");
+      await settled();
+      const top = pane().scrollTop;
+      assert(top > 60, `viewport stays where the human scrolled (${top})`);
+      assert(tui.captureCharFrame().includes("hunk 2/2"), "header follows the focus");
+      assert(!tui.captureCharFrame().includes("▌a.ts"), "the heading scrolled off; no snap back");
+      await Bun.sleep(40);
+      await settled();
+      assert.equal(pane().scrollTop, top, "polls and the derived focus do not move the viewport");
+      const focusActions = state.actions.filter(
+        (action) => action.type === "cursor.focus" && action.hunkId === "a.ts",
+      );
+      assert.equal(focusActions.length, 1, "the derived focus is sent once, not in a loop");
+      assert.deepEqual(state.status().cursor, { itemId: "group", pane: "diff", hunkId: "a.ts" });
+      // Mouse wheel scrolling back up follows the same rule.
+      const before = pane().scrollTop;
+      await tui.mockMouse.scroll(20, 15, "up");
+      await tui.renderOnce();
+      assert(pane().scrollTop < before, "the wheel scrolls the diff pane");
+      while (pane().scrollTop > 40) await tui.mockMouse.scroll(20, 15, "up");
+      await tui.waitFor(() => state.status().cursor.hunkId === "b.ts");
+      await settled();
+      assert(pane().scrollTop <= 40, "wheel-derived focus does not snap the viewport");
+      // An explicit jump still reveals its target from the header.
+      await press(tui, "]");
+      await tui.waitForFrame((frame) => frame.includes("second_0"));
+      assert.equal(state.status().cursor.hunkId, "a.ts");
+      assert(tui.captureCharFrame().includes("▌a.ts"), "the jump reveals the header");
+      // Overview scrolling never moves the diff focus.
+      await press(tui, "TAB");
+      await press(tui, "d", { ctrl: true });
+      await press(tui, "j");
+      await settled();
+      assert.equal(state.status().cursor.hunkId, "a.ts");
+    } finally {
+      tui.renderer.destroy();
+    }
+  });
+
+  // Three members: A and B are 60 lines each so either can head the viewport; C is short and last.
+  function threeTall(state: ReturnType<typeof fixture>): TuiClient {
+    const tall = (prefix: string) =>
+      `@@ -1 +1,60 @@\n${Array.from({ length: 60 }, (_, i) => `+${prefix}_${i}`).join("\n")}`;
+    const next = structuredClone(state.status()) as any;
+    next.groups[0].hunkIds = ["b.ts", "a.ts", "c.ts"];
+    next.groups[0].count = 3;
+    next.groups.splice(1, 1);
+    next.queue = ["group"];
+    next.cursor = { itemId: "group", pane: "diff", hunkId: "b.ts" };
+    state.setStatus(next);
+    return {
+      ...state.client,
+      diff: async () => {
+        const value = await state.client.diff();
+        return {
+          ...value,
+          hunks: value.hunks.map((hunk) =>
+            hunk.id === "b.ts"
+              ? { ...hunk, patch: tall("first") }
+              : hunk.id === "a.ts"
+                ? { ...hunk, patch: tall("second") }
+                : hunk,
+          ),
+        };
+      },
+    };
+  }
+
+  it("discards a scroll-derived focus queued behind a blocked poll once an explicit jump lands", async () => {
+    const state = fixture();
+    const base = threeTall(state);
+    const started = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    let reads = 0;
+    let failing = false;
+    let failures = 0;
+    const client: TuiClient = {
+      ...base,
+      status: async () => {
+        if (++reads === 2) {
+          started.resolve();
+          await release.promise;
+        }
+        return base.status();
+      },
+      action: async (action) => {
+        if (failing && action.type === "cursor.focus" && action.hunkId === "b.ts") {
+          failures++;
+          throw new TuiClientError({ code: "internal_error", message: "daemon hiccup" });
+        }
+        return base.action(action);
+      },
+    };
+    const tui = await testRender(() => <App client={client} pollInterval={5} />, {
+      width: 100,
+      height: 30,
+    });
+    const pane = () => tui.renderer.root.findDescendantById("diff-pane") as ScrollBoxRenderable;
+    const settled = async () => {
+      for (let i = 0; i < 8; i++) {
+        await tui.renderOnce();
+        await Bun.sleep(10);
+      }
+    };
+    try {
+      await tui.waitForFrame((frame) => frame.includes("first_0"));
+      await started.promise;
+      // Queued behind the blocked poll: an explicit wrap to C, then a scroll that makes B head the view.
+      await tui.mockInput.pressKey("[");
+      for (let i = 0; i < 6; i++) await press(tui, "d", { ctrl: true });
+      assert(pane().scrollTop > 60, "B heads the viewport while the poll is blocked");
+      assert.equal(state.status().cursor.hunkId, "b.ts", "nothing landed yet");
+      release.resolve();
+      await tui.waitFor(() => state.status().cursor.hunkId === "c.ts");
+      await settled();
+      assert.equal(
+        state.status().cursor.hunkId,
+        "c.ts",
+        "the stale tracker must not overwrite the jump",
+      );
+      assert(tui.captureCharFrame().includes("\u258cc.ts"), "the jump target is revealed");
+      assert(
+        !state.actions.some((action) => action.type === "cursor.focus" && action.hunkId === "a.ts"),
+        "no derived focus for B was sent",
+      );
+      // The tracker still works afterwards; a derived action the daemon rejects leaves no trace that
+      // could later swallow an explicit jump to the same hunk.
+      await press(tui, "u", { ctrl: true });
+      await press(tui, "u", { ctrl: true });
+      await tui.waitFor(() => state.status().cursor.hunkId === "a.ts");
+      await settled();
+      failing = true;
+      for (let i = 0; i < 6; i++) await press(tui, "u", { ctrl: true });
+      await settled();
+      assert(failures > 0, "the tracker tried to follow the scroll to A");
+      assert(failures <= 6, `at most one attempt per scroll step (${failures})`);
+      assert.equal(
+        state.status().cursor.hunkId,
+        "a.ts",
+        "a rejected derived action changes nothing",
+      );
+      // Nothing changed: unchanged frames, error renders and successful polls must not retry.
+      const latched = failures;
+      for (let i = 0; i < 3; i++) {
+        await Bun.sleep(30);
+        await settled();
+      }
+      assert(reads > 5, "polls kept landing meanwhile");
+      assert.equal(failures, latched, "no retry from unchanged frames or polls");
+      // Deliberate scrolling re-arms exactly one attempt for the new position.
+      await press(tui, "u", { ctrl: true });
+      await settled();
+      assert.equal(failures, latched + 1, "one retry per meaningful scroll");
+      failing = false;
+      for (let i = 0; i < 5; i++) await press(tui, "d", { ctrl: true });
+      await settled();
+      assert(!tui.captureCharFrame().includes("first_0"), "A's header is off-screen again");
+      assert.equal(state.status().cursor.hunkId, "a.ts");
+      await press(tui, "[");
+      await tui.waitFor(() => state.status().cursor.hunkId === "b.ts");
+      await tui.waitForFrame((frame) => frame.includes("first_0"));
+    } finally {
+      release.resolve();
+      tui.renderer.destroy();
+    }
+  });
+
+  it("keeps the reading position across expand/restore when wrapping content reflows", async () => {
+    const state = fixture();
+    const next = structuredClone(state.status()) as any;
+    next.groups[0].overview = Array.from(
+      { length: 40 },
+      (_, i) => `P_${i} ${"long words ".repeat(12)}end.`,
+    ).join("\n\n");
+    state.setStatus(next);
+    const tui = await testRender(() => <App client={state.client} pollInterval={60_000} />, {
+      width: 130,
+      height: 30,
+    });
+    const pane = (id: string) => tui.renderer.root.findDescendantById(id) as ScrollBoxRenderable;
+    const settle = async () => {
+      for (let i = 0; i < 6; i++) await tui.renderOnce();
+    };
+    const firstMarker = () => {
+      const match = tui.captureCharFrame().match(/P_\d+/);
+      assert(match, "a paragraph heads the overview");
+      return match[0];
+    };
+    try {
+      await tui.waitForFrame((frame) => frame.includes("rename old to new"));
+      await press(tui, "RETURN");
+      await press(tui, "TAB");
+      await markdownFrame(tui, "P_0");
+      // 11 half pages: near the bottom, short of the trailing rows the pinned Markdown measures but
+      // never draws for this wrapped content.
+      for (let i = 0; i < 11; i++) await press(tui, "d", { ctrl: true });
+      await settle();
+      const narrowTop = pane("overview-pane").scrollTop;
+      const marker = firstMarker();
+      assert(
+        marker !== "P_0" && narrowTop > 100,
+        `scrolled near the bottom (${marker}, ${narrowTop})`,
+      );
+      await press(tui, "z");
+      await settle();
+      assert(!pane("diff-pane").visible);
+      // Wider prose wraps into fewer rows; the paragraph stays on screen even when it is now on the last page.
+      assert(tui.captureCharFrame().includes(marker), "expansion keeps the paragraph being read");
+      assert(
+        pane("overview-pane").scrollTop < narrowTop,
+        "the offset was clamped by the shorter content (the pre-fix failure mode)",
+      );
+      // Up two rows and back: the expanded offset is untouched, so restoring is exact.
+      await press(tui, "k");
+      await press(tui, "k");
+      await press(tui, "j");
+      await press(tui, "j");
+      await settle();
+      await press(tui, "ESCAPE");
+      await settle();
+      assert(pane("diff-pane").visible, "Esc restores the split");
+      assert.equal(
+        pane("overview-pane").scrollTop,
+        narrowTop,
+        "restoring returns the exact position",
+      );
+      assert.equal(firstMarker(), marker);
+      await press(tui, "z");
+      await settle();
+      await press(tui, "u", { ctrl: true });
+      await settle();
+      const read = firstMarker();
+      await press(tui, "z");
+      await settle();
+      const restored: string[] = tui.captureCharFrame().match(/P_\d+/g) ?? [];
+      assert(restored.includes(read), "reading while expanded carries over to the restored pane");
+      assert(
+        Number(restored[0]!.slice(2)) <= Number(read.slice(2)),
+        `nothing after ${read} took the top (${restored[0]})`,
+      );
+    } finally {
+      tui.renderer.destroy();
+    }
+  });
+
+  it("keeps the focused hunk in place across diff expansion that switches unified and split", async () => {
+    const state = fixture();
+    // Twenty replaced lines: 40 unified rows, 20 split rows, no wrapping.
+    const replaced = (prefix: string) =>
+      `@@ -1,20 +1,20 @@\n${Array.from({ length: 20 }, (_, i) => `-${prefix}_old_${i}`).join("\n")}\n${Array.from({ length: 20 }, (_, i) => `+${prefix}_new_${i}`).join("\n")}`;
+    const next = structuredClone(state.status()) as any;
+    next.groups[0].hunkIds = ["b.ts", "a.ts", "c.ts"];
+    next.groups[0].count = 3;
+    next.groups.splice(1, 1);
+    next.queue = ["group"];
+    state.setStatus(next);
+    const client: TuiClient = {
+      ...state.client,
+      diff: async () => {
+        const value = await state.client.diff();
+        return {
+          ...value,
+          hunks: value.hunks.map((hunk) => ({
+            ...hunk,
+            patch: replaced(hunk.id.replace(".ts", "")),
+          })),
+        };
+      },
+    };
+    const tui = await testRender(() => <App client={client} pollInterval={5} />, {
+      width: 130,
+      height: 30,
+    });
+    const pane = () => tui.renderer.root.findDescendantById("diff-pane") as ScrollBoxRenderable;
+    const paired = () =>
+      tui
+        .captureCharFrame()
+        .split("\n")
+        .some((line) => line.includes("_old_") && line.includes("_new_"));
+    const settle = async () => {
+      for (let i = 0; i < 8; i++) {
+        await tui.renderOnce();
+        await Bun.sleep(10);
+      }
+    };
+    // First diff row (below header, hint and caption), diff-pane columns only.
+    const topLine = () =>
+      tui.captureCharFrame().split("\n")[3]!.slice(0, 76).replace(/\s+/g, " ").trim();
+    try {
+      await tui.waitForFrame((frame) => frame.includes("rename old to new"));
+      await press(tui, "RETURN");
+      await tui.waitForFrame((frame) => frame.includes("b_old_0"));
+      assert(!paired(), "a 78-column pane stacks");
+      for (let i = 0; i < 4; i++) await press(tui, "d", { ctrl: true });
+      await tui.waitFor(() => state.status().cursor.hunkId === "a.ts");
+      await settle();
+      const before = { top: pane().scrollTop, line: topLine() };
+      assert(before.line.includes("a_old_"), `reading inside the second hunk (${before.line})`);
+      const focusActions = () =>
+        state.actions.filter((action) => action.type === "cursor.focus").length;
+      const sent = focusActions();
+      await press(tui, "z");
+      await settle();
+      assert(paired(), "the expanded pane splits");
+      assert(
+        topLine().includes("a_old_") || topLine().includes("\u258ca.ts"),
+        `the same hunk still heads the view when split (${topLine()})`,
+      );
+      assert(pane().scrollTop < before.top, "the split layout is shorter, so the offset moved");
+      await press(tui, "ESCAPE");
+      await settle();
+      assert(!paired());
+      assert.equal(pane().scrollTop, before.top, "restore returns the unified position");
+      assert.equal(topLine(), before.line);
+      assert.equal(state.status().cursor.hunkId, "a.ts");
+      assert.equal(focusActions(), sent, "reflow produced no derived focus traffic");
+    } finally {
+      tui.renderer.destroy();
+    }
+  });
+
+  it("retains the expanded pane owner after a hunk jump before switching panes", async () => {
+    const state = fixture();
+    const next = structuredClone(state.status()) as any;
+    next.groups[0].hunkIds = ["b.ts", "a.ts", "c.ts"];
+    next.groups[0].count = 3;
+    next.groups.splice(1, 1);
+    next.queue = ["group"];
+    state.setStatus(next);
+    const client: TuiClient = {
+      ...state.client,
+      diff: async () => {
+        const value = await state.client.diff();
+        return {
+          ...value,
+          hunks: value.hunks.map((hunk) => ({
+            ...hunk,
+            patch: `@@ -1,60 +1,60 @@\n${["-", "+"]
+              .flatMap((sign) => Array.from({ length: 60 }, (_, i) => `${sign}${hunk.id}_${i}`))
+              .join("\n")}`,
+          })),
+        };
+      },
+    };
+    const tui = await testRender(() => <App client={client} pollInterval={5} />, {
+      width: 130,
+      height: 30,
+    });
+    const pane = () => tui.renderer.root.findDescendantById("diff-pane") as ScrollBoxRenderable;
+    const settle = async () => {
+      for (let i = 0; i < 8; i++) {
+        await tui.renderOnce();
+        await Bun.sleep(10);
+      }
+    };
+    try {
+      await tui.waitForFrame((frame) => frame.includes("rename old to new"));
+      await press(tui, "RETURN");
+      await press(tui, "z");
+      await settle();
+      assert(pane().width > 100, "the expanded diff uses the split layout");
+      await press(tui, "]");
+      await tui.waitFor(() => state.status().cursor.hunkId === "a.ts");
+      await settle();
+      await press(tui, "TAB");
+      await settle();
+      assert(pane().visible && pane().width < 100, "switching panes restores the unified diff");
+      assert.equal(state.status().cursor.hunkId, "a.ts", "the selected member survives reflow");
+      assert(tui.captureCharFrame().split("\n")[3]!.includes("a.ts"));
+    } finally {
+      tui.renderer.destroy();
+    }
+  });
+
+  it("collapses an expanded pane when Tab switches focus, restoring its own position", async () => {
+    const state = fixture();
+    const next = structuredClone(state.status()) as any;
+    next.groups[0].overview = Array.from(
+      { length: 40 },
+      (_, i) => `P_${i} ${"long words ".repeat(12)}end.`,
+    ).join("\n\n");
+    state.setStatus(next);
+    const tui = await testRender(() => <App client={tallGroup(state)} pollInterval={60_000} />, {
+      width: 130,
+      height: 30,
+    });
+    const pane = (id: string) => tui.renderer.root.findDescendantById(id) as ScrollBoxRenderable;
+    const settle = async () => {
+      for (let i = 0; i < 8; i++) await tui.renderOnce();
+    };
+    try {
+      await tui.waitForFrame((frame) => frame.includes("rename old to new"));
+      await press(tui, "RETURN");
+      await tui.waitForFrame((frame) => frame.includes("first_0"));
+      await markdownFrame(tui, "P_0");
+      // Independent nonzero offsets in both panes.
+      for (let i = 0; i < 2; i++) await press(tui, "d", { ctrl: true });
+      await press(tui, "TAB");
+      for (let i = 0; i < 11; i++) await press(tui, "d", { ctrl: true });
+      await settle();
+      const diffTop = pane("diff-pane").scrollTop;
+      const overviewTop = pane("overview-pane").scrollTop;
+      assert(diffTop > 0 && overviewTop > 100);
+      // Expand the overview (it reflows and clamps), then Tab away and back.
+      await press(tui, "z");
+      await settle();
+      assert(!pane("diff-pane").visible && pane("overview-pane").scrollTop < overviewTop);
+      await press(tui, "\u001b[Z"); // Shift+Tab → diff
+      await settle();
+      assert.equal(state.status().cursor.pane, "diff");
+      assert(
+        pane("diff-pane").visible && pane("overview-pane").visible,
+        "Tab collapses the expansion",
+      );
+      assert.equal(
+        pane("overview-pane").scrollTop,
+        overviewTop,
+        "the overview keeps its own position",
+      );
+      assert.equal(pane("diff-pane").scrollTop, diffTop, "the diff was never touched");
+      // Reverse: expand the diff, Tab to the overview.
+      await press(tui, "z");
+      await settle();
+      assert(!pane("overview-pane").visible);
+      await press(tui, "TAB");
+      await settle();
+      assert.equal(state.status().cursor.pane, "overview");
+      assert(pane("diff-pane").visible && pane("overview-pane").visible);
+      assert.equal(pane("diff-pane").scrollTop, diffTop, "the diff returns to its own position");
+      assert.equal(pane("overview-pane").scrollTop, overviewTop, "the overview was never touched");
+      await press(tui, "ESCAPE");
+      assert(browsing(tui), "with nothing expanded, Esc returns to the list");
+    } finally {
+      tui.renderer.destroy();
+    }
+  });
+
+  it("lets an explicit jump or remote focus during expansion restore win over the stale restore", async () => {
+    const state = fixture();
+    const client = threeTall(state);
+    const tui = await testRender(() => <App client={client} pollInterval={5} />, {
+      width: 130,
+      height: 30,
+    });
+    const pane = () => tui.renderer.root.findDescendantById("diff-pane") as ScrollBoxRenderable;
+    const settled = async () => {
+      for (let i = 0; i < 10; i++) {
+        await tui.renderOnce();
+        await Bun.sleep(10);
+      }
+    };
+    try {
+      await tui.waitForFrame((frame) => frame.includes("first_0"));
+      for (let i = 0; i < 6; i++) await press(tui, "d", { ctrl: true });
+      await tui.waitFor(() => state.status().cursor.hunkId === "a.ts");
+      await settled();
+      const scrolled = pane().scrollTop;
+      await press(tui, "z");
+      await settled();
+      // Collapse and jump before the restoration frames finish.
+      await tui.mockInput.pressKey("z");
+      await tui.mockInput.pressKey("]");
+      await tui.waitFor(() => state.status().cursor.hunkId === "c.ts");
+      await settled();
+      await Bun.sleep(40);
+      await settled();
+      assert.equal(
+        state.status().cursor.hunkId,
+        "c.ts",
+        "the explicit jump keeps the shared focus",
+      );
+      assert(tui.captureCharFrame().includes("\u258cc.ts"), "the jump target stays revealed");
+      assert.notEqual(
+        pane().scrollTop,
+        scrolled,
+        "the stale restore did not reapply the old offset",
+      );
+      // A remote focus change (another TUI) during a restore is just as authoritative.
+      await press(tui, "[");
+      await tui.waitFor(() => state.status().cursor.hunkId === "a.ts");
+      await settled();
+      await press(tui, "z");
+      await settled();
+      await tui.mockInput.pressKey("z");
+      const moved = structuredClone(state.status()) as any;
+      moved.seq++;
+      moved.cursor = { itemId: "group", pane: "diff", hunkId: "b.ts" };
+      state.setStatus(moved);
+      await tui.waitFor(() => state.status().cursor.hunkId === "b.ts" && pane().scrollTop === 0);
+      await Bun.sleep(40);
+      await settled();
+      assert.equal(state.status().cursor.hunkId, "b.ts");
+      assert(tui.captureCharFrame().includes("first_0"), "the remote target stays revealed");
+    } finally {
+      tui.renderer.destroy();
+    }
   });
 
   it("reveals a persisted focus on attach and keeps manual scrolling across unchanged polls", async () => {
@@ -911,6 +1574,7 @@ describe("TUI", () => {
       !tui.captureCharFrame().includes("const old = 1"),
       "an unchanged poll must not scroll the focused member back into view",
     );
+    assert.equal(state.status().cursor.hunkId, "b.ts", "focus follows the member heading the view");
     tui.renderer.destroy();
   });
 
@@ -925,7 +1589,8 @@ describe("TUI", () => {
     });
     const pane = () => tui.renderer.root.findDescendantById("diff-pane") as ScrollBoxRenderable;
     try {
-      await tui.waitForFrame((frame) => frame.includes("[overview]"));
+      await tui.waitForFrame((frame) => frame.includes("▍overview"));
+      assert(!pane().visible, "a narrow overview hides the diff");
       await press(tui, "TAB");
       await tui.waitForFrame((frame) => frame.includes("const old = 1"));
       assert.deepEqual(state.status().cursor, { itemId: "group", pane: "diff", hunkId: "a.ts" });
@@ -937,14 +1602,16 @@ describe("TUI", () => {
       assert.equal(state.status().cursor.pane, "diff");
       assert.equal(pane().scrollTop, manual, "Tab round trip keeps the manual scroll");
       await press(tui, "TAB");
+      await tui.waitFor(() => state.status().cursor.pane === "overview");
       // Another TUI moves the shared hunk while this narrow overview hides the diff; widening shows it.
       const moved = structuredClone(state.status()) as any;
       moved.seq++;
-      moved.cursor = { itemId: "group", pane: "overview", hunkId: "b.ts" };
+      moved.cursor = { itemId: "group", pane: "overview", hunkId: "a.ts" };
       state.setStatus(moved);
-      await tui.waitForFrame((frame) => frame.includes("— b.ts"));
+      await tui.waitForFrame((frame) => frame.includes("hunk 2/2"));
+      assert(!tui.captureCharFrame().includes("const old = 1"));
       tui.resize(120, 30);
-      await tui.waitForFrame((frame) => frame.includes("first_0"));
+      await tui.waitForFrame((frame) => frame.includes("const old = 1"));
     } finally {
       tui.renderer.destroy();
     }
@@ -957,14 +1624,18 @@ describe("TUI", () => {
       height: 30,
     });
     try {
-      await tui.waitForFrame((frame) => frame.includes("first_0"));
+      await tui.waitForFrame((frame) => frame.includes("rename old to new"));
       await press(tui, "RETURN");
+      await tui.waitForFrame((frame) => frame.includes("first_0"));
       await press(tui, "d", { ctrl: true });
-      const before = tui
-        .captureCharFrame()
-        .split("\n")
-        .filter((line) => line.includes("first_"))
-        .map((line) => line.slice(27));
+      // Diff text only: the scrollbar column redraws, and the pane grows a row once the inbox empties.
+      const shown = () =>
+        tui
+          .captureCharFrame()
+          .split("\n")
+          .filter((line) => line.includes("first_"))
+          .map((line) => line.slice(0, 40));
+      const before = shown();
       assert(!before.some((line) => line.includes("first_0")));
       const next = structuredClone(state.status()) as any;
       next.groups.push({
@@ -981,16 +1652,71 @@ describe("TUI", () => {
       next.seq++;
       next.ready = true;
       state.setStatus(next);
-      await tui.waitForFrame((frame) => frame.includes("0 hunks awaiting preparation"));
+      await tui.waitForFrame((frame) => frame.includes("0/3 done"));
       assert.deepEqual(state.status().cursor, { itemId: "group", pane: "diff", hunkId: "b.ts" });
-      assert.deepEqual(
-        tui
-          .captureCharFrame()
-          .split("\n")
-          .filter((line) => line.includes("first_"))
-          .map((line) => line.slice(27)),
-        before,
+      assert.deepEqual(shown().slice(0, before.length), before);
+    } finally {
+      tui.renderer.destroy();
+    }
+  });
+
+  it("scrolls a long group list to the selection and keeps the overview at the same width when reading", async () => {
+    const state = fixture();
+    const next = structuredClone(state.status()) as any;
+    const long = `Reject expired credentials ${"with a deliberately very long title ".repeat(3)}CUT`;
+    next.groups = Array.from({ length: 40 }, (_, i) => ({
+      id: `g${i}`,
+      title: i === 0 ? long : `Group ${i}`,
+      overview: `Overview ${i}. ${"long words ".repeat(20)}end.`,
+      hunkIds: [i === 0 ? "a.ts" : "b.ts"],
+      count: 1,
+      accepted: i % 3 === 0,
+    }));
+    next.queue = next.groups.map((group: any) => group.id);
+    next.cursor = { itemId: "g0", pane: "queue" };
+    state.setStatus(next);
+    const tui = await testRender(() => <App client={state.client} pollInterval={60_000} />, {
+      width: 160,
+      height: 24,
+    });
+    const pane = (id: string) => tui.renderer.root.findDescendantById(id) as ScrollBoxRenderable;
+    try {
+      await tui.waitForFrame((frame) => frame.includes("Reject expired"));
+      const frame = await markdownFrame(tui, "Overview 0");
+      const rows = frame.split("\n");
+      assert(rows[0]!.startsWith(" stdin"), "browse header shows the scope");
+      assert.equal((frame.match(/Reject expired/g) ?? []).length, 1, "the title appears once");
+      assert(!frame.includes("CUT"), "the title is cut to the list width");
+      assert(
+        rows[3]!.slice(0, 96).includes("very long title with"),
+        "but keeps most of the 60% column",
       );
+      const overviewLeft = pane("overview-pane").x;
+      assert.equal(overviewLeft, Math.round(160 * 0.6), "overview takes 40% beside the list");
+      assert.equal(
+        pane("group-list").viewport.height,
+        pane("group-list").height,
+        "list root keeps the row layout",
+      );
+      assert(!frame.includes("Group 30"), "the long list is clipped, not stacked");
+      for (let i = 0; i < 30; i++) await press(tui, "j");
+      await tui.waitForFrame((value) => value.includes("Group 30"));
+      assert.equal(state.status().cursor.itemId, "g30");
+      assert(pane("group-list").scrollTop > 0, "the list scrolled to reveal the selection");
+      await press(tui, "RETURN");
+      await markdownFrame(tui, "Overview 30");
+      assert.equal(
+        pane("overview-pane").x,
+        overviewLeft,
+        "opening the diff does not reflow the overview",
+      );
+      assert(
+        tui.captureCharFrame().includes("a unmark · tab pane · ? help"),
+        `reading hint for an accepted lone hunk: ${tui.captureCharFrame().split("\n")[1]}`,
+      );
+      await press(tui, "ESCAPE");
+      await tui.waitForFrame((value) => value.includes("Group 30"));
+      assert(browsing(tui), "back in the list at the selection");
     } finally {
       tui.renderer.destroy();
     }
@@ -1025,7 +1751,7 @@ describe("TUI", () => {
       () => <App client={unreadyState.client} pollInterval={60_000} />,
       { width: 100, height: 30 },
     );
-    await unreadyTui.waitForFrame((value) => value.includes("▍GROUP"));
+    await unreadyTui.waitForFrame((value) => value.includes("rename old to new"));
     await press(unreadyTui, "a");
     await press(unreadyTui, "u");
     assert(
@@ -1067,7 +1793,7 @@ describe("TUI", () => {
     await waitingTui.waitForFrame((value) => value.includes("no session for this repo — waiting…"));
     available = true;
     await Bun.sleep(15);
-    await waitingTui.waitForFrame((value) => value.includes("REVIEW QUEUE"));
+    await waitingTui.waitForFrame((value) => value.includes("rename old to new"));
     await press(waitingTui, "q");
     assert(quit, "q detaches");
     waitingTui.renderer.destroy();
@@ -1101,7 +1827,7 @@ describe("TUI", () => {
         ),
         { width: 100, height: 30, exitOnCtrlC: false },
       );
-      await drainTui.waitForFrame((value) => value.includes("▍GROUP"));
+      await drainTui.waitForFrame((value) => value.includes("rename old to new"));
       drainTui.mockInput.pressKey("a");
       if (cancel) drainTui.mockInput.pressKey("c", { ctrl: true });
       else drainTui.mockInput.pressKey("q");
@@ -1126,13 +1852,14 @@ describe("TUI", () => {
         height: 30,
       },
     );
-    await rapidTui.waitForFrame((value) => value.includes("▍GROUP"));
+    await rapidTui.waitForFrame((value) => value.includes("rename old to new"));
     await rapidTui.mockInput.pressKey("j");
     await rapidTui.mockInput.pressKey("j");
     await Bun.sleep(5);
     await rapidTui.renderOnce();
     assert(
-      rapidTui.captureCharFrame().includes("INBOX"),
+      rapidState.status().cursor.itemId === "d.ts" &&
+        rapidTui.captureCharFrame().includes("! d.ts"),
       "rapid navigation derives each target after the prior action",
     );
     rapidTui.renderer.destroy();
@@ -1154,7 +1881,10 @@ describe("TUI", () => {
       height: 30,
     });
     await emptyTui.waitForFrame((value) => value.includes("no review items"));
-    assert(emptyTui.captureCharFrame().includes("  HEAD"), "header names the git scope");
+    assert(
+      emptyTui.captureCharFrame().split("\n")[0]!.startsWith(" HEAD"),
+      "header names the git scope",
+    );
     assert(
       !emptyTui.captureCharFrame().includes("review complete"),
       "an unready empty queue is not complete",
@@ -1182,18 +1912,18 @@ describe("TUI", () => {
       () => <App client={readyEmptyState.client} pollInterval={60_000} />,
       { width: 100, height: 30 },
     );
-    await readyEmptyTui.waitForFrame((value) => value.includes("review complete — 0/0 accepted"));
+    await readyEmptyTui.waitForFrame((value) => value.includes("review complete — 0/0 done"));
     assert(
-      readyEmptyTui.captureCharFrame().includes("  working tree"),
+      readyEmptyTui.captureCharFrame().split("\n")[0]!.startsWith(" working tree"),
       "header names the bare scope",
     );
     readyEmptyTui.renderer.destroy();
   });
 
-  it("scrolls a single-hunk group with Ctrl+D/Ctrl+U and snaps back on the next item", async () => {
+  it("scrolls a single-hunk group with Ctrl+D/Ctrl+U and snaps back on the next group", async () => {
     const longState = fixture();
     const long = structuredClone(longState.status()) as any;
-    long.cursor = { itemId: "cache", pane: "queue" };
+    long.cursor = { itemId: "cache", pane: "diff", hunkId: "c.ts" };
     longState.setStatus(long);
     const longLines = Array.from({ length: 60 }, (_, index) => `+line_${index}`).join("\n");
     const longClient: TuiClient = {
@@ -1220,8 +1950,14 @@ describe("TUI", () => {
     await longTui.waitForFrame((value) => value.includes("line_59"));
     await press(longTui, "u", { ctrl: true });
     await longTui.waitForFrame((value) => !value.includes("line_59"));
-    await press(longTui, "j");
-    await press(longTui, "k");
+    await press(longTui, "n");
+    assert.deepEqual(
+      longState.status().cursor,
+      { itemId: "d.ts", pane: "diff", hunkId: "d.ts" },
+      "n visits the unverdicted inbox hunk too",
+    );
+    await press(longTui, "p");
+    assert.deepEqual(longState.status().cursor, { itemId: "cache", pane: "diff", hunkId: "c.ts" });
     await longTui.waitForFrame((value) => value.includes("line_0"));
     await press(longTui, "\u001b[6~");
     await longTui.waitForFrame((value) => !value.includes("line_0"));
@@ -1250,8 +1986,9 @@ describe("TUI", () => {
       width: 100,
       height: 30,
     });
-    await tui.waitForFrame((frame) => frame.includes("▍GROUP"));
+    await tui.waitForFrame((frame) => frame.includes("rename old to new"));
     await press(tui, "j");
+    await press(tui, "RETURN");
     await tui.waitForFrame((frame) => frame.includes(tail));
     await press(tui, "1");
     await tui.waitForFrame((frame) => frame.includes(tail));
@@ -1265,8 +2002,9 @@ describe("TUI", () => {
       width: 100,
       height: 30,
     });
-    await tui.waitForFrame((frame) => frame.includes("▍GROUP"));
+    await tui.waitForFrame((frame) => frame.includes("rename old to new"));
     await press(tui, "j");
+    await press(tui, "RETURN");
     await tui.waitForFrame(
       (frame) => frame.includes("cache behavior changed") && frame.includes("1 - stale"),
     );
@@ -1290,13 +2028,13 @@ describe("TUI", () => {
       width: 100,
       height: 30,
     });
-    await resetTui.waitForFrame((value) => value.includes("✓ accepted"));
+    await resetTui.waitForFrame((value) => value.includes("✓ rename"));
     const reset = structuredClone(resetState.status()) as any;
     reset.groups[0].accepted = false;
     reset.revision = 2;
     resetState.setStatus(reset);
     await Bun.sleep(15);
-    await resetTui.waitForFrame((value) => !value.includes("✓ accepted"));
+    await resetTui.waitForFrame((value) => !value.includes("✓ rename"));
     resetTui.renderer.destroy();
   });
 
@@ -1310,10 +2048,10 @@ describe("TUI", () => {
       () => <App client={reattachedState.client} pollInterval={60_000} />,
       { width: 100, height: 30 },
     );
-    await reattachedTui.waitForFrame((value) => value.includes("✓ accepted"));
+    await reattachedTui.waitForFrame((value) => value.includes("✓ rename"));
     await press(reattachedTui, "u");
     assert(
-      !reattachedTui.captureCharFrame().includes("✓ accepted"),
+      !reattachedTui.captureCharFrame().includes("✓ rename"),
       "undo remains actionable after TUI reattachment",
     );
     reattachedTui.renderer.destroy();

@@ -10,6 +10,8 @@ import {
   pathToFiletype,
   SyntaxStyle,
   type BoxRenderable,
+  type CodeRenderable,
+  type Renderable,
   type ScrollBoxRenderable,
 } from "@opentui/core";
 import { useKeyboard, useRenderer, useTerminalDimensions, type SpanProps } from "@opentui/solid";
@@ -93,7 +95,9 @@ type ViewItem =
     }
   | { kind: "inbox"; id: string; accepted: false; member: Member };
 type LayoutMode = "auto" | "split" | "stack";
-const LAYOUT = { zoomColumns: 120, overviewPercent: 40, splitColumns: 120, queueColumns: 27 };
+// The overview keeps the same 40% beside the list and beside the diff, so opening a group never reflows it.
+const LAYOUT = { wideColumns: 120, overviewPercent: 40, splitColumns: 120 };
+const INBOX_OVERVIEW = "Unprepared hunk — awaiting agent preparation. Verdict unavailable.";
 
 function memberOf(hunk: Hunk): Member {
   const [header = "", ...body] = hunk.patch.split("\n");
@@ -136,6 +140,10 @@ function buildItems(status: StatusPayload, hunks: Map<string, Member>): ViewItem
   });
 }
 
+const itemTitle = (item: ViewItem) =>
+  item.kind === "inbox" ? `${item.member.file} · unprepared` : item.title;
+const itemMembers = (item: ViewItem) => (item.kind === "group" ? item.members : [item.member]);
+
 function FileHeader(props: { member: Member; focused: boolean }) {
   return (
     <box
@@ -149,6 +157,7 @@ function FileHeader(props: { member: Member; focused: boolean }) {
         <Sp fg={C.fg} attributes={props.focused ? 1 : 0}>
           {props.member.file}
         </Sp>
+        <Sp fg={C.dim}> {props.member.header}</Sp>
       </text>
       <text>
         <Show when={props.member.added}>
@@ -162,8 +171,9 @@ function FileHeader(props: { member: Member; focused: boolean }) {
   );
 }
 
-/** The box id lets the focus card scroll a focused member into view. */
+/** The box id lets the diff pane reveal a focused member and find the member at its viewport top. */
 const memberElementId = (hunkId: string) => `hunk:${hunkId}`;
+const rowElementId = (itemId: string) => `row:${itemId}`;
 
 function MemberDiff(props: { member: Member; layout: "split" | "stack"; focused: boolean }) {
   return (
@@ -189,81 +199,24 @@ function MemberDiff(props: { member: Member; layout: "split" | "stack"; focused:
   );
 }
 
-function Note(props: { text: string }) {
-  return (
-    <box flexDirection="row" backgroundColor={C.panel} marginTop={1}>
-      <text fg={C.accent} bg={C.panel}>
-        ▌{" "}
-      </text>
-      <text fg={C.fg} bg={C.panel}>
-        {props.text}
-      </text>
-    </box>
-  );
-}
-
-function VerdictTag(props: { accepted: boolean }) {
-  return (
-    <Show when={props.accepted}>
-      <Sp fg={C.okBadge} attributes={1}>
-        {" "}
-        ✓ accepted
-      </Sp>
-    </Show>
-  );
-}
-
-function FocusCard(props: {
+function GroupDiff(props: {
   item: ViewItem;
   focusedHunk: string | undefined;
   layout: "split" | "stack";
 }) {
-  const focused = (member: Member) => member.id === props.focusedHunk;
-  if (props.item.kind === "group")
-    return (
-      <box flexDirection="column">
-        <text>
-          <Sp fg={C.accent} attributes={1}>
-            ▍GROUP
-          </Sp>
-          <Sp fg={C.dim}> ×{props.item.members.length}</Sp>
-          <VerdictTag accepted={props.item.accepted} />
-        </text>
-        <Note text={props.item.title} />
-        <text> </text>
-        <text fg={C.dim}>
-          all {props.item.members.length} members (
-          {props.focusedHunk === undefined ? "enter to step through" : "j/k to step, esc to leave"})
-        </text>
-        <For each={props.item.members}>
-          {(member) => (
-            <box paddingBottom={1}>
-              <MemberDiff member={member} layout={props.layout} focused={focused(member)} />
-            </box>
-          )}
-        </For>
-      </box>
-    );
   return (
     <box flexDirection="column">
-      <text>
-        <Sp fg={C.accent} attributes={1}>
-          ▍INBOX{" "}
-        </Sp>
-        <Sp fg={C.fg} attributes={1}>
-          {props.item.member.file}
-        </Sp>
-      </text>
-      <text fg={C.accent}>awaiting agent triage — verdict unavailable</text>
-      <text fg={C.muted} attributes={2}>
-        {props.item.member.header}
-      </text>
-      <text> </text>
-      <MemberDiff
-        member={props.item.member}
-        layout={props.layout}
-        focused={focused(props.item.member)}
-      />
+      <For each={itemMembers(props.item)}>
+        {(member) => (
+          <box paddingBottom={1}>
+            <MemberDiff
+              member={member}
+              layout={props.layout}
+              focused={member.id === props.focusedHunk}
+            />
+          </box>
+        )}
+      </For>
     </box>
   );
 }
@@ -295,6 +248,8 @@ export function App(props: {
   const [diffWidth, setDiffWidth] = createSignal(0);
   const [help, setHelp] = createSignal(false);
   const [layoutMode, setLayoutMode] = createSignal<LayoutMode>("auto");
+  // The focused reading pane temporarily takes the whole width; the other pane keeps its scroll.
+  const [expanded, setExpanded] = createSignal(false);
   // `closing` stops admitting inputs and polls while the queue drains; `stopped` means the renderer is gone.
   let closing = false;
   let stopped = false;
@@ -302,9 +257,24 @@ export function App(props: {
   let syncQueued = false;
   let latestStatus: StatusPayload | undefined;
   let inputs = Promise.resolve();
-  let focusCard: ScrollBoxRenderable | undefined;
+  let diffPane: ScrollBoxRenderable | undefined;
   let overviewPane: ScrollBoxRenderable | undefined;
+  let groupList: ScrollBoxRenderable | undefined;
   let diffContent: BoxRenderable | undefined;
+  // Scroll-derived focus: `revealPending` holds the tracker off until an explicit focus is revealed,
+  // `derivedFocus` is the hunk the tracker sent so the reveal effect does not snap the viewport to it,
+  // and `focusGeneration` counts every focus change the tracker did not cause: a queued tracker entry
+  // derived under an older generation has been overtaken and is dropped.
+  let revealPending = false;
+  let derivedFocus: string | undefined;
+  let derivedInFlight = false;
+  let focusGeneration = 0;
+  // A derived focus the daemon rejected, keyed by everything that made it: the same view at the same
+  // scroll position is not retried by frames, error renders or unchanged polls, only by new input.
+  let failedDerived: string | undefined;
+  // Expansion reflows the focused pane; the tracker waits until its reading position is restored.
+  let anchorPending = false;
+  let cancelRestore: (() => void) | undefined;
 
   // Reusing a member across polls keeps its rendered diff (and highlighting) in place. A refresh keeps a
   // hunk's id when only its line numbers moved, so the patch text decides whether the member is still current.
@@ -328,7 +298,7 @@ export function App(props: {
     ),
   );
   const current = createMemo(() => items()[currentIndex()]);
-  // The focus card is rebuilt only when the item or its kind changes, not on every poll.
+  // The diff is rebuilt only when the item or its kind changes, not on every poll.
   const currentKey = createMemo(() => {
     const item = current();
     return item && `${status()!.session.id}:${item.kind}:${item.id}`;
@@ -336,15 +306,17 @@ export function App(props: {
   // A memo, so a poll that returns the same focus does not re-run the reveal below.
   const focusedHunk = createMemo(() => status()?.cursor.hunkId);
   const pane = createMemo(() => status()?.cursor.pane ?? "queue");
-  const zoomed = createMemo(() => pane() !== "queue");
-  const wide = createMemo(() => dims().width >= LAYOUT.zoomColumns);
+  // Browsing shows the group list; reading replaces it with the group's diff.
+  const reading = createMemo(() => pane() !== "queue");
+  const readingPane = () => (pane() === "overview" ? "overview" : "diff");
+  const wide = createMemo(() => dims().width >= LAYOUT.wideColumns);
+  const showDiff = createMemo(() => reading() && (pane() === "diff" || (wide() && !expanded())));
+  const showOverview = createMemo(() =>
+    reading() ? pane() === "overview" || (wide() && !expanded()) : wide(),
+  );
   const overview = createMemo(() => {
     const item = current();
-    return sanitizeOverview(
-      item && item.kind !== "inbox"
-        ? item.overview
-        : "Unprepared hunk — awaiting agent preparation. Verdict unavailable.",
-    );
+    return sanitizeOverview(item && item.kind !== "inbox" ? item.overview : INBOX_OVERVIEW);
   });
   const selectedMember = createMemo(() => {
     const item = current();
@@ -355,42 +327,101 @@ export function App(props: {
   // Hunks the focused cursor can step through: a group's members in order, or the lone hunk.
   const focusable = createMemo(() => {
     const item = current();
-    if (!item) return [];
-    return item.kind === "group" ? item.members.map(({ id }) => id) : [item.id];
+    return item ? itemMembers(item).map(({ id }) => id) : [];
   });
   const resolvedLayout = createMemo(() => {
     const mode = layoutMode();
     return mode === "auto" ? (diffWidth() >= LAYOUT.splitColumns ? "split" : "stack") : mode;
   });
+  const doneCount = createMemo(
+    () => status()?.groups.filter((group) => group.accepted).length ?? 0,
+  );
   // A ready session has an empty inbox, so a ready empty queue is also complete.
   const allDone = createMemo(
     () => status()?.ready === true && items().every((item) => item.accepted),
   );
+  // One muted line of the keys that matter right now; the full list stays behind ?.
+  const hint = createMemo(() => {
+    const item = current();
+    if (!item) return "no review items · ? help";
+    if (!reading()) return "enter review · ? help";
+    const parts = [
+      item.kind === "inbox" ? "no verdict (inbox)" : item.accepted ? "a unmark" : "a done",
+      ...(focusable().length > 1 ? ["[ ] hunk"] : []),
+      "tab pane",
+      "? help",
+    ];
+    return parts.join(" · ");
+  });
+  const position = createMemo(() => {
+    const frame = status();
+    const item = current();
+    if (!frame || !item) return "";
+    const parts = [`${currentIndex() + 1}/${items().length}`];
+    const hunkIndex = focusable().indexOf(focusedHunk() ?? "");
+    if (reading() && hunkIndex >= 0 && focusable().length > 1)
+      parts.push(`hunk ${hunkIndex + 1}/${focusable().length}`);
+    parts.push(`${doneCount()}/${frame.groups.length} done`);
+    return parts.join(" · ");
+  });
   // Keyed on the id, not the item object: every poll rebuilds the items, and only a move should reset the scroll.
   createEffect(
-    on([currentKey, zoomed], () => {
-      focusCard?.scrollTo(0);
+    on([currentKey, reading], () => {
+      cancelRestore?.();
+      diffPane?.scrollTo(0);
       overviewPane?.scrollTo(0);
+      setExpanded(false);
     }),
   );
-  // Reveal the focused member when the focus moves or its card is (re)mounted. Positions exist only
-  // after layout, which happens inside a render, so the scroll waits for a rendered frame. A narrow
-  // overview hides the diff pane, which then has no layout: the reveal stays pending until a frame shows it.
+  // Keep the selected row visible in a long list: positions exist after a rendered frame.
   createEffect(
-    on([focusedHunk, currentKey], ([hunkId]) => {
-      if (hunkId === undefined) return;
-      // A hunk that does not fit goes to the top of the viewport: reading starts at its header, and a
-      // hunk taller than the viewport would otherwise be revealed by its tail.
+    on([currentKey, reading], ([key, isReading]) => {
+      if (!key || isReading) return;
       const reveal = () => {
-        const member = focusCard?.findDescendantById(memberElementId(hunkId));
-        if (!focusCard?.visible || !member) return;
+        if (!groupList?.visible || !groupList.findDescendantById(rowElementId(current()!.id)))
+          return;
         renderer.off("frame", reveal);
-        const top = member.y - focusCard.viewport.y;
-        if (top < 0 || top + member.height > focusCard.viewport.height) focusCard.scrollBy(top);
+        groupList.scrollChildIntoView(rowElementId(current()!.id));
       };
       renderer.on("frame", reveal);
       renderer.requestRender();
       onCleanup(() => renderer.off("frame", reveal));
+    }),
+  );
+  // Reveal the focused member when the focus moves or its diff is (re)mounted. Positions exist only
+  // after layout, which happens inside a render, so the scroll waits for a rendered frame. A narrow
+  // overview hides the diff pane, which then has no layout: the reveal stays pending until a frame shows it.
+  createEffect(
+    on([focusedHunk, currentKey], ([hunkId]) => {
+      const derived = hunkId !== undefined && hunkId === derivedFocus;
+      derivedFocus = undefined;
+      if (!derived) {
+        // An explicit jump, another TUI's focus or a new item supersedes queued tracking and any
+        // expansion restore still in flight, including its saved pre-expansion offset.
+        focusGeneration++;
+        cancelRestore?.();
+        // The saved position is stale, but a later pane switch must still restore this pane.
+        expansion = expanded() && expansion ? { scroll: expansion.scroll } : undefined;
+      }
+      // The tracker named this hunk because it already heads the viewport: no snap to its header.
+      if (hunkId === undefined || derived) return;
+      // A hunk that does not fit goes to the top of the viewport: reading starts at its header, and a
+      // hunk taller than the viewport would otherwise be revealed by its tail.
+      const reveal = () => {
+        const member = diffPane?.findDescendantById(memberElementId(hunkId));
+        if (!diffPane?.visible || !member) return;
+        renderer.off("frame", reveal);
+        revealPending = false;
+        const top = member.y - diffPane.viewport.y;
+        if (top < 0 || top + member.height > diffPane.viewport.height) diffPane.scrollBy(top);
+      };
+      revealPending = true;
+      renderer.on("frame", reveal);
+      renderer.requestRender();
+      onCleanup(() => {
+        renderer.off("frame", reveal);
+        revealPending = false;
+      });
     }),
   );
 
@@ -560,10 +591,181 @@ export function App(props: {
     }
   }
 
+  /** The member occupying the diff viewport's top row; undefined while the focused member is fully shown. */
+  function memberAtTop(): string | undefined {
+    if (!diffPane?.visible || !reading()) return undefined;
+    const viewport = diffPane.viewport;
+    const box = (id: string) => diffPane!.findDescendantById(memberElementId(id));
+    const focused = focusedHunk() === undefined ? undefined : box(focusedHunk()!);
+    if (focused) {
+      const top = focused.y - viewport.y;
+      if (top >= 0 && top + focused.height <= viewport.height) return undefined;
+    }
+    let candidate: string | undefined;
+    for (const id of focusable()) {
+      const member = box(id);
+      if (!member) return undefined;
+      if (member.y - viewport.y <= 0) candidate = id;
+      else break;
+    }
+    return candidate ?? focusable()[0];
+  }
+
+  // Scrolling moves the shared focus to the hunk heading the viewport. Geometry is read after a
+  // rendered frame; an explicit jump's reveal or an expansion restore runs first so the tracker never
+  // fights them. The queue may carry an explicit jump, a poll with another TUI's focus or a snapshot
+  // change ahead of the entry, so nothing observed here is trusted at dequeue: the entry is dropped
+  // when the view changed meaning and otherwise re-derived from the latest completed geometry.
+  function followScroll(): void {
+    if (stopped || closing || editing || revealPending || anchorPending || derivedInFlight) return;
+    const seen = status();
+    const item = current();
+    if (!seen || !item || memberAtTop() === undefined) return;
+    const generation = focusGeneration;
+    derivedInFlight = true;
+    enqueue(async () => {
+      let top: string | undefined;
+      try {
+        const fresh = status();
+        if (
+          editing ||
+          revealPending ||
+          anchorPending ||
+          generation !== focusGeneration ||
+          fresh?.session.id !== seen.session.id ||
+          fresh.revision !== seen.revision ||
+          current()?.id !== item.id
+        )
+          return;
+        top = memberAtTop();
+        if (top === undefined || top === focusedHunk() || !focusable().includes(top)) return;
+        const attempt = [
+          seen.session.id,
+          seen.revision,
+          item.id,
+          top,
+          focusGeneration,
+          diffPane?.scrollTop,
+        ].join(":");
+        if (attempt === failedDerived) return;
+        derivedFocus = top;
+        await action({ type: "cursor.focus", itemId: item.id, pane: readingPane(), hunkId: top });
+        if (focusedHunk() !== top) failedDerived = attempt;
+      } finally {
+        // A failed or no-op action leaves nothing for the reveal effect to consume.
+        if (derivedFocus === top) derivedFocus = undefined;
+        derivedInFlight = false;
+      }
+    });
+  }
+
+  // Reading position of a pane as text, not as a scroll offset: the block heading the viewport and
+  // where in it the top row sits. A width change re-wraps content and clamps the offset, so the
+  // position is re-applied from this anchor once the new layout has completed.
+  type Anchor = {
+    block: Renderable;
+    row: number;
+    height: number;
+    source: number | undefined;
+    scrollTop: number;
+  };
+  // Geometry is read from the last completed layout, so a pane a pending pane switch already hid
+  // (Solid applies `visible` before this runs) still anchors correctly; the restore checks visibility.
+  function anchorOf(scroll: ScrollBoxRenderable): Anchor | undefined {
+    const blocks: Renderable[] =
+      scroll === diffPane
+        ? focusable().flatMap((id) => diffPane!.findDescendantById(memberElementId(id)) ?? [])
+        : (overviewPane?.findDescendantById("overview-markdown")?.getChildren() ?? []);
+    const viewportTop = scroll.viewport.y;
+    let block: Renderable | undefined;
+    for (const candidate of blocks) {
+      if (candidate.y <= viewportTop) block = candidate;
+      else break;
+    }
+    if (!block) return undefined;
+    const row = viewportTop - block.y;
+    // Markdown prose is one Code block whose wrapped rows map back to source lines.
+    const source = lineSources(block) ? block.getLineSources(row, 1)[0] : undefined;
+    return { block, row, height: block.height, source, scrollTop: scroll.scrollTop };
+  }
+  const lineSources = (block: Renderable): block is CodeRenderable =>
+    typeof (block as { getLineSources?: unknown }).getLineSources === "function";
+  function anchorRow(anchor: Anchor): number {
+    const { block, row, height, source } = anchor;
+    if (source !== undefined && lineSources(block)) {
+      const index = block.lineInfo.lineSources.indexOf(source);
+      if (index >= 0) return index;
+    }
+    return height > 0 ? Math.round((row / height) * block.height) : 0;
+  }
+  // The expansion belongs to one pane: only that pane's untouched offset is ever restored exactly.
+  let expansion: { scroll: ScrollBoxRenderable; anchor?: Anchor; expandedTop?: number } | undefined;
+  function toggleExpansion(): void {
+    // Collapsing restores the pane that was expanded, whichever pane has focus by now.
+    const scroll = expanded() ? (expansion?.scroll ?? activeScroll()) : activeScroll();
+    if (!scroll) return;
+    cancelRestore?.();
+    const anchor = anchorOf(scroll);
+    // Restoring an untouched expansion returns the exact offset; otherwise the anchor is re-applied.
+    const exact =
+      expanded() &&
+      expansion?.anchor &&
+      expansion.scroll === scroll &&
+      scroll.scrollTop === expansion.expandedTop
+        ? expansion.anchor.scrollTop
+        : undefined;
+    setExpanded((value) => !value);
+    if (!anchor) {
+      expansion = undefined;
+      return;
+    }
+    expansion = expanded() ? { scroll, anchor } : undefined;
+    const seen = status();
+    anchorPending = true;
+    let unchanged = 0;
+    let frames = 0;
+    // Layout settles over more than one frame: a wider diff pane may switch to the split view after
+    // its width is measured. Re-apply until two frames leave the offset alone. A hidden pane, a
+    // replaced snapshot or a disposed block ends the restore instead of acting on stale content.
+    const restore = () => {
+      if (!scroll.visible || anchor.block.isDestroyed || status()?.revision !== seen?.revision)
+        return cancelRestore?.();
+      const before = scroll.scrollTop;
+      if (exact !== undefined) scroll.scrollTo(exact);
+      else scroll.scrollBy(anchor.block.y + anchorRow(anchor) - scroll.viewport.y);
+      unchanged = scroll.scrollTop === before ? unchanged + 1 : 0;
+      if (unchanged >= 2 || ++frames >= 8) {
+        if (expansion?.scroll === scroll) expansion.expandedTop = scroll.scrollTop;
+        return cancelRestore?.();
+      }
+      renderer.requestRender();
+    };
+    cancelRestore = () => {
+      renderer.off("frame", restore);
+      anchorPending = false;
+      cancelRestore = undefined;
+    };
+    renderer.on("frame", restore);
+    renderer.requestRender();
+  }
+
+  // Scroll the displayed pane now; a queued poll may replace the shared view.
+  const activeScroll = () =>
+    pane() === "diff" ? diffPane : showOverview() ? overviewPane : undefined;
+  // Switching panes (Tab, or another TUI) collapses the expansion first, so the expanded pane is
+  // restored to its own position and the other pane is never resized while expanded.
+  createEffect(
+    on(pane, () => {
+      if (expanded()) toggleExpansion();
+    }),
+  );
+
   onMount(() => {
     // Read completed geometry: changing diff mode inside onSizeChange would mutate the tree during layout.
     const measureDiff = () => {
-      if (!stopped && diffContent && focusCard?.visible) setDiffWidth(diffContent.width);
+      if (stopped) return;
+      if (diffContent && diffPane?.visible) setDiffWidth(diffContent.width);
+      followScroll();
     };
     renderer.on("frame", measureDiff);
     onCleanup(() => renderer.off("frame", measureDiff));
@@ -575,6 +777,18 @@ export function App(props: {
       clearInterval(timer);
     });
   });
+
+  // Group navigation keeps the pane: browsing moves the selection, reading opens the destination's first hunk.
+  async function moveTo(destination: ViewItem): Promise<void> {
+    if (!reading()) return action({ type: "cursor.move", itemId: destination.id });
+    const first = itemMembers(destination)[0]!.id;
+    await action({
+      type: "cursor.focus",
+      itemId: destination.id,
+      pane: readingPane(),
+      hunkId: first,
+    });
+  }
 
   useKeyboard((key) => {
     // Admission, not dequeue: even local help/layout/scroll and quit keys belong to the editor now.
@@ -593,7 +807,7 @@ export function App(props: {
     if (key.name === "o") {
       const seen = status();
       const member = selectedMember();
-      if (!seen || !zoomed() || !member || !props.onEdit) return;
+      if (!seen || !reading() || !member || !props.onEdit) return;
       const request: EditRequest = {
         sessionId: seen.session.id,
         revision: seen.revision,
@@ -635,11 +849,14 @@ export function App(props: {
         }
       });
     }
-    const activeScroll = () => (pane() === "overview" ? overviewPane : focusCard);
     if (key.name === "pagedown" || (key.name === "d" && key.ctrl))
       return activeScroll()?.scrollBy(0.5, "viewport");
     if (key.name === "pageup" || (key.name === "u" && key.ctrl))
       return activeScroll()?.scrollBy(-0.5, "viewport");
+    if (key.name === "z") {
+      if (reading()) toggleExpansion();
+      return;
+    }
     if (key.name === "r")
       return enqueue(async () => {
         if (status()?.session.source.kind === "stdin") {
@@ -654,19 +871,21 @@ export function App(props: {
       return enqueue(async () => {
         const first = focusable()[0];
         const itemId = current()?.id;
-        if (itemId && first !== undefined && pane() === "queue")
+        if (itemId && first !== undefined && !reading())
           await action({ type: "cursor.focus", itemId, pane: "diff", hunkId: first });
       });
-    if (key.name === "escape")
+    if (key.name === "escape") {
+      if (expanded()) return toggleExpansion();
       return enqueue(async () => {
         const itemId = current()?.id;
-        if (itemId && zoomed()) await action({ type: "cursor.focus", itemId, pane: "queue" });
+        if (itemId && reading()) await action({ type: "cursor.focus", itemId, pane: "queue" });
       });
+    }
     if (key.name === "tab")
       return enqueue(async () => {
         const itemId = current()?.id;
         const hunkId = focusedHunk();
-        if (itemId && hunkId && zoomed())
+        if (itemId && hunkId && reading())
           await action({
             type: "cursor.focus",
             itemId,
@@ -676,22 +895,43 @@ export function App(props: {
       });
     if (key.name === "j" || key.name === "k") {
       const delta = key.name === "j" ? 1 : -1;
-      // Scroll the displayed pane now; a queued poll may replace the shared view.
-      if (pane() === "overview") return overviewPane?.scrollBy(delta);
+      if (reading()) return activeScroll()?.scrollBy(delta);
       return enqueue(async () => {
-        if (pane() === "overview") return;
-        const focused = focusedHunk();
-        if (focused !== undefined) {
-          const ids = focusable();
-          if (ids.length < 2) return;
-          const next = ids[(ids.indexOf(focused) + delta + ids.length) % ids.length]!;
-          await action({ type: "cursor.focus", itemId: current()!.id, pane: "diff", hunkId: next });
-          return;
-        }
+        if (reading()) return;
         const visible = items();
         if (!visible.length) return;
-        const destination = visible[(currentIndex() + delta + visible.length) % visible.length]!;
-        await action({ type: "cursor.move", itemId: destination.id });
+        await moveTo(visible[(currentIndex() + delta + visible.length) % visible.length]!);
+      });
+    }
+    if (key.name === "[" || key.name === "]") {
+      const delta = key.name === "]" ? 1 : -1;
+      return enqueue(async () => {
+        const focused = focusedHunk();
+        if (!reading() || focused === undefined) return;
+        const ids = focusable();
+        if (ids.length < 2) return;
+        const next = ids[(ids.indexOf(focused) + delta + ids.length) % ids.length]!;
+        await action({
+          type: "cursor.focus",
+          itemId: current()!.id,
+          pane: readingPane(),
+          hunkId: next,
+        });
+      });
+    }
+    if (key.name === "p" || key.name === "n") {
+      const delta = key.name === "n" ? 1 : -1;
+      return enqueue(async () => {
+        const visible = items();
+        const count = visible.length;
+        for (let offset = 1; offset < count; offset++) {
+          const destination =
+            visible[(((currentIndex() + delta * offset) % count) + count) % count]!;
+          if (destination.accepted) continue;
+          await moveTo(destination);
+          return;
+        }
+        setMessage("no other group without a verdict");
       });
     }
     if (key.name === "a" || key.name === "u") {
@@ -708,11 +948,23 @@ export function App(props: {
     }
   });
 
-  const queueRow = (item: ViewItem) => {
+  const listRow = (item: ViewItem) => {
     const active = () => item.id === current()?.id;
     const label = item.kind === "inbox" ? item.member.file : item.title;
+    // Marker, gap, count column, padding and the scrollbar share the row with the title.
+    const columns = () =>
+      Math.max(
+        8,
+        (wide()
+          ? Math.floor((dims().width * (100 - LAYOUT.overviewPercent)) / 100)
+          : dims().width) - 8,
+      );
     return (
-      <box flexDirection="row" backgroundColor={active() ? C.panelAlt : C.panel}>
+      <box
+        id={rowElementId(item.id)}
+        flexDirection="row"
+        backgroundColor={active() ? C.panelAlt : C.panel}
+      >
         <text fg={active() ? C.accent : C.panel} bg={active() ? C.panelAlt : C.panel}>
           ▌
         </text>
@@ -720,13 +972,14 @@ export function App(props: {
           <text
             fg={item.accepted ? C.ok : item.kind === "inbox" ? C.accent : active() ? C.fg : C.muted}
           >
-            {item.accepted ? "✓" : item.kind === "inbox" ? "!" : "·"} {label.slice(0, 19)}
+            {item.accepted ? "✓" : item.kind === "inbox" ? "!" : "·"} {label.slice(0, columns())}
           </text>
           {item.kind === "group" && <text fg={C.dim}>{item.members.length}</text>}
         </box>
       </box>
     );
   };
+  const paneTitle = (name: string, focused: boolean) => (focused ? ` ▍${name} ` : ` ${name} `);
 
   return (
     <box flexDirection="column" flexGrow={1} backgroundColor={C.bg}>
@@ -740,54 +993,63 @@ export function App(props: {
       >
         {(_attached) => (
           <box flexDirection="column" flexGrow={1} flexBasis={0} minHeight={0}>
-            <Show when={zoomed() && current()}>
-              <text fg={C.accent} flexShrink={0}>
-                {current()!.kind === "inbox"
-                  ? "Unprepared hunk"
-                  : (current() as Exclude<ViewItem, { kind: "inbox" }>).title}
-                {" — "}
-                {selectedMember()?.file} {selectedMember()?.header}
-                {" — "}
-                {pane() === "diff" ? "[diff] / overview" : "diff / [overview]"}
+            <box
+              flexDirection="row"
+              justifyContent="space-between"
+              paddingLeft={1}
+              paddingRight={1}
+            >
+              <text>
+                <Sp fg={C.fg} attributes={1}>
+                  {(reading() && current()
+                    ? itemTitle(current()!)
+                    : scopeLabel(status()!.session.source)
+                  ).slice(0, Math.max(12, dims().width - position().length - 6))}
+                </Sp>
+                <Show when={reading() && current()?.accepted}>
+                  <Sp fg={C.okBadge}> ✓</Sp>
+                </Show>
               </text>
-            </Show>
+              <text fg={C.dim}>{position()}</text>
+            </box>
+            <box paddingLeft={1}>
+              <text fg={C.dim}>{hint()}</text>
+            </box>
             <box flexDirection="row" flexGrow={1} flexBasis={0} minHeight={0}>
-              <Show when={!zoomed()}>
-                <box
-                  width={LAYOUT.queueColumns}
-                  flexDirection="column"
-                  backgroundColor={C.panel}
-                  paddingTop={1}
-                  paddingBottom={1}
-                >
-                  <text fg={C.dim} attributes={1}>
-                    {"  REVIEW QUEUE"}
-                  </text>
-                  <text fg={C.muted}>
-                    {"  "}
-                    {scopeLabel(status()!.session.source).slice(0, 25)}
-                  </text>
-                  <For each={items()}>{queueRow}</For>
+              <scrollbox
+                id="group-list"
+                visible={!reading()}
+                ref={(scrollbox: ScrollBoxRenderable) => (groupList = scrollbox)}
+                width={wide() ? `${100 - LAYOUT.overviewPercent}%` : "auto"}
+                flexGrow={1}
+                backgroundColor={C.panel}
+                paddingTop={1}
+                paddingBottom={1}
+              >
+                <box flexDirection="column" width="100%">
+                  <For each={items()}>{listRow}</For>
                 </box>
-              </Show>
+              </scrollbox>
               <scrollbox
                 id="diff-pane"
-                visible={!zoomed() || wide() || pane() === "diff"}
-                width={zoomed() && wide() ? `${100 - LAYOUT.overviewPercent}%` : "auto"}
-                ref={(scrollbox: ScrollBoxRenderable) => (focusCard = scrollbox)}
+                visible={showDiff()}
+                width={showDiff() && showOverview() ? `${100 - LAYOUT.overviewPercent}%` : "auto"}
+                ref={(scrollbox: ScrollBoxRenderable) => (diffPane = scrollbox)}
                 flexGrow={1}
-                paddingLeft={2}
-                paddingTop={1}
-                paddingRight={2}
-                flexDirection="column"
+                paddingLeft={1}
+                paddingRight={1}
+                border={["top"]}
+                borderColor={pane() === "diff" ? C.accent : C.border}
+                title={paneTitle("diff", pane() === "diff")}
+                titleColor={pane() === "diff" ? C.accent : C.dim}
               >
                 <box
                   ref={(box: BoxRenderable) => (diffContent = box)}
                   width="100%"
                   flexDirection="column"
                 >
-                  <Show when={currentKey()} keyed fallback={<text>no review items</text>}>
-                    <FocusCard
+                  <Show when={currentKey()} keyed>
+                    <GroupDiff
                       item={current()!}
                       focusedHunk={focusedHunk()}
                       layout={resolvedLayout()}
@@ -798,14 +1060,21 @@ export function App(props: {
               <scrollbox
                 id="overview-pane"
                 ref={(scrollbox: ScrollBoxRenderable) => (overviewPane = scrollbox)}
-                visible={zoomed() && (wide() || pane() === "overview")}
-                width={wide() ? `${LAYOUT.overviewPercent}%` : "auto"}
+                visible={showOverview()}
+                width={
+                  showOverview() && (showDiff() || !reading())
+                    ? `${LAYOUT.overviewPercent}%`
+                    : "auto"
+                }
                 flexGrow={1}
                 paddingLeft={2}
                 paddingRight={2}
-                paddingTop={1}
+                border={["top"]}
+                borderColor={pane() === "overview" ? C.accent : C.border}
+                title={paneTitle("overview", pane() === "overview")}
+                titleColor={pane() === "overview" ? C.accent : C.dim}
               >
-                <Show when={zoomed() && currentKey()} keyed>
+                <Show when={currentKey()} keyed>
                   <markdown
                     id="overview-markdown"
                     content={overview()}
@@ -819,15 +1088,24 @@ export function App(props: {
         )}
       </Show>
       <Show when={status()}>
-        <text fg={allDone() ? C.okBadge : C.muted}>
-          {allDone()
-            ? `✓ review complete — ${items().length}/${items().length} accepted · u undo · q quit`
-            : !status()!.queueSet || status()!.groups.length === 0
-              ? `preparing — ${status()!.inbox.length} hunks awaiting preparation`
-              : status()!.groups.every((group) => group.accepted) && status()!.inbox.length > 0
-                ? `reviewed everything prepared so far — ${status()!.inbox.length} hunks awaiting preparation`
-                : `ready to review these items — ${status()!.inbox.length} hunks awaiting preparation`}
-        </text>
+        <Show
+          when={allDone()}
+          fallback={
+            <Show when={!status()!.queueSet || status()!.inbox.length > 0}>
+              <text fg={C.muted}>
+                {!status()!.queueSet || status()!.groups.length === 0
+                  ? `preparing — ${status()!.inbox.length} hunks awaiting preparation`
+                  : status()!.groups.every((group) => group.accepted)
+                    ? `reviewed everything prepared so far — ${status()!.inbox.length} hunks awaiting preparation`
+                    : `${status()!.inbox.length} hunks awaiting preparation`}
+              </text>
+            </Show>
+          }
+        >
+          <text fg={C.okBadge}>
+            ✓ review complete — {items().length}/{items().length} done · u undo · q quit
+          </text>
+        </Show>
       </Show>
       <Show when={sourceNotice()}>
         <text fg={C.accent}>{sourceNotice()}</text>
@@ -838,9 +1116,9 @@ export function App(props: {
       <Show when={help()}>
         <box
           position="absolute"
-          left={Math.max(0, Math.floor((dims().width - 60) / 2))}
-          top={4}
-          width={60}
+          left={Math.max(0, Math.floor((dims().width - 64) / 2))}
+          top={2}
+          width={64}
           zIndex={10}
           backgroundColor={C.panel}
           border
@@ -860,15 +1138,18 @@ export function App(props: {
           <text> </text>
           <For
             each={[
-              ["j / k", "queue: item; diff: hunk; overview: scroll line"],
-              ["enter / esc", "zoom into item / return to queue"],
-              ["tab / S-tab", "switch diff / overview when zoomed"],
-              ["^d / ^u", "scroll active pane half page (PgDn / PgUp)"],
-              ["a", "accept whole item (all group members), advance"],
-              ["u", "undo last accept"],
-              ["1 / 2 / 0", "split / stack / auto layout"],
-              ["o", "zoom: EDITOR opens working-tree file, not snapshot"],
-              ["r", "refresh Git snapshot; stdin: replace from harness"],
+              ["j / k", "browse: select group; reading: scroll a line"],
+              ["enter / esc", "open the group's diff / back to the group list"],
+              ["[ / ]", "previous / next hunk in the group"],
+              ["p / n", "previous / next group without a verdict"],
+              ["tab / S-tab", "switch diff / overview while reading"],
+              ["z", "expand the focused pane / restore (esc or tab restores too)"],
+              ["^d / ^u", "scroll half a page (PgDn / PgUp)"],
+              ["a", "mark the group done and advance (again to unmark)"],
+              ["u", "undo the last verdict"],
+              ["1 / 2 / 0", "split / stack / auto diff layout"],
+              ["o", "reading: EDITOR opens the working-tree file, not the snapshot"],
+              ["r", "refresh the Git snapshot; stdin: replace from the harness"],
               ["q", "quit"],
             ]}
           >

@@ -29,14 +29,17 @@ Order concepts before consequences, and members along the explanation: entry poi
 
 ## 3. Author self-contained groups
 
-A reader should understand each group without reconstructing another group or the chat:
+A reader should understand each group without reconstructing another group or the chat.
 
-- Name the change in the title; explain intent, prior behavior and new behavior in the overview.
-- Introduce necessary concepts and connect members in display order.
-- When prose is insufficient, include selected unchanged-code excerpts with file locations and the revision or working-tree source actually read. Distinguish snapshot evidence from later code.
-- State evidence and uncertainty; distinguish inspected tests from tests run.
+**Title**: name the change in a few words (`Reject expired credentials`), not a sentence explaining it. The 120-code-point limit is a bound, not a target.
 
-Titles are single-line plain text, 1–120 Unicode code points, without terminal controls. Overviews are nonempty Markdown, at most 64 KiB UTF-8. Use only context needed for the review question.
+**Overview**: a concise, skimmable breakdown read beside the diff. Mix short sentences, bullets, small headings, selected source context and diagrams as the change warrants; there is no template, bullet count or word quota. Explain what the diff does not make obvious: intent, prior behavior, how members connect in display order, concepts the reader needs. Line-by-line narration and test inventories belong in the diff, not here.
+
+- Excerpts: include unchanged code only when prose is insufficient, with the file location and the revision or working-tree source actually read; distinguish snapshot evidence from later code.
+- Verification: keep material caveats and uncertainty; distinguish tests run from tests inspected.
+- Diagrams: a `mermaid` fence when a flow or relationship is clearer drawn than described. The TUI currently shows Mermaid as source, so keep diagrams small and the surrounding prose sufficient on its own.
+
+Titles are single-line plain text, 1–120 Unicode code points, without terminal controls. Overviews are nonempty Markdown, at most 64 KiB UTF-8.
 
 ## 4. Publish atomically
 
@@ -44,7 +47,7 @@ Read the current revision. Pipe a batch to `gyst session apply --session <id>`. 
 
 Example first batch; replace the revision, key and hunk ids:
 
-```json
+````json
 {
   "revision": 0,
   "idempotencyKey": "fresh-uuid",
@@ -53,13 +56,13 @@ Example first batch; replace the revision, key and hunk ids:
       "type": "group.create",
       "id": "expiry",
       "title": "Reject expired credentials",
-      "overview": "Check expiry before loading account data. Read the guard, then its boundary test. Evidence: tests inspected, not run.",
+      "overview": "Account data loaded before the expiry check ran, so an expired credential still reached the fetch. The guard now runs first.\n\n- `loadAccount` returns `Expired` instead of throwing after the fetch\n- The boundary test covers a credential expiring at the exact request instant\n\n```mermaid\nflowchart LR\n  request --> expired{expired?}\n  expired -- yes --> Expired\n  expired -- no --> fetch[fetch account]\n```\n\nTests inspected, not run. The clock source in `auth/time.ts` (HEAD) is unchanged.",
       "memberHunkIds": ["guard-hunk", "test-hunk"]
     },
     { "type": "queue.set", "itemIds": ["expiry"] }
   ]
 }
-```
+````
 
 - Successful batch: use its returned revision for the next batch.
 - `stale_revision`: reread status and reconcile concurrent human work before rebuilding.

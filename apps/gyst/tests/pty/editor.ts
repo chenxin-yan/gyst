@@ -149,7 +149,7 @@ async function runCase(name: string, evidence: string, vim: string) {
   const send = (value: string) => terminal.write(value);
   try {
     await wait(() => event("mounted").length > 0, "mount");
-    await wait(() => screen(bytes()).includes("[diff]"), "initial frame");
+    await wait(() => screen(bytes()).includes("▍diff"), "initial frame");
     send("o");
     if (!["missing", "unset", "suspend"].includes(name)) {
       await wait(

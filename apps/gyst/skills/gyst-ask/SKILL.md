@@ -8,7 +8,7 @@ disable-model-invocation: true
 
 1. Read `gyst session status`. Use its session id with `--session <id>` on subsequent commands, rather than relying on pre-pass memory.
 2. Resolve `cursor.itemId` and read its group's title and overview. Interpret focus:
-   - **diff:** address `cursor.hunkId` first, within the group's context.
+   - **diff:** address `cursor.hunkId` first, within the group's context; it is the hunk heading the reviewer's diff view and follows their scrolling.
    - **overview / queue:** address the whole group; a retained hunk id does not narrow overview focus.
    - **Inbox or no cursor:** state that limitation; use a targeted hunk if the question identifies one, otherwise ask which change.
 3. Read `gyst session diff --group <id>` or `--hunk <id>` and surrounding code as needed. Verify excerpt provenance; distinguish the snapshot from later working-tree code. Use `gyst session check` when freshness matters; cached, unavailable or stdin results cannot guarantee current source.

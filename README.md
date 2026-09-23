@@ -43,16 +43,27 @@ Use `/gyst-ask <question>` in your agent's chat to ask about the current group.
 
 ## Review keys
 
-| Key                                  | Queue                                       | Zoom: diff                        | Zoom: overview                |
-| ------------------------------------ | ------------------------------------------- | --------------------------------- | ----------------------------- |
-| `j` / `k`                            | Next / previous entry                       | Next / previous hunk, wrapping    | Scroll one line               |
-| `Enter`                              | Zoom into the first hunk                    | No-op                             | No-op                         |
-| `Tab` / `Shift+Tab`                  | No-op                                       | Focus overview                    | Focus diff                    |
-| `Esc`                                | No-op                                       | Return to queue                   | Return to queue               |
-| `Ctrl+D` / `Ctrl+U`, `PgDn` / `PgUp` | Scroll diff preview half a page             | Scroll diff half a page           | Scroll overview half a page   |
-| `a`                                  | Toggle whole-group acceptance               | Same, including all group members | Same                          |
-| `u`                                  | Undo last acceptance and return to its item | Same, staying zoomed              | Same, returning to diff focus |
-| `o`                                  | No-op                                       | Open selected working-tree file   | Open retained selected file   |
+Gyst opens on the group list (scope in the header) with the selected group's overview
+beside it on wide terminals. `Enter` replaces the list with the group's diff; narrow terminals show one
+pane at a time. While reading, the hunk at the top of the diff is the shared focus that
+`/gyst-ask` and the editor use.
+
+| Key                                  | Group list                                       | Reading (diff / overview)                                                     |
+| ------------------------------------ | ------------------------------------------------ | ----------------------------------------------------------------------------- |
+| `j` / `k`                            | Select next / previous group                     | Scroll one line                                                               |
+| `Enter`                              | Open the group's diff                            | No-op                                                                         |
+| `Esc`                                | No-op                                            | Restore an expanded pane, otherwise return to the list                        |
+| `[` / `]`                            | No-op                                            | Previous / next hunk in the group                                             |
+| `p` / `n`                            | Previous / next group without a verdict          | Same, opening its first hunk                                                  |
+| `Tab` / `Shift+Tab`                  | No-op                                            | Switch diff / overview, restoring an expanded pane                            |
+| `z`                                  | No-op                                            | Expand the focused pane to full width / restore, keeping its reading position |
+| `Ctrl+D` / `Ctrl+U`, `PgDn` / `PgUp` | Scroll the overview half a page                  | Scroll the focused pane half a page                                           |
+| `a`                                  | Mark the group done and advance; again to unmark | Same, including all group members                                             |
+| `u`                                  | Undo the last verdict and return to its group    | Same, staying in the diff                                                     |
+| `o`                                  | No-op                                            | Open the focused hunk's working-tree file in `EDITOR`                         |
+| `1` / `2` / `0`                      | Split / stacked / automatic diff layout          | Same                                                                          |
+| `r`                                  | Refresh the Git snapshot                         | Same                                                                          |
+| `?`                                  | Show all keys                                    | Same                                                                          |
 
 ## Sessions
 

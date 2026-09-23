@@ -25,7 +25,7 @@ _Avoid_: Spotlight, pattern, cluster, fold
 The short, plain-text name of a group, identifying its change in the walkthrough.
 
 **Overview**:
-An agent-authored explanation of a group's intent, relevant context, and behavioral changes, with selected source-located code excerpts where needed. It supports the human's judgment without replacing the changed hunks or asserting an unverified verdict.
+A concise, agent-authored breakdown of a group's intent, relevant context, and behavioral changes, with selected source context where needed. It lets the human skim the change and exercise judgment without replacing the changed hunks or asserting an unverified verdict.
 _Avoid_: TLDR, annotation
 
 **Inbox**:
