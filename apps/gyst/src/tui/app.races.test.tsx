@@ -8,7 +8,6 @@ import type { TuiClient } from "./client.ts";
 function status(revision = 0, seq = revision, sessionId = "session"): StatusPayload {
   return {
     session: {
-      formatVersion: 1,
       id: sessionId,
       repoRoot: "/repo",
       source: { kind: "git", args: ["HEAD"], cwd: "/repo" },
@@ -38,7 +37,6 @@ function status(revision = 0, seq = revision, sessionId = "session"): StatusPayl
 }
 function diff(revision = 0, sessionId = "session"): DiffPayload {
   return {
-    formatVersion: 1,
     sessionId,
     revision,
     hunks: [

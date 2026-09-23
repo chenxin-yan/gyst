@@ -18,8 +18,6 @@ Resolve the requested scope from the repository. Fetch remote refs yourself when
 
 On `session_exists`, read `gyst session status`. Refresh only if the recorded source matches the requested scope: `gyst session refresh` for Git, or a replacement patch through `gyst session refresh --stdin`. For a different scope, ask the user whether to keep or explicitly close the session. Never discard human work automatically.
 
-On an incompatible saved session or daemon reply, stop. Finish/close sessions with the old executable, ensure its daemon exits, then upgrade and refresh installed skills. Legacy files are not migrated; manual archiving requires the owner's decision.
-
 ## 2. Understand the whole scoped change
 
 Read status and `gyst session diff`, then surrounding code before publishing anything. For large snapshots, read by `--file`; use `--hunk` or `--group` for targeted reads. Distinguish the frozen snapshot from unchanged context and any newer working-tree content.

@@ -11,7 +11,6 @@ import {
   type Request,
   type Session,
   SessionExists,
-  SESSION_FORMAT_VERSION,
   StaleRevision,
   type StatusPayload,
   statusOf,
@@ -30,7 +29,7 @@ import {
 } from "effect";
 import { parseArgs, type ParseArgsConfig } from "node:util";
 import { Git } from "./git.ts";
-import { type IncompatibleSession, SessionStore } from "./store.ts";
+import { SessionStore } from "./store.ts";
 
 const requestArgs = <T extends ParseArgsConfig>(config: T) =>
   Effect.try({
@@ -56,10 +55,8 @@ const stdinOptions = { ...sessionOptions, stdin: { type: "boolean" } } as const;
 export class Sessions extends Context.Service<
   Sessions,
   {
-    create(
-      request: Request,
-    ): Effect.Effect<StatusPayload, BadArgs | SessionExists | ValidationFailed>;
-    status(request: Request): Effect.Effect<StatusPayload, BadArgs | NoSession | ValidationFailed>;
+    create(request: Request): Effect.Effect<StatusPayload, BadArgs | SessionExists>;
+    status(request: Request): Effect.Effect<StatusPayload, BadArgs | NoSession>;
     diff(request: Request): Effect.Effect<DiffPayload, BadArgs | NoSession | ValidationFailed>;
     /** One schema-validated batch from `request.stdin`: all ops or none, replays answered by receipt. */
     apply(
@@ -71,7 +68,7 @@ export class Sessions extends Context.Service<
     tuiAction(
       request: Request,
     ): Effect.Effect<StatusPayload, BadArgs | NoSession | StaleRevision | ValidationFailed>;
-    close(request: Request): Effect.Effect<ClosePayload, BadArgs | NoSession | ValidationFailed>;
+    close(request: Request): Effect.Effect<ClosePayload, BadArgs | NoSession>;
     /**
      * Replaces the in-memory sessions with the persisted ones. The daemon calls it once it owns
      * the socket: a contender that loaded earlier would otherwise serve a map a rival has since
@@ -91,13 +88,6 @@ export class Sessions extends Context.Service<
       const store = yield* SessionStore;
       const { randomUUIDv4 } = yield* Crypto.Crypto;
       const sessions = new Map<string, Session>();
-      let incompatible: IncompatibleSession[] = [];
-      const incompatibleError = (file: IncompatibleSession) =>
-        new ValidationFailed({
-          message:
-            "incompatible saved session: finish/close it with the old gyst version, then exit the old daemon; or manually archive the file before restarting gyst",
-          detail: file,
-        });
       // Server handlers run concurrently; one permit keeps state changes from interleaving.
       const lock = yield* Semaphore.make(1);
       const idle = yield* Latch.make(false);
@@ -113,15 +103,11 @@ export class Sessions extends Context.Service<
           const { values } = yield* requestArgs({ args, options, strict: true });
           const { session: id } = values as { session?: string };
           if (id) {
-            const blocked = incompatible.find((file) => file.id === id);
-            if (blocked) return yield* incompatibleError(blocked);
             const session = sessions.get(id);
             if (!session) return yield* new NoSession({ message: `no session with id ${id}` });
             return { values, session };
           }
           const root = yield* git.repoRoot(cwd);
-          const blocked = incompatible.find((file) => file.repoRoot === root);
-          if (blocked) return yield* incompatibleError(blocked);
           const session = [...sessions.values()].find((candidate) => candidate.repoRoot === root);
           if (!session)
             return yield* new NoSession({ message: `no session for repository ${root}` });
@@ -130,8 +116,6 @@ export class Sessions extends Context.Service<
 
       const create = Effect.fn("Sessions.create")(function* (request: Request) {
         const root = yield* git.repoRoot(request.cwd);
-        const blocked = incompatible.find((file) => file.repoRoot === root);
-        if (blocked) return yield* incompatibleError(blocked);
         const { values, positionals } = yield* requestArgs({
           args: request.args,
           options: { stdin: { type: "boolean" } },
@@ -154,10 +138,7 @@ export class Sessions extends Context.Service<
         const now = DateTime.formatIso(yield* DateTime.now);
         // Like persistence, an id source that cannot produce randomness is an operational defect.
         const id = yield* Effect.orDie(randomUUIDv4);
-        const reserved = incompatible.find((file) => file.id === id);
-        if (reserved) return yield* incompatibleError(reserved);
         const session: Session = {
-          formatVersion: SESSION_FORMAT_VERSION,
           id,
           repoRoot: root,
           source: values.stdin
@@ -213,7 +194,6 @@ export class Sessions extends Context.Service<
         if (selectors.length && hunks.length === 0)
           return yield* new ValidationFailed({ message: "diff selector matched nothing" });
         return {
-          formatVersion: SESSION_FORMAT_VERSION,
           sessionId: session.id,
           revision: session.revision,
           hunks,
@@ -223,8 +203,7 @@ export class Sessions extends Context.Service<
       const load = Effect.gen(function* () {
         const persisted = yield* store.loadAll;
         sessions.clear();
-        for (const session of persisted.sessions) sessions.set(session.id, session);
-        incompatible = persisted.incompatible;
+        for (const session of persisted) sessions.set(session.id, session);
       }).pipe(Semaphore.withPermit(lock), Effect.withSpan("Sessions.load"));
 
       const apply = Effect.fn("Sessions.apply")(function* (request: Request) {
@@ -308,9 +287,8 @@ export class Sessions extends Context.Service<
         const { session } = yield* selected(request.cwd, request.args, sessionOptions);
         yield* store.remove(session.id).pipe(Effect.orDie);
         sessions.delete(session.id);
-        if (sessions.size === 0 && incompatible.length === 0) yield* idle.open;
+        if (sessions.size === 0) yield* idle.open;
         return {
-          formatVersion: SESSION_FORMAT_VERSION,
           closed: true,
           sessionId: session.id,
         } satisfies ClosePayload;
@@ -328,7 +306,7 @@ export class Sessions extends Context.Service<
         idle: idle.await,
         isEmpty: Semaphore.withPermit(
           lock,
-          Effect.sync(() => sessions.size === 0 && incompatible.length === 0),
+          Effect.sync(() => sessions.size === 0),
         ),
       });
     }),

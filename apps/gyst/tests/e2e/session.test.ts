@@ -157,7 +157,6 @@ describe("gyst session CLI seam", () => {
 
     const closed = await gyst(cwd, ["session", "close"]);
     expect(JSON.parse(closed.stdout)).toEqual({
-      formatVersion: 1,
       closed: true,
       sessionId: status.session.id,
     });
@@ -630,44 +629,39 @@ describe("gyst session CLI seam", () => {
     await gyst(cwd, ["session", "close"]);
   }, 20_000);
 
-  it("reports legacy files by repo and id, blocks duplicate creation and preserves their bytes", async () => {
+  it("skips undecodable saved sessions without reserving their repo or modifying their files", async () => {
     const cwd = await repo("legacy");
-    const other = await repo("compatible");
     const ownData = await mkdtemp(join(root, "legacy-data-"));
     const path = join(ownData, "legacy.json");
     const content = JSON.stringify({ id: "legacy", repoRoot: cwd, groups: [{ tldr: "old" }] });
     await writeFile(path, content);
     try {
-      for (const args of [["status"], ["status", "--session", "legacy"], ["create"], ["close"]]) {
+      for (const args of [["status"], ["status", "--session", "legacy"], ["close"]]) {
         const result = await gyst(cwd, ["session", ...args], undefined, ownData);
         expect(result.exitCode).toBe(1);
-        expect(JSON.parse(result.stderr)).toMatchObject({
-          code: "validation_failed",
-          message: expect.stringContaining("old gyst version"),
-        });
+        expect(JSON.parse(result.stderr).code).toBe("no_session");
       }
-      expect((await gyst(other, ["session", "create"], undefined, ownData)).exitCode).toBe(0);
-      expect((await gyst(other, ["session", "close"], undefined, ownData)).exitCode).toBe(0);
+      expect((await gyst(cwd, ["session", "create"], undefined, ownData)).exitCode).toBe(0);
       expect(await readFile(path, "utf8")).toBe(content);
-      process.kill(Number(await readFile(join(ownData, "daemon.pid"), "utf8")), "SIGKILL");
-      await Bun.sleep(50);
-      const reloaded = await gyst(cwd, ["session", "status"], undefined, ownData);
-      expect(JSON.parse(reloaded.stderr).code).toBe("validation_failed");
+      expect((await gyst(cwd, ["session", "close"], undefined, ownData)).exitCode).toBe(0);
       expect(await readFile(path, "utf8")).toBe(content);
     } finally {
-      process.kill(Number(await readFile(join(ownData, "daemon.pid"), "utf8")), "SIGTERM");
+      await readFile(join(ownData, "daemon.pid"), "utf8")
+        .then((pid) => process.kill(Number(pid), "SIGTERM"))
+        .catch((error: NodeJS.ErrnoException) => {
+          if (!["ENOENT", "ESRCH"].includes(error.code ?? "")) throw error;
+        });
     }
   }, 20_000);
 
-  it("rejects mismatched success replies visibly in both CLI and TUI clients", async () => {
+  it("rejects malformed success replies visibly in both CLI and TUI clients", async () => {
     const ownData = await mkdtemp(join(root, "mismatched-reply-"));
     const fake = Bun.listen({
       unix: join(ownData, "daemon.sock"),
       socket: {
         data(socket) {
           socket.end(
-            JSON.stringify({ ok: true, value: { sessionId: "legacy", revision: 0, hunks: [] } }) +
-              "\n",
+            JSON.stringify({ ok: true, value: { sessionId: "invalid", revision: 0 } }) + "\n",
           );
         },
       },
@@ -678,7 +672,7 @@ describe("gyst session CLI seam", () => {
       expect(result.stdout).toBe("");
       expect(JSON.parse(result.stderr)).toMatchObject({
         code: "daemon_unreachable",
-        message: expect.stringContaining("incompatible daemon reply"),
+        message: expect.stringContaining("invalid daemon reply"),
       });
       await using runtime = ManagedRuntime.make(
         DaemonClient.layer.pipe(
@@ -689,9 +683,7 @@ describe("gyst session CLI seam", () => {
           ),
         ),
       );
-      await expect(daemonTuiClient(runtime, root).diff()).rejects.toThrow(
-        "incompatible daemon reply",
-      );
+      await expect(daemonTuiClient(runtime, root).diff()).rejects.toThrow("invalid daemon reply");
     } finally {
       fake.stop(true);
     }

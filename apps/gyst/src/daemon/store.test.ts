@@ -11,7 +11,6 @@ import { SessionStore } from "./store.ts";
 let dataDir: string;
 
 const session = (id: string): Session => ({
-  formatVersion: 1,
   id,
   repoRoot: "/repo",
   source: { kind: "stdin" },
@@ -61,38 +60,11 @@ describe("SessionStore", () => {
     await writeFile(join(dataDir, "corrupt.json"), "{not json");
     await writeFile(join(dataDir, "wrong-shape.json"), JSON.stringify({ id: "x" }));
     // The schema is the contract: a file missing a review field is not migrated, it is skipped.
-    await writeFile(
-      join(dataDir, "older.json"),
-      JSON.stringify({ ...session("older"), queue: undefined }),
-    );
+    const older = JSON.stringify({ ...session("older"), queue: undefined });
+    await writeFile(join(dataDir, "older.json"), older);
     const loaded = await run(SessionStore.use((s) => s.loadAll));
-    expect(loaded.sessions.map((loadedSession) => loadedSession.id)).toEqual(["a"]);
-    expect(loaded.incompatible).toEqual([]);
-  });
-
-  it("reports recognizable legacy/mismatched files without decoding their state or touching bytes", async () => {
-    for (const [id, formatVersion] of [
-      ["legacy", undefined],
-      ["future", 99],
-    ] as const) {
-      const path = join(dataDir, `${id}.json`);
-      const content = JSON.stringify({
-        id,
-        repoRoot: `/repo-${id}`,
-        formatVersion,
-        applyReceipts: "not decoded",
-      });
-      await writeFile(path, content);
-      const loaded = await run(SessionStore.use((s) => s.loadAll));
-      expect(loaded.incompatible).toContainEqual({
-        id,
-        repoRoot: `/repo-${id}`,
-        path,
-        formatVersion: formatVersion ?? null,
-      });
-      expect(await readFile(path, "utf8")).toBe(content);
-      expect(loaded.sessions.map(({ id }) => id)).toEqual(["a"]);
-    }
+    expect(loaded.map((loadedSession) => loadedSession.id)).toEqual(["a"]);
+    expect(await readFile(join(dataDir, "older.json"), "utf8")).toBe(older);
   });
 
   it("round-trips semantic metadata inside persisted historical receipt snapshots", async () => {
@@ -122,7 +94,7 @@ describe("SessionStore", () => {
     };
     await run(SessionStore.use((s) => s.save(saved)));
     const loaded = await run(SessionStore.use((s) => s.loadAll));
-    expect(loaded.sessions.find(({ id }) => id === "semantic")).toEqual(saved);
+    expect(loaded.find(({ id }) => id === "semantic")).toEqual(saved);
   });
 
   it.skipIf(process.getuid?.() === 0)(

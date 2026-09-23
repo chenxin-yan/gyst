@@ -1,9 +1,6 @@
 import { Schema } from "effect";
 import { metadataFields, OverviewSchema, TitleSchema } from "./metadata.ts";
 
-export const SESSION_FORMAT_VERSION = 1;
-export const FormatVersionSchema = Schema.Literal(SESSION_FORMAT_VERSION);
-
 export const HunkSchema = Schema.Struct({
   id: Schema.String,
   file: Schema.String,
@@ -44,7 +41,6 @@ export const SourceSchema = Schema.Union([
 export type Source = typeof SourceSchema.Type;
 
 const sessionSummaryFields = {
-  formatVersion: FormatVersionSchema,
   id: Schema.String,
   repoRoot: Schema.String,
   source: SourceSchema,

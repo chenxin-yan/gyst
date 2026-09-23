@@ -34,8 +34,6 @@ export {
   HunkSchema,
   type Session,
   SessionSchema,
-  SESSION_FORMAT_VERSION,
-  FormatVersionSchema,
   type Source,
   SourceSchema,
   type StatusPayload,

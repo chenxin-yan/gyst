@@ -27,7 +27,6 @@ const hunk = (
 
 function session(): Session {
   return {
-    formatVersion: 1,
     id: "session",
     repoRoot: "/repo",
     source: { kind: "git", args: ["HEAD"], cwd: "/repo" },

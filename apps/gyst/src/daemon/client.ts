@@ -99,8 +99,7 @@ export class DaemonClient extends Context.Service<
           Effect.mapError(
             (error) =>
               new DaemonUnreachable({
-                message:
-                  "incompatible daemon reply: finish sessions with the old gyst version and exit its daemon before upgrading; refresh installed skills",
+                message: "invalid daemon reply",
                 detail: error.message,
               }),
           ),

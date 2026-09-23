@@ -16,7 +16,6 @@ const hunk = (id: string, title?: string): Hunk => ({
 });
 
 const unready: Session = {
-  formatVersion: 1,
   id: "session",
   repoRoot: "/repo",
   source: { kind: "stdin" },

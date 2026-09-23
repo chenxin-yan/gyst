@@ -11,14 +11,7 @@ export function statusOf(session: Session): StatusPayload {
   );
   const inbox = session.hunks.filter((hunk) => !grouped.has(hunk.id) && hunk.title === undefined);
   return {
-    session: Struct.pick(session, [
-      "formatVersion",
-      "id",
-      "repoRoot",
-      "source",
-      "createdAt",
-      "updatedAt",
-    ]),
+    session: Struct.pick(session, ["id", "repoRoot", "source", "createdAt", "updatedAt"]),
     revision: session.revision,
     seq: session.seq,
     cursor: session.cursor,

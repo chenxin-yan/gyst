@@ -9,7 +9,7 @@ import {
 import { Crypto, Effect, Exit, Layer, PlatformError } from "effect";
 import { Git } from "./git.ts";
 import { Sessions } from "./sessions.ts";
-import { type IncompatibleSession, SessionStore } from "./store.ts";
+import { SessionStore } from "./store.ts";
 
 const root = "/repo";
 const otherRoot = "/other";
@@ -28,7 +28,6 @@ diff --git a/b.txt b/b.txt
 `;
 
 let files: Map<string, Session>;
-let incompatible: IncompatibleSession[];
 let patchCalls: Array<{
   root: string;
   cwd: string;
@@ -61,7 +60,7 @@ const git = Layer.succeed(Git, {
 });
 
 const store = Layer.succeed(SessionStore, {
-  loadAll: Effect.sync(() => ({ sessions: [...files.values()], incompatible })),
+  loadAll: Effect.sync(() => [...files.values()]),
   save: (session) =>
     saveFails
       ? Effect.fail(
@@ -95,7 +94,6 @@ const request = (
 ): Request => ({ command, cwd, args, ...(stdin === undefined ? {} : { stdin }) });
 
 const persisted: Session = {
-  formatVersion: 1,
   id: "persisted",
   repoRoot: otherRoot,
   source: { kind: "stdin" },
@@ -149,7 +147,6 @@ const persisted: Session = {
 };
 
 beforeEach(() => {
-  incompatible = [];
   files = new Map([[persisted.id, persisted]]);
   patchCalls = [];
   saveFails = false;
@@ -606,39 +603,6 @@ diff --git a/c.txt b/c.txt
 });
 
 describe("Sessions.load", () => {
-  it("reserves incompatible repo/id across create, close, reads and reload without blocking another repo", async () => {
-    incompatible = [
-      { id: "legacy", repoRoot: root, path: "/data/legacy.json", formatVersion: null },
-    ];
-    await run(
-      Effect.gen(function* () {
-        const s = yield* Sessions;
-        for (const command of ["status", "diff", "apply", "refresh", "close"] as const) {
-          for (const args of [[], ["--session", "legacy"]]) {
-            const operation: Effect.Effect<unknown, { _tag: string; message: string }> = s[command](
-              request(command, args),
-            );
-            const error = yield* Effect.flip(operation);
-            expect(error._tag).toBe("validation_failed");
-            expect(error.message).toContain("old gyst version");
-          }
-        }
-        expect((yield* Effect.flip(s.create(request("create"))))._tag).toBe("validation_failed");
-        expect((yield* s.status(request("status", [], otherRoot))).session.id).toBe(persisted.id);
-        yield* s.close(request("close", [], otherRoot));
-        expect(yield* s.isEmpty).toBe(false);
-        expect(incompatible).toHaveLength(1);
-        yield* s.load;
-        expect((yield* Effect.flip(s.close(request("close", ["--session", "legacy"]))))._tag).toBe(
-          "validation_failed",
-        );
-        incompatible = [];
-        yield* s.load;
-        expect(yield* s.isEmpty).toBe(true);
-        expect((yield* s.create(request("create"))).session.repoRoot).toBe(root);
-      }),
-    );
-  });
   it("replaces the in-memory sessions with what is persisted now", async () => {
     await run(
       Effect.gen(function* () {
@@ -762,7 +726,7 @@ describe("Sessions.close", () => {
         const created = yield* sessions.create(request("create", ["--"]));
         yield* Effect.flip(Effect.timeout(sessions.idle, "10 millis"));
         const closed = yield* sessions.close(request("close"));
-        expect(closed).toEqual({ formatVersion: 1, closed: true, sessionId: created.session.id });
+        expect(closed).toEqual({ closed: true, sessionId: created.session.id });
         expect(files.has(created.session.id)).toBe(false);
         expect(yield* sessions.isEmpty).toBe(false);
         yield* Effect.flip(Effect.timeout(sessions.idle, "10 millis"));

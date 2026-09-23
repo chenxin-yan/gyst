@@ -18,7 +18,6 @@ function fixture() {
   const actions: HumanAction[] = [];
   let status: StatusPayload = {
     session: {
-      formatVersion: 1,
       id: "session",
       repoRoot: "/repo",
       source: { kind: "stdin" },
@@ -55,7 +54,6 @@ function fixture() {
     files: ["a.ts", "b.ts", "c.ts", "d.ts"].map((path) => ({ path, hunkCount: 1 })),
   };
   let diff: DiffPayload = {
-    formatVersion: 1,
     sessionId: "session",
     revision: 0,
     hunks: [

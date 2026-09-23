@@ -70,14 +70,10 @@ Titles and overviews are proposals, not correctness claims. This model update sh
 titles and all diffs; the focused Markdown overview pane follows in the next slice.
 Mermaid remains ordinary fenced source text; no diagram rendering is provided.
 
-## Upgrading existing sessions
+## Persistence
 
-Finish and close sessions with the old executable before upgrading, ensure the old
-daemon has exited, then run `gyst skills` to refresh installed skills. Saved sessions
-have an explicit format version: incompatible files remain untouched and block a
-second session for that repository. They are not migrated. If you cannot finish
-with the old version, manually archive the reported file before restarting gyst.
-Mismatched daemon replies fail visibly; gyst never silently kills the old daemon.
+Sessions are saved on disk and survive daemon restarts. Saved files that fail schema
+validation are skipped without being changed or migrated.
 
 ## More
 

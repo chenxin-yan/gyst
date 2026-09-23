@@ -17,7 +17,6 @@ const hunk = (id: string) => ({
 });
 const initial = () =>
   Schema.decodeUnknownSync(SessionSchema)({
-    formatVersion: 1,
     id: "session",
     repoRoot: "/repo",
     source: { kind: "stdin" },

@@ -50,7 +50,7 @@ const git = Layer.succeed(Git, {
   patch: () => Effect.succeed(patch),
 });
 const store = Layer.succeed(SessionStore, {
-  loadAll: Effect.sync(() => ({ sessions: [...files.values()], incompatible: [] })),
+  loadAll: Effect.sync(() => [...files.values()]),
   save: (session) => Effect.sync(() => void files.set(session.id, session)),
   remove: (id) => Effect.sync(() => void files.delete(id)),
 });
