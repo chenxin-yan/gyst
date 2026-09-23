@@ -10,6 +10,8 @@ const invalidDiff = (detail: string) =>
 export function parseSnapshot(patch: string): Result.Result<Hunk[], BadArgs> {
   return Result.flatMap(
     Result.try({
+      // TODO: Upgrade once https://github.com/pierrecomputer/pierre/pull/1143 ships.
+      // Git-quoted filenames currently stay escaped, so editor targets may not resolve.
       try: () => parsePatchFiles(patch, undefined, true).flatMap((parsed) => parsed.files),
       catch: (error) =>
         new BadArgs({
