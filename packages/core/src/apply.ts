@@ -44,11 +44,6 @@ export type ValidationDetail = { opIndex: number; message: string };
 /** A replayed idempotency key returns the recorded status and no session to persist. */
 export type ApplyOutcome = { readonly status: StatusPayload; readonly session?: Session };
 
-const mapOverviews = <From, To, Item extends { overview: From }>(
-  items: readonly Item[],
-  map: (overview: From) => To,
-) => items.map((item) => ({ ...item, overview: map(item.overview) }));
-
 // A receipt records each overview once as an index into `receiptOverviews`, so replay stays exact
 // while a hundred one-item publications do not repeat every earlier overview a hundred times.
 function receiptStatusOf(draft: MutableSession, status: StatusPayload): ReceiptStatus {
@@ -59,14 +54,14 @@ function receiptStatusOf(draft: MutableSession, status: StatusPayload): ReceiptS
   };
   return {
     ...status,
-    groups: mapOverviews(status.groups, intern),
+    groups: status.groups.map((group) => ({ ...group, overview: intern(group.overview) })),
   };
 }
 function recordedStatusOf(session: Session, status: ReceiptStatus): StatusPayload {
   const text = (index: number) => session.receiptOverviews[index]!;
   return {
     ...status,
-    groups: mapOverviews(status.groups, text),
+    groups: status.groups.map((group) => ({ ...group, overview: text(group.overview) })),
   };
 }
 
