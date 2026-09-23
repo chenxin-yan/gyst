@@ -412,7 +412,8 @@ export function App(props: {
     }),
   );
   // Reveal the focused member when the focus moves or its card is (re)mounted. Positions exist only
-  // after layout, which happens inside a render, so the scroll waits for the next rendered frame.
+  // after layout, which happens inside a render, so the scroll waits for a rendered frame. A narrow
+  // overview hides the diff pane, which then has no layout: the reveal stays pending until a frame shows it.
   createEffect(
     on([focusedHunk, currentKey], ([hunkId]) => {
       if (hunkId === undefined) return;
@@ -420,11 +421,12 @@ export function App(props: {
       // hunk taller than the viewport would otherwise be revealed by its tail.
       const reveal = () => {
         const member = focusCard?.findDescendantById(memberElementId(hunkId));
-        if (!focusCard || !member) return;
+        if (!focusCard?.visible || !member) return;
+        renderer.off("frame", reveal);
         const top = member.y - focusCard.viewport.y;
         if (top < 0 || top + member.height > focusCard.viewport.height) focusCard.scrollBy(top);
       };
-      renderer.once("frame", reveal);
+      renderer.on("frame", reveal);
       renderer.requestRender();
       onCleanup(() => renderer.off("frame", reveal));
     }),

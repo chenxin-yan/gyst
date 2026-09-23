@@ -710,6 +710,42 @@ describe("TUI", () => {
     tui.renderer.destroy();
   });
 
+  it("reveals a focus that a narrow overview hid once the diff pane shows, without re-revealing on Tab", async () => {
+    const state = fixture();
+    const focused = structuredClone(state.status()) as any;
+    focused.cursor = { itemId: "group", pane: "overview", hunkId: "a.ts" };
+    state.setStatus(focused);
+    const tui = await testRender(() => <App client={tallGroup(state)} pollInterval={5} />, {
+      width: 80,
+      height: 30,
+    });
+    const pane = () => tui.renderer.root.findDescendantById("diff-pane") as ScrollBoxRenderable;
+    try {
+      await tui.waitForFrame((frame) => frame.includes("[overview]"));
+      await press(tui, "TAB");
+      await tui.waitForFrame((frame) => frame.includes("const old = 1"));
+      assert.deepEqual(state.status().cursor, { itemId: "group", pane: "diff", hunkId: "a.ts" });
+      await press(tui, "u", { ctrl: true });
+      const manual = pane().scrollTop;
+      assert(manual > 0 && !tui.captureCharFrame().includes("const old = 1"));
+      await press(tui, "TAB");
+      await press(tui, "\u001b[Z"); // Shift+Tab
+      assert.equal(state.status().cursor.pane, "diff");
+      assert.equal(pane().scrollTop, manual, "Tab round trip keeps the manual scroll");
+      await press(tui, "TAB");
+      // Another TUI moves the shared hunk while this narrow overview hides the diff; widening shows it.
+      const moved = structuredClone(state.status()) as any;
+      moved.seq++;
+      moved.cursor = { itemId: "group", pane: "overview", hunkId: "b.ts" };
+      state.setStatus(moved);
+      await tui.waitForFrame((frame) => frame.includes("— b.ts"));
+      tui.resize(120, 30);
+      await tui.waitForFrame((frame) => frame.includes("first_0"));
+    } finally {
+      tui.renderer.destroy();
+    }
+  });
+
   it("preserves cursor and manual scroll when another complete item is published", async () => {
     const state = fixture();
     const tui = await testRender(() => <App client={tallGroup(state)} pollInterval={5} />, {
