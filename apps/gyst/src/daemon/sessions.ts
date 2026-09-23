@@ -38,7 +38,9 @@ const requestArgs = <T extends ParseArgsConfig>(config: T) =>
       new BadArgs({ message: error instanceof Error ? error.message : String(error) }),
   });
 
-const decodeEnvelope = Schema.decodeUnknownEffect(Schema.fromJsonString(ApplyEnvelopeSchema));
+const decodeEnvelope = Schema.decodeUnknownEffect(Schema.fromJsonString(ApplyEnvelopeSchema), {
+  onExcessProperty: "error",
+});
 
 // Options each session command accepts; anything else is `bad_args`.
 const sessionOptions = { session: { type: "string" } } as const;
@@ -61,7 +63,7 @@ export class Sessions extends Context.Service<
       request: Request,
     ): Effect.Effect<StatusPayload, BadArgs | NoSession | StaleRevision | ValidationFailed>;
     /** Re-reads the recorded source (or `--stdin`); unchanged hunks keep their group and verdict. */
-    refresh(request: Request): Effect.Effect<StatusPayload, BadArgs | NoSession>;
+    refresh(request: Request): Effect.Effect<StatusPayload, BadArgs | NoSession | ValidationFailed>;
     /** One human review step from `request.action`; the daemon owns the reducer so every TUI sees the same state. */
     tuiAction(
       request: Request,
@@ -135,8 +137,9 @@ export class Sessions extends Context.Service<
         const hunks = yield* Effect.fromResult(parseSnapshot(patch));
         const now = DateTime.formatIso(yield* DateTime.now);
         // Like persistence, an id source that cannot produce randomness is an operational defect.
+        const id = yield* Effect.orDie(randomUUIDv4);
         const session: Session = {
-          id: yield* Effect.orDie(randomUUIDv4),
+          id,
           repoRoot: root,
           source: values.stdin
             ? { kind: "stdin" }
@@ -156,6 +159,7 @@ export class Sessions extends Context.Service<
           queue: [],
           queueSet: false,
           acceptHistory: [],
+          receiptOverviews: [],
           applyReceipts: [],
         };
         yield* store.save(session).pipe(Effect.orDie);
@@ -183,12 +187,17 @@ export class Sessions extends Context.Service<
               message: "group selector does not exist",
               detail: { groupId: values.group },
             });
-          hunks = hunks.filter((hunk) => group.hunkIds.includes(hunk.id));
+          const byId = new Map(hunks.map((hunk) => [hunk.id, hunk]));
+          hunks = group.hunkIds.flatMap((id) => byId.get(id) ?? []);
         }
         if (values.file) hunks = hunks.filter((hunk) => hunk.file === values.file);
         if (selectors.length && hunks.length === 0)
           return yield* new ValidationFailed({ message: "diff selector matched nothing" });
-        return { sessionId: session.id, revision: session.revision, hunks } satisfies DiffPayload;
+        return {
+          sessionId: session.id,
+          revision: session.revision,
+          hunks,
+        } satisfies DiffPayload;
       }, Semaphore.withPermit(lock));
 
       const load = Effect.gen(function* () {
@@ -279,7 +288,10 @@ export class Sessions extends Context.Service<
         yield* store.remove(session.id).pipe(Effect.orDie);
         sessions.delete(session.id);
         if (sessions.size === 0) yield* idle.open;
-        return { closed: true, sessionId: session.id } satisfies ClosePayload;
+        return {
+          closed: true,
+          sessionId: session.id,
+        } satisfies ClosePayload;
       }, Semaphore.withPermit(lock));
 
       return Sessions.of({

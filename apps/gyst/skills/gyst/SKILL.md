@@ -1,66 +1,34 @@
 ---
 name: gyst
-description: Pre-pass a diff into groups and spotlight hunks, then hand it to the human for co-review.
+description: Prepare coherent review items and publish them progressively for human co-review.
 disable-model-invocation: true
 ---
 
 # Gyst co-review
 
-Use gyst to prepare one diff for human review, then answer questions about the item under the reviewer's cursor. Gyst does not judge the change: your folds and tldrs are proposals, and the human's accept verdict authorizes them.
+Prepare one scoped diff for human judgment. A review item is a **group** of hunks contributing to one coherent change, or a **spotlight** (one prepared, ungrouped hunk). Every member is shown; accepting a group covers all its members. The **inbox** holds unprepared hunks. A **title** names an item; its Markdown **overview** explains intent, context and behavior. The human alone supplies **verdicts**: accept means done reviewing, not a claim that the code is correct.
 
-## Vocabulary
+## 1. Establish the session
 
-Use these terms exactly:
+Resolve the requested scope from the repository. Fetch remote refs yourself when needed; gyst does not fetch them.
 
-- **session**: one live review of one diff, owned by the daemon; at most one per repo.
-- **snapshot**: the frozen files and hunks in the session.
-- **inbox**: ungrouped hunks with no tldr; these still need your pre-pass.
-- **group**: hunks sharing one mechanical pattern, represented by an exemplar and occurrence count.
-- **spotlight**: an ungrouped hunk with a tldr, left for the human to read in full.
-- **tldr**: your one-line annotation on a group or spotlight hunk.
-- **verdict**: the human's accept ruling. Never write or infer it yourself.
-- **refresh**: re-derive the snapshot while retaining review work on unchanged hunks.
+- Uncommitted changes: `gyst session create` includes the Git diff and untracked files.
+- Replayable range: `gyst session create -- <revisions> [-- <pathspecs>]`. Git options are rejected; pathspecs resolve from your current directory.
+- An obtained unified diff: pipe it to `gyst session create --stdin`.
 
-## Pre-pass
+On `session_exists`, read `gyst session status`. Refresh only if the recorded source matches the requested scope: `gyst session refresh` for Git, or a replacement patch through `gyst session refresh --stdin`. For a different scope, ask the user whether to keep or explicitly close the session. Never discard human work automatically.
 
-### 1. Establish the session
+## 2. Understand the whole scoped change
 
-Work out the diff source from the request and repository state. Do not match user phrases against a fixed table. Fetch a PR or remote ref yourself when needed; gyst does no network access.
+Read status and `gyst session diff`, then surrounding code before publishing anything. For large snapshots, read by `--file`; use `--hunk` or `--group` for targeted reads. Distinguish the frozen snapshot from unchanged context and any newer working-tree content.
 
-- Uncommitted changes: run `gyst session create`. This defaults to `git diff HEAD` plus untracked files as all-added hunks.
-- Replayable git range: run `gyst session create -- <revisions> [-- <pathspecs>]`. Git options are rejected; pathspecs resolve from your current directory.
-- A unified diff you already obtained: pipe it to `gyst session create --stdin`.
+Group by the review question or behavior: an API change, implementation and decisive tests can belong together despite different mechanics. A common file, directory or vague topic is insufficient. Split changes needing independent explanations or judgments; prefer a spotlight for an independent hunk. Order members along the explanation, for example entry point → behavior → tests. Never claim unshown members are interchangeable.
 
-If create returns `session_exists`, read `gyst session status` before doing anything else. Refresh only when the existing session's recorded source describes the requested scope: git-backed sessions use `gyst session refresh`; stdin-backed sessions accept a replacement patch through `gyst session refresh --stdin`. If the requested scope differs, stop and ask the user whether to keep the existing session or explicitly close it and start the new scope. Never close or recreate a session automatically — verdicts are human labor.
+## 3. Publish complete items progressively
 
-### 2. Explore only to improve triage
+Each item needs a plain-text, single-line **title** (1–120 Unicode code points, no terminal controls) and a nonempty Markdown **overview** (at most 64 KiB UTF-8). Explain intent, before/after behavior, relationships between members, necessary surrounding context and relevant evidence or uncertainty. Use only warranted sections. Concrete code/data-flow sketches, compact tables and source references are often clearer than long prose. Mermaid fences are ordinary source text, not rendered diagrams. Never invent test results or substitute a correctness verdict for the human's review.
 
-Read `gyst session status`, then read snapshot text with `gyst session diff`. For a large snapshot, use `--file`; use `--hunk` and `--group` for targeted reads.
-
-Explore surrounding code before classifying when it will produce a more accurate group or tldr. Use subagents when the harness supports them, but only for that understanding. Do not ask them to judge, mutate the session, or produce a separate review artifact.
-
-### 3. Triage the inbox once
-
-Classify every inbox hunk. Fold a hunk only when the shared mechanics are clear. Preserve the smallest source-shaped exemplar that explains changed behavior and data flow. Never invent or summarize away source. If unsure, leave the hunk in spotlight with a tldr.
-
-These ten families are candidates, not permission to fold:
-
-1. **Batch field/member copies and repeated plumbing** — group repeated assignments and keep one exemplar. Exception: spotlight destinations with conversions, defaults, validation, changed data flow, or observable effects.
-2. **Repeated renames and call-site migrations** — group equivalent old/new substitutions and keep one representative pair. Exception: spotlight any call site that also adapts arguments, types, control flow, or meaning.
-3. **Forced signature/API propagation** — group mechanical zero-value returns, parameter threading, or context plumbing forced by one signature change. Exception: spotlight sites that choose a value, alter error handling, or introduce behavior.
-4. **Error-message construction** — group repeated formatting prose while preserving the error identity and decisive control flow in the exemplar. Exception: spotlight exact text used as an API, assertion, localization key, protocol value, or user-visible behavior under review.
-5. **Generated files** — group generated outputs and keep the hand-written generator or driver in view. Exception: spotlight generated output that is edited directly, is the source of truth, carries security/compatibility significance, or was explicitly requested for review.
-6. **Import/include scaffolding** — group unconditional compiler-removed import churn. Exception: spotlight side-effect imports, conditional loading, re-exports, namespace resolution, or dependency-boundary changes.
-7. **Pure formatting and already-demonstrated mechanics** — group repeated whitespace or syntax-normalization churn after one exemplar. Exception: spotlight whitespace-sensitive content, templates, generated syntax, formatter configuration, or any token change that can alter behavior.
-8. **Test-suite repetition** — group repeated setup/assertion mechanics while keeping the scenario owner and one decisive assertion. Exception: spotlight distinct specifications, boundary cases, failure modes, fixtures with semantic data, and assertions that establish different contracts.
-9. **Bulky literal/table/signature interiors** — group repetitive interiors while preserving the owner and boundaries in an exemplar. Exception: spotlight values that encode behavior, ordering, migrations, wire formats, permissions, security policy, or compatibility.
-10. **Exact behavioral moves** — group both sides of a relocation only when the moved behavior is exact. Exception: any edit beyond relocation, ambiguous source/destination mapping, changed scope, or changed execution order stays in spotlight.
-
-Never treat contracts or definitions, behavior-changing conditions, transformations, observable effects, or test specifications as mechanical. Every family has exceptions. Pattern membership proposes a group; only the human's verdict accepts it.
-
-### 4. Apply one complete batch
-
-Build one `gyst session apply` JSON envelope from the current `revision` and a fresh idempotency key. Use these exact field names (choose a unique `id` for each group):
+Read the current revision, then pipe an envelope to `gyst session apply`:
 
 ```json
 {
@@ -69,42 +37,27 @@ Build one `gyst session apply` JSON envelope from the current `revision` and a f
   "ops": [
     {
       "type": "group.create",
-      "id": "group-id",
-      "tldr": "Repeated mechanical change",
-      "memberHunkIds": ["hunk-1", "hunk-2"],
-      "exemplarHunkId": "hunk-1"
-    },
-    {
-      "type": "hunk.annotate",
-      "hunkId": "hunk-3",
-      "tldr": "Behavior that needs human review"
+      "id": "api-and-tests",
+      "title": "Reject expired credentials",
+      "overview": "## Behavior\nThe entry point rejects expired credentials before loading account data. The tests exercise expiry and the still-valid path.\n\nEvidence: source inspection; tests not run.",
+      "memberHunkIds": ["entry-hunk", "implementation-hunk", "test-hunk"]
     },
     {
       "type": "queue.set",
-      "itemIds": ["group-id", "hunk-3"]
+      "itemIds": ["api-and-tests"]
     }
   ]
 }
 ```
 
-Submit all triage in that single batch:
+Publish one complete item or a small coherent batch at a time. Include `queue.set` **in the same transaction**, containing every currently published group/spotlight id exactly once, excluding inbox ids. Preserve published order and append new items. Grouped hunks need no separate metadata. For a spotlight use `{"type":"hunk.annotate","hunkId":"id","title":"Short title","overview":"Complete explanation"}` with both fields together.
 
-- one `group.create` for each mechanical pattern, with a concise `tldr`, all `memberHunkIds`, and a representative `exemplarHunkId`;
-- one `hunk.annotate` for every hunk left in spotlight — a `tldr` is mandatory for every spotlight `hunkId`;
-- one `queue.set` whose `itemIds` contain every group id and spotlight hunk id exactly once, in your judged review order (use diff order when no better order exists).
+Use the returned revision for the next batch. On `stale_revision`, reread status and reassess concurrent human work before rebuilding; never blindly retry obsolete operations or overwrite verdicts. An identical retry with the same idempotency key returns its historical receipt, not current status; reread before continuing. Use a new key for changed content. On `validation_failed`, correct the batch and use a new key. Never stream incomplete Markdown into published items or write verdict/cursor state.
 
-Do not submit partial batches. Do not write verdicts, cursor, or expand state. If apply returns `validation_failed`, fix the reported operations and retry the complete batch with a **new** idempotency key. If it returns `stale_revision`, read status and the affected hunks again before rebuilding the batch.
+## 4. Hand off while preparing
 
-The pre-pass is ready only when the returned status says the inbox is empty and the queue is set.
-
-### 5. Hand off
-
-Do not launch the TUI. Reply briefly:
-
-> N hunks → K groups, M in spotlight — run `gyst` here
-
-Do not add a separate "start with" recommendation; the queue already records that judgment.
+As soon as items are published, tell the human they can run `gyst` in this repository; do not launch it. Continue preparing remaining inbox hunks at item boundaries. Report published item and remaining inbox counts briefly. Empty inbox plus a set queue means preparation is ready; all published items accepted while inbox remains is **not review complete**.
 
 ## Refresh during co-review
 
-After any refresh, triage the **inbox only**. Existing groups and verdicts are human work: leave them untouched unless the user explicitly asks to regroup. If regrouping is requested, remember that changing a group's membership resets that group's accept verdict.
+Triage new inbox hunks without automatically reordering or regrouping published work. Any removed/changed group member invalidates the surviving group's verdict; its title and overview remain a proposal needing re-review. Surface affected context and revise it explicitly when appropriate. Membership or metadata changes invalidate verdicts; use existing `group.update` (optional title, overview, memberHunkIds) or `group.dissolve` only for deliberate revisions, with the resulting queue set atomically. Preserve unrelated accepted items.

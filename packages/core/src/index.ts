@@ -39,6 +39,7 @@ export {
   type StatusPayload,
   StatusPayloadSchema,
 } from "./session.ts";
+export { sanitizeOverview, TitleSchema, OverviewSchema } from "./metadata.ts";
 export { parseSnapshot } from "./snapshot.ts";
 export { statusOf } from "./status.ts";
 export {

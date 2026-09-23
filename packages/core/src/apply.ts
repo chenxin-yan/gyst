@@ -1,23 +1,23 @@
 import { Result, Schema } from "effect";
-import { draftOf, groupedIds, reconcileQueue } from "./draft.ts";
+import { draftOf, groupedIds, type MutableSession, reconcileQueue } from "./draft.ts";
 import { StaleRevision, ValidationFailed } from "./errors.ts";
 import { hash } from "./hash.ts";
-import type { Session, StatusPayload } from "./session.ts";
+import { metadataFields, MetadataSchema, OverviewSchema, TitleSchema } from "./metadata.ts";
+import type { ReceiptStatus, Session, StatusPayload } from "./session.ts";
 import { statusOf } from "./status.ts";
 
 export const GroupCreateSchema = Schema.Struct({
   type: Schema.Literal("group.create"),
   id: Schema.String,
-  tldr: Schema.String,
+  ...metadataFields,
   memberHunkIds: Schema.Array(Schema.String),
-  exemplarHunkId: Schema.String,
 });
 export const GroupUpdateSchema = Schema.Struct({
   type: Schema.Literal("group.update"),
   id: Schema.String,
-  tldr: Schema.optional(Schema.String),
+  title: Schema.optional(TitleSchema),
+  overview: Schema.optional(OverviewSchema),
   memberHunkIds: Schema.optional(Schema.Array(Schema.String)),
-  exemplarHunkId: Schema.optional(Schema.String),
 });
 export const GroupDissolveSchema = Schema.Struct({
   type: Schema.Literal("group.dissolve"),
@@ -26,7 +26,7 @@ export const GroupDissolveSchema = Schema.Struct({
 export const HunkAnnotateSchema = Schema.Struct({
   type: Schema.Literal("hunk.annotate"),
   hunkId: Schema.String,
-  tldr: Schema.String,
+  ...metadataFields,
 });
 export const QueueSetSchema = Schema.Struct({
   type: Schema.Literal("queue.set"),
@@ -50,6 +50,34 @@ export type ValidationDetail = { opIndex: number; message: string };
 /** A replayed idempotency key returns the recorded status and no session to persist. */
 export type ApplyOutcome = { readonly status: StatusPayload; readonly session?: Session };
 
+const mapOverviews = <From, To, Item extends { overview: From }>(
+  items: readonly Item[],
+  map: (overview: From) => To,
+) => items.map((item) => ({ ...item, overview: map(item.overview) }));
+
+// A receipt records each overview once as an index into `receiptOverviews`, so replay stays exact
+// while a hundred one-item publications do not repeat every earlier overview a hundred times.
+function receiptStatusOf(draft: MutableSession, status: StatusPayload): ReceiptStatus {
+  // ponytail: linear indexOf over distinct overviews; a hash index if a session publishes thousands.
+  const intern = (overview: string) => {
+    const index = draft.receiptOverviews.indexOf(overview);
+    return index >= 0 ? index : draft.receiptOverviews.push(overview) - 1;
+  };
+  return {
+    ...status,
+    groups: mapOverviews(status.groups, intern),
+    spotlight: mapOverviews(status.spotlight, intern),
+  };
+}
+function recordedStatusOf(session: Session, status: ReceiptStatus): StatusPayload {
+  const text = (index: number) => session.receiptOverviews[index]!;
+  return {
+    ...status,
+    groups: mapOverviews(status.groups, text),
+    spotlight: mapOverviews(status.spotlight, text),
+  };
+}
+
 export function applyBatch(
   session: Session,
   envelope: ApplyEnvelope,
@@ -59,7 +87,8 @@ export function applyBatch(
   const digest = hash(JSON.stringify(envelope));
   const receipt = session.applyReceipts.find(({ key }) => key === envelope.idempotencyKey);
   if (receipt) {
-    if (receipt.digest === digest) return Result.succeed({ status: receipt.status });
+    if (receipt.digest === digest)
+      return Result.succeed({ status: recordedStatusOf(session, receipt.status) });
     return Result.fail(
       new ValidationFailed({
         message: "idempotency key reused with a different batch",
@@ -102,8 +131,8 @@ export function applyBatch(
         fail(opIndex, `item id ${op.id} already exists`);
         continue;
       }
-      if (!op.tldr.trim()) {
-        fail(opIndex, "group tldr must not be empty");
+      if (!Schema.is(MetadataSchema)(op)) {
+        fail(opIndex, "invalid group title or overview");
         continue;
       }
       if (
@@ -121,15 +150,11 @@ export function applyBatch(
         fail(opIndex, "a hunk may belong to only one group");
         continue;
       }
-      if (!op.memberHunkIds.includes(op.exemplarHunkId)) {
-        fail(opIndex, "group exemplar must be a member");
-        continue;
-      }
       draft.groups.push({
         id: op.id,
-        tldr: op.tldr,
+        title: op.title,
+        overview: op.overview,
         hunkIds: [...op.memberHunkIds],
-        exemplarHunkId: op.exemplarHunkId,
         accepted: false,
       });
       draft.queueSet = false;
@@ -147,7 +172,6 @@ export function applyBatch(
         continue;
       }
       const members = op.memberHunkIds ?? group.hunkIds;
-      const exemplar = op.exemplarHunkId ?? group.exemplarHunkId;
       if (members.length === 0 || new Set(members).size !== members.length) {
         fail(opIndex, "group members must be non-empty and unique");
         continue;
@@ -160,18 +184,16 @@ export function applyBatch(
         fail(opIndex, "a hunk may belong to only one group");
         continue;
       }
-      if (!members.includes(exemplar)) {
-        fail(opIndex, "group exemplar must be a member");
-        continue;
-      }
-      if (op.tldr !== undefined && !op.tldr.trim()) {
-        fail(opIndex, "group tldr must not be empty");
+      const title = op.title ?? group.title;
+      const overview = op.overview ?? group.overview;
+      if (!Schema.is(MetadataSchema)({ title, overview })) {
+        fail(opIndex, "invalid group title or overview");
         continue;
       }
       Object.assign(group, {
         hunkIds: [...members],
-        exemplarHunkId: exemplar,
-        ...(op.tldr === undefined ? {} : { tldr: op.tldr }),
+        title,
+        overview,
         accepted: false,
       });
       draft.queueSet = false;
@@ -195,18 +217,19 @@ export function applyBatch(
         fail(opIndex, `hunk ${op.hunkId} does not exist`);
         continue;
       }
-      if (!op.tldr.trim()) {
-        fail(opIndex, "hunk tldr must not be empty");
+      if (!Schema.is(MetadataSchema)(op)) {
+        fail(opIndex, "invalid hunk title or overview");
         continue;
       }
-      const wasInbox = hunk.tldr === undefined && !hunkInOtherGroup(hunk.id);
+      const wasInbox = hunk.title === undefined && !hunkInOtherGroup(hunk.id);
       // A re-worded annotation is a new claim; the verdict on the old wording no longer applies.
       // Pruned here because a finalized queue skips the end-of-batch reconcile.
-      if (hunk.tldr !== op.tldr) {
+      if (hunk.title !== op.title || hunk.overview !== op.overview) {
         hunk.accepted = false;
         draft.acceptHistory = draft.acceptHistory.filter((id) => id !== hunk.id);
       }
-      hunk.tldr = op.tldr;
+      hunk.title = op.title;
+      hunk.overview = op.overview;
       if (wasInbox) draft.queueSet = false;
       continue;
     }
@@ -214,7 +237,7 @@ export function applyBatch(
     const expected = [
       ...draft.groups.map((group) => group.id),
       ...draft.hunks
-        .filter((hunk) => !grouped.has(hunk.id) && hunk.tldr !== undefined)
+        .filter((hunk) => !grouped.has(hunk.id) && hunk.title !== undefined)
         .map((hunk) => hunk.id),
     ];
     if (
@@ -246,6 +269,10 @@ export function applyBatch(
   draft.seq++;
   draft.updatedAt = updatedAt;
   const status = statusOf(draft);
-  draft.applyReceipts.push({ key: envelope.idempotencyKey, digest, status });
+  draft.applyReceipts.push({
+    key: envelope.idempotencyKey,
+    digest,
+    status: receiptStatusOf(draft, status),
+  });
   return Result.succeed({ session: draft, status });
 }

@@ -20,8 +20,8 @@ function status(revision = 0, seq = revision, sessionId = "session"): StatusPayl
     groups: [
       {
         id: "group",
-        tldr: `review ${revision}`,
-        exemplarHunkId: `hunk-${revision}`,
+        title: `review ${revision}`,
+        overview: `Intent and evidence ${revision}`,
         hunkIds: [`hunk-${revision}`],
         count: 1,
         accepted: false,
@@ -72,7 +72,11 @@ describe("TUI snapshot races", () => {
         return diff(state.revision);
       },
       action: async () => {
-        state = { ...state, seq: state.seq + 1, cursor: { itemId: "group", expanded: true } };
+        state = {
+          ...state,
+          seq: state.seq + 1,
+          cursor: { itemId: "group", expanded: true, hunkId: `hunk-${state.revision}` },
+        };
         return structuredClone(state);
       },
       refresh: async () => structuredClone(state),
@@ -84,11 +88,11 @@ describe("TUI snapshot races", () => {
     try {
       await tui.waitForFrame((frame) => frame.includes("TEXT_0"));
       await started.promise;
-      await tui.mockInput.pressKey("e");
+      await tui.mockInput.pressKey("RETURN");
       await tui.renderOnce();
       release.resolve();
       await tui.waitForFrame(
-        (frame) => frame.includes("TEXT_1") && frame.includes("all 1 members"),
+        (frame) => frame.includes("TEXT_1") && frame.includes("j/k to step, esc to leave"),
       );
     } finally {
       release.resolve();
@@ -212,7 +216,10 @@ describe("TUI snapshot races", () => {
 
   it("older same-session action and poll statuses cannot roll back the view", async () => {
     let stale = false;
-    const current = { ...status(1, 5), cursor: { itemId: "group", expanded: true } };
+    const current = {
+      ...status(1, 5),
+      cursor: { itemId: "group", expanded: true, hunkId: "hunk-1" },
+    };
     const client: TuiClient = {
       status: async () => (stale ? status(1, 3) : current),
       diff: async () => diff(1),
@@ -227,11 +234,11 @@ describe("TUI snapshot races", () => {
       height: 30,
     });
     try {
-      await tui.waitForFrame((frame) => frame.includes("all 1 members"));
-      await tui.mockInput.pressKey("e");
+      await tui.waitForFrame((frame) => frame.includes("j/k to step, esc to leave"));
+      await tui.mockInput.pressKey("ESCAPE");
       await Bun.sleep(60);
       await tui.renderOnce();
-      assert(tui.captureCharFrame().includes("all 1 members"));
+      assert(tui.captureCharFrame().includes("j/k to step, esc to leave"));
     } finally {
       tui.renderer.destroy();
     }

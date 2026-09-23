@@ -1,8 +1,8 @@
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import { BunServices } from "@effect/platform-bun";
-import type { Session } from "@gyst/core";
+import { type Session, statusOf } from "@gyst/core";
 import { ConfigProvider, Effect, Layer } from "effect";
-import { chmod, mkdir, mkdtemp, readdir, rm, stat, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Paths } from "./paths.ts";
@@ -24,6 +24,7 @@ const session = (id: string): Session => ({
   queue: [],
   queueSet: false,
   acceptHistory: [],
+  receiptOverviews: [],
   applyReceipts: [],
 });
 
@@ -59,12 +60,41 @@ describe("SessionStore", () => {
     await writeFile(join(dataDir, "corrupt.json"), "{not json");
     await writeFile(join(dataDir, "wrong-shape.json"), JSON.stringify({ id: "x" }));
     // The schema is the contract: a file missing a review field is not migrated, it is skipped.
-    await writeFile(
-      join(dataDir, "older.json"),
-      JSON.stringify({ ...session("older"), queue: undefined }),
-    );
+    const older = JSON.stringify({ ...session("older"), queue: undefined });
+    await writeFile(join(dataDir, "older.json"), older);
     const loaded = await run(SessionStore.use((s) => s.loadAll));
     expect(loaded.map((loadedSession) => loadedSession.id)).toEqual(["a"]);
+    expect(await readFile(join(dataDir, "older.json"), "utf8")).toBe(older);
+  });
+
+  it("round-trips semantic metadata inside persisted historical receipt snapshots", async () => {
+    const prepared: Session = {
+      ...session("semantic"),
+      groups: [
+        {
+          id: "g",
+          title: "API and tests",
+          overview: "## Intent\nDifferent operations, one behavior.",
+          hunkIds: ["h"],
+          accepted: false,
+        },
+      ],
+    };
+    const status = statusOf(prepared);
+    const saved: Session = {
+      ...prepared,
+      receiptOverviews: [prepared.groups[0]!.overview],
+      applyReceipts: [
+        {
+          key: "publish",
+          digest: "digest",
+          status: { ...status, groups: [{ ...status.groups[0]!, overview: 0 }], spotlight: [] },
+        },
+      ],
+    };
+    await run(SessionStore.use((s) => s.save(saved)));
+    const loaded = await run(SessionStore.use((s) => s.loadAll));
+    expect(loaded.find(({ id }) => id === "semantic")).toEqual(saved);
   });
 
   it.skipIf(process.getuid?.() === 0)(

@@ -2,7 +2,9 @@ import { type Session, SessionSchema } from "@gyst/core";
 import { Array, Context, Effect, FileSystem, Layer, type PlatformError, Schema } from "effect";
 import { Paths } from "./paths.ts";
 
-const decodeSessionFile = Schema.decodeUnknownEffect(Schema.fromJsonString(SessionSchema));
+const decodeSessionFile = Schema.decodeUnknownEffect(Schema.fromJsonString(SessionSchema), {
+  onExcessProperty: "error",
+});
 
 export class SessionStore extends Context.Service<
   SessionStore,

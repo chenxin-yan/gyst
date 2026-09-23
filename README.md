@@ -2,7 +2,8 @@
 
 Review code changes with your coding agent, in your terminal.
 
-Your agent groups repetitive changes and summarizes the rest. You review the diff
+Your agent organizes coherent changes into review items with short titles and
+contextual Markdown overviews. Every member hunk is shown. You review the diff
 and decide what to accept. Accepting marks an item reviewed—it does not stage,
 commit, or modify your code.
 
@@ -27,7 +28,8 @@ npm install -g @gyst/cli
    ```
 
    You can also specify a range (`/gyst main...HEAD`) or a PR (`/gyst PR 42`).
-   The agent prepares the review and tells you when it is ready.
+   The agent publishes complete items progressively. You can review published
+   items while the remaining hunks await preparation.
 
 3. Open another terminal in the same repository:
 
@@ -44,8 +46,7 @@ Use `/gyst-ask <question>` in your agent's chat to ask about the current review 
 | `j` / `k`           | Next / previous item                                                           |
 | `Enter` / `Esc`     | Step into an item / back to the list; inside, `j` / `k` move between its hunks |
 | `Ctrl+D` / `Ctrl+U` | Scroll the diff down / up                                                      |
-| `e`                 | Expand / collapse a group                                                      |
-| `a`                 | Toggle accepted                                                                |
+| `a`                 | Toggle accepted for the whole item (all members of a group)                    |
 | `u`                 | Undo the last verdict                                                          |
 | `r`                 | Refresh the diff from Git                                                      |
 | `?`                 | Show all keyboard shortcuts                                                    |
@@ -61,6 +62,18 @@ gyst session close
 ```
 
 For CLI options, run `gyst --help` or `gyst session --help`.
+
+Published items can be accepted while the inbox still contains hunks. Reviewing
+all prepared items is not completion until preparation finishes. Refresh preserves
+unchanged work; changing or removing any group member resets that group's verdict.
+Titles and overviews are proposals, not correctness claims. This model update shows
+titles and all diffs; the focused Markdown overview pane follows in the next slice.
+Mermaid remains ordinary fenced source text; no diagram rendering is provided.
+
+## Persistence
+
+Sessions are saved on disk and survive daemon restarts. Saved files that fail schema
+validation are skipped without being changed or migrated.
 
 ## More
 

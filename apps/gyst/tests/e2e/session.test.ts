@@ -42,10 +42,10 @@ function isAlive(pid: number): boolean {
 }
 
 type Result = { exitCode: number; stdout: string; stderr: string };
-async function gyst(cwd: string, args: string[], stdin?: string): Promise<Result> {
+async function gyst(cwd: string, args: string[], stdin?: string, dataDir = data): Promise<Result> {
   const child = Bun.spawn([binary, ...args], {
     cwd,
-    env: { ...isolatedHome(root), GYST_DATA_DIR: data },
+    env: { ...isolatedHome(root), GYST_DATA_DIR: dataDir },
     stdin: stdin === undefined ? "ignore" : new Blob([stdin]),
     stdout: "pipe",
     stderr: "pipe",
@@ -127,14 +127,15 @@ describe("gyst session CLI seam", () => {
     state.groups = [
       {
         id: "group-1",
-        tldr: "same edit",
-        exemplarHunkId: hunkId,
+        title: "same edit",
+        overview: "intent and behavior",
         hunkIds: [hunkId],
         accepted: false,
       },
     ];
     const spotlightHunk = state.hunks.find((hunk: { id: string }) => hunk.id !== hunkId);
-    spotlightHunk.tldr = "needs human review";
+    spotlightHunk.title = "needs human review";
+    spotlightHunk.overview = "intent and behavior";
     await writeFile(statePath, JSON.stringify(state));
     await writeFile(join(data, "corrupt.json"), "not json");
     const restored = await gyst(cwd, ["session", "status"]);
@@ -146,7 +147,8 @@ describe("gyst session CLI seam", () => {
       {
         id: spotlightHunk.id,
         file: spotlightHunk.file,
-        tldr: "needs human review",
+        title: "needs human review",
+        overview: "intent and behavior",
         accepted: false,
       },
     ]);
@@ -154,7 +156,10 @@ describe("gyst session CLI seam", () => {
     expect(await daemonPid()).not.toBe(pid);
 
     const closed = await gyst(cwd, ["session", "close"]);
-    expect(JSON.parse(closed.stdout)).toEqual({ closed: true, sessionId: status.session.id });
+    expect(JSON.parse(closed.stdout)).toEqual({
+      closed: true,
+      sessionId: status.session.id,
+    });
     for (
       let attempt = 0;
       attempt < 50 && (await Bun.file(join(data, "daemon.pid")).exists());
@@ -333,11 +338,11 @@ describe("gyst session CLI seam", () => {
           {
             type: "group.create",
             id: "group-1",
-            tldr: "mechanical",
+            title: "coherent change",
+            overview: "intent and behavior",
             memberHunkIds: [first.id],
-            exemplarHunkId: first.id,
           },
-          { type: "hunk.annotate", hunkId: "missing", tldr: "nope" },
+          { type: "hunk.annotate", hunkId: "missing", title: "nope", overview: "nope" },
         ],
       }),
     );
@@ -354,11 +359,11 @@ describe("gyst session CLI seam", () => {
         {
           type: "group.create",
           id: "group-1",
-          tldr: "mechanical",
+          title: "coherent change",
+          overview: "intent and behavior",
           memberHunkIds: [first.id],
-          exemplarHunkId: first.id,
         },
-        { type: "hunk.annotate", hunkId: second.id, tldr: "read this" },
+        { type: "hunk.annotate", hunkId: second.id, title: "read this", overview: "read this" },
         { type: "queue.set", itemIds: [second.id, "group-1"] },
       ],
     };
@@ -387,7 +392,7 @@ describe("gyst session CLI seam", () => {
       JSON.stringify({
         revision: 1,
         idempotencyKey: "change",
-        ops: [{ type: "hunk.annotate", hunkId: second.id, tldr: "updated" }],
+        ops: [{ type: "hunk.annotate", hunkId: second.id, title: "updated", overview: "updated" }],
       }),
     );
     expect(JSON.parse(changed.stdout).revision).toBe(2);
@@ -434,7 +439,7 @@ describe("gyst session CLI seam", () => {
         JSON.stringify({
           revision: 0,
           idempotencyKey: "concurrent-a",
-          ops: [{ type: "hunk.annotate", hunkId, tldr: "first" }],
+          ops: [{ type: "hunk.annotate", hunkId, title: "first", overview: "first" }],
         }),
       ),
       gyst(
@@ -443,7 +448,7 @@ describe("gyst session CLI seam", () => {
         JSON.stringify({
           revision: 0,
           idempotencyKey: "concurrent-b",
-          ops: [{ type: "hunk.annotate", hunkId, tldr: "second" }],
+          ops: [{ type: "hunk.annotate", hunkId, title: "second", overview: "second" }],
         }),
       ),
     ]);
@@ -480,11 +485,16 @@ describe("gyst session CLI seam", () => {
               {
                 type: "group.create",
                 id: "group-1",
-                tldr: "stable group",
+                title: "stable group",
+                overview: "intent and behavior",
                 memberHunkIds: [first.id],
-                exemplarHunkId: first.id,
               },
-              { type: "hunk.annotate", hunkId: second.id, tldr: "stale spotlight" },
+              {
+                type: "hunk.annotate",
+                hunkId: second.id,
+                title: "stale spotlight",
+                overview: "stale spotlight",
+              },
               { type: "queue.set", itemIds: ["group-1", second.id] },
             ],
           }),
@@ -524,7 +534,7 @@ describe("gyst session CLI seam", () => {
         revision: refreshed.revision,
         idempotencyKey: "update-group",
         ops: [
-          { type: "group.update", id: "group-1", tldr: "updated group" },
+          { type: "group.update", id: "group-1", title: "updated group" },
           { type: "queue.set", itemIds: ["group-1"] },
         ],
       }),
@@ -577,11 +587,11 @@ describe("gyst session CLI seam", () => {
           {
             type: "group.create",
             id: "group-1",
-            tldr: "mechanical",
+            title: "coherent change",
+            overview: "intent and behavior",
             memberHunkIds: [first.id],
-            exemplarHunkId: first.id,
           },
-          { type: "hunk.annotate", hunkId: second.id, tldr: "read this" },
+          { type: "hunk.annotate", hunkId: second.id, title: "read this", overview: "read this" },
           { type: "queue.set", itemIds: ["group-1", second.id] },
         ],
       }),
@@ -617,6 +627,66 @@ describe("gyst session CLI seam", () => {
     expect(undone.cursor).toEqual({ itemId: "group-1", expanded: false });
     expect(undone.groups[0]!.accepted).toBe(false);
     await gyst(cwd, ["session", "close"]);
+  }, 20_000);
+
+  it("skips undecodable saved sessions without reserving their repo or modifying their files", async () => {
+    const cwd = await repo("legacy");
+    const ownData = await mkdtemp(join(root, "legacy-data-"));
+    const path = join(ownData, "legacy.json");
+    const content = JSON.stringify({ id: "legacy", repoRoot: cwd, groups: [{ tldr: "old" }] });
+    await writeFile(path, content);
+    try {
+      for (const args of [["status"], ["status", "--session", "legacy"], ["close"]]) {
+        const result = await gyst(cwd, ["session", ...args], undefined, ownData);
+        expect(result.exitCode).toBe(1);
+        expect(JSON.parse(result.stderr).code).toBe("no_session");
+      }
+      expect((await gyst(cwd, ["session", "create"], undefined, ownData)).exitCode).toBe(0);
+      expect(await readFile(path, "utf8")).toBe(content);
+      expect((await gyst(cwd, ["session", "close"], undefined, ownData)).exitCode).toBe(0);
+      expect(await readFile(path, "utf8")).toBe(content);
+    } finally {
+      await readFile(join(ownData, "daemon.pid"), "utf8")
+        .then((pid) => process.kill(Number(pid), "SIGTERM"))
+        .catch((error: NodeJS.ErrnoException) => {
+          if (!["ENOENT", "ESRCH"].includes(error.code ?? "")) throw error;
+        });
+    }
+  }, 20_000);
+
+  it("rejects malformed success replies visibly in both CLI and TUI clients", async () => {
+    const ownData = await mkdtemp(join(root, "mismatched-reply-"));
+    const fake = Bun.listen({
+      unix: join(ownData, "daemon.sock"),
+      socket: {
+        data(socket) {
+          socket.end(
+            JSON.stringify({ ok: true, value: { sessionId: "invalid", revision: 0 } }) + "\n",
+          );
+        },
+      },
+    });
+    try {
+      const result = await gyst(root, ["session", "diff"], undefined, ownData);
+      expect(result.exitCode).toBe(1);
+      expect(result.stdout).toBe("");
+      expect(JSON.parse(result.stderr)).toMatchObject({
+        code: "daemon_unreachable",
+        message: expect.stringContaining("invalid daemon reply"),
+      });
+      await using runtime = ManagedRuntime.make(
+        DaemonClient.layer.pipe(
+          Layer.provide(Paths.layer),
+          Layer.provide(BunServices.layer),
+          Layer.provide(
+            ConfigProvider.layer(ConfigProvider.fromUnknown({ GYST_DATA_DIR: ownData })),
+          ),
+        ),
+      );
+      await expect(daemonTuiClient(runtime, root).diff()).rejects.toThrow("invalid daemon reply");
+    } finally {
+      fake.stop(true);
+    }
   }, 20_000);
 
   it("starts the daemon when run from source under bun", async () => {

@@ -1,21 +1,31 @@
-import type { Group, Hunk, Session, StatusPayload } from "./session.ts";
+import type { ApplyReceipt, Group, Hunk, Session } from "./session.ts";
 
 type Mutable<T> = { -readonly [K in keyof T]: T[K] };
 type MutableHunk = Mutable<Hunk>;
 type MutableGroup = Mutable<Omit<Group, "hunkIds">> & { hunkIds: string[] };
 export type MutableSession = Mutable<
-  Omit<Session, "hunks" | "groups" | "queue" | "acceptHistory" | "applyReceipts">
+  Omit<
+    Session,
+    "hunks" | "groups" | "queue" | "acceptHistory" | "receiptOverviews" | "applyReceipts"
+  >
 > & {
   hunks: MutableHunk[];
   groups: MutableGroup[];
   queue: string[];
   acceptHistory: string[];
-  applyReceipts: Array<{ key: string; digest: string; status: StatusPayload }>;
+  receiptOverviews: string[];
+  applyReceipts: ApplyReceipt[];
 };
 
 export function draftOf(session: Session): MutableSession {
-  // SAFETY: structuredClone returns a detached copy, so dropping readonly cannot alias the caller's session.
-  return structuredClone(session) as MutableSession;
+  const { receiptOverviews, applyReceipts, ...live } = session;
+  // SAFETY: structuredClone returns a detached copy, so dropping readonly cannot alias the caller's
+  // session. Receipt history is append-only and its entries are never mutated, so sharing them is safe.
+  return {
+    ...(structuredClone(live) as Mutable<typeof live>),
+    receiptOverviews: [...receiptOverviews],
+    applyReceipts: [...applyReceipts],
+  } as MutableSession;
 }
 
 export function groupedIds(session: Session): Set<string> {
@@ -49,7 +59,7 @@ export function reconcileQueue(session: MutableSession): void {
   const acceptedIds = new Set([
     ...session.groups.filter(({ accepted }) => accepted).map(({ id }) => id),
     ...session.hunks
-      .filter(({ accepted, tldr, id }) => accepted && tldr !== undefined && visibleSet.has(id))
+      .filter(({ accepted, title, id }) => accepted && title !== undefined && visibleSet.has(id))
       .map(({ id }) => id),
   ]);
   session.acceptHistory = session.acceptHistory.filter((id) => acceptedIds.has(id));

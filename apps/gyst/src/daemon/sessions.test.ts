@@ -117,7 +117,8 @@ const persisted: Session = {
       header: "@@ -1 +1 @@",
       patch: "@@ -1 +1 @@\n-c\n+d",
       contentHash: "cd",
-      tldr: "read me",
+      title: "read me",
+      overview: "intent and behavior",
       accepted: true,
     },
     {
@@ -129,10 +130,19 @@ const persisted: Session = {
       accepted: false,
     },
   ],
-  groups: [{ id: "g1", tldr: "same edit", exemplarHunkId: "h1", hunkIds: ["h1"], accepted: true }],
+  groups: [
+    {
+      id: "g1",
+      title: "same edit",
+      overview: "intent and behavior",
+      hunkIds: ["h1"],
+      accepted: true,
+    },
+  ],
   queue: ["h2", "g1", "h3"],
   queueSet: false,
   acceptHistory: ["h2", "g1"],
+  receiptOverviews: [],
   applyReceipts: [],
 };
 
@@ -233,13 +243,29 @@ describe("Sessions.create", () => {
 });
 
 describe("Sessions reads", () => {
+  it("returns group diffs in explanation order rather than snapshot order", async () => {
+    files.set(persisted.id, {
+      ...persisted,
+      groups: [{ ...persisted.groups[0]!, hunkIds: ["h3", "h1"] }],
+    });
+    const value = await run(
+      Sessions.use((s) => s.diff(request("diff", ["--group", "g1"], otherRoot))),
+    );
+    expect(value.hunks.map(({ id }) => id)).toEqual(["h3", "h1"]);
+  });
   it("selects by repository or by exact --session id", async () => {
     const byRepo = await run(Sessions.use((s) => s.status(request("status", [], otherRoot))));
     expect(byRepo.session.id).toBe("persisted");
     expect(byRepo.groups[0]?.count).toBe(1);
     expect(byRepo.groups[0]?.accepted).toBe(true);
     expect(byRepo.spotlight).toEqual([
-      { id: "h2", file: "y.txt", tldr: "read me", accepted: true },
+      {
+        id: "h2",
+        file: "y.txt",
+        title: "read me",
+        overview: "intent and behavior",
+        accepted: true,
+      },
     ]);
     expect(byRepo.inbox).toEqual([{ id: "h3", file: "y.txt" }]);
     const byId = await run(
@@ -310,7 +336,7 @@ describe("Sessions.apply", () => {
     revision: 3,
     idempotencyKey: "first-pass",
     ops: [
-      { type: "hunk.annotate", hunkId: "h3", tldr: "third" },
+      { type: "hunk.annotate", hunkId: "h3", title: "third", overview: "third" },
       { type: "queue.set", itemIds: ["g1", "h2", "h3"] },
     ],
   };
@@ -323,10 +349,23 @@ describe("Sessions.apply", () => {
     expect(status.spotlight.map((hunk) => hunk.id)).toEqual(["h2", "h3"]);
     expect(status).toMatchObject({ queue: ["g1", "h2", "h3"], queueSet: true, ready: true });
     const saved = files.get("persisted")!;
+    // The receipt stores each distinct overview once; g1 and h2 share the same text.
+    expect(saved.receiptOverviews).toEqual(["intent and behavior", "third"]);
     expect(saved.applyReceipts).toEqual([
-      { key: "first-pass", digest: expect.any(String), status },
+      {
+        key: "first-pass",
+        digest: expect.any(String),
+        status: {
+          ...status,
+          groups: [{ ...status.groups[0]!, overview: 0 }],
+          spotlight: [
+            { ...status.spotlight[0]!, overview: 0 },
+            { ...status.spotlight[1]!, overview: 1 },
+          ],
+        },
+      },
     ]);
-    expect(saved.hunks[2]?.tldr).toBe("third");
+    expect(saved.hunks[2]?.title).toBe("third");
     // The receipt answers a replay before the revision check, so a retried batch is a no-op.
     expect(await run(apply(envelope))).toEqual(status);
     expect(files.get("persisted")?.revision).toBe(4);
@@ -341,11 +380,11 @@ describe("Sessions.apply", () => {
           {
             type: "group.create",
             id: "g2",
-            tldr: "mechanical",
+            title: "coherent change",
+            overview: "intent and behavior",
             memberHunkIds: ["h3"],
-            exemplarHunkId: "h3",
           },
-          { type: "hunk.annotate", hunkId: "missing", tldr: "nope" },
+          { type: "hunk.annotate", hunkId: "missing", title: "nope", overview: "nope" },
         ],
       }),
     );
@@ -372,6 +411,62 @@ describe("Sessions.apply", () => {
     const missing = await failure(Sessions.use((s) => s.apply(request("apply", [], otherRoot))));
     expect(missing._tag).toBe("validation_failed");
     expect(files.get("persisted")).toEqual(persisted);
+  });
+
+  it("rejects legacy fields, partial metadata and controls without writes", async () => {
+    for (const op of [
+      { type: "group.update", id: "g1", tldr: "old" },
+      { type: "group.update", id: "g1", exemplarHunkId: "h1" },
+      { type: "group.update", id: "g1", title: "new", tldr: "old" },
+      { type: "hunk.annotate", hunkId: "h3", title: "partial" },
+      { type: "hunk.annotate", hunkId: "h3", title: "bad\u001b", overview: "valid" },
+    ]) {
+      expect(
+        (await failure(apply({ revision: 3, idempotencyKey: "invalid", ops: [op] })))._tag,
+      ).toBe("validation_failed");
+      expect(files.get("persisted")).toEqual(persisted);
+    }
+  });
+
+  it("publishes progressively around human work and replays historical receipts without rollback", async () => {
+    await run(
+      Effect.gen(function* () {
+        const s = yield* Sessions;
+        const firstBatch = {
+          revision: 3,
+          idempotencyKey: "partial",
+          ops: [{ type: "queue.set", itemIds: ["h2", "g1"] }],
+        };
+        const first = yield* apply(firstBatch);
+        expect(first).toMatchObject({ ready: false, inbox: [{ id: "h3" }] });
+        yield* s.tuiAction({
+          ...request("tui.action", [], otherRoot),
+          action: { type: "cursor.move", itemId: "h2" },
+        });
+        const verdict = yield* s.tuiAction({
+          ...request("tui.action", [], otherRoot),
+          action: { type: "verdict.toggle", itemId: "h2", sessionId: "persisted", revision: 4 },
+        });
+        const obsolete = yield* Effect.flip(apply({ ...envelope, revision: 4 }));
+        expect(obsolete._tag).toBe("stale_revision");
+        const second = yield* apply({
+          ...envelope,
+          revision: verdict.revision,
+          ops: [envelope.ops[0], { type: "queue.set", itemIds: ["h2", "g1", "h3"] }],
+        });
+        expect(second).toMatchObject({
+          queue: ["h2", "g1", "h3"],
+          cursor: verdict.cursor,
+          spotlight: [
+            { id: "h2", accepted: false },
+            { id: "h3", accepted: false },
+          ],
+        });
+        expect(yield* apply(firstBatch)).toEqual(first);
+        expect((yield* s.status(request("status", [], otherRoot))).revision).toBe(second.revision);
+        expect(files.get("persisted")?.revision).toBe(second.revision);
+      }),
+    );
   });
 
   it("serializes concurrent batches so the second sees a stale revision", async () => {
@@ -433,11 +528,11 @@ diff --git a/c.txt b/c.txt
                 {
                   type: "group.create",
                   id: "g",
-                  tldr: "same",
+                  title: "same",
+                  overview: "intent and behavior",
                   memberHunkIds: [a],
-                  exemplarHunkId: a,
                 },
-                { type: "hunk.annotate", hunkId: b, tldr: "stale note" },
+                { type: "hunk.annotate", hunkId: b, title: "stale note", overview: "stale note" },
                 { type: "queue.set", itemIds: ["g", b] },
               ],
             }),

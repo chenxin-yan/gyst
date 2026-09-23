@@ -1,4 +1,5 @@
 import { Schema } from "effect";
+import { metadataFields, OverviewSchema, TitleSchema } from "./metadata.ts";
 
 export const HunkSchema = Schema.Struct({
   id: Schema.String,
@@ -6,15 +7,21 @@ export const HunkSchema = Schema.Struct({
   header: Schema.String,
   patch: Schema.String,
   contentHash: Schema.String,
-  tldr: Schema.optional(Schema.String),
+  title: Schema.optional(TitleSchema),
+  overview: Schema.optional(OverviewSchema),
   accepted: Schema.Boolean,
-});
+}).check(
+  Schema.makeFilter(
+    (hunk) =>
+      (hunk.title === undefined) === (hunk.overview === undefined) ||
+      "hunk title and overview must be present together",
+  ),
+);
 export type Hunk = typeof HunkSchema.Type;
 
 export const GroupSchema = Schema.Struct({
   id: Schema.String,
-  tldr: Schema.String,
-  exemplarHunkId: Schema.String,
+  ...metadataFields,
   hunkIds: Schema.Array(Schema.String),
   accepted: Schema.Boolean,
 });
@@ -48,38 +55,40 @@ const cursorSchema = Schema.Struct({
 });
 
 const HunkSummarySchema = Schema.Struct({ id: Schema.String, file: Schema.String });
-const GroupSummarySchema = Schema.Struct({
-  ...GroupSchema.fields,
-  count: Schema.Number,
-  accepted: Schema.Boolean,
-});
-const SpotlightSummarySchema = Schema.Struct({
-  id: Schema.String,
-  file: Schema.String,
-  tldr: Schema.String,
-  accepted: Schema.Boolean,
-});
-export const StatusPayloadSchema = Schema.Struct({
+// The wire status carries overview text; a receipt status carries an index into `receiptOverviews`.
+const statusPayloadFields = <Overview extends Schema.Top>(overview: Overview) => ({
   session: Schema.Struct(sessionSummaryFields),
   revision: Schema.Number,
   seq: Schema.Number,
   cursor: cursorSchema,
-  groups: Schema.Array(GroupSummarySchema),
-  spotlight: Schema.Array(SpotlightSummarySchema),
+  groups: Schema.Array(Schema.Struct({ ...GroupSchema.fields, overview, count: Schema.Number })),
+  spotlight: Schema.Array(
+    Schema.Struct({
+      id: Schema.String,
+      file: Schema.String,
+      ...metadataFields,
+      overview,
+      accepted: Schema.Boolean,
+    }),
+  ),
   inbox: Schema.Array(HunkSummarySchema),
   queue: Schema.Array(Schema.String),
   queueSet: Schema.Boolean,
   ready: Schema.Boolean,
   files: Schema.Array(Schema.Struct({ path: Schema.String, hunkCount: Schema.Number })),
 });
+export const StatusPayloadSchema = Schema.Struct(statusPayloadFields(OverviewSchema));
 export type StatusPayload = typeof StatusPayloadSchema.Type;
+const ReceiptStatusSchema = Schema.Struct(statusPayloadFields(Schema.Natural));
+export type ReceiptStatus = typeof ReceiptStatusSchema.Type;
 
 // `digest` pins the receipt to the exact batch it answered, so a reused key cannot replay another.
 const ApplyReceiptSchema = Schema.Struct({
   key: Schema.String,
   digest: Schema.String,
-  status: StatusPayloadSchema,
+  status: ReceiptStatusSchema,
 });
+export type ApplyReceipt = typeof ApplyReceiptSchema.Type;
 export const SessionSchema = Schema.Struct({
   ...sessionSummaryFields,
   revision: Schema.Number,
@@ -90,6 +99,18 @@ export const SessionSchema = Schema.Struct({
   queue: Schema.Array(Schema.String),
   queueSet: Schema.Boolean,
   acceptHistory: Schema.Array(Schema.String),
+  // Every distinct overview a receipt ever recorded, once; receipts reference it by index so
+  // progressive publication does not repeat all earlier Markdown in each new receipt.
+  receiptOverviews: Schema.Array(OverviewSchema),
   applyReceipts: Schema.Array(ApplyReceiptSchema),
-});
+}).check(
+  Schema.makeFilter(
+    (session) =>
+      session.applyReceipts.every(({ status }) =>
+        [...status.groups, ...status.spotlight].every(
+          ({ overview }) => overview < session.receiptOverviews.length,
+        ),
+      ) || "receipt overview reference is outside receiptOverviews",
+  ),
+);
 export type Session = typeof SessionSchema.Type;

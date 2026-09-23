@@ -54,7 +54,7 @@ export function applyHumanAction(
       };
     else return inapplicable;
   } else {
-    // Until the pre-pass finalizes the queue, the human is not looking at the reviewable set.
+    // Each publication sets the reviewable queue, even while inbox preparation continues.
     if (!session.queueSet)
       return Result.fail(new ValidationFailed({ message: "review queue is not set" }));
     const itemId = action.type === "verdict.undo" ? draft.acceptHistory.at(-1) : action.itemId;
@@ -62,7 +62,7 @@ export function applyHumanAction(
     const group = draft.groups.find(({ id }) => id === itemId);
     const grouped = groupedIds(draft);
     const hunk = draft.hunks.find(
-      ({ id, tldr }) => id === itemId && tldr !== undefined && !grouped.has(id),
+      ({ id, title }) => id === itemId && title !== undefined && !grouped.has(id),
     );
     const item = group ?? hunk;
     if (!item || (action.type === "verdict.undo" && !item.accepted)) return inapplicable;
