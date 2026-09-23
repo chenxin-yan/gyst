@@ -47,6 +47,7 @@ let state: Session = {
   queue: ["h"],
   queueSet: true,
   acceptHistory: [],
+  receiptOverviews: [],
   applyReceipts: [],
 };
 let owner: ReturnType<typeof editorHandoff> | undefined;
