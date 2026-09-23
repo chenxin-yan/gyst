@@ -105,6 +105,7 @@ function fixture() {
             queue: status.queue,
             queueSet: status.queueSet,
             acceptHistory,
+            receiptOverviews: [],
             applyReceipts: [],
           },
           action,
