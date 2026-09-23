@@ -63,6 +63,14 @@ describe("gyst skill installer", () => {
       await expectLink(join(home, ".agents", "skills", name), name);
       await expectLink(join(home, ".claude", "skills", name), name);
     }
+    for (const name of ["gyst", "gyst-refresh"]) {
+      expect(await readFile(join(skills, name, "SKILL.md"), "utf8")).not.toContain(
+        "disable-model-invocation: true",
+      );
+    }
+    expect(await readFile(join(skills, "gyst", "agents", "openai.yaml"), "utf8")).toContain(
+      "allow_implicit_invocation: true",
+    );
     expect(
       await readFile(join(skills, "gyst-cli", "commands", "session", "create.md"), "utf8"),
     ).toContain("git options are rejected");

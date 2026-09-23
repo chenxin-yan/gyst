@@ -1,28 +1,30 @@
 ---
 name: gyst-refresh
-description: Update an existing gyst walkthrough when the user asks to incorporate code edits into the review, regroup the current snapshot, or revise groups after a TUI refresh. Use it to keep grouping and explanations aligned with the reviewed diff while preserving unrelated human progress. A source-change notice alone is not a request to refresh.
+description: Use when the user asks to incorporate code edits into an existing gyst review, regroup its snapshot, or revise groups after pressing r. Align the walkthrough with the reviewed diff while preserving unrelated human progress.
 ---
 
-# Refresh a gyst walkthrough
+# Update a walkthrough
 
-Read the [gyst authoring skill](../gyst/SKILL.md) for whole-snapshot planning, self-contained explanations, atomic publication and retry rules. Continue the existing session rather than running its session-creation step.
+Load the `gyst` skill's planning, authoring and publication rules as reference; continue the existing session rather than starting its workflow.
 
-## 1. Select the session and snapshot
+## 1. Choose the snapshot
 
-Run `gyst session status` in the repository. Record its session id, source, revision, groups and acceptance state; use `--session <id>` on subsequent session commands so a replacement session cannot receive this work. If there is no session, direct the user to `/gyst` and stop. If the requested scope differs from the recorded source, ask before replacing the session.
+Read `gyst session status`; record the source, revision, groups and acceptance. Pin subsequent commands with `--session <id>`. If no session exists, direct the user to `gyst` and stop. Ask before changing scope.
 
-- For `/gyst-refresh` or a request to incorporate the latest code changes, run `gyst session refresh --session <id>` for a Git session. This replays its recorded scope, not an arbitrary working-tree diff. Fetch remote refs first only when the requested update requires it.
-- If the user already refreshed with `r`, or requests regrouping without new code, work with the current snapshot without refreshing again.
-- To refresh a stdin session, obtain a replacement patch for the same scope from the user or its original producer and pipe it to `gyst session refresh --session <id> --stdin`. If it is unavailable, ask for it and stop rather than substituting a Git diff.
+| User request                                                              | Action                                                                                                                     |
+| ------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------- |
+| “Include my latest edits” or `/gyst-refresh`                              | For Git, run `gyst session refresh --session <id>`; replay the recorded scope, fetching refs first if needed.              |
+| “I pressed r; update the groups” or “Split this group without refreshing” | Use the current snapshot.                                                                                                  |
+| Refresh a stdin snapshot                                                  | Obtain a same-scope replacement patch; pipe to `gyst session refresh --session <id> --stdin`. Ask and stop if unavailable. |
 
-A source-change notice by itself calls for informing the user, not replacing the snapshot. Confirm a refresh request before proceeding in that case.
+A source-change notice alone calls for informing the user and asking whether to refresh.
 
-## 2. Reconcile the walkthrough
+## 2. Reconcile and publish
 
-Reread status and `gyst session diff --session <id>`. Compare with the previous groups and inspect affected implementation, callers, tests and source excerpts. Apply the gyst skill's planning and refresh rules: account for every current hunk, keep unrelated accepted groups and their order, and deliberately revise affected explanations and membership. Retained prose is a proposal, not proof that it still describes the code.
+Reread status and `gyst session diff --session <id>`. Reassess affected code, tests and excerpts. Changed or removed members can clear acceptance; retained explanations may be stale. Plan coverage for every current hunk while preserving unrelated accepted groups and their order.
 
-Publish only the required group changes with the resulting queue in the same `gyst session apply --session <id>` batch, following the gyst skill's revision and idempotency rules. Split or merge groups when the new review questions warrant it; explain necessary restructuring rather than silently rebuilding the whole walkthrough. Avoid no-op group updates because even an explanation-only update resets acceptance.
+Revise affected groups with `group.update` (optional title, overview, memberHunkIds), or dissolve/create groups to split or merge them. Follow `gyst`'s atomic queue and retry rules. Explain restructuring; avoid no-op updates because even an explanation-only update resets acceptance.
 
-## 3. Verify and hand back
+## 3. Hand back
 
-Read current status again. Finish when every snapshot hunk belongs to a group and the queue is set, or report the remaining inbox work or blocker explicitly. Summarize the snapshot action, revised groups, preserved progress and groups needing human re-review. The open TUI picks up published changes; no restart is needed.
+Verify current status is ready, or report the remaining inbox work or blocker. Summarize what refreshed, which groups changed, preserved progress and what needs re-review. The open TUI updates without restarting.
