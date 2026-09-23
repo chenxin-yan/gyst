@@ -15,11 +15,11 @@ bun run test
 `check` runs lint, formatting, and type checks. `bun run check:fix` fixes lint and
 formatting issues. Run both checks and tests before opening a PR.
 
-For editor lifecycle changes, also run the Linux PTY regression (Python 3 and Vim
-must be available; artifacts go outside the repository):
+For editor lifecycle changes, also run the Linux PTY regression (Bun, Vim, `stty`
+and `setsid` must be available; artifacts go outside the repository):
 
 ```sh
-python3 apps/gyst/tests/pty/editor.py --evidence /path/outside/repo/editor-pty
+bun apps/gyst/tests/pty/editor.ts --evidence /path/outside/repo/editor-pty
 ```
 
 It exercises real OpenTUI/App handoff with fake editors and Vim, signals, resize,

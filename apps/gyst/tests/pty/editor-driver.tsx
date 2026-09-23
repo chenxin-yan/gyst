@@ -1,4 +1,4 @@
-// Real-terminal integration driver. Run through editor.py, never directly in a developer's terminal.
+// Real-terminal integration driver. Run through editor.ts, never directly in a developer's terminal.
 import { appendFileSync } from "node:fs";
 import { constants } from "node:os";
 import { runTui } from "@crustjs/tui";
