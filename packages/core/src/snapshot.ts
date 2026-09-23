@@ -66,7 +66,6 @@ function hunksOf(
         header: (parsedHunk.hunkSpecs ?? "").trimEnd(),
         patch: text,
         contentHash: hash(text.slice(text.indexOf("\n") + 1)),
-        accepted: false,
       });
     }
   }

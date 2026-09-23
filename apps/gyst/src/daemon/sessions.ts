@@ -12,6 +12,7 @@ import {
   type Session,
   SessionExists,
   StaleRevision,
+  type SourceCheckPayload,
   type StatusPayload,
   statusOf,
   ValidationFailed,
@@ -27,9 +28,13 @@ import {
   Schema,
   Semaphore,
 } from "effect";
+import { createHash } from "node:crypto";
 import { parseArgs, type ParseArgsConfig } from "node:util";
 import { Git } from "./git.ts";
 import { SessionStore } from "./store.ts";
+
+const patchHash = (patch: string) => createHash("sha256").update(patch).digest("hex");
+type SourceCheck = Omit<SourceCheckPayload, "sessionId" | "revision">;
 
 const requestArgs = <T extends ParseArgsConfig>(config: T) =>
   Effect.try({
@@ -57,6 +62,7 @@ export class Sessions extends Context.Service<
   {
     create(request: Request): Effect.Effect<StatusPayload, BadArgs | SessionExists>;
     status(request: Request): Effect.Effect<StatusPayload, BadArgs | NoSession>;
+    check(request: Request): Effect.Effect<SourceCheckPayload, BadArgs | NoSession>;
     diff(request: Request): Effect.Effect<DiffPayload, BadArgs | NoSession | ValidationFailed>;
     /** One schema-validated batch from `request.stdin`: all ops or none, replays answered by receipt. */
     apply(
@@ -88,6 +94,7 @@ export class Sessions extends Context.Service<
       const store = yield* SessionStore;
       const { randomUUIDv4 } = yield* Crypto.Crypto;
       const sessions = new Map<string, Session>();
+      const sourceChecks = new Map<string, Effect.Effect<SourceCheck>>();
       // Server handlers run concurrently; one permit keeps state changes from interleaving.
       const lock = yield* Semaphore.make(1);
       const idle = yield* Latch.make(false);
@@ -145,6 +152,7 @@ export class Sessions extends Context.Service<
             ? { kind: "stdin" }
             : {
                 kind: "git",
+                patchHash: patchHash(patch),
                 args: positionals.length ? positionals : ["HEAD"],
                 cwd: request.cwd,
                 ...(includeUntracked ? { includeUntracked } : {}),
@@ -172,6 +180,54 @@ export class Sessions extends Context.Service<
         const { session } = yield* selected(request.cwd, request.args, sessionOptions);
         return statusOf(session);
       }, Semaphore.withPermit(lock));
+
+      const sourcePatch = (session: Pick<Session, "source" | "repoRoot">) => {
+        const source = session.source;
+        if (source.kind !== "git")
+          return Effect.fail(new BadArgs({ message: "stdin has no replayable source" }));
+        const bare = source.includeUntracked ?? false;
+        return git.patch(session.repoRoot, source.cwd, bare ? [] : source.args, bare);
+      };
+
+      const check = Effect.fn("Sessions.check")(function* (request: Request) {
+        const target = yield* Effect.gen(function* () {
+          const { session } = yield* selected(request.cwd, request.args, sessionOptions);
+          let cached = sourceChecks.get(session.id);
+          if (!cached) {
+            const { source, repoRoot } = session;
+            cached = yield* Effect.cachedWithTTL(
+              Effect.gen(function* () {
+                const result =
+                  source.kind === "stdin"
+                    ? { state: "stdin" as const }
+                    : yield* sourcePatch({ source, repoRoot }).pipe(
+                        Effect.timeout("2 seconds"),
+                        Effect.map((patch) => ({
+                          state:
+                            patchHash(patch) === source.patchHash
+                              ? ("unchanged" as const)
+                              : ("changed" as const),
+                        })),
+                        Effect.catch((error) =>
+                          Effect.succeed({ state: "unavailable" as const, message: error.message }),
+                        ),
+                      );
+                return { ...result, checkedAt: DateTime.formatIso(yield* DateTime.now) };
+              }),
+              "5 seconds",
+            );
+            sourceChecks.set(session.id, cached);
+          }
+          return { session, cached };
+        }).pipe(Semaphore.withPermit(lock));
+        // Slow Git reads share a cached computation, outside the review-state lock.
+        // ponytail: replay the full scoped patch; use cheaper fingerprints if large-scope checks become costly.
+        return {
+          sessionId: target.session.id,
+          revision: target.session.revision,
+          ...(yield* target.cached),
+        };
+      });
 
       const diff = Effect.fn("Sessions.diff")(function* (request: Request) {
         const { values, session } = yield* selected(request.cwd, request.args, selectorOptions);
@@ -203,6 +259,7 @@ export class Sessions extends Context.Service<
       const load = Effect.gen(function* () {
         const persisted = yield* store.loadAll;
         sessions.clear();
+        sourceChecks.clear();
         for (const session of persisted) sessions.set(session.id, session);
       }).pipe(Semaphore.withPermit(lock), Effect.withSpan("Sessions.load"));
 
@@ -236,22 +293,18 @@ export class Sessions extends Context.Service<
         } else {
           if (values.stdin)
             return yield* new BadArgs({ message: "git sessions refresh their recorded arguments" });
-          const bare = session.source.includeUntracked ?? false;
-          // A bare scope re-resolves HEAD (or the empty tree) rather than replaying the recorded args.
-          patch = yield* git.patch(
-            session.repoRoot,
-            session.source.cwd,
-            bare ? [] : session.source.args,
-            bare,
-          );
+          patch = yield* sourcePatch(session);
         }
         const refreshed = refreshSession(
-          session,
+          session.source.kind === "git"
+            ? { ...session, source: { ...session.source, patchHash: patchHash(patch) } }
+            : session,
           yield* Effect.fromResult(parseSnapshot(patch)),
           DateTime.formatIso(yield* DateTime.now),
         );
         yield* store.save(refreshed).pipe(Effect.orDie);
         sessions.set(session.id, refreshed);
+        sourceChecks.delete(session.id);
         return statusOf(refreshed);
       }, Semaphore.withPermit(lock));
 
@@ -287,6 +340,7 @@ export class Sessions extends Context.Service<
         const { session } = yield* selected(request.cwd, request.args, sessionOptions);
         yield* store.remove(session.id).pipe(Effect.orDie);
         sessions.delete(session.id);
+        sourceChecks.delete(session.id);
         if (sessions.size === 0) yield* idle.open;
         return {
           closed: true,
@@ -297,6 +351,7 @@ export class Sessions extends Context.Service<
       return Sessions.of({
         create,
         status,
+        check,
         diff,
         apply,
         refresh,

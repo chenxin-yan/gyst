@@ -2,10 +2,11 @@
 
 Review code changes with your coding agent, in your terminal.
 
-Your agent organizes coherent changes into review items with short titles and
-contextual Markdown overviews. Every member hunk is shown. You review the diff
-and decide what to accept. Accepting marks an item reviewed—it does not stage,
-commit, or modify your code.
+Your agent plans a top-to-bottom walkthrough of all changes, then publishes
+self-contained groups with short titles, explanations and relevant source
+excerpts. Each group contains one or more hunks, all shown for review. You decide
+what to accept. Accepting marks a group reviewed—it does not stage, commit, or
+modify your code.
 
 ## Install
 
@@ -28,8 +29,9 @@ npm install -g @gyst/cli
    ```
 
    You can also specify a range (`/gyst main...HEAD`) or a PR (`/gyst PR 42`).
-   The agent publishes complete items progressively. You can review published
-   items while the remaining hunks await preparation.
+   The agent plans coverage and order first, then publishes complete groups
+   progressively. Start reviewing at the top while later groups are prepared;
+   remaining hunks stay visible in the inbox.
 
 3. Open another terminal in the same repository:
 
@@ -37,7 +39,7 @@ npm install -g @gyst/cli
    gyst
    ```
 
-Use `/gyst-ask <question>` in your agent's chat to ask about the current review item.
+Use `/gyst-ask <question>` in your agent's chat to ask about the current group.
 
 ## Review keys
 
@@ -48,11 +50,17 @@ Use `/gyst-ask <question>` in your agent's chat to ask about the current review 
 | `Tab` / `Shift+Tab`                  | No-op                                       | Focus overview                    | Focus diff                    |
 | `Esc`                                | No-op                                       | Return to queue                   | Return to queue               |
 | `Ctrl+D` / `Ctrl+U`, `PgDn` / `PgUp` | Scroll diff preview half a page             | Scroll diff half a page           | Scroll overview half a page   |
-| `a`                                  | Toggle whole-item acceptance                | Same, including all group members | Same                          |
+| `a`                                  | Toggle whole-group acceptance               | Same, including all group members | Same                          |
 | `u`                                  | Undo last acceptance and return to its item | Same, staying zoomed              | Same, returning to diff focus |
 | `o`                                  | No-op                                       | Open selected working-tree file   | Open retained selected file   |
 
 ## Sessions
+
+Snapshots stay fixed when files change. Gyst warns when the recorded Git scope
+changes; press `r` to refresh explicitly. `gyst session check` reports `unchanged`,
+`changed`, `unavailable`, or `stdin` without modifying review progress. Checks are
+periodic and cached, not a real-time guarantee. Stdin snapshots have no source to
+check; replace them explicitly with `gyst session refresh --stdin`.
 
 Run `gyst` again to resume. There is one session per repository. When you are done,
 close it before starting a review with a different scope:

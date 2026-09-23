@@ -54,14 +54,9 @@ export function reconcileQueue(session: MutableSession): void {
     ...session.queue.filter((id) => available.delete(id)),
     ...visible.filter((id) => available.has(id)),
   ];
-  // A grouped hunk is reviewed through its group, so a verdict of its own would be unreachable.
-  for (const hunk of session.hunks) if (!visibleSet.has(hunk.id)) hunk.accepted = false;
-  const acceptedIds = new Set([
-    ...session.groups.filter(({ accepted }) => accepted).map(({ id }) => id),
-    ...session.hunks
-      .filter(({ accepted, title, id }) => accepted && title !== undefined && visibleSet.has(id))
-      .map(({ id }) => id),
-  ]);
+  const acceptedIds = new Set(
+    session.groups.filter(({ accepted }) => accepted).map(({ id }) => id),
+  );
   session.acceptHistory = session.acceptHistory.filter((id) => acceptedIds.has(id));
   const { itemId, pane, hunkId } = session.cursor;
   if (itemId !== null && !visibleSet.has(itemId)) {

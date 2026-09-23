@@ -88,7 +88,7 @@ describe("SessionStore", () => {
         {
           key: "publish",
           digest: "digest",
-          status: { ...status, groups: [{ ...status.groups[0]!, overview: 0 }], spotlight: [] },
+          status: { ...status, groups: [{ ...status.groups[0]!, overview: 0 }] },
         },
       ],
     };

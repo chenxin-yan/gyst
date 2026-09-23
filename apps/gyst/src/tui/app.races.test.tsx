@@ -11,7 +11,7 @@ function status(revision = 0, seq = revision, sessionId = "session"): StatusPayl
     session: {
       id: sessionId,
       repoRoot: "/repo",
-      source: { kind: "git", args: ["HEAD"], cwd: "/repo" },
+      source: { kind: "git", args: ["HEAD"], cwd: "/repo", patchHash: "snapshot" },
       createdAt: "now",
       updatedAt: "now",
     },
@@ -28,7 +28,6 @@ function status(revision = 0, seq = revision, sessionId = "session"): StatusPayl
         accepted: false,
       },
     ],
-    spotlight: [],
     inbox: [],
     queue: ["group"],
     queueSet: true,
@@ -46,14 +45,103 @@ function diff(revision = 0, sessionId = "session"): DiffPayload {
         file: "a.ts",
         header: "@@ -1 +1 @@",
         contentHash: `${revision}`,
-        accepted: false,
         patch: `@@ -1 +1 @@\n-before\n+TEXT_${revision}`,
       },
     ],
   };
 }
 
+const checked = (value = status()) => ({
+  sessionId: value.session.id,
+  revision: value.revision,
+  state: "unchanged" as const,
+  checkedAt: "now",
+});
+
 describe("TUI snapshot races", () => {
+  for (const checkState of ["changed", "unavailable"] as const) {
+    it(`shows ${checkState} source awareness without refreshing or changing review state`, async () => {
+      let state = status();
+      let refreshes = 0;
+      const before = structuredClone(state);
+      const client: TuiClient = {
+        check: async () => ({
+          ...checked(state),
+          state: state.revision === 0 ? checkState : "unchanged",
+        }),
+        status: async () => structuredClone(state),
+        diff: async () => diff(state.revision),
+        action: async () => structuredClone(state),
+        refresh: async () => {
+          refreshes++;
+          state = status(1);
+          return state;
+        },
+      };
+      const tui = await testRender(() => <App client={client} pollInterval={20} />, {
+        width: 120,
+        height: 30,
+      });
+      try {
+        await tui.waitForFrame((frame) =>
+          frame.includes(checkState === "changed" ? "source changed" : "source check unavailable"),
+        );
+        assert.deepEqual(state, before);
+        assert.equal(refreshes, 0);
+        await tui.mockInput.pressKey("r");
+        await tui.waitForFrame(
+          (frame) => frame.includes("TEXT_1") && !frame.includes("snapshot unchanged"),
+        );
+        assert.equal(refreshes, 1);
+      } finally {
+        tui.renderer.destroy();
+      }
+    });
+  }
+
+  for (const replacement of [false, true]) {
+    it(`ignores a delayed source check after ${replacement ? "session replacement" : "refresh"}`, async () => {
+      let state = status();
+      let checks = 0;
+      const started = Promise.withResolvers<void>();
+      const release = Promise.withResolvers<void>();
+      const client: TuiClient = {
+        check: async () => {
+          const captured = checked(state);
+          if (++checks === 1) {
+            started.resolve();
+            await release.promise;
+            return { ...captured, state: "changed" };
+          }
+          return captured;
+        },
+        status: async () => structuredClone(state),
+        diff: async () => diff(state.revision, state.session.id),
+        action: async () => structuredClone(state),
+        refresh: async () => {
+          state = status(1, 1, replacement ? "replacement" : "session");
+          return state;
+        },
+      };
+      const tui = await testRender(() => <App client={client} pollInterval={20} />, {
+        width: 120,
+        height: 30,
+      });
+      try {
+        await started.promise;
+        await tui.mockInput.pressKey("r");
+        await tui.waitForFrame((frame) => frame.includes("TEXT_1"));
+        release.resolve();
+        await tui.waitForFrame(() => checks === 2);
+        await tui.renderOnce();
+        assert(!tui.captureCharFrame().includes("source changed"));
+      } finally {
+        release.resolve();
+        tui.renderer.destroy();
+      }
+    });
+  }
+
   it("poll/action overlap retains a matching diff and newer cursor", async () => {
     let state = status();
     let reads = 0;
@@ -61,6 +149,7 @@ describe("TUI snapshot races", () => {
     const started = Promise.withResolvers<void>();
     const release = Promise.withResolvers<void>();
     const client: TuiClient = {
+      check: async () => checked(state),
       status: async () => {
         if (++reads === 2) state = status(1);
         return structuredClone(state);
@@ -129,6 +218,7 @@ describe("TUI snapshot races", () => {
       const started = Promise.withResolvers<void>();
       const release = Promise.withResolvers<void>();
       const client: TuiClient = {
+        check: async () => checked(state),
         status: async () => {
           if (++reads === 2) {
             started.resolve();
@@ -182,6 +272,7 @@ describe("TUI snapshot races", () => {
     const started = Promise.withResolvers<void>();
     const release = Promise.withResolvers<void>();
     const client: TuiClient = {
+      check: async () => checked(),
       status: async () => {
         if (++reads === 2) {
           started.resolve();
@@ -222,6 +313,7 @@ describe("TUI snapshot races", () => {
       const started = Promise.withResolvers<void>();
       const release = Promise.withResolvers<void>();
       const client: TuiClient = {
+        check: async () => checked(state),
         status: async () => structuredClone(state),
         diff: async () => {
           if (++diffReads === 2) {
@@ -268,6 +360,7 @@ describe("TUI snapshot races", () => {
   it("refresh that finds no coherent frame says so instead of claiming success", async () => {
     // The refresh reply claims revision 1 while every other read still answers revision 0.
     const client: TuiClient = {
+      check: async () => checked(),
       status: async () => status(),
       diff: async () => diff(),
       refresh: async () => status(1),
@@ -297,6 +390,7 @@ describe("TUI snapshot races", () => {
       cursor: { itemId: "group", pane: "diff" as const, hunkId: "hunk-1" },
     };
     const client: TuiClient = {
+      check: async () => checked(current),
       status: async () => (stale ? status(1, 3) : current),
       diff: async () => diff(1),
       refresh: async () => current,

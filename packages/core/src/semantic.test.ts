@@ -13,7 +13,6 @@ const hunk = (id: string) => ({
   header: "@@ -1 +1 @@",
   patch: "-a\n+b",
   contentHash: id,
-  accepted: false,
 });
 const initial = () =>
   Schema.decodeUnknownSync(SessionSchema)({
@@ -43,10 +42,11 @@ const group = {
 const envelope = (ops: unknown[], revision = 0, idempotencyKey = "first") =>
   decode({ revision, idempotencyKey, ops });
 
-it("publishes complete ordered items progressively without losing verdicts or replaying state", () => {
+it("publishes complete ordered groups progressively without losing verdicts or replaying state", () => {
   const firstBatch = envelope([group, { type: "queue.set", itemIds: ["g"] }]);
   const first = Result.getOrThrow(applyBatch(initial(), firstBatch, "later"));
   expect(first.status.ready).toBe(false);
+  expect(first.status).not.toHaveProperty("spotlight");
   expect(first.status.inbox.map(({ id }) => id)).toEqual(["c"]);
   const accepted = Result.getOrThrow(
     applyHumanAction(
@@ -58,12 +58,13 @@ it("publishes complete ordered items progressively without losing verdicts or re
   const nextBatch = envelope(
     [
       {
-        type: "hunk.annotate",
-        hunkId: "c",
+        type: "group.create",
+        id: "independent",
+        memberHunkIds: ["c"],
         title: "Independent fix",
         overview: "Before and after",
       },
-      { type: "queue.set", itemIds: ["g", "c"] },
+      { type: "queue.set", itemIds: ["g", "independent"] },
     ],
     accepted.revision,
     "second",
@@ -71,9 +72,12 @@ it("publishes complete ordered items progressively without losing verdicts or re
   const next = Result.getOrThrow(applyBatch(accepted, nextBatch, "later"));
   expect(next.status).toMatchObject({
     ready: true,
-    queue: ["g", "c"],
+    queue: ["g", "independent"],
     cursor: accepted.cursor,
-    groups: [{ accepted: true, hunkIds: ["b", "a"] }],
+    groups: [
+      { accepted: true, hunkIds: ["b", "a"] },
+      { accepted: false, hunkIds: ["c"] },
+    ],
   });
   expect(
     Result.isFailure(
@@ -108,12 +112,13 @@ it("stores each receipt overview once and replays exact historical statuses afte
   const envelopes: ApplyEnvelope[] = [];
   const statuses: StatusPayload[] = [];
   for (let index = 0; index < count; index++) {
-    published.push(`h${index}`);
+    published.push(`g${index}`);
     const batch = envelope(
       [
         {
-          type: "hunk.annotate",
-          hunkId: `h${index}`,
+          type: "group.create",
+          id: `g${index}`,
+          memberHunkIds: [`h${index}`],
           title: `item ${index}`,
           overview: overview(index),
         },
@@ -127,19 +132,19 @@ it("stores each receipt overview once and replays exact historical statuses afte
     statuses.push(outcome.status);
     session = outcome.session!;
   }
-  // Each overview appears in the current hunk and once in the receipt table; never once per receipt.
+  // Each overview appears in the current group and once in the receipt table; never once per receipt.
   const json = JSON.stringify(session);
   for (let index = 0; index < count; index++)
     expect(json.split(`overview-${index}-`).length - 1).toBe(2);
   expect(session.applyReceipts).toHaveLength(count);
 
   const moved = Result.getOrThrow(
-    applyHumanAction(session, { type: "cursor.move", itemId: "h3" }, "later"),
+    applyHumanAction(session, { type: "cursor.move", itemId: "g3" }, "later"),
   );
   const accepted = Result.getOrThrow(
     applyHumanAction(
       moved,
-      { type: "verdict.toggle", itemId: "h3", sessionId: "session", revision: moved.revision },
+      { type: "verdict.toggle", itemId: "g3", sessionId: "session", revision: moved.revision },
       "later",
     ),
   );
@@ -147,7 +152,10 @@ it("stores each receipt overview once and replays exact historical statuses afte
     applyBatch(
       accepted,
       envelope(
-        [{ type: "hunk.annotate", hunkId: "h0", title: "item 0", overview: "rewritten" }],
+        [
+          { type: "group.update", id: "g0", overview: "rewritten" },
+          { type: "queue.set", itemIds: [...published] },
+        ],
         accepted.revision,
         "edit",
       ),
@@ -161,10 +169,10 @@ it("stores each receipt overview once and replays exact historical statuses afte
       Result.succeed({ status: statuses[index]! }),
     );
   }
-  expect(statuses[count - 1]!.spotlight[0]?.overview).toBe(overview(0));
-  expect(reloaded.hunks[0]?.overview).toBe("rewritten");
-  expect(reloaded.hunks[3]).toMatchObject({ accepted: true });
-  expect(reloaded.cursor).toEqual({ itemId: "h4", pane: "queue" });
+  expect(statuses[count - 1]!.groups[0]?.overview).toBe(overview(0));
+  expect(reloaded.groups[0]?.overview).toBe("rewritten");
+  expect(reloaded.groups[3]).toMatchObject({ accepted: true });
+  expect(reloaded.cursor).toEqual({ itemId: "g4", pane: "queue" });
 
   // Interned text must retain the same validation as the wire overview it reconstructs.
   for (const invalid of ["", "x".repeat(64 * 1024 + 1)]) {
@@ -186,7 +194,7 @@ it("stores each receipt overview once and replays exact historical statuses afte
           ...receipt,
           status: {
             ...receipt.status,
-            spotlight: [{ ...receipt.status.spotlight[0]!, overview: overviewRef }],
+            groups: [{ ...receipt.status.groups[0]!, overview: overviewRef }],
           },
         },
       ],
@@ -197,7 +205,7 @@ it("stores each receipt overview once and replays exact historical statuses afte
   }
 });
 
-it("validates Unicode title/UTF-8 overview bounds, paired metadata and legacy fields", () => {
+it("validates group metadata and keeps hunks free of review state", () => {
   for (const title of [
     "",
     " ",
@@ -219,8 +227,18 @@ it("validates Unicode title/UTF-8 overview bounds, paired metadata and legacy fi
     expect(() => envelope([{ type: "group.update", id: "g", [field]: "old" }])).toThrow();
     expect(() => envelope([{ ...group, [field]: "old" }])).toThrow();
   }
-  for (const metadata of [{ title: "only" }, { overview: "only" }])
-    expect(() => Schema.decodeUnknownSync(HunkSchema)({ ...hunk("a"), ...metadata })).toThrow();
+  for (const metadata of [
+    { title: "only" },
+    { overview: "only" },
+    { title: "title", overview: "overview" },
+    { accepted: true },
+  ])
+    expect(() =>
+      Schema.decodeUnknownSync(HunkSchema, { onExcessProperty: "error" })({
+        ...hunk("a"),
+        ...metadata,
+      }),
+    ).toThrow();
 });
 
 it("neutralizes terminal controls while preserving Markdown and ordinary code fences", () => {

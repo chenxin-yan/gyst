@@ -1,5 +1,5 @@
 import { Schema } from "effect";
-import { metadataFields, OverviewSchema, TitleSchema } from "./metadata.ts";
+import { metadataFields, OverviewSchema } from "./metadata.ts";
 
 export const HunkSchema = Schema.Struct({
   id: Schema.String,
@@ -7,16 +7,7 @@ export const HunkSchema = Schema.Struct({
   header: Schema.String,
   patch: Schema.String,
   contentHash: Schema.String,
-  title: Schema.optional(TitleSchema),
-  overview: Schema.optional(OverviewSchema),
-  accepted: Schema.Boolean,
-}).check(
-  Schema.makeFilter(
-    (hunk) =>
-      (hunk.title === undefined) === (hunk.overview === undefined) ||
-      "hunk title and overview must be present together",
-  ),
-);
+});
 export type Hunk = typeof HunkSchema.Type;
 
 export const GroupSchema = Schema.Struct({
@@ -31,6 +22,7 @@ export const SourceSchema = Schema.Union([
   Schema.Struct({
     kind: Schema.Literal("git"),
     args: Schema.Array(Schema.String),
+    patchHash: Schema.String,
     // `cwd` makes relative pathspecs in `args` replayable.
     cwd: Schema.String,
     // A bare snapshot re-resolves HEAD and re-lists untracked files on refresh.
@@ -69,15 +61,6 @@ const statusPayloadFields = <Overview extends Schema.Top>(overview: Overview) =>
   seq: Schema.Number,
   cursor: cursorSchema,
   groups: Schema.Array(Schema.Struct({ ...GroupSchema.fields, overview, count: Schema.Number })),
-  spotlight: Schema.Array(
-    Schema.Struct({
-      id: Schema.String,
-      file: Schema.String,
-      ...metadataFields,
-      overview,
-      accepted: Schema.Boolean,
-    }),
-  ),
   inbox: Schema.Array(HunkSummarySchema),
   queue: Schema.Array(Schema.String),
   queueSet: Schema.Boolean,
@@ -114,9 +97,7 @@ export const SessionSchema = Schema.Struct({
   Schema.makeFilter(
     (session) =>
       session.applyReceipts.every(({ status }) =>
-        [...status.groups, ...status.spotlight].every(
-          ({ overview }) => overview < session.receiptOverviews.length,
-        ),
+        status.groups.every(({ overview }) => overview < session.receiptOverviews.length),
       ) || "receipt overview reference is outside receiptOverviews",
   ),
 );

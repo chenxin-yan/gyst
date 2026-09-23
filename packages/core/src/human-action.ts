@@ -1,5 +1,5 @@
 import { Result, Schema } from "effect";
-import { draftOf, focusableHunkIds, groupedIds, visibleItemIds } from "./draft.ts";
+import { draftOf, focusableHunkIds, visibleItemIds } from "./draft.ts";
 import { ValidationFailed } from "./errors.ts";
 import type { Session } from "./session.ts";
 
@@ -55,12 +55,7 @@ export function applyHumanAction(
       return Result.fail(new ValidationFailed({ message: "review queue is not set" }));
     const itemId = action.type === "verdict.undo" ? draft.acceptHistory.at(-1) : action.itemId;
     if (!itemId) return inapplicable;
-    const group = draft.groups.find(({ id }) => id === itemId);
-    const grouped = groupedIds(draft);
-    const hunk = draft.hunks.find(
-      ({ id, title }) => id === itemId && title !== undefined && !grouped.has(id),
-    );
-    const item = group ?? hunk;
+    const item = draft.groups.find(({ id }) => id === itemId);
     if (!item || (action.type === "verdict.undo" && !item.accepted)) return inapplicable;
     if (action.type === "verdict.undo") {
       item.accepted = false;
@@ -76,19 +71,11 @@ export function applyHumanAction(
         draft.acceptHistory.push(itemId);
         // Another TUI may have moved focus since this explicitly named verdict was sent.
         if (session.cursor.itemId === itemId) {
-          const pending = new Set([
-            ...draft.groups
+          const pending = new Set(
+            draft.groups
               .filter((candidate) => !candidate.accepted)
               .map((candidate) => candidate.id),
-            ...draft.hunks
-              .filter(
-                (candidate) =>
-                  candidate.title !== undefined &&
-                  !candidate.accepted &&
-                  !grouped.has(candidate.id),
-              )
-              .map((candidate) => candidate.id),
-          ]);
+          );
           const start = draft.queue.indexOf(itemId);
           for (let offset = 1; offset <= draft.queue.length; offset++) {
             const destination = draft.queue[(start + offset) % draft.queue.length]!;

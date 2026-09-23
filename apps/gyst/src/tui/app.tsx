@@ -3,6 +3,7 @@ import {
   type DiffPayload,
   type Hunk,
   type Source,
+  type SourceCheckPayload,
   type StatusPayload,
 } from "@gyst/core";
 import {
@@ -90,14 +91,6 @@ type ViewItem =
       accepted: boolean;
       members: Member[];
     }
-  | {
-      kind: "spotlight";
-      id: string;
-      title: string;
-      overview: string;
-      accepted: boolean;
-      member: Member;
-    }
   | { kind: "inbox"; id: string; accepted: false; member: Member };
 type LayoutMode = "auto" | "split" | "stack";
 const LAYOUT = { zoomColumns: 120, overviewPercent: 40, splitColumns: 120, queueColumns: 27 };
@@ -130,26 +123,11 @@ function buildItems(status: StatusPayload, hunks: Map<string, Member>): ViewItem
         ]
       : [];
   });
-  const spotlight = status.spotlight.flatMap((hunk): ViewItem[] => {
-    const member = hunks.get(hunk.id);
-    return member
-      ? [
-          {
-            kind: "spotlight",
-            id: hunk.id,
-            title: hunk.title,
-            overview: hunk.overview,
-            accepted: hunk.accepted,
-            member,
-          },
-        ]
-      : [];
-  });
   const inbox = status.inbox.flatMap((hunk): ViewItem[] => {
     const member = hunks.get(hunk.id);
     return member ? [{ kind: "inbox", id: hunk.id, accepted: false, member }] : [];
   });
-  const byId = new Map([...groups, ...spotlight, ...inbox].map((item) => [item.id, item]));
+  const byId = new Map([...groups, ...inbox].map((item) => [item.id, item]));
   return [...status.queue, ...byId.keys()].flatMap((id) => {
     const item = byId.get(id);
     if (!item) return [];
@@ -266,30 +244,6 @@ function FocusCard(props: {
         </For>
       </box>
     );
-  if (props.item.kind === "spotlight")
-    return (
-      <box flexDirection="column">
-        <text>
-          <Sp fg={C.okBadge} attributes={1}>
-            ▍SPOTLIGHT{" "}
-          </Sp>
-          <Sp fg={C.fg} attributes={1}>
-            {props.item.member.file}
-          </Sp>
-          <VerdictTag accepted={props.item.accepted} />
-        </text>
-        <text fg={C.muted} attributes={2}>
-          {props.item.member.header}
-        </text>
-        <Note text={props.item.title} />
-        <text> </text>
-        <MemberDiff
-          member={props.item.member}
-          layout={props.layout}
-          focused={focused(props.item.member)}
-        />
-      </box>
-    );
   return (
     <box flexDirection="column">
       <text>
@@ -334,6 +288,10 @@ export function App(props: {
   const [diff, setDiff] = createSignal<DiffPayload>();
   const [message, setMessage] = createSignal("attaching…");
   const [editorNotice, setEditorNotice] = createSignal("");
+  const [sourceCheck, setSourceCheck] = createSignal<SourceCheckPayload>();
+  let checkingSource = false;
+  let checkedIdentity = "";
+  let nextSourceCheck = 0;
   const [diffWidth, setDiffWidth] = createSignal(0);
   const [help, setHelp] = createSignal(false);
   const [layoutMode, setLayoutMode] = createSignal<LayoutMode>("auto");
@@ -436,6 +394,64 @@ export function App(props: {
     }),
   );
 
+  const sourceNotice = createMemo(() => {
+    const frame = status();
+    if (!frame) return "";
+    if (frame.session.source.kind === "stdin")
+      return "stdin snapshot — source changes cannot be checked";
+    const check = sourceCheck();
+    if (check?.sessionId !== frame.session.id || check.revision !== frame.revision)
+      return "checking source — snapshot stays fixed";
+    if (check.state === "changed") return "source changed — snapshot unchanged · r refresh";
+    if (check.state === "unavailable") return "source check unavailable — snapshot unchanged";
+    return "";
+  });
+
+  async function checkSource(): Promise<void> {
+    const seen = status();
+    if (
+      !seen ||
+      seen.session.source.kind === "stdin" ||
+      checkingSource ||
+      stopped ||
+      closing ||
+      editing
+    )
+      return;
+    const identity = `${seen.session.id}:${seen.revision}`;
+    if (checkedIdentity === identity && Date.now() < nextSourceCheck) return;
+    checkedIdentity = identity;
+    checkingSource = true;
+    try {
+      const checked = await props.client.check();
+      if (
+        !stopped &&
+        !closing &&
+        !editing &&
+        checked.sessionId === status()?.session.id &&
+        checked.revision === status()?.revision
+      )
+        setSourceCheck(checked);
+    } catch {
+      if (
+        !stopped &&
+        !closing &&
+        !editing &&
+        seen.session.id === status()?.session.id &&
+        seen.revision === status()?.revision
+      )
+        setSourceCheck({
+          sessionId: seen.session.id,
+          revision: seen.revision,
+          state: "unavailable",
+          checkedAt: new Date().toISOString(),
+        });
+    } finally {
+      checkingSource = false;
+      nextSourceCheck = Date.now() + 5_000;
+    }
+  }
+
   function observe(next: StatusPayload): StatusPayload {
     if (
       !latestStatus ||
@@ -467,6 +483,7 @@ export function App(props: {
       setStatus(next);
       setMessage("");
     });
+    void checkSource();
     return true;
   }
 
@@ -805,13 +822,15 @@ export function App(props: {
         <text fg={allDone() ? C.okBadge : C.muted}>
           {allDone()
             ? `✓ review complete — ${items().length}/${items().length} accepted · u undo · q quit`
-            : !status()!.queueSet || status()!.groups.length + status()!.spotlight.length === 0
+            : !status()!.queueSet || status()!.groups.length === 0
               ? `preparing — ${status()!.inbox.length} hunks awaiting preparation`
-              : [...status()!.groups, ...status()!.spotlight].every((item) => item.accepted) &&
-                  status()!.inbox.length > 0
+              : status()!.groups.every((group) => group.accepted) && status()!.inbox.length > 0
                 ? `reviewed everything prepared so far — ${status()!.inbox.length} hunks awaiting preparation`
                 : `ready to review these items — ${status()!.inbox.length} hunks awaiting preparation`}
         </text>
+      </Show>
+      <Show when={sourceNotice()}>
+        <text fg={C.accent}>{sourceNotice()}</text>
       </Show>
       <Show when={Boolean(message() || editorNotice()) && Boolean(status())}>
         <text fg={C.accent}>{message() || editorNotice()}</text>

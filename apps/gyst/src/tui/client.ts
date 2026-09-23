@@ -6,6 +6,8 @@ import {
   ErrorPayloadSchema,
   type HumanAction,
   type Request,
+  type SourceCheckPayload,
+  SourceCheckPayloadSchema,
   type StatusPayload,
   StatusPayloadSchema,
 } from "@gyst/core";
@@ -14,6 +16,7 @@ import { DaemonClient } from "../daemon/client.ts";
 
 export interface TuiClient {
   status(): Promise<StatusPayload>;
+  check(): Promise<SourceCheckPayload>;
   diff(): Promise<DiffPayload>;
   action(action: HumanAction): Promise<StatusPayload>;
   refresh(): Promise<StatusPayload>;
@@ -49,6 +52,7 @@ export function daemonTuiClient(
       ),
     );
   return {
+    check: () => send({ command: "check", cwd, args: [] }, SourceCheckPayloadSchema),
     status: () => send({ command: "status", cwd, args: [] }, StatusPayloadSchema),
     diff: () => send({ command: "diff", cwd, args: [] }, DiffPayloadSchema),
     action: (action) => send({ command: "tui.action", cwd, args: [], action }, StatusPayloadSchema),

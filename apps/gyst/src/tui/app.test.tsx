@@ -18,7 +18,6 @@ const patch = (file: string, from: string, to: string) => ({
   file,
   header: "-1 +1",
   contentHash: file,
-  accepted: false,
   patch: `@@ -1 +1 @@\n-${from}\n+${to}`,
 });
 
@@ -45,18 +44,17 @@ function fixture() {
         count: 2,
         accepted: false,
       },
-    ],
-    spotlight: [
       {
-        id: "c.ts",
-        file: "c.ts",
+        id: "cache",
+        hunkIds: ["c.ts"],
+        count: 1,
         title: "cache behavior changed",
         overview: "Refresh cached values.",
         accepted: false,
       },
     ],
     inbox: [{ id: "d.ts", file: "d.ts" }],
-    queue: ["group", "c.ts"],
+    queue: ["group", "cache"],
     // Finalized queue with an inbox item left: verdicts are allowed, the session is not yet ready.
     queueSet: true,
     ready: false,
@@ -73,6 +71,12 @@ function fixture() {
     ],
   };
   const client: TuiClient = {
+    check: async () => ({
+      sessionId: status.session.id,
+      revision: status.revision,
+      state: "unchanged",
+      checkedAt: "now",
+    }),
     status: async () => structuredClone(status),
     diff: async () => ({
       ...structuredClone(diff),
@@ -97,10 +101,7 @@ function fixture() {
             revision: status.revision,
             seq: status.seq,
             cursor: status.cursor,
-            hunks: diff.hunks.map((hunk) => ({
-              ...hunk,
-              ...status.spotlight.find((item) => item.id === hunk.id),
-            })),
+            hunks: diff.hunks,
             groups: status.groups,
             queue: status.queue,
             queueSet: status.queueSet,
@@ -123,9 +124,7 @@ function fixture() {
     status: () => status,
     setStatus: (next: StatusPayload) => {
       status = next;
-      acceptHistory = [...next.groups, ...next.spotlight]
-        .filter((item) => item.accepted)
-        .map((item) => item.id);
+      acceptHistory = next.groups.filter((item) => item.accepted).map((item) => item.id);
     },
     setDiff: (map: (hunk: DiffPayload["hunks"][number]) => DiffPayload["hunks"][number]) => {
       diff = { ...diff, hunks: diff.hunks.map(map) };
@@ -159,9 +158,8 @@ async function markdownFrame(tui: Awaited<ReturnType<typeof testRender>>, text: 
 
 function emptyStatus(base: StatusPayload): StatusPayload {
   const empty = structuredClone(base) as any;
-  empty.session.source = { kind: "git", args: ["HEAD"], cwd: "/repo" };
+  empty.session.source = { kind: "git", args: ["HEAD"], cwd: "/repo", patchHash: "snapshot" };
   empty.groups = [];
-  empty.spotlight = [];
   empty.inbox = [];
   empty.queue = [];
   empty.files = [];
@@ -237,7 +235,7 @@ describe("TUI", () => {
       assert.equal(refreshes, 0);
       await press(tui, "ESCAPE");
       await press(tui, "j");
-      assert.equal(state.status().cursor.itemId, "c.ts", "rejection did not poison inputs");
+      assert.equal(state.status().cursor.itemId, "cache", "rejection did not poison inputs");
       await press(tui, "q");
       assert.equal(quits, 1);
     } finally {
@@ -389,7 +387,7 @@ describe("TUI", () => {
     await press(tui, "a");
     frame = tui.captureCharFrame();
     assert(frame.includes("✓ rename"));
-    assert(frame.includes("SPOTLIGHT"), "accept advances atomically");
+    assert(frame.includes("cache behavior changed"), "accept advances atomically");
     assert.equal(state.status().revision, 1, "verdict bumps revision");
     assert.deepEqual(
       state.actions.at(-1),
@@ -509,13 +507,13 @@ describe("TUI", () => {
     await press(tui, "j");
     assert.deepEqual(
       state.actions.at(-1),
-      { type: "cursor.move", itemId: "c.ts" },
+      { type: "cursor.move", itemId: "cache" },
       "j moves items again",
     );
     await press(tui, "RETURN");
     assert.deepEqual(state.actions.at(-1), {
       type: "cursor.focus",
-      itemId: "c.ts",
+      itemId: "cache",
       pane: "diff",
       hunkId: "c.ts",
     });
@@ -524,7 +522,11 @@ describe("TUI", () => {
     await press(tui, "k");
     assert.equal(state.actions.length, before, "a lone hunk has nothing to step through");
     await press(tui, "ESCAPE");
-    assert.deepEqual(state.actions.at(-1), { type: "cursor.focus", itemId: "c.ts", pane: "queue" });
+    assert.deepEqual(state.actions.at(-1), {
+      type: "cursor.focus",
+      itemId: "cache",
+      pane: "queue",
+    });
     tui.renderer.destroy();
   });
 
@@ -586,15 +588,16 @@ describe("TUI", () => {
           "poll retains Markdown identity",
         );
         const published = structuredClone(state.status()) as any;
-        published.spotlight.push({
-          id: "d.ts",
-          file: "d.ts",
+        published.groups.push({
+          id: "arrival",
+          hunkIds: ["d.ts"],
+          count: 1,
           title: "Arrival",
           overview: "Complete item",
           accepted: false,
         });
         published.inbox = [];
-        published.queue.push("d.ts");
+        published.queue.push("arrival");
         published.revision++;
         published.seq++;
         published.ready = true;
@@ -699,13 +702,17 @@ describe("TUI", () => {
       state.setStatus({
         ...moved,
         seq: moved.seq + 1,
-        cursor: { itemId: "c.ts", pane: "overview", hunkId: "c.ts" },
+        cursor: { itemId: "cache", pane: "overview", hunkId: "c.ts" },
       });
       release.resolve();
       await tui.waitForFrame((frame) => frame.includes("snapshot changed, re-read"));
       assert(state.status().groups[0]!.accepted);
-      assert(!state.status().spotlight[0]!.accepted, "unseen destination cannot be accepted");
-      assert.deepEqual(state.status().cursor, { itemId: "c.ts", pane: "overview", hunkId: "c.ts" });
+      assert(!state.status().groups[1]!.accepted, "unseen destination cannot be accepted");
+      assert.deepEqual(state.status().cursor, {
+        itemId: "cache",
+        pane: "overview",
+        hunkId: "c.ts",
+      });
       assert.deepEqual(
         state.actions.map((action) => action.type === "verdict.toggle" && action.itemId),
         ["group", "group"],
@@ -807,29 +814,30 @@ describe("TUI", () => {
       await press(tui, "RETURN");
       await press(tui, "TAB");
       await press(tui, "a");
-      assert.deepEqual(state.status().cursor, { itemId: "c.ts", pane: "diff", hunkId: "c.ts" });
+      assert.deepEqual(state.status().cursor, { itemId: "cache", pane: "diff", hunkId: "c.ts" });
       await press(tui, "TAB");
       await press(tui, "a");
       assert.equal(state.status().cursor.pane, "overview");
       assert(tui.captureCharFrame().includes("reviewed everything prepared so far"));
       await markdownFrame(tui, "Refresh cached values");
       const next = structuredClone(state.status()) as any;
-      next.spotlight.push({
-        id: "d.ts",
-        file: "d.ts",
+      next.groups.push({
+        id: "arrival",
+        hunkIds: ["d.ts"],
+        count: 1,
         title: "Arrival",
         overview: "New item",
         accepted: false,
       });
       next.inbox = [];
-      next.queue.push("d.ts");
+      next.queue.push("arrival");
       next.revision++;
       next.seq++;
       next.ready = true;
       state.setStatus(next);
       await Bun.sleep(15);
       await tui.waitForFrame((frame) => frame.includes("0 hunks awaiting preparation"));
-      assert.equal(state.status().cursor.itemId, "c.ts");
+      assert.equal(state.status().cursor.itemId, "cache");
       assert.equal(state.status().cursor.pane, "overview");
       await press(tui, "ESCAPE");
       await press(tui, "j");
@@ -959,15 +967,16 @@ describe("TUI", () => {
         .map((line) => line.slice(27));
       assert(!before.some((line) => line.includes("first_0")));
       const next = structuredClone(state.status()) as any;
-      next.spotlight.push({
-        id: "d.ts",
-        file: "d.ts",
+      next.groups.push({
+        id: "arrival",
+        hunkIds: ["d.ts"],
+        count: 1,
         title: "Newly published",
         overview: "Independent change",
         accepted: false,
       });
       next.inbox = [];
-      next.queue.push("d.ts");
+      next.queue.push("arrival");
       next.revision++;
       next.seq++;
       next.ready = true;
@@ -991,7 +1000,7 @@ describe("TUI", () => {
     const state = fixture();
     const next = structuredClone(state.status()) as any;
     next.groups[0].accepted = true;
-    next.spotlight[0].accepted = true;
+    next.groups[1].accepted = true;
     state.setStatus(next);
     const tui = await testRender(() => <App client={state.client} pollInterval={60_000} />, {
       width: 100,
@@ -1025,7 +1034,10 @@ describe("TUI", () => {
     );
     assert.equal(unreadyState.actions.length, 0, "unready session dispatches no verdict");
     await press(unreadyTui, "j");
-    assert(unreadyTui.captureCharFrame().includes("SPOTLIGHT"), "navigation stays available");
+    assert(
+      unreadyTui.captureCharFrame().includes("cache behavior changed"),
+      "navigation stays available",
+    );
     unreadyTui.renderer.destroy();
   });
 
@@ -1158,6 +1170,7 @@ describe("TUI", () => {
     const readyEmpty = emptyStatus(readyEmptyState.status()) as any;
     readyEmpty.session.source = {
       kind: "git",
+      patchHash: "snapshot",
       args: ["HEAD"],
       cwd: "/repo",
       includeUntracked: true,
@@ -1177,11 +1190,10 @@ describe("TUI", () => {
     readyEmptyTui.renderer.destroy();
   });
 
-  it("scrolls a long spotlight with Ctrl+D/Ctrl+U and snaps back on the next item", async () => {
-    // A long spotlight scrolls from the keyboard and snaps back to the top on the next item.
+  it("scrolls a single-hunk group with Ctrl+D/Ctrl+U and snaps back on the next item", async () => {
     const longState = fixture();
     const long = structuredClone(longState.status()) as any;
-    long.cursor = { itemId: "c.ts", pane: "queue" };
+    long.cursor = { itemId: "cache", pane: "queue" };
     longState.setStatus(long);
     const longLines = Array.from({ length: 60 }, (_, index) => `+line_${index}`).join("\n");
     const longClient: TuiClient = {
@@ -1255,7 +1267,9 @@ describe("TUI", () => {
     });
     await tui.waitForFrame((frame) => frame.includes("▍GROUP"));
     await press(tui, "j");
-    await tui.waitForFrame((frame) => frame.includes("SPOTLIGHT") && frame.includes("1 - stale"));
+    await tui.waitForFrame(
+      (frame) => frame.includes("cache behavior changed") && frame.includes("1 - stale"),
+    );
     const moved = structuredClone(state.status()) as any;
     moved.revision++;
     state.setStatus(moved);
@@ -1316,9 +1330,9 @@ describe("TUI", () => {
       () => <App client={mismatchedState.client} pollInterval={60_000} />,
       { width: 100, height: 30 },
     );
-    await mismatchedTui.waitForFrame((value) => value.includes("SPOTLIGHT"));
+    await mismatchedTui.waitForFrame((value) => value.includes("cache behavior changed"));
     assert(
-      !mismatchedTui.captureCharFrame().includes("▍GROUP"),
+      !mismatchedTui.captureCharFrame().includes("rename old to new"),
       "groups absent from a non-atomic diff read are omitted",
     );
     mismatchedTui.renderer.destroy();
