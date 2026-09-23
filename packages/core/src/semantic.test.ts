@@ -101,7 +101,7 @@ it("stores each receipt overview once and replays exact historical statuses afte
   const overview = (index: number) => `overview-${index}-`.padEnd(1024, "x");
   let session = Schema.decodeUnknownSync(SessionSchema)({
     ...initial(),
-    cursor: { itemId: null, expanded: false },
+    cursor: { itemId: null, pane: "queue" },
     hunks: Array.from({ length: count }, (_, index) => hunk(`h${index}`)),
   });
   const published: string[] = [];
@@ -164,7 +164,7 @@ it("stores each receipt overview once and replays exact historical statuses afte
   expect(statuses[count - 1]!.spotlight[0]?.overview).toBe(overview(0));
   expect(reloaded.hunks[0]?.overview).toBe("rewritten");
   expect(reloaded.hunks[3]).toMatchObject({ accepted: true });
-  expect(reloaded.cursor).toEqual({ itemId: "h3", expanded: false });
+  expect(reloaded.cursor).toEqual({ itemId: "h4", pane: "queue" });
 
   // Interned text must retain the same validation as the wire overview it reconstructs.
   for (const invalid of ["", "x".repeat(64 * 1024 + 1)]) {
