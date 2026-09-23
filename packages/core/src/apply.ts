@@ -1,5 +1,5 @@
 import { Result, Schema } from "effect";
-import { draftOf, groupedIds, type MutableSession, reconcileQueue } from "./draft.ts";
+import { draftOf, type MutableSession, reconcileQueue } from "./draft.ts";
 import { StaleRevision, ValidationFailed } from "./errors.ts";
 import { hash } from "./hash.ts";
 import { metadataFields, MetadataSchema, OverviewSchema, TitleSchema } from "./metadata.ts";
@@ -23,11 +23,6 @@ export const GroupDissolveSchema = Schema.Struct({
   type: Schema.Literal("group.dissolve"),
   id: Schema.String,
 });
-export const HunkAnnotateSchema = Schema.Struct({
-  type: Schema.Literal("hunk.annotate"),
-  hunkId: Schema.String,
-  ...metadataFields,
-});
 export const QueueSetSchema = Schema.Struct({
   type: Schema.Literal("queue.set"),
   itemIds: Schema.Array(Schema.String),
@@ -36,7 +31,6 @@ export const ApplyOpSchema = Schema.Union([
   GroupCreateSchema,
   GroupUpdateSchema,
   GroupDissolveSchema,
-  HunkAnnotateSchema,
   QueueSetSchema,
 ]);
 export type ApplyOp = typeof ApplyOpSchema.Type;
@@ -66,7 +60,6 @@ function receiptStatusOf(draft: MutableSession, status: StatusPayload): ReceiptS
   return {
     ...status,
     groups: mapOverviews(status.groups, intern),
-    spotlight: mapOverviews(status.spotlight, intern),
   };
 }
 function recordedStatusOf(session: Session, status: ReceiptStatus): StatusPayload {
@@ -74,7 +67,6 @@ function recordedStatusOf(session: Session, status: ReceiptStatus): StatusPayloa
   return {
     ...status,
     groups: mapOverviews(status.groups, text),
-    spotlight: mapOverviews(status.spotlight, text),
   };
 }
 
@@ -211,41 +203,13 @@ export function applyBatch(
       reconcileQueue(draft);
       continue;
     }
-    if (op.type === "hunk.annotate") {
-      const hunk = draft.hunks.find((candidate) => candidate.id === op.hunkId);
-      if (!hunk) {
-        fail(opIndex, `hunk ${op.hunkId} does not exist`);
-        continue;
-      }
-      if (!Schema.is(MetadataSchema)(op)) {
-        fail(opIndex, "invalid hunk title or overview");
-        continue;
-      }
-      const wasInbox = hunk.title === undefined && !hunkInOtherGroup(hunk.id);
-      // A re-worded annotation is a new claim; the verdict on the old wording no longer applies.
-      // Pruned here because a finalized queue skips the end-of-batch reconcile.
-      if (hunk.title !== op.title || hunk.overview !== op.overview) {
-        hunk.accepted = false;
-        draft.acceptHistory = draft.acceptHistory.filter((id) => id !== hunk.id);
-      }
-      hunk.title = op.title;
-      hunk.overview = op.overview;
-      if (wasInbox) draft.queueSet = false;
-      continue;
-    }
-    const grouped = groupedIds(draft);
-    const expected = [
-      ...draft.groups.map((group) => group.id),
-      ...draft.hunks
-        .filter((hunk) => !grouped.has(hunk.id) && hunk.title !== undefined)
-        .map((hunk) => hunk.id),
-    ];
+    const expected = draft.groups.map((group) => group.id);
     if (
       op.itemIds.length !== expected.length ||
       new Set(op.itemIds).size !== op.itemIds.length ||
       expected.some((id) => !op.itemIds.includes(id))
     ) {
-      fail(opIndex, "queue must contain every group and spotlight hunk exactly once");
+      fail(opIndex, "queue must contain every group exactly once");
       continue;
     }
     draft.queue = [...op.itemIds];
@@ -258,7 +222,7 @@ export function applyBatch(
     !draft.queueSet &&
     !errors.some(({ opIndex }) => opIndex === queueOpIndex)
   ) {
-    fail(queueOpIndex, "queue.set must describe the batch's final groups and spotlight hunks");
+    fail(queueOpIndex, "queue.set must describe the batch's final groups");
   }
   if (errors.length)
     return Result.fail(

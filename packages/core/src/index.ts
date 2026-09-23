@@ -8,7 +8,6 @@ export {
   GroupCreateSchema,
   GroupDissolveSchema,
   GroupUpdateSchema,
-  HunkAnnotateSchema,
   QueueSetSchema,
   type ValidationDetail,
 } from "./apply.ts";
@@ -51,4 +50,6 @@ export {
   ReplySchema,
   type Request,
   RequestSchema,
+  type SourceCheckPayload,
+  SourceCheckPayloadSchema,
 } from "./wire.ts";

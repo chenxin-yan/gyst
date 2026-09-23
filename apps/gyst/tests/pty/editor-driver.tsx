@@ -28,8 +28,8 @@ let state: Session = {
   source:
     process.env.GYST_PTY_SOURCE === "stdin"
       ? { kind: "stdin" }
-      : { kind: "git", args: ["HEAD"], cwd: process.cwd() },
-  cursor: { itemId: "h", pane: "diff", hunkId: "h" },
+      : { kind: "git", args: ["HEAD"], cwd: process.cwd(), patchHash: "snapshot" },
+  cursor: { itemId: "editor", pane: "diff", hunkId: "h" },
   hunks: [
     {
       id: "h",
@@ -37,13 +37,18 @@ let state: Session = {
       header: "-1 +1",
       contentHash: "h",
       patch: "@@ -1 +1 @@\n-before\n+after",
+    },
+  ],
+  groups: [
+    {
+      id: "editor",
+      hunkIds: ["h"],
       accepted: false,
       title: "Editor handoff",
       overview: "Working tree is separate from the snapshot.",
     },
   ],
-  groups: [],
-  queue: ["h"],
+  queue: ["editor"],
   queueSet: true,
   acceptHistory: [],
   receiptOverviews: [],
@@ -84,6 +89,15 @@ try {
           <App
             pollInterval={20}
             client={{
+              check: async () => {
+                reads++;
+                return {
+                  sessionId: state.id,
+                  revision: state.revision,
+                  state: "unchanged",
+                  checkedAt: "now",
+                };
+              },
               status: async () => {
                 reads++;
                 return statusOf(state);

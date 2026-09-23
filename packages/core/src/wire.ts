@@ -10,6 +10,15 @@ export const DiffPayloadSchema = Schema.Struct({
 });
 export type DiffPayload = typeof DiffPayloadSchema.Type;
 
+export const SourceCheckPayloadSchema = Schema.Struct({
+  sessionId: Schema.String,
+  revision: Schema.Number,
+  state: Schema.Literals(["unchanged", "changed", "stdin", "unavailable"]),
+  checkedAt: Schema.String,
+  message: Schema.optional(Schema.String),
+});
+export type SourceCheckPayload = typeof SourceCheckPayloadSchema.Type;
+
 export const ClosePayloadSchema = Schema.Struct({
   closed: Schema.Literal(true),
   sessionId: Schema.String,
@@ -17,7 +26,16 @@ export const ClosePayloadSchema = Schema.Struct({
 export type ClosePayload = typeof ClosePayloadSchema.Type;
 
 export const RequestSchema = Schema.Struct({
-  command: Schema.Literals(["create", "status", "diff", "apply", "refresh", "close", "tui.action"]),
+  command: Schema.Literals([
+    "create",
+    "status",
+    "check",
+    "diff",
+    "apply",
+    "refresh",
+    "close",
+    "tui.action",
+  ]),
   cwd: Schema.String,
   args: Schema.Array(Schema.String),
   stdin: Schema.optional(Schema.String),

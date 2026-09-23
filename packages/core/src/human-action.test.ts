@@ -4,14 +4,12 @@ import { applyHumanAction, HumanActionSchema, type HumanAction } from "./human-a
 import type { Hunk, Session } from "./session.ts";
 
 const LATER = "2026-02-02T00:00:00.000Z";
-const hunk = (id: string, title?: string): Hunk => ({
+const hunk = (id: string): Hunk => ({
   id,
   file: `${id}.ts`,
   header: "@@ -1 +1 @@",
   patch: `@@ -1 +1 @@\n-${id}\n+${id}`,
   contentHash: id,
-  ...(title === undefined ? {} : { title, overview: title }),
-  accepted: false,
 });
 const ready: Session = {
   id: "session",
@@ -22,7 +20,7 @@ const ready: Session = {
   revision: 3,
   seq: 3,
   cursor: { itemId: "g1", pane: "queue" },
-  hunks: [hunk("h1"), hunk("h2", "read me"), hunk("h3", "other"), hunk("inbox")],
+  hunks: [hunk("h1"), hunk("h2"), hunk("h3"), hunk("inbox")],
   groups: [
     {
       id: "g1",
@@ -31,8 +29,10 @@ const ready: Session = {
       hunkIds: ["h1"],
       accepted: false,
     },
+    { id: "g2", title: "read me", overview: "context", hunkIds: ["h2"], accepted: false },
+    { id: "g3", title: "other", overview: "context", hunkIds: ["h3"], accepted: false },
   ],
-  queue: ["g1", "h2", "h3"],
+  queue: ["g1", "g2", "g3"],
   queueSet: true,
   acceptHistory: [],
   receiptOverviews: [],
@@ -52,8 +52,8 @@ describe("applyHumanAction", () => {
       { type: "verdict.undo", ...frame } as const,
     ])
       expect(Result.isFailure(applyHumanAction(unready, action, LATER))).toBe(true);
-    expect(act(unready, { type: "cursor.move", itemId: "h2" })).toMatchObject({
-      cursor: { itemId: "h2", pane: "queue" },
+    expect(act(unready, { type: "cursor.move", itemId: "g2" })).toMatchObject({
+      cursor: { itemId: "g2", pane: "queue" },
       revision: 3,
       seq: 4,
     });
@@ -77,8 +77,8 @@ describe("applyHumanAction", () => {
       itemId: "g1",
       pane: "queue",
     });
-    expect(act(focused, { type: "cursor.move", itemId: "h2" }).cursor).toEqual({
-      itemId: "h2",
+    expect(act(focused, { type: "cursor.move", itemId: "g2" }).cursor).toEqual({
+      itemId: "g2",
       pane: "queue",
     });
     for (const itemId of ["g1", "missing"]) {
@@ -104,21 +104,23 @@ describe("applyHumanAction", () => {
   it("accepts atomically, skips accepted items and inbox, wraps once, and stays zoomed", () => {
     const start: Session = {
       ...ready,
-      hunks: ready.hunks.map((h) => (h.id === "h2" ? { ...h, accepted: true } : h)),
-      cursor: { itemId: "h3", pane: "overview", hunkId: "h3" },
+      groups: ready.groups.map((group) =>
+        group.id === "g2" ? { ...group, accepted: true } : group,
+      ),
+      cursor: { itemId: "g3", pane: "overview", hunkId: "h3" },
     };
-    const accepted = toggle(start, "h3");
+    const accepted = toggle(start, "g3");
     expect(accepted).toMatchObject({
       revision: 4,
       seq: 4,
-      acceptHistory: ["h3"],
+      acceptHistory: ["g3"],
       updatedAt: LATER,
     });
     expect(accepted.cursor).toEqual({ itemId: "g1", pane: "diff", hunkId: "h1" });
     const completed = toggle(accepted, "g1");
     expect(completed.cursor).toEqual(accepted.cursor);
     expect(completed.groups[0]?.accepted).toBe(true);
-    expect(toggle(ready, "g1").cursor).toEqual({ itemId: "h2", pane: "queue" });
+    expect(toggle(ready, "g1").cursor).toEqual({ itemId: "g2", pane: "queue" });
     expect(ready.groups[0]?.accepted).toBe(false);
   });
 
@@ -127,7 +129,7 @@ describe("applyHumanAction", () => {
     expect(toggle(accepted, "g1").cursor).toEqual(accepted.cursor);
     const zoomed = act(accepted, {
       type: "cursor.focus",
-      itemId: "h2",
+      itemId: "g2",
       pane: "overview",
       hunkId: "h2",
     });
@@ -144,7 +146,7 @@ describe("applyHumanAction", () => {
   it("a delayed explicitly named verdict never teleports an unrelated shared cursor", () => {
     const moved = act(ready, {
       type: "cursor.focus",
-      itemId: "h2",
+      itemId: "g2",
       pane: "overview",
       hunkId: "h2",
     });

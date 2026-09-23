@@ -6,40 +6,30 @@ import { parseSnapshot } from "./snapshot.ts";
 import { statusOf } from "./status.ts";
 
 const LATER = "2026-02-02T00:00:00.000Z";
-
 const snapshot = (patch: string) => Result.getOrThrow(parseSnapshot(patch));
-
-const hunk = (
-  id: string,
-  file: string,
-  contentHash: string,
-  title?: string,
-  accepted = false,
-): Hunk => ({
+const hunk = (id: string, file: string, contentHash: string): Hunk => ({
   id,
   file,
   contentHash,
   header: "@@ -1 +1 @@",
   patch: `@@ -1 +1 @@\n-${id}\n+${contentHash}`,
-  ...(title === undefined ? {} : { title, overview: title }),
-  accepted,
 });
 
 function session(): Session {
   return {
     id: "session",
     repoRoot: "/repo",
-    source: { kind: "git", args: ["HEAD"], cwd: "/repo" },
+    source: { kind: "git", args: ["HEAD"], cwd: "/repo", patchHash: "snapshot" },
     createdAt: "2026-01-01T00:00:00.000Z",
     updatedAt: "2026-01-01T00:00:00.000Z",
     revision: 4,
     seq: 7,
     cursor: { itemId: "group-1", pane: "queue" },
     hunks: [
-      hunk("old-a", "a.ts", "same", "member note", true),
-      hunk("old-b", "b.ts", "changed", "stale note", true),
-      hunk("old-c", "c.ts", "gone", "gone note", true),
-      hunk("old-d", "d.ts", "spotlight", "keep note", true),
+      hunk("old-a", "a.ts", "same"),
+      hunk("old-b", "b.ts", "changed"),
+      hunk("old-c", "c.ts", "gone"),
+      hunk("old-d", "d.ts", "independent"),
     ],
     groups: [
       {
@@ -49,68 +39,57 @@ function session(): Session {
         hunkIds: ["old-a"],
         accepted: true,
       },
+      { id: "group-b", title: "changed", overview: "stale", hunkIds: ["old-b"], accepted: true },
+      { id: "group-c", title: "gone", overview: "gone", hunkIds: ["old-c"], accepted: true },
+      { id: "group-d", title: "stable", overview: "keep", hunkIds: ["old-d"], accepted: true },
     ],
-    queue: ["old-b", "group-1", "old-c", "old-d"],
+    queue: ["group-b", "group-1", "group-c", "group-d"],
     queueSet: true,
-    acceptHistory: ["group-1"],
+    acceptHistory: ["group-1", "group-d"],
     receiptOverviews: [],
     applyReceipts: [],
   };
 }
 
 describe("refreshSession", () => {
-  it("preserves unchanged identity and verdicts, drops stale annotations, and appends new inbox hunks", () => {
+  it("preserves unchanged groups and verdicts, drops stale groups, and appends new inbox hunks", () => {
     const refreshed = refreshSession(
       session(),
       [
         hunk("fresh-a", "a.ts", "same"),
         hunk("fresh-b", "b.ts", "replacement"),
         hunk("fresh-d", "d.ts", "new"),
-        hunk("fresh-spotlight", "d.ts", "spotlight"),
+        hunk("fresh-independent", "d.ts", "independent"),
         hunk("fresh-cross-file", "e.ts", "same"),
       ],
       LATER,
     );
 
     expect(refreshed.updatedAt).toBe(LATER);
-    expect(refreshed.hunks).toEqual([
-      // A grouped hunk is hidden behind its group, so it carries no verdict of its own.
-      expect.objectContaining({
-        id: "old-a",
-        title: "member note",
-        overview: "member note",
-        accepted: false,
-      }),
-      expect.objectContaining({
-        id: "fresh-b",
-        title: undefined,
-        overview: undefined,
-        accepted: false,
-      }),
-      expect.objectContaining({
-        id: "fresh-d",
-        title: undefined,
-        overview: undefined,
-        accepted: false,
-      }),
-      expect.objectContaining({
-        id: "old-d",
-        title: "keep note",
-        overview: "keep note",
-        accepted: true,
-      }),
-      expect.objectContaining({
-        id: "fresh-cross-file",
-        title: undefined,
-        overview: undefined,
-        accepted: false,
-      }),
+    expect(refreshed.hunks.map(({ id }) => id)).toEqual([
+      "old-a",
+      "fresh-b",
+      "fresh-d",
+      "old-d",
+      "fresh-cross-file",
     ]);
     expect(refreshed.groups).toEqual([
       expect.objectContaining({ id: "group-1", hunkIds: ["old-a"], accepted: true }),
+      expect.objectContaining({
+        id: "group-d",
+        overview: "keep",
+        hunkIds: ["old-d"],
+        accepted: true,
+      }),
     ]);
-    expect(refreshed.queue).toEqual(["group-1", "old-d", "fresh-b", "fresh-d", "fresh-cross-file"]);
-    expect(refreshed.acceptHistory).toEqual(["group-1"]);
+    expect(refreshed.queue).toEqual([
+      "group-1",
+      "group-d",
+      "fresh-b",
+      "fresh-d",
+      "fresh-cross-file",
+    ]);
+    expect(refreshed.acceptHistory).toEqual(["group-1", "group-d"]);
     expect(refreshed.queueSet).toBe(false);
     expect(refreshed.revision).toBe(5);
     expect(refreshed.seq).toBe(8);
@@ -129,6 +108,7 @@ describe("refreshSession", () => {
         },
       ],
       queue: ["group-1", "old-b"],
+      acceptHistory: ["group-1"],
     };
     const refreshed = refreshSession(original, [hunk("fresh-a", "a.ts", "same")], LATER);
     expect(refreshed.groups[0]).toEqual(
@@ -174,18 +154,21 @@ describe("refreshSession", () => {
     const fresh = snapshot(patch);
     const original: Session = {
       ...session(),
-      hunks: fresh.map((hunk, index) => ({
-        ...hunk,
+      hunks: fresh,
+      groups: fresh.map((hunk, index) => ({
+        id: `duplicate-${index}`,
         title: `note ${index}`,
         overview: `note ${index}`,
+        hunkIds: [hunk.id],
         accepted: index === 0,
       })),
-      groups: [],
-      queue: fresh.map(({ id }) => id),
-      cursor: { itemId: fresh[0]!.id, pane: "queue" },
+      queue: ["duplicate-0", "duplicate-1"],
+      cursor: { itemId: "duplicate-0", pane: "queue" },
+      acceptHistory: ["duplicate-0"],
     };
     const unchanged = refreshSession(original, snapshot(patch), LATER);
     expect(unchanged.hunks).toEqual(original.hunks);
+    expect(unchanged.groups).toEqual(original.groups);
     expect(unchanged.queue).toEqual(original.queue);
     expect(statusOf(unchanged).ready).toBe(true);
 
@@ -195,11 +178,9 @@ describe("refreshSession", () => {
       snapshot(patch.replace("@@ -20 +20 @@", "@@ -30 +30 @@")),
     ]) {
       const refreshed = refreshSession(original, changed, LATER);
-      expect(
-        refreshed.hunks.every(
-          (hunk) => !hunk.accepted && hunk.title === undefined && hunk.overview === undefined,
-        ),
-      ).toBe(true);
+      expect(refreshed.groups).toEqual([]);
+      expect(refreshed.acceptHistory).toEqual([]);
+      expect(statusOf(refreshed).inbox).toHaveLength(changed.length);
       expect(refreshed.queueSet).toBe(false);
     }
   });
@@ -209,8 +190,8 @@ describe("refreshSession", () => {
       ...session(),
       cursor: { itemId: null, pane: "queue" },
       hunks: [
-        hunk("old-first", "same.ts", "duplicate", "first note", true),
-        hunk("old-second", "same.ts", "duplicate", "second note", true),
+        hunk("old-first", "same.ts", "duplicate"),
+        hunk("old-second", "same.ts", "duplicate"),
       ],
       groups: [
         {
@@ -222,18 +203,13 @@ describe("refreshSession", () => {
         },
       ],
       queue: ["group-1"],
+      acceptHistory: ["group-1"],
     };
 
     const refreshed = refreshSession(original, [hunk("fresh-only", "same.ts", "duplicate")], LATER);
 
-    expect(refreshed.hunks).toEqual([
-      expect.objectContaining({
-        id: "fresh-only",
-        title: undefined,
-        overview: undefined,
-        accepted: false,
-      }),
-    ]);
+    expect(refreshed.hunks).toEqual([hunk("fresh-only", "same.ts", "duplicate")]);
     expect(refreshed.groups).toEqual([]);
+    expect(refreshed.acceptHistory).toEqual([]);
   });
 });

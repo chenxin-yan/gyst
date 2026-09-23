@@ -35,15 +35,9 @@ export function refreshSession(
       matches?.length === 1 && freshMatchCounts.get(key) === 1
         ? matches[0]
         : stableDuplicates.get(fresh.id);
-    if (!old) return { ...fresh, title: undefined, overview: undefined, accepted: false };
+    if (!old) return { ...fresh };
     survivingIds.add(old.id);
-    return {
-      ...fresh,
-      id: old.id,
-      title: old.title,
-      overview: old.overview,
-      accepted: old.accepted,
-    };
+    return { ...fresh, id: old.id };
   });
 
   draft.groups = draft.groups.flatMap((group) => {

@@ -1,9 +1,9 @@
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
-import { chmod, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { BunServices } from "@effect/platform-bun";
-import { StatusPayloadSchema } from "@gyst/core";
+import { SourceCheckPayloadSchema, StatusPayloadSchema } from "@gyst/core";
 import { ConfigProvider, Layer, ManagedRuntime, Schema } from "effect";
 import { DaemonClient } from "../../src/daemon/client.ts";
 import { Paths } from "../../src/daemon/paths.ts";
@@ -82,6 +82,55 @@ afterAll(async () => {
 });
 
 describe("gyst session CLI seam", () => {
+  it("checks scoped Git sources across restart without replacing snapshots, and distinguishes stdin", async () => {
+    const cwd = await repo("source-check");
+    const nested = join(cwd, "nested");
+    await mkdir(nested);
+    await writeFile(join(nested, "inside.txt"), "base\n");
+    git(cwd, "add", ".");
+    git(cwd, "commit", "-qm", "nested file");
+    await writeFile(join(nested, "inside.txt"), "captured\n");
+    const created = await gyst(nested, ["session", "create", "--", "HEAD", "--", "inside.txt"]);
+    expect(created.exitCode).toBe(0);
+    const captured = JSON.parse(created.stdout);
+    const savedPath = join(data, `${captured.session.id}.json`);
+    const saved = await readFile(savedPath, "utf8");
+    const check = async (directory = cwd) => {
+      const result = await gyst(directory, ["session", "check"]);
+      expect(result.exitCode).toBe(0);
+      return Schema.decodeUnknownSync(SourceCheckPayloadSchema)(JSON.parse(result.stdout));
+    };
+    await writeFile(join(cwd, "tracked.txt"), "outside scope\n");
+    expect((await check()).state).toBe("unchanged");
+    await writeFile(join(nested, "inside.txt"), "changed after capture\n");
+    process.kill(await daemonPid(), "SIGKILL");
+    await Bun.sleep(50);
+    expect((await check()).state).toBe("changed");
+    expect(JSON.parse((await gyst(cwd, ["session", "status"])).stdout)).toEqual(captured);
+    expect(await readFile(savedPath, "utf8")).toBe(saved);
+    expect((await gyst(cwd, ["session", "refresh"])).exitCode).toBe(0);
+    expect((await check()).state).toBe("unchanged");
+    await gyst(cwd, ["session", "close"]);
+
+    expect((await gyst(nested, ["session", "create"])).exitCode).toBe(0);
+    await writeFile(join(cwd, "new-untracked.txt"), "new\n");
+    expect((await check()).state).toBe("changed");
+    await gyst(cwd, ["session", "close"]);
+
+    const base = git(cwd, "rev-parse", "HEAD~1").trim();
+    const head = git(cwd, "rev-parse", "HEAD").trim();
+    expect((await gyst(cwd, ["session", "create", "--", base, head])).exitCode).toBe(0);
+    await writeFile(join(nested, "inside.txt"), "working tree is not the fixed range\n");
+    expect((await check()).state).toBe("unchanged");
+    await gyst(cwd, ["session", "close"]);
+
+    expect(
+      (await gyst(cwd, ["session", "create", "--stdin"], git(cwd, "diff", "HEAD"))).exitCode,
+    ).toBe(0);
+    expect((await check()).state).toBe("stdin");
+    await gyst(cwd, ["session", "close"]);
+  }, 20_000);
+
   it("serializes concurrent startup and create for one repository", async () => {
     const cwd = await repo("concurrent-create");
     await writeFile(join(cwd, "tracked.txt"), "changed\n");
@@ -112,6 +161,7 @@ describe("gyst session CLI seam", () => {
     expect(status.inbox.length).toBe(2);
     expect(status.session.source).toEqual({
       kind: "git",
+      patchHash: expect.any(String),
       args: ["HEAD"],
       cwd,
       includeUntracked: true,
@@ -133,9 +183,14 @@ describe("gyst session CLI seam", () => {
         accepted: false,
       },
     ];
-    const spotlightHunk = state.hunks.find((hunk: { id: string }) => hunk.id !== hunkId);
-    spotlightHunk.title = "needs human review";
-    spotlightHunk.overview = "intent and behavior";
+    const independentHunk = state.hunks.find((hunk: { id: string }) => hunk.id !== hunkId);
+    state.groups.push({
+      id: "group-2",
+      hunkIds: [independentHunk.id],
+      title: "needs human review",
+      overview: "intent and behavior",
+      accepted: false,
+    });
     await writeFile(statePath, JSON.stringify(state));
     await writeFile(join(data, "corrupt.json"), "not json");
     const restored = await gyst(cwd, ["session", "status"]);
@@ -143,15 +198,14 @@ describe("gyst session CLI seam", () => {
     const restoredStatus = JSON.parse(restored.stdout);
     expect(restoredStatus.session.id).toBe(status.session.id);
     expect(restoredStatus.groups[0].count).toBe(1);
-    expect(restoredStatus.spotlight).toEqual([
-      {
-        id: spotlightHunk.id,
-        file: spotlightHunk.file,
-        title: "needs human review",
-        overview: "intent and behavior",
-        accepted: false,
-      },
-    ]);
+    expect(restoredStatus.groups[1]).toEqual({
+      id: "group-2",
+      hunkIds: [independentHunk.id],
+      count: 1,
+      title: "needs human review",
+      overview: "intent and behavior",
+      accepted: false,
+    });
     expect(restoredStatus.inbox).toEqual([]);
     expect(await daemonPid()).not.toBe(pid);
 
@@ -342,7 +396,7 @@ describe("gyst session CLI seam", () => {
             overview: "intent and behavior",
             memberHunkIds: [first.id],
           },
-          { type: "hunk.annotate", hunkId: "missing", title: "nope", overview: "nope" },
+          { type: "group.update", id: "missing", title: "nope" },
         ],
       }),
     );
@@ -363,18 +417,23 @@ describe("gyst session CLI seam", () => {
           overview: "intent and behavior",
           memberHunkIds: [first.id],
         },
-        { type: "hunk.annotate", hunkId: second.id, title: "read this", overview: "read this" },
-        { type: "queue.set", itemIds: [second.id, "group-1"] },
+        {
+          type: "group.create",
+          id: "group-2",
+          memberHunkIds: [second.id],
+          title: "read this",
+          overview: "read this",
+        },
+        { type: "queue.set", itemIds: ["group-2", "group-1"] },
       ],
     };
     const applied = await gyst(cwd, ["session", "apply"], JSON.stringify(envelope));
     expect(applied.exitCode).toBe(0);
     const status = Schema.decodeUnknownSync(StatusPayloadSchema)(JSON.parse(applied.stdout));
     expect(status.revision).toBe(1);
-    expect(status.groups).toHaveLength(1);
-    expect(status.spotlight).toHaveLength(1);
+    expect(status.groups).toHaveLength(2);
     expect(status.inbox).toEqual([]);
-    expect(status.queue).toEqual([second.id, "group-1"]);
+    expect(status.queue).toEqual(["group-2", "group-1"]);
     expect(status.queueSet).toBe(true);
     expect(status.ready).toBe(true);
 
@@ -392,7 +451,10 @@ describe("gyst session CLI seam", () => {
       JSON.stringify({
         revision: 1,
         idempotencyKey: "change",
-        ops: [{ type: "hunk.annotate", hunkId: second.id, title: "updated", overview: "updated" }],
+        ops: [
+          { type: "group.update", id: "group-2", title: "updated", overview: "updated" },
+          { type: "queue.set", itemIds: ["group-2", "group-1"] },
+        ],
       }),
     );
     expect(JSON.parse(changed.stdout).revision).toBe(2);
@@ -409,15 +471,15 @@ describe("gyst session CLI seam", () => {
         idempotencyKey: "dissolve",
         ops: [
           { type: "group.dissolve", id: "group-1" },
-          { type: "queue.set", itemIds: [second.id] },
+          { type: "queue.set", itemIds: ["group-2"] },
         ],
       }),
     );
     expect(dissolved.exitCode).toBe(0);
     expect(JSON.parse(dissolved.stdout)).toEqual(
       expect.objectContaining({
-        groups: [],
-        queue: [second.id],
+        groups: [expect.objectContaining({ id: "group-2", hunkIds: [second.id] })],
+        queue: ["group-2"],
         queueSet: true,
         ready: false,
         cursor: { itemId: null, pane: "queue" },
@@ -439,7 +501,16 @@ describe("gyst session CLI seam", () => {
         JSON.stringify({
           revision: 0,
           idempotencyKey: "concurrent-a",
-          ops: [{ type: "hunk.annotate", hunkId, title: "first", overview: "first" }],
+          ops: [
+            {
+              type: "group.create",
+              id: "group-1",
+              memberHunkIds: [hunkId],
+              title: "first",
+              overview: "first",
+            },
+            { type: "queue.set", itemIds: ["group-1"] },
+          ],
         }),
       ),
       gyst(
@@ -448,7 +519,16 @@ describe("gyst session CLI seam", () => {
         JSON.stringify({
           revision: 0,
           idempotencyKey: "concurrent-b",
-          ops: [{ type: "hunk.annotate", hunkId, title: "second", overview: "second" }],
+          ops: [
+            {
+              type: "group.create",
+              id: "group-1",
+              memberHunkIds: [hunkId],
+              title: "second",
+              overview: "second",
+            },
+            { type: "queue.set", itemIds: ["group-1"] },
+          ],
         }),
       ),
     ]);
@@ -490,12 +570,13 @@ describe("gyst session CLI seam", () => {
                 memberHunkIds: [first.id],
               },
               {
-                type: "hunk.annotate",
-                hunkId: second.id,
-                title: "stale spotlight",
-                overview: "stale spotlight",
+                type: "group.create",
+                id: "group-2",
+                memberHunkIds: [second.id],
+                title: "stale group",
+                overview: "stale group",
               },
-              { type: "queue.set", itemIds: ["group-1", second.id] },
+              { type: "queue.set", itemIds: ["group-1", "group-2"] },
             ],
           }),
         )
@@ -518,7 +599,7 @@ describe("gyst session CLI seam", () => {
     expect(refreshed.groups[0]).toEqual(
       expect.objectContaining({ id: "group-1", accepted: true, hunkIds: [first.id] }),
     );
-    expect(refreshed.spotlight).toEqual([]);
+    expect(refreshed.groups).toHaveLength(1);
     expect(refreshed.inbox).toHaveLength(2);
     expect(refreshed.queue).toEqual([
       "group-1",
@@ -591,8 +672,14 @@ describe("gyst session CLI seam", () => {
             overview: "intent and behavior",
             memberHunkIds: [first.id],
           },
-          { type: "hunk.annotate", hunkId: second.id, title: "read this", overview: "read this" },
-          { type: "queue.set", itemIds: ["group-1", second.id] },
+          {
+            type: "group.create",
+            id: "group-2",
+            memberHunkIds: [second.id],
+            title: "read this",
+            overview: "read this",
+          },
+          { type: "queue.set", itemIds: ["group-1", "group-2"] },
         ],
       }),
     );
@@ -616,7 +703,7 @@ describe("gyst session CLI seam", () => {
       itemId: "group-1",
       ...frame(1),
     });
-    expect(accepted.cursor).toEqual({ itemId: second.id, pane: "diff", hunkId: second.id });
+    expect(accepted.cursor).toEqual({ itemId: "group-2", pane: "diff", hunkId: second.id });
     expect(accepted.groups[0]!.accepted).toBe(true);
     expect(accepted.revision).toBe(2);
     expect(accepted.seq).toBe(4);
@@ -626,7 +713,7 @@ describe("gyst session CLI seam", () => {
     process.kill(pid, "SIGKILL");
     await Bun.sleep(50);
     const restored = JSON.parse((await gyst(cwd, ["session", "status"])).stdout);
-    expect(restored.cursor).toEqual({ itemId: second.id, pane: "diff", hunkId: second.id });
+    expect(restored.cursor).toEqual({ itemId: "group-2", pane: "diff", hunkId: second.id });
     expect(restored.groups[0]!.accepted).toBe(true);
     const undone = await client.action({ type: "verdict.undo", ...frame(2) });
     expect(undone.cursor).toEqual({ itemId: "group-1", pane: "diff", hunkId: first.id });

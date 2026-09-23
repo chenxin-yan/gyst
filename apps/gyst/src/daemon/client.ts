@@ -5,6 +5,7 @@ import {
   ClosePayloadSchema,
   DiffPayloadSchema,
   StatusPayloadSchema,
+  SourceCheckPayloadSchema,
   ReplySchema,
   type Request,
   RequestSchema,
@@ -88,11 +89,13 @@ export class DaemonClient extends Context.Service<
         );
         if (!reply.ok) return yield* reply.error;
         const payload =
-          input.command === "diff"
-            ? DiffPayloadSchema
-            : input.command === "close"
-              ? ClosePayloadSchema
-              : StatusPayloadSchema;
+          input.command === "check"
+            ? SourceCheckPayloadSchema
+            : input.command === "diff"
+              ? DiffPayloadSchema
+              : input.command === "close"
+                ? ClosePayloadSchema
+                : StatusPayloadSchema;
         return yield* Schema.decodeUnknownEffect(payload, { onExcessProperty: "error" })(
           reply.value,
         ).pipe(

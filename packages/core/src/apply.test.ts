@@ -2,17 +2,16 @@ import { describe, expect, it } from "bun:test";
 import { Result } from "effect";
 import { type ApplyEnvelope, type ApplyOp, applyBatch } from "./apply.ts";
 import type { Hunk, Session } from "./session.ts";
+import { statusOf } from "./status.ts";
 
 const LATER = "2026-02-02T00:00:00.000Z";
 
-const hunk = (id: string, title?: string, accepted = false): Hunk => ({
+const hunk = (id: string): Hunk => ({
   id,
   file: `${id}.ts`,
   header: "@@ -1 +1 @@",
   patch: `@@ -1 +1 @@\n-${id}\n+${id}`,
   contentHash: id,
-  ...(title === undefined ? {} : { title, overview: title }),
-  accepted,
 });
 
 const session: Session = {
@@ -24,11 +23,14 @@ const session: Session = {
   revision: 3,
   seq: 3,
   cursor: { itemId: null, pane: "queue" },
-  hunks: [hunk("h1", "first", true), hunk("h2", "second", true), hunk("h3")],
-  groups: [],
-  queue: ["h1", "h2", "h3"],
+  hunks: [hunk("h1"), hunk("h2"), hunk("h3")],
+  groups: [
+    { id: "g1", title: "first", overview: "first", hunkIds: ["h1"], accepted: true },
+    { id: "g2", title: "second", overview: "second", hunkIds: ["h2"], accepted: true },
+  ],
+  queue: ["g1", "g2", "h3"],
   queueSet: false,
-  acceptHistory: ["h1", "h2"],
+  acceptHistory: ["g1", "g2"],
   receiptOverviews: [],
   applyReceipts: [],
 };
@@ -46,98 +48,64 @@ const rejected = (ops: ApplyOp[]) => {
   return result.failure;
 };
 
+const third: ApplyOp = {
+  type: "group.create",
+  id: "g3",
+  title: "third",
+  overview: "third",
+  memberHunkIds: ["h3"],
+};
+
 describe("applyBatch", () => {
-  it("resets a spotlight verdict when its annotation changes, not when it is repeated", () => {
-    const reworded = applied([
-      { type: "hunk.annotate", hunkId: "h1", title: "reworded", overview: "reworded" },
-    ]);
-    expect(reworded.hunks[0]).toEqual(
-      expect.objectContaining({ title: "reworded", overview: "reworded", accepted: false }),
-    );
-    expect(reworded.hunks[1]?.accepted).toBe(true);
-    expect(reworded.acceptHistory).toEqual(["h2"]);
-
-    const repeated = applied([
-      { type: "hunk.annotate", hunkId: "h1", title: "first", overview: "first" },
-    ]);
-    expect(repeated.hunks[0]).toEqual(expect.objectContaining({ title: "first", accepted: true }));
-    expect(repeated.acceptHistory).toEqual(["h1", "h2"]);
-
-    // A finalized queue survives a re-wording, so the history must be pruned even then.
-    const finalized = applied(
-      [{ type: "hunk.annotate", hunkId: "h1", title: "reworded", overview: "reworded" }],
-      {
-        ...session,
-        hunks: [session.hunks[0]!, session.hunks[1]!],
-        queue: ["h1", "h2"],
-        queueSet: true,
-      },
-    );
-    expect(finalized).toMatchObject({ queueSet: true, acceptHistory: ["h2"] });
-  });
-
-  it("invalidates overview-only changes and group membership edits", () => {
-    const annotated = applied([
-      { type: "hunk.annotate", hunkId: "h1", title: "first", overview: "new context" },
-    ]);
-    expect(annotated.hunks[0]?.accepted).toBe(false);
-    expect(annotated.acceptHistory).toEqual(["h2"]);
-    const grouped: Session = {
-      ...session,
-      groups: [
-        { id: "g", title: "Behavior", overview: "Context", hunkIds: ["h1", "h3"], accepted: true },
-      ],
-      acceptHistory: ["g", "h2"],
-    };
-    for (const update of [{ overview: "Updated context" }, { memberHunkIds: ["h3"] }]) {
-      const changed = applied([{ type: "group.update", id: "g", ...update }], grouped);
+  it("invalidates title, overview and membership edits without losing unrelated verdicts", () => {
+    for (const update of [
+      { title: "Reworded" },
+      { overview: "Updated context" },
+      { memberHunkIds: ["h1", "h3"] },
+    ]) {
+      const changed = applied([
+        { type: "group.update", id: "g1", ...update },
+        { type: "queue.set", itemIds: ["g1", "g2"] },
+      ]);
       expect(changed.groups[0]?.accepted).toBe(false);
-      expect(changed.hunks[1]?.accepted).toBe(true);
-      expect(changed.acceptHistory).toEqual(["h2"]);
+      expect(changed.groups[1]?.accepted).toBe(true);
+      expect(changed.acceptHistory).toEqual(["g2"]);
+      expect(changed.queueSet).toBe(true);
     }
+    expect(session.groups[0]?.accepted).toBe(true);
   });
 
   it("rejects an empty group id and leaves the batch unapplied", () => {
     for (const id of ["", "  "]) {
       const error = rejected([
-        { type: "hunk.annotate", hunkId: "h3", title: "third", overview: "third" },
-        {
-          type: "group.create",
-          id,
-          title: "coherent change",
-          overview: "intent and behavior",
-          memberHunkIds: ["h3"],
-        },
+        { type: "group.update", id: "g1", title: "reworded" },
+        { ...third, id },
       ]);
       expect(error._tag).toBe("validation_failed");
       expect(error.detail).toEqual([{ opIndex: 1, message: "group id must not be empty" }]);
     }
+    expect(session.groups[0]?.title).toBe("first");
     expect(rejected([{ type: "group.update", id: "", title: "renamed" }]).detail).toEqual([
       { opIndex: 0, message: "group id must not be empty" },
     ]);
+    expect(rejected([{ ...third, memberHunkIds: ["h1"] }]).detail).toEqual([
+      { opIndex: 0, message: "a hunk may belong to only one group" },
+    ]);
   });
 
-  it("clears a hunk's verdict once it is hidden inside a group", () => {
-    const grouped = applied([
-      { type: "group.create", id: "g1", title: "same", overview: "same", memberHunkIds: ["h1"] },
+  it("returns dissolved members to inbox without retaining review state", () => {
+    const dissolved = applied([
+      { type: "group.dissolve", id: "g1" },
+      { type: "queue.set", itemIds: ["g2"] },
     ]);
-    expect(grouped.hunks[0]?.accepted).toBe(false);
-    expect(grouped.hunks[1]?.accepted).toBe(true);
-    expect(grouped.acceptHistory).toEqual(["h2"]);
-
-    const widened = applied(
-      [{ type: "group.update", id: "g1", memberHunkIds: ["h1", "h2"] }],
-      { ...grouped, revision: 3 },
-      "widen",
-    );
-    expect(widened.hunks.map(({ accepted }) => accepted)).toEqual([false, false, false]);
-    expect(widened.acceptHistory).toEqual([]);
+    expect(statusOf(dissolved).inbox.map(({ id }) => id)).toEqual(["h1", "h3"]);
+    expect(dissolved.hunks).toEqual(session.hunks);
+    expect(dissolved.acceptHistory).toEqual(["g2"]);
+    expect(dissolved.groups[0]?.accepted).toBe(true);
   });
 
   it("replays only an identical envelope under a reused idempotency key", () => {
-    const ops: ApplyOp[] = [
-      { type: "hunk.annotate", hunkId: "h3", title: "third", overview: "third" },
-    ];
+    const ops: ApplyOp[] = [third, { type: "queue.set", itemIds: ["g1", "g2", "g3"] }];
     const first = Result.getOrThrow(applyBatch(session, batch(ops), LATER));
     const next = first.session!;
     expect(next.updatedAt).toBe(LATER);
@@ -146,7 +114,7 @@ describe("applyBatch", () => {
     expect(replay).toEqual({ status: first.status });
 
     for (const different of [
-      batch([{ type: "hunk.annotate", hunkId: "h3", title: "changed", overview: "changed" }]),
+      batch([{ ...third, title: "changed" }]),
       { ...batch(ops), revision: next.revision },
     ]) {
       const reused = applyBatch(next, different, LATER);

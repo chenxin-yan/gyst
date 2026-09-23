@@ -38,7 +38,11 @@ const readStdin = Effect.flatMap(Stdio.Stdio, (stdio) =>
 const create = defineCommand("create", { description: "Create a session" }, (command) =>
   command
     .use(daemonClient)
-    .flags({ name: "stdin", type: "boolean", description: "Read a unified diff from stdin" })
+    .flags({
+      name: "stdin",
+      type: "boolean",
+      description: "Read a unified diff with repository-root-relative paths from stdin",
+    })
     .args(
       defineArg("gitArgs", {
         type: "string",
@@ -65,6 +69,17 @@ const status = defineCommand("status", { description: "Read session status" }, (
     .action(
       handler(({ flags, stdout }) => call("status", option("session", flags.session), stdout)),
     ),
+);
+const check = defineCommand(
+  "check",
+  { description: "Check the recorded source without refreshing (cached up to 5 seconds)" },
+  (command) =>
+    command
+      .use(daemonClient)
+      .flags(sessionFlag)
+      .action(
+        handler(({ flags, stdout }) => call("check", option("session", flags.session), stdout)),
+      ),
 );
 const diff = defineCommand("diff", { description: "Read snapshot hunks" }, (command) =>
   command
@@ -143,6 +158,7 @@ export const session = defineCommand(
       .provide(daemonClient())
       .add(create)
       .add(status)
+      .add(check)
       .add(diff)
       .add(apply)
       .add(refresh)
