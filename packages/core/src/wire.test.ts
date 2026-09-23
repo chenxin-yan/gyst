@@ -20,7 +20,7 @@ describe("daemon wire envelopes", () => {
       command: "tui.action",
       cwd: "/repo",
       args: [],
-      action: { type: "expand.toggle" },
+      action: { type: "cursor.focus", itemId: "g1", pane: "overview", hunkId: "h1" },
     } as const;
     expect(decodeRequest(request)).toEqual(request);
     expect(() =>

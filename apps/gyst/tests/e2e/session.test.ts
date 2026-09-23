@@ -383,7 +383,7 @@ describe("gyst session CLI seam", () => {
     await Bun.sleep(50);
     const statePath = join(data, `${status.session.id}.json`);
     const persisted = JSON.parse(await readFile(statePath, "utf8"));
-    persisted.cursor = { itemId: "group-1", expanded: true };
+    persisted.cursor = { itemId: "group-1", pane: "diff", hunkId: first.id };
     await writeFile(statePath, JSON.stringify(persisted));
 
     const changed = await gyst(
@@ -420,7 +420,7 @@ describe("gyst session CLI seam", () => {
         queue: [second.id],
         queueSet: true,
         ready: false,
-        cursor: { itemId: null, expanded: false },
+        cursor: { itemId: null, pane: "queue" },
       }),
     );
     await gyst(cwd, ["session", "close"]);
@@ -601,7 +601,12 @@ describe("gyst session CLI seam", () => {
       "TUI action does not apply",
     );
     await client.action({ type: "cursor.move", itemId: "group-1" });
-    await client.action({ type: "expand.toggle" });
+    await client.action({
+      type: "cursor.focus",
+      itemId: "group-1",
+      pane: "overview",
+      hunkId: first.id,
+    });
     // The frame the human saw is stale once the pre-pass moved the revision on.
     await expect(
       client.action({ type: "verdict.toggle", itemId: "group-1", ...frame(0) }),
@@ -611,7 +616,7 @@ describe("gyst session CLI seam", () => {
       itemId: "group-1",
       ...frame(1),
     });
-    expect(accepted.cursor).toEqual({ itemId: "group-1", expanded: true });
+    expect(accepted.cursor).toEqual({ itemId: second.id, pane: "diff", hunkId: second.id });
     expect(accepted.groups[0]!.accepted).toBe(true);
     expect(accepted.revision).toBe(2);
     expect(accepted.seq).toBe(4);
@@ -621,10 +626,10 @@ describe("gyst session CLI seam", () => {
     process.kill(pid, "SIGKILL");
     await Bun.sleep(50);
     const restored = JSON.parse((await gyst(cwd, ["session", "status"])).stdout);
-    expect(restored.cursor).toEqual({ itemId: "group-1", expanded: true });
+    expect(restored.cursor).toEqual({ itemId: second.id, pane: "diff", hunkId: second.id });
     expect(restored.groups[0]!.accepted).toBe(true);
     const undone = await client.action({ type: "verdict.undo", ...frame(2) });
-    expect(undone.cursor).toEqual({ itemId: "group-1", expanded: false });
+    expect(undone.cursor).toEqual({ itemId: "group-1", pane: "diff", hunkId: first.id });
     expect(undone.groups[0]!.accepted).toBe(false);
     await gyst(cwd, ["session", "close"]);
   }, 20_000);

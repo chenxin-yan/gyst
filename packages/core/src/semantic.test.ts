@@ -24,7 +24,7 @@ const initial = () =>
     updatedAt: "now",
     revision: 0,
     seq: 0,
-    cursor: { itemId: "g", expanded: false },
+    cursor: { itemId: "g", pane: "queue" },
     hunks: [hunk("a"), hunk("b"), hunk("c")],
     groups: [],
     queue: [],

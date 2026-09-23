@@ -49,10 +49,17 @@ const sessionSummaryFields = {
 };
 const cursorSchema = Schema.Struct({
   itemId: Schema.NullOr(Schema.String),
-  expanded: Schema.Boolean,
-  // Set while the human reads inside the item: one of its hunks, absent while the sidebar has focus.
+  pane: Schema.Literals(["queue", "diff", "overview"]),
   hunkId: Schema.optional(Schema.String),
-});
+}).check(
+  Schema.makeFilter(
+    (cursor) =>
+      (cursor.pane === "queue"
+        ? cursor.hunkId === undefined
+        : cursor.itemId !== null && cursor.hunkId !== undefined) ||
+      "queue focus has no hunk; zoom requires an item and hunk",
+  ),
+);
 
 const HunkSummarySchema = Schema.Struct({ id: Schema.String, file: Schema.String });
 // The wire status carries overview text; a receipt status carries an index into `receiptOverviews`.

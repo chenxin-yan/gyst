@@ -34,7 +34,7 @@ function session(): Session {
     updatedAt: "2026-01-01T00:00:00.000Z",
     revision: 4,
     seq: 7,
-    cursor: { itemId: "group-1", expanded: false },
+    cursor: { itemId: "group-1", pane: "queue" },
     hunks: [
       hunk("old-a", "a.ts", "same", "member note", true),
       hunk("old-b", "b.ts", "changed", "stale note", true),
@@ -157,15 +157,15 @@ describe("refreshSession", () => {
     expect(empty.groups).toEqual([]);
     expect(empty.queue).toEqual([]);
     expect(empty.acceptHistory).toEqual([]);
-    expect(empty.cursor).toEqual({ itemId: null, expanded: false });
+    expect(empty.cursor).toEqual({ itemId: null, pane: "queue" });
 
-    // The focused member vanished with the refresh; focus returns to the item without leaving it.
+    // The focused member vanished; zoom and pane survive on the first remaining member.
     const focused = refreshSession(
-      { ...original, cursor: { itemId: "group-1", expanded: true, hunkId: "old-c" } },
+      { ...original, cursor: { itemId: "group-1", pane: "overview", hunkId: "old-c" } },
       [hunk("fresh-a", "a.ts", "same")],
       LATER,
     );
-    expect(focused.cursor).toEqual({ itemId: "group-1", expanded: true });
+    expect(focused.cursor).toEqual({ itemId: "group-1", pane: "overview", hunkId: "old-a" });
   });
 
   it("preserves stable duplicate identities only when the whole duplicate set is unchanged", () => {
@@ -182,7 +182,7 @@ describe("refreshSession", () => {
       })),
       groups: [],
       queue: fresh.map(({ id }) => id),
-      cursor: { itemId: fresh[0]!.id, expanded: false },
+      cursor: { itemId: fresh[0]!.id, pane: "queue" },
     };
     const unchanged = refreshSession(original, snapshot(patch), LATER);
     expect(unchanged.hunks).toEqual(original.hunks);
@@ -207,7 +207,7 @@ describe("refreshSession", () => {
   it("does not transfer review state between ambiguous duplicate hunks", () => {
     const original: Session = {
       ...session(),
-      cursor: { itemId: null, expanded: false },
+      cursor: { itemId: null, pane: "queue" },
       hunks: [
         hunk("old-first", "same.ts", "duplicate", "first note", true),
         hunk("old-second", "same.ts", "duplicate", "second note", true),

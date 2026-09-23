@@ -1,6 +1,7 @@
 import { describe, it } from "bun:test";
 import assert from "node:assert/strict";
 import { testRender } from "@opentui/solid";
+import type { ScrollBoxRenderable } from "@opentui/core";
 import type { DiffPayload, StatusPayload } from "@gyst/core";
 import { App } from "./app.tsx";
 import type { TuiClient } from "./client.ts";
@@ -16,7 +17,7 @@ function status(revision = 0, seq = revision, sessionId = "session"): StatusPayl
     },
     revision,
     seq,
-    cursor: { itemId: "group", expanded: false },
+    cursor: { itemId: "group", pane: "queue" },
     groups: [
       {
         id: "group",
@@ -75,7 +76,7 @@ describe("TUI snapshot races", () => {
         state = {
           ...state,
           seq: state.seq + 1,
-          cursor: { itemId: "group", expanded: true, hunkId: `hunk-${state.revision}` },
+          cursor: { itemId: "group", pane: "diff", hunkId: `hunk-${state.revision}` },
         };
         return structuredClone(state);
       },
@@ -99,6 +100,81 @@ describe("TUI snapshot races", () => {
       tui.renderer.destroy();
     }
   });
+
+  for (const [from, to] of [
+    ["overview", "diff"],
+    ["overview", "overview"],
+    ["diff", "overview"],
+  ] as const) {
+    it(`does not retarget ${from} j/k to another shared ${to} view behind a poll`, async () => {
+      const overview = Array.from({ length: 60 }, (_, i) => `Paragraph ${i}\n`).join("\n");
+      let state: StatusPayload = {
+        ...status(),
+        cursor: { itemId: "group", pane: from, hunkId: "hunk-0" },
+        groups: [
+          { ...status().groups[0]!, overview },
+          {
+            ...status().groups[0]!,
+            id: "other",
+            title: "Other item",
+            overview,
+            hunkIds: ["other-1", "other-2"],
+            count: 2,
+          },
+        ],
+        queue: ["group", "other"],
+      };
+      let reads = 0;
+      let actions = 0;
+      const started = Promise.withResolvers<void>();
+      const release = Promise.withResolvers<void>();
+      const client: TuiClient = {
+        status: async () => {
+          if (++reads === 2) {
+            started.resolve();
+            await release.promise;
+          }
+          return structuredClone(state);
+        },
+        diff: async () => ({
+          ...diff(),
+          hunks: [
+            ...diff().hunks,
+            ...["other-1", "other-2"].map((id) => ({ ...diff().hunks[0]!, id })),
+          ],
+        }),
+        action: async () => {
+          actions++;
+          return structuredClone(state);
+        },
+        refresh: async () => structuredClone(state),
+      };
+      const tui = await testRender(() => <App client={client} pollInterval={20} />, {
+        width: 120,
+        height: 30,
+      });
+      try {
+        await tui.waitForFrame((frame) => frame.includes(`[${from}]`));
+        await started.promise;
+        await tui.mockInput.pressKey("j");
+        await tui.renderOnce();
+        state = {
+          ...state,
+          seq: state.seq + 1,
+          cursor: { itemId: "other", pane: to, hunkId: "other-1" },
+        };
+        release.resolve();
+        await tui.waitForFrame((frame) => frame.includes("Other item") && reads >= 3);
+        await tui.renderOnce();
+        const pane = tui.renderer.root.findDescendantById("overview-pane") as ScrollBoxRenderable;
+        assert.equal(actions, 0, "a scroll key never becomes navigation on another item");
+        assert.equal(pane.scrollTop, 0, "an old key never scrolls another item's overview");
+      } finally {
+        release.resolve();
+        tui.renderer.destroy();
+      }
+    });
+  }
 
   it("refresh requested during a poll is retained without repeated polling", async () => {
     let reads = 0;
@@ -218,7 +294,7 @@ describe("TUI snapshot races", () => {
     let stale = false;
     const current = {
       ...status(1, 5),
-      cursor: { itemId: "group", expanded: true, hunkId: "hunk-1" },
+      cursor: { itemId: "group", pane: "diff" as const, hunkId: "hunk-1" },
     };
     const client: TuiClient = {
       status: async () => (stale ? status(1, 3) : current),

@@ -153,7 +153,7 @@ export class Sessions extends Context.Service<
           updatedAt: now,
           revision: 0,
           seq: 0,
-          cursor: { itemId: null, expanded: false },
+          cursor: { itemId: null, pane: "queue" },
           hunks,
           groups: [],
           queue: [],

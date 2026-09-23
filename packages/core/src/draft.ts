@@ -63,14 +63,12 @@ export function reconcileQueue(session: MutableSession): void {
       .map(({ id }) => id),
   ]);
   session.acceptHistory = session.acceptHistory.filter((id) => acceptedIds.has(id));
-  const { itemId, expanded, hunkId } = session.cursor;
+  const { itemId, pane, hunkId } = session.cursor;
   if (itemId !== null && !visibleSet.has(itemId)) {
-    session.cursor = { itemId: null, expanded: false };
-  } else if (
-    itemId !== null &&
-    hunkId !== undefined &&
-    !focusableHunkIds(session, itemId).includes(hunkId)
-  ) {
-    session.cursor = { itemId, expanded };
+    session.cursor = { itemId: null, pane: "queue" };
+  } else if (itemId !== null && pane !== "queue") {
+    const members = focusableHunkIds(session, itemId);
+    if (hunkId === undefined || !members.includes(hunkId))
+      session.cursor = { itemId, pane, hunkId: members[0]! };
   }
 }

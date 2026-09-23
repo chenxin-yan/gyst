@@ -23,7 +23,7 @@ const session: Session = {
   updatedAt: "2026-01-01T00:00:00.000Z",
   revision: 3,
   seq: 3,
-  cursor: { itemId: null, expanded: false },
+  cursor: { itemId: null, pane: "queue" },
   hunks: [hunk("h1", "first", true), hunk("h2", "second", true), hunk("h3")],
   groups: [],
   queue: ["h1", "h2", "h3"],
