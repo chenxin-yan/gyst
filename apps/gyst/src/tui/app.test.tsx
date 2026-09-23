@@ -18,6 +18,7 @@ function fixture() {
   const actions: HumanAction[] = [];
   let status: StatusPayload = {
     session: {
+      formatVersion: 1,
       id: "session",
       repoRoot: "/repo",
       source: { kind: "stdin" },
@@ -30,14 +31,22 @@ function fixture() {
     groups: [
       {
         id: "group",
-        tldr: "rename old to new",
-        exemplarHunkId: "a.ts",
+        title: "rename old to new",
+        overview: "Rename entry point and caller together.",
         hunkIds: ["b.ts", "a.ts"],
         count: 2,
         accepted: false,
       },
     ],
-    spotlight: [{ id: "c.ts", file: "c.ts", tldr: "cache behavior changed", accepted: false }],
+    spotlight: [
+      {
+        id: "c.ts",
+        file: "c.ts",
+        title: "cache behavior changed",
+        overview: "Refresh cached values.",
+        accepted: false,
+      },
+    ],
     inbox: [{ id: "d.ts", file: "d.ts" }],
     queue: ["group", "c.ts"],
     // Finalized queue with an inbox item left: verdicts are allowed, the session is not yet ready.
@@ -46,6 +55,7 @@ function fixture() {
     files: ["a.ts", "b.ts", "c.ts", "d.ts"].map((path) => ({ path, hunkCount: 1 })),
   };
   let diff: DiffPayload = {
+    formatVersion: 1,
     sessionId: "session",
     revision: 0,
     hunks: [
@@ -160,21 +170,21 @@ describe("TUI", () => {
     let frame = tui.captureCharFrame();
     assert(frame.includes("  stdin"), "header names the stdin scope");
     assert(frame.includes("rename old to new"));
-    assert(frame.includes("exemplar · 1 of 2"));
+    assert(frame.includes("all 2 members"));
     assert(
-      frame.includes("const old = 1"),
-      "collapsed group renders the declared exemplar rather than its first member",
+      frame.includes("const old = 1") && frame.includes("old()"),
+      "all members render in publication order",
     );
+    assert(frame.indexOf("old()") < frame.indexOf("const old = 1"));
+    assert(!frame.includes("Rename entry point"), "browse does not render the overview");
     assert(frame.includes("! d.ts"), "inbox is visibly distinct");
 
     await press(tui, "e");
-    assert(tui.captureCharFrame().includes("all 2 members"), "e expands a group");
-    await press(tui, "e");
-    assert(tui.captureCharFrame().includes("exemplar · 1 of 2"), "e folds a group");
+    assert.equal(state.actions.length, 0, "fold control is removed");
     await press(tui, "a");
     frame = tui.captureCharFrame();
     assert(frame.includes("✓ accepted"));
-    assert(frame.includes("exemplar · 1 of 2"), "accept does not advance");
+    assert(frame.includes("all 2 members"), "stage 1 accept keeps the selected item");
     assert.equal(state.status().revision, 1, "verdict bumps revision");
     assert.deepEqual(
       state.actions.at(-1),
@@ -186,7 +196,7 @@ describe("TUI", () => {
     assert(tui.captureCharFrame().includes("SPOTLIGHT"));
     assert.equal(state.status().seq, seqBeforeMove + 1, "cursor bumps seq once");
     await press(tui, "u");
-    assert(tui.captureCharFrame().includes("exemplar · 1 of 2"), "undo returns to accepted item");
+    assert(tui.captureCharFrame().includes("all 2 members"), "undo returns to accepted item");
     assert(!tui.captureCharFrame().includes("✓ accepted"), "undo clears verdict");
 
     const paired = (value: string) =>
@@ -229,7 +239,7 @@ describe("TUI", () => {
     await press(tui, "k");
     assert(tui.captureCharFrame().includes("▍GROUP"));
     const moved = structuredClone(state.status()) as any;
-    moved.groups[0].tldr = "rename old to new (reworded)";
+    moved.groups[0].title = "rename old to new (reworded)";
     moved.revision++;
     state.setStatus(moved);
     const actionsBeforeStale = state.actions.length;
@@ -255,7 +265,7 @@ describe("TUI", () => {
       "Enter focuses the group's first member",
     );
     let frame = tui.captureCharFrame();
-    assert(frame.includes("all 2 members"), "focusing a group expands it");
+    assert(frame.includes("all 2 members"), "focusing retains all members");
     assert(frame.includes("j/k to step, esc to leave"), "focused card names the pane keys");
     await press(tui, "j");
     assert.deepEqual(state.actions.at(-1), { type: "cursor.focus", hunkId: "a.ts" });
@@ -271,7 +281,7 @@ describe("TUI", () => {
     await press(tui, "ESCAPE");
     assert.deepEqual(state.actions.at(-1), { type: "cursor.focus", hunkId: null });
     frame = tui.captureCharFrame();
-    assert(frame.includes("all 2 members"), "leaving keeps the group expanded");
+    assert(frame.includes("all 2 members"), "leaving retains all members");
     assert(frame.includes("enter to step through"), "unfocused card offers Enter");
     await press(tui, "j");
     assert.deepEqual(
@@ -348,6 +358,70 @@ describe("TUI", () => {
       "an unchanged poll must not scroll the focused member back into view",
     );
     tui.renderer.destroy();
+  });
+
+  it("preserves cursor and manual scroll when another complete item is published", async () => {
+    const state = fixture();
+    const tui = await testRender(() => <App client={tallGroup(state)} pollInterval={5} />, {
+      width: 100,
+      height: 30,
+    });
+    try {
+      await tui.waitForFrame((frame) => frame.includes("first_0"));
+      await press(tui, "RETURN");
+      await press(tui, "d", { ctrl: true });
+      const before = tui
+        .captureCharFrame()
+        .split("\n")
+        .filter((line) => line.includes("first_"))
+        .map((line) => line.slice(27));
+      assert(!before.some((line) => line.includes("first_0")));
+      const next = structuredClone(state.status()) as any;
+      next.spotlight.push({
+        id: "d.ts",
+        file: "d.ts",
+        title: "Newly published",
+        overview: "Independent change",
+        accepted: false,
+      });
+      next.inbox = [];
+      next.queue.push("d.ts");
+      next.revision++;
+      next.seq++;
+      next.ready = true;
+      state.setStatus(next);
+      await tui.waitForFrame((frame) => frame.includes("Newly published"));
+      assert.deepEqual(state.status().cursor, { itemId: "group", expanded: true, hunkId: "b.ts" });
+      assert.deepEqual(
+        tui
+          .captureCharFrame()
+          .split("\n")
+          .filter((line) => line.includes("first_"))
+          .map((line) => line.slice(27)),
+        before,
+      );
+    } finally {
+      tui.renderer.destroy();
+    }
+  });
+
+  it("distinguishes reviewed prepared work from completion while the inbox remains", async () => {
+    const state = fixture();
+    const next = structuredClone(state.status()) as any;
+    next.groups[0].accepted = true;
+    next.spotlight[0].accepted = true;
+    state.setStatus(next);
+    const tui = await testRender(() => <App client={state.client} pollInterval={60_000} />, {
+      width: 100,
+      height: 30,
+    });
+    try {
+      await tui.waitForFrame((frame) => frame.includes("reviewed everything prepared so far"));
+      assert(tui.captureCharFrame().includes("1 hunks awaiting preparation"));
+      assert(!tui.captureCharFrame().includes("review complete"));
+    } finally {
+      tui.renderer.destroy();
+    }
   });
 
   it("blocks verdict keys while the review queue is unset", async () => {

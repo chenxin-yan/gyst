@@ -73,12 +73,19 @@ type ViewItem =
   | {
       kind: "group";
       id: string;
-      tldr: string;
+      title: string;
+      overview: string;
       accepted: boolean;
-      exemplar: Member;
       members: Member[];
     }
-  | { kind: "spotlight"; id: string; tldr: string; accepted: boolean; member: Member }
+  | {
+      kind: "spotlight";
+      id: string;
+      title: string;
+      overview: string;
+      accepted: boolean;
+      member: Member;
+    }
   | { kind: "inbox"; id: string; accepted: false; member: Member };
 type LayoutMode = "auto" | "split" | "stack";
 
@@ -97,15 +104,14 @@ function memberOf(hunk: Hunk): Member {
 function buildItems(status: StatusPayload, hunks: Map<string, Member>): ViewItem[] {
   const groups = status.groups.flatMap((group): ViewItem[] => {
     const members = group.hunkIds.flatMap((id) => hunks.get(id) ?? []);
-    const exemplar = hunks.get(group.exemplarHunkId);
-    return members.length && exemplar
+    return members.length
       ? [
           {
             kind: "group",
             id: group.id,
-            tldr: group.tldr,
+            title: group.title,
+            overview: group.overview,
             accepted: group.accepted,
-            exemplar,
             members,
           },
         ]
@@ -114,7 +120,16 @@ function buildItems(status: StatusPayload, hunks: Map<string, Member>): ViewItem
   const spotlight = status.spotlight.flatMap((hunk): ViewItem[] => {
     const member = hunks.get(hunk.id);
     return member
-      ? [{ kind: "spotlight", id: hunk.id, tldr: hunk.tldr, accepted: hunk.accepted, member }]
+      ? [
+          {
+            kind: "spotlight",
+            id: hunk.id,
+            title: hunk.title,
+            overview: hunk.overview,
+            accepted: hunk.accepted,
+            member,
+          },
+        ]
       : [];
   });
   const inbox = status.inbox.flatMap((hunk): ViewItem[] => {
@@ -209,7 +224,6 @@ function VerdictTag(props: { accepted: boolean }) {
 
 function FocusCard(props: {
   item: ViewItem;
-  expanded: boolean;
   focusedHunk: string | undefined;
   layout: "split" | "stack";
 }) {
@@ -224,39 +238,19 @@ function FocusCard(props: {
           <Sp fg={C.dim}> ×{props.item.members.length}</Sp>
           <VerdictTag accepted={props.item.accepted} />
         </text>
-        <Note text={props.item.tldr} />
+        <Note text={props.item.title} />
         <text> </text>
-        <Show
-          when={props.expanded}
-          fallback={
-            <box flexDirection="column">
-              <text fg={C.dim}>exemplar · 1 of {props.item.members.length}</text>
-              <MemberDiff
-                member={props.item.exemplar}
-                layout={props.layout}
-                focused={focused(props.item.exemplar)}
-              />
-              <text fg={C.dim}>(e to expand)</text>
+        <text fg={C.dim}>
+          all {props.item.members.length} members (
+          {props.focusedHunk === undefined ? "enter to step through" : "j/k to step, esc to leave"})
+        </text>
+        <For each={props.item.members}>
+          {(member) => (
+            <box paddingBottom={1}>
+              <MemberDiff member={member} layout={props.layout} focused={focused(member)} />
             </box>
-          }
-        >
-          <box flexDirection="column">
-            <text fg={C.dim}>
-              all {props.item.members.length} members (e to fold
-              {props.focusedHunk === undefined
-                ? ", enter to step through"
-                : ", j/k to step, esc to leave"}
-              )
-            </text>
-            <For each={props.item.members}>
-              {(member) => (
-                <box paddingBottom={1}>
-                  <MemberDiff member={member} layout={props.layout} focused={focused(member)} />
-                </box>
-              )}
-            </For>
-          </box>
-        </Show>
+          )}
+        </For>
       </box>
     );
   if (props.item.kind === "spotlight")
@@ -274,7 +268,7 @@ function FocusCard(props: {
         <text fg={C.muted} attributes={2}>
           {props.item.member.header}
         </text>
-        <Note text={props.item.tldr} />
+        <Note text={props.item.title} />
         <text> </text>
         <MemberDiff
           member={props.item.member}
@@ -482,7 +476,11 @@ export function App(props: {
   async function refresh(): Promise<void> {
     try {
       const coherent = await synchronize(await props.client.refresh());
-      setMessage(coherent ? "snapshot refreshed" : "refreshed; waiting for a coherent view");
+      setMessage(
+        coherent
+          ? "snapshot refreshed — changed group members need re-review"
+          : "refreshed; waiting for a coherent view",
+      );
     } catch (error) {
       setMessage(error instanceof Error ? error.message : String(error));
     }
@@ -561,10 +559,6 @@ export function App(props: {
         const destination = visible[(currentIndex() + delta + visible.length) % visible.length]!;
         await action({ type: "cursor.move", itemId: destination.id });
       });
-    if (key.name === "e")
-      return enqueue(async () => {
-        if (current()?.kind === "group") await action({ type: "expand.toggle" });
-      });
     if (key.name === "a" || key.name === "u") {
       // Captured at keypress: the verdict names the frame the human saw, not whatever lands later.
       const seen = status();
@@ -581,7 +575,7 @@ export function App(props: {
 
   const sidebarRow = (item: ViewItem) => {
     const active = () => item.id === current()?.id;
-    const label = item.kind === "group" ? item.tldr : item.member.file;
+    const label = item.kind === "inbox" ? item.member.file : item.title;
     return (
       <box flexDirection="row" backgroundColor={active() ? C.panelAlt : C.panel}>
         <text fg={active() ? C.accent : C.panel} bg={active() ? C.panelAlt : C.panel}>
@@ -659,7 +653,6 @@ export function App(props: {
                 <Show when={currentKey()} keyed fallback={<text>no review items</text>}>
                   <FocusCard
                     item={current()!}
-                    expanded={status()!.cursor.expanded}
                     focusedHunk={focusedHunk()}
                     layout={resolvedLayout()}
                   />
@@ -668,6 +661,16 @@ export function App(props: {
             </Show>
           </box>
         )}
+      </Show>
+      <Show when={status() && !allDone()}>
+        <text fg={C.muted}>
+          {!status()!.queueSet || status()!.groups.length + status()!.spotlight.length === 0
+            ? `preparing — ${status()!.inbox.length} hunks awaiting preparation`
+            : [...status()!.groups, ...status()!.spotlight].every((item) => item.accepted) &&
+                status()!.inbox.length > 0
+              ? `reviewed everything prepared so far — ${status()!.inbox.length} hunks awaiting preparation`
+              : `ready to review these items — ${status()!.inbox.length} hunks awaiting preparation`}
+        </text>
       </Show>
       <Show when={Boolean(message()) && Boolean(status())}>
         <text fg={C.accent}>{message()}</text>
@@ -700,8 +703,7 @@ export function App(props: {
               ["j / k", "next / previous item, or hunk when focused"],
               ["enter / esc", "focus / leave the diff pane"],
               ["^d / ^u", "scroll item down / up (PgDn / PgUp)"],
-              ["a", "accept — done reviewing (toggle)"],
-              ["e", "expand group members (toggle)"],
+              ["a", "accept whole item, including every group member"],
               ["u", "undo last accept"],
               ["s", "toggle sidebar"],
               ["1 / 2 / 0", "split / stack / auto layout"],

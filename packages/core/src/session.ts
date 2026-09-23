@@ -1,4 +1,8 @@
 import { Schema } from "effect";
+import { metadataFields, OverviewSchema, TitleSchema } from "./metadata.ts";
+
+export const SESSION_FORMAT_VERSION = 1;
+export const FormatVersionSchema = Schema.Literal(SESSION_FORMAT_VERSION);
 
 export const HunkSchema = Schema.Struct({
   id: Schema.String,
@@ -6,15 +10,21 @@ export const HunkSchema = Schema.Struct({
   header: Schema.String,
   patch: Schema.String,
   contentHash: Schema.String,
-  tldr: Schema.optional(Schema.String),
+  title: Schema.optional(TitleSchema),
+  overview: Schema.optional(OverviewSchema),
   accepted: Schema.Boolean,
-});
+}).check(
+  Schema.makeFilter(
+    (hunk) =>
+      (hunk.title === undefined) === (hunk.overview === undefined) ||
+      "hunk title and overview must be present together",
+  ),
+);
 export type Hunk = typeof HunkSchema.Type;
 
 export const GroupSchema = Schema.Struct({
   id: Schema.String,
-  tldr: Schema.String,
-  exemplarHunkId: Schema.String,
+  ...metadataFields,
   hunkIds: Schema.Array(Schema.String),
   accepted: Schema.Boolean,
 });
@@ -34,6 +44,7 @@ export const SourceSchema = Schema.Union([
 export type Source = typeof SourceSchema.Type;
 
 const sessionSummaryFields = {
+  formatVersion: FormatVersionSchema,
   id: Schema.String,
   repoRoot: Schema.String,
   source: SourceSchema,
@@ -56,7 +67,7 @@ const GroupSummarySchema = Schema.Struct({
 const SpotlightSummarySchema = Schema.Struct({
   id: Schema.String,
   file: Schema.String,
-  tldr: Schema.String,
+  ...metadataFields,
   accepted: Schema.Boolean,
 });
 export const StatusPayloadSchema = Schema.Struct({

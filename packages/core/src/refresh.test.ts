@@ -13,7 +13,7 @@ const hunk = (
   id: string,
   file: string,
   contentHash: string,
-  tldr?: string,
+  title?: string,
   accepted = false,
 ): Hunk => ({
   id,
@@ -21,12 +21,13 @@ const hunk = (
   contentHash,
   header: "@@ -1 +1 @@",
   patch: `@@ -1 +1 @@\n-${id}\n+${contentHash}`,
-  ...(tldr === undefined ? {} : { tldr }),
+  ...(title === undefined ? {} : { title, overview: title }),
   accepted,
 });
 
 function session(): Session {
   return {
+    formatVersion: 1,
     id: "session",
     repoRoot: "/repo",
     source: { kind: "git", args: ["HEAD"], cwd: "/repo" },
@@ -44,8 +45,8 @@ function session(): Session {
     groups: [
       {
         id: "group-1",
-        tldr: "mechanical",
-        exemplarHunkId: "old-a",
+        title: "coherent change",
+        overview: "intent and behavior",
         hunkIds: ["old-a"],
         accepted: true,
       },
@@ -74,11 +75,36 @@ describe("refreshSession", () => {
     expect(refreshed.updatedAt).toBe(LATER);
     expect(refreshed.hunks).toEqual([
       // A grouped hunk is hidden behind its group, so it carries no verdict of its own.
-      expect.objectContaining({ id: "old-a", tldr: "member note", accepted: false }),
-      expect.objectContaining({ id: "fresh-b", tldr: undefined, accepted: false }),
-      expect.objectContaining({ id: "fresh-d", tldr: undefined, accepted: false }),
-      expect.objectContaining({ id: "old-d", tldr: "keep note", accepted: true }),
-      expect.objectContaining({ id: "fresh-cross-file", tldr: undefined, accepted: false }),
+      expect.objectContaining({
+        id: "old-a",
+        title: "member note",
+        overview: "member note",
+        accepted: false,
+      }),
+      expect.objectContaining({
+        id: "fresh-b",
+        title: undefined,
+        overview: undefined,
+        accepted: false,
+      }),
+      expect.objectContaining({
+        id: "fresh-d",
+        title: undefined,
+        overview: undefined,
+        accepted: false,
+      }),
+      expect.objectContaining({
+        id: "old-d",
+        title: "keep note",
+        overview: "keep note",
+        accepted: true,
+      }),
+      expect.objectContaining({
+        id: "fresh-cross-file",
+        title: undefined,
+        overview: undefined,
+        accepted: false,
+      }),
     ]);
     expect(refreshed.groups).toEqual([
       expect.objectContaining({ id: "group-1", hunkIds: ["old-a"], accepted: true }),
@@ -90,14 +116,14 @@ describe("refreshSession", () => {
     expect(refreshed.seq).toBe(8);
   });
 
-  it("drops vanished groups and unaccepts a group whose exemplar was replaced", () => {
+  it("drops vanished groups and unaccepts a group when any member disappears", () => {
     const original: Session = {
       ...session(),
       groups: [
         {
           id: "group-1",
-          tldr: "mechanical",
-          exemplarHunkId: "old-c",
+          title: "coherent change",
+          overview: "intent and behavior",
           hunkIds: ["old-a", "old-c"],
           accepted: true,
         },
@@ -105,18 +131,19 @@ describe("refreshSession", () => {
       queue: ["group-1", "old-b"],
     };
     const refreshed = refreshSession(original, [hunk("fresh-a", "a.ts", "same")], LATER);
-    // The human accepted the group as shown through old-c; a different exemplar is a new claim.
     expect(refreshed.groups[0]).toEqual(
-      expect.objectContaining({ exemplarHunkId: "old-a", hunkIds: ["old-a"], accepted: false }),
+      expect.objectContaining({
+        title: "coherent change",
+        overview: "intent and behavior",
+        hunkIds: ["old-a"],
+        accepted: false,
+      }),
     );
     expect(refreshed.acceptHistory).toEqual([]);
+    // Losing either member invalidates the verdict, regardless of position.
     expect(
-      refreshSession(
-        { ...original, groups: [{ ...original.groups[0]!, exemplarHunkId: "old-a" }] },
-        [hunk("fresh-a", "a.ts", "same")],
-        LATER,
-      ).groups[0]?.accepted,
-    ).toBe(true);
+      refreshSession(original, [hunk("fresh-c", "c.ts", "gone")], LATER).groups[0]?.accepted,
+    ).toBe(false);
 
     expect(refreshed.queue).toEqual(["group-1"]);
     expect(refreshed.queueSet).toBe(true);
@@ -149,7 +176,8 @@ describe("refreshSession", () => {
       ...session(),
       hunks: fresh.map((hunk, index) => ({
         ...hunk,
-        tldr: `note ${index}`,
+        title: `note ${index}`,
+        overview: `note ${index}`,
         accepted: index === 0,
       })),
       groups: [],
@@ -167,7 +195,11 @@ describe("refreshSession", () => {
       snapshot(patch.replace("@@ -20 +20 @@", "@@ -30 +30 @@")),
     ]) {
       const refreshed = refreshSession(original, changed, LATER);
-      expect(refreshed.hunks.every((hunk) => !hunk.accepted && hunk.tldr === undefined)).toBe(true);
+      expect(
+        refreshed.hunks.every(
+          (hunk) => !hunk.accepted && hunk.title === undefined && hunk.overview === undefined,
+        ),
+      ).toBe(true);
       expect(refreshed.queueSet).toBe(false);
     }
   });
@@ -183,8 +215,8 @@ describe("refreshSession", () => {
       groups: [
         {
           id: "group-1",
-          tldr: "duplicate edits",
-          exemplarHunkId: "old-first",
+          title: "duplicate edits",
+          overview: "intent and behavior",
           hunkIds: ["old-first", "old-second"],
           accepted: true,
         },
@@ -195,7 +227,12 @@ describe("refreshSession", () => {
     const refreshed = refreshSession(original, [hunk("fresh-only", "same.ts", "duplicate")], LATER);
 
     expect(refreshed.hunks).toEqual([
-      expect.objectContaining({ id: "fresh-only", tldr: undefined, accepted: false }),
+      expect.objectContaining({
+        id: "fresh-only",
+        title: undefined,
+        overview: undefined,
+        accepted: false,
+      }),
     ]);
     expect(refreshed.groups).toEqual([]);
   });

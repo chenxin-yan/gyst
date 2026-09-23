@@ -5,17 +5,18 @@ import type { Hunk, Session } from "./session.ts";
 
 const LATER = "2026-02-02T00:00:00.000Z";
 
-const hunk = (id: string, tldr?: string): Hunk => ({
+const hunk = (id: string, title?: string): Hunk => ({
   id,
   file: `${id}.ts`,
   header: "@@ -1 +1 @@",
   patch: `@@ -1 +1 @@\n-${id}\n+${id}`,
   contentHash: id,
-  ...(tldr === undefined ? {} : { tldr }),
+  ...(title === undefined ? {} : { title, overview: title }),
   accepted: false,
 });
 
 const unready: Session = {
+  formatVersion: 1,
   id: "session",
   repoRoot: "/repo",
   source: { kind: "stdin" },
@@ -25,7 +26,15 @@ const unready: Session = {
   seq: 3,
   cursor: { itemId: "g1", expanded: false },
   hunks: [hunk("h1"), hunk("h2", "read me")],
-  groups: [{ id: "g1", tldr: "same edit", exemplarHunkId: "h1", hunkIds: ["h1"], accepted: false }],
+  groups: [
+    {
+      id: "g1",
+      title: "same edit",
+      overview: "intent and behavior",
+      hunkIds: ["h1"],
+      accepted: false,
+    },
+  ],
   queue: ["g1", "h2"],
   queueSet: false,
   acceptHistory: [],

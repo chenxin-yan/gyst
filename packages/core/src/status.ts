@@ -7,11 +7,18 @@ export function statusOf(session: Session): StatusPayload {
   for (const hunk of session.hunks) counts.set(hunk.file, (counts.get(hunk.file) ?? 0) + 1);
   const grouped = groupedIds(session);
   const spotlight = session.hunks.filter(
-    (hunk) => !grouped.has(hunk.id) && hunk.tldr !== undefined,
+    (hunk) => !grouped.has(hunk.id) && hunk.title !== undefined,
   );
-  const inbox = session.hunks.filter((hunk) => !grouped.has(hunk.id) && hunk.tldr === undefined);
+  const inbox = session.hunks.filter((hunk) => !grouped.has(hunk.id) && hunk.title === undefined);
   return {
-    session: Struct.pick(session, ["id", "repoRoot", "source", "createdAt", "updatedAt"]),
+    session: Struct.pick(session, [
+      "formatVersion",
+      "id",
+      "repoRoot",
+      "source",
+      "createdAt",
+      "updatedAt",
+    ]),
     revision: session.revision,
     seq: session.seq,
     cursor: session.cursor,
@@ -19,7 +26,8 @@ export function statusOf(session: Session): StatusPayload {
     spotlight: spotlight.map((hunk) => ({
       id: hunk.id,
       file: hunk.file,
-      tldr: hunk.tldr!,
+      title: hunk.title!,
+      overview: hunk.overview!,
       accepted: hunk.accepted,
     })),
     inbox: inbox.map(({ id, file }) => ({ id, file })),

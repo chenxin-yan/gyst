@@ -1,14 +1,39 @@
-import { type Session, SessionSchema } from "@gyst/core";
-import { Array, Context, Effect, FileSystem, Layer, type PlatformError, Schema } from "effect";
+import { type Session, SessionSchema, SESSION_FORMAT_VERSION } from "@gyst/core";
+import { Context, Effect, FileSystem, Layer, Option, type PlatformError, Schema } from "effect";
+import { isAbsolute, normalize } from "node:path";
 import { Paths } from "./paths.ts";
 
-const decodeSessionFile = Schema.decodeUnknownEffect(Schema.fromJsonString(SessionSchema));
+const decodeSessionFile = Schema.decodeUnknownEffect(Schema.fromJsonString(SessionSchema), {
+  onExcessProperty: "error",
+});
+const decodeIdentity = Schema.decodeUnknownEffect(
+  Schema.fromJsonString(
+    Schema.Struct({
+      id: Schema.String.check(Schema.makeFilter((id) => /^[a-zA-Z0-9_-]+$/.test(id))),
+      repoRoot: Schema.String.check(
+        Schema.makeFilter(
+          (root) =>
+            // eslint-disable-next-line no-control-regex -- Identity paths must be safe to report.
+            isAbsolute(root) && normalize(root) === root && !/[\x00-\x1f\x7f-\x9f]/.test(root),
+        ),
+      ),
+      formatVersion: Schema.optional(Schema.Unknown),
+    }),
+  ),
+);
+export type IncompatibleSession = {
+  id: string;
+  repoRoot: string;
+  path: string;
+  formatVersion: string | number | null;
+};
+export type StoredSessions = { sessions: Session[]; incompatible: IncompatibleSession[] };
 
 export class SessionStore extends Context.Service<
   SessionStore,
   {
-    /** Undecodable files are skipped: a corrupt or older session must not block valid ones. */
-    readonly loadAll: Effect.Effect<Array<Session>, PlatformError.PlatformError>;
+    /** Corrupt files are skipped; recognizable incompatible identities remain reserved. */
+    readonly loadAll: Effect.Effect<StoredSessions, PlatformError.PlatformError>;
     save(session: Session): Effect.Effect<void, PlatformError.PlatformError>;
     remove(id: string): Effect.Effect<void, PlatformError.PlatformError>;
   }
@@ -22,14 +47,28 @@ export class SessionStore extends Context.Service<
 
       const loadAll = Effect.gen(function* () {
         const files = yield* fs.readDirectory(paths.dataDir);
-        const sessions = yield* Effect.forEach(
-          files.filter((file) => file.endsWith(".json")),
-          (file) =>
-            fs
-              .readFileString(paths.sessionFile(file.slice(0, -".json".length)))
-              .pipe(Effect.flatMap((content) => Effect.option(decodeSessionFile(content)))),
-        );
-        return Array.getSomes(sessions);
+        const result: StoredSessions = { sessions: [], incompatible: [] };
+        for (const file of files.filter((name) => name.endsWith(".json"))) {
+          const path = paths.sessionFile(file.slice(0, -".json".length));
+          const content = yield* fs.readFileString(path);
+          const identity = yield* Effect.option(decodeIdentity(content));
+          if (Option.isSome(identity) && identity.value.formatVersion !== SESSION_FORMAT_VERSION) {
+            const { id, repoRoot, formatVersion } = identity.value;
+            result.incompatible.push({
+              id,
+              repoRoot,
+              path,
+              formatVersion:
+                typeof formatVersion === "number" || typeof formatVersion === "string"
+                  ? formatVersion
+                  : null,
+            });
+            continue;
+          }
+          const session = yield* Effect.option(decodeSessionFile(content));
+          if (Option.isSome(session)) result.sessions.push(session.value);
+        }
+        return result;
       }).pipe(Effect.withSpan("SessionStore.loadAll"));
 
       // Temp + rename: a reader never sees a half-written session. The scope removes the temp

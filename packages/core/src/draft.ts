@@ -49,7 +49,7 @@ export function reconcileQueue(session: MutableSession): void {
   const acceptedIds = new Set([
     ...session.groups.filter(({ accepted }) => accepted).map(({ id }) => id),
     ...session.hunks
-      .filter(({ accepted, tldr, id }) => accepted && tldr !== undefined && visibleSet.has(id))
+      .filter(({ accepted, title, id }) => accepted && title !== undefined && visibleSet.has(id))
       .map(({ id }) => id),
   ]);
   session.acceptHistory = session.acceptHistory.filter((id) => acceptedIds.has(id));

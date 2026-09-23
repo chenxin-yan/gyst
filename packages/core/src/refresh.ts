@@ -35,22 +35,26 @@ export function refreshSession(
       matches?.length === 1 && freshMatchCounts.get(key) === 1
         ? matches[0]
         : stableDuplicates.get(fresh.id);
-    if (!old) return { ...fresh, tldr: undefined, accepted: false };
+    if (!old) return { ...fresh, title: undefined, overview: undefined, accepted: false };
     survivingIds.add(old.id);
-    return { ...fresh, id: old.id, tldr: old.tldr, accepted: old.accepted };
+    return {
+      ...fresh,
+      id: old.id,
+      title: old.title,
+      overview: old.overview,
+      accepted: old.accepted,
+    };
   });
 
   draft.groups = draft.groups.flatMap((group) => {
     const hunkIds = group.hunkIds.filter((id) => survivingIds.has(id));
     if (hunkIds.length === 0) return [];
-    const exemplarSurvived = hunkIds.includes(group.exemplarHunkId);
     return [
       {
         ...group,
         hunkIds,
-        exemplarHunkId: exemplarSurvived ? group.exemplarHunkId : hunkIds[0]!,
-        // The human judged the group through its exemplar; a different one is a new claim.
-        accepted: exemplarSurvived && group.accepted,
+        // A verdict covers every member, not just the surviving ones.
+        accepted: hunkIds.length === group.hunkIds.length && group.accepted,
       },
     ];
   });

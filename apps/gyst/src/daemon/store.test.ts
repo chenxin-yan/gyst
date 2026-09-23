@@ -1,8 +1,8 @@
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import { BunServices } from "@effect/platform-bun";
-import type { Session } from "@gyst/core";
+import { type Session, statusOf } from "@gyst/core";
 import { ConfigProvider, Effect, Layer } from "effect";
-import { chmod, mkdir, mkdtemp, readdir, rm, stat, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Paths } from "./paths.ts";
@@ -11,6 +11,7 @@ import { SessionStore } from "./store.ts";
 let dataDir: string;
 
 const session = (id: string): Session => ({
+  formatVersion: 1,
   id,
   repoRoot: "/repo",
   source: { kind: "stdin" },
@@ -64,7 +65,55 @@ describe("SessionStore", () => {
       JSON.stringify({ ...session("older"), queue: undefined }),
     );
     const loaded = await run(SessionStore.use((s) => s.loadAll));
-    expect(loaded.map((loadedSession) => loadedSession.id)).toEqual(["a"]);
+    expect(loaded.sessions.map((loadedSession) => loadedSession.id)).toEqual(["a"]);
+    expect(loaded.incompatible).toEqual([]);
+  });
+
+  it("reports recognizable legacy/mismatched files without decoding their state or touching bytes", async () => {
+    for (const [id, formatVersion] of [
+      ["legacy", undefined],
+      ["future", 99],
+    ] as const) {
+      const path = join(dataDir, `${id}.json`);
+      const content = JSON.stringify({
+        id,
+        repoRoot: `/repo-${id}`,
+        formatVersion,
+        applyReceipts: "not decoded",
+      });
+      await writeFile(path, content);
+      const loaded = await run(SessionStore.use((s) => s.loadAll));
+      expect(loaded.incompatible).toContainEqual({
+        id,
+        repoRoot: `/repo-${id}`,
+        path,
+        formatVersion: formatVersion ?? null,
+      });
+      expect(await readFile(path, "utf8")).toBe(content);
+      expect(loaded.sessions.map(({ id }) => id)).toEqual(["a"]);
+    }
+  });
+
+  it("round-trips semantic metadata inside persisted historical receipt snapshots", async () => {
+    const prepared: Session = {
+      ...session("semantic"),
+      groups: [
+        {
+          id: "g",
+          title: "API and tests",
+          overview: "## Intent\nDifferent operations, one behavior.",
+          hunkIds: ["h"],
+          accepted: false,
+        },
+      ],
+    };
+    const saved: Session = {
+      ...prepared,
+      applyReceipts: [{ key: "publish", digest: "digest", status: statusOf(prepared) }],
+    };
+    await run(SessionStore.use((s) => s.save(saved)));
+    const loaded = await run(SessionStore.use((s) => s.loadAll));
+    expect(loaded.sessions.find(({ id }) => id === "semantic")).toEqual(saved);
   });
 
   it.skipIf(process.getuid?.() === 0)(

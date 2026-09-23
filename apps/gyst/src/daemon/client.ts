@@ -2,6 +2,9 @@ import { BunSocket } from "@effect/platform-bun";
 import {
   type DaemonError,
   DaemonUnreachable,
+  ClosePayloadSchema,
+  DiffPayloadSchema,
+  StatusPayloadSchema,
   ReplySchema,
   type Request,
   RequestSchema,
@@ -84,7 +87,24 @@ export class DaemonClient extends Context.Service<
           ),
         );
         if (!reply.ok) return yield* reply.error;
-        return reply.value;
+        const payload =
+          input.command === "diff"
+            ? DiffPayloadSchema
+            : input.command === "close"
+              ? ClosePayloadSchema
+              : StatusPayloadSchema;
+        return yield* Schema.decodeUnknownEffect(payload, { onExcessProperty: "error" })(
+          reply.value,
+        ).pipe(
+          Effect.mapError(
+            (error) =>
+              new DaemonUnreachable({
+                message:
+                  "incompatible daemon reply: finish sessions with the old gyst version and exit its daemon before upgrading; refresh installed skills",
+                detail: error.message,
+              }),
+          ),
+        );
       });
 
       return DaemonClient.of({ request });
