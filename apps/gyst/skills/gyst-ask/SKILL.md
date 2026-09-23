@@ -9,8 +9,8 @@ disable-model-invocation: true
 Works cold, without memory of the pre-pass:
 
 1. Run `gyst session status` in the repo.
-2. Resolve `cursor.itemId` to its group or spotlight hunk and read its title and overview. A group is one coherent change and its verdict covers every member. When `cursor.hunkId` is present, answer about that hunk first, retaining the item's context.
-3. Fetch only that text with `gyst session diff --group <id>` or `gyst session diff --hunk <id>`.
+2. Resolve `cursor.itemId` to its group or spotlight hunk and read its title and overview. A group is one coherent change and its verdict covers every member. Use the shared `cursor.pane`: `overview` means consider the whole item; `diff` means address `cursor.hunkId` first while retaining the item's context; `queue` means consider the selected item. Overview retains a hunk id for returning to the diff, not as a narrower question scope.
+3. Fetch the item's text with `gyst session diff --group <id>` or `gyst session diff --hunk <id>`. In diff focus, start with the selected hunk and read other group members as needed.
 4. Inspect surrounding code only when needed to answer accurately.
 5. Answer in harness chat. Do not mutate the session and do not start a wait loop.
 

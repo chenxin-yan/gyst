@@ -7,9 +7,18 @@ import type { Session } from "./session.ts";
 const verdictFrameFields = { sessionId: Schema.String, revision: Schema.Number };
 export const HumanActionSchema = Schema.Union([
   Schema.Struct({ type: Schema.Literal("cursor.move"), itemId: Schema.String }),
-  Schema.Struct({ type: Schema.Literal("expand.toggle") }),
-  // `null` returns focus to the sidebar; a hunk id focuses that hunk inside the current item.
-  Schema.Struct({ type: Schema.Literal("cursor.focus"), hunkId: Schema.NullOr(Schema.String) }),
+  Schema.Struct({
+    type: Schema.Literal("cursor.focus"),
+    itemId: Schema.String,
+    pane: Schema.Literal("queue"),
+    hunkId: Schema.optional(Schema.Never),
+  }),
+  Schema.Struct({
+    type: Schema.Literal("cursor.focus"),
+    itemId: Schema.String,
+    pane: Schema.Literals(["diff", "overview"]),
+    hunkId: Schema.String,
+  }),
   Schema.Struct({
     type: Schema.Literal("verdict.toggle"),
     itemId: Schema.String,
@@ -18,7 +27,7 @@ export const HumanActionSchema = Schema.Union([
   Schema.Struct({ type: Schema.Literal("verdict.undo"), ...verdictFrameFields }),
 ]);
 export type HumanAction = typeof HumanActionSchema.Type;
-/** Cursor moves and folds bump only `seq`; verdicts are review state and bump `revision` too. */
+/** Cursor focus bumps only `seq`; verdicts and their atomic navigation bump `revision` too. */
 export function applyHumanAction(
   session: Session,
   action: HumanAction,
@@ -32,26 +41,13 @@ export function applyHumanAction(
 
   if (action.type === "cursor.move") {
     if (!visibleIds.has(action.itemId)) return inapplicable;
-    draft.cursor = { itemId: action.itemId, expanded: false };
-  } else if (action.type === "expand.toggle") {
-    if (!session.cursor.itemId || !session.groups.some(({ id }) => id === session.cursor.itemId))
-      return inapplicable;
-    const expanded = !session.cursor.expanded;
-    // Folding hides the members, so it also drops the focus on one of them.
-    draft.cursor = expanded
-      ? { ...draft.cursor, expanded }
-      : { itemId: session.cursor.itemId, expanded };
+    draft.cursor = { itemId: action.itemId, pane: "queue" };
   } else if (action.type === "cursor.focus") {
-    const { itemId, expanded } = session.cursor;
-    if (itemId === null) return inapplicable;
-    if (action.hunkId === null) draft.cursor = { itemId, expanded };
+    const { itemId, pane } = action;
+    if (!visibleIds.has(itemId)) return inapplicable;
+    if (pane === "queue") draft.cursor = { itemId, pane };
     else if (focusableHunkIds(session, itemId).includes(action.hunkId))
-      // A focused member has to be visible, so focusing inside a group expands it.
-      draft.cursor = {
-        itemId,
-        expanded: expanded || session.groups.some(({ id }) => id === itemId),
-        hunkId: action.hunkId,
-      };
+      draft.cursor = { itemId, pane, hunkId: action.hunkId };
     else return inapplicable;
   } else {
     // Each publication sets the reviewable queue, even while inbox preparation continues.
@@ -69,11 +65,46 @@ export function applyHumanAction(
     if (action.type === "verdict.undo") {
       item.accepted = false;
       draft.acceptHistory.pop();
-      draft.cursor = { itemId, expanded: false };
+      draft.cursor =
+        session.cursor.pane === "queue"
+          ? { itemId, pane: "queue" }
+          : { itemId, pane: "diff", hunkId: focusableHunkIds(draft, itemId)[0]! };
     } else {
       item.accepted = !item.accepted;
       draft.acceptHistory = draft.acceptHistory.filter((id) => id !== itemId);
-      if (item.accepted) draft.acceptHistory.push(itemId);
+      if (item.accepted) {
+        draft.acceptHistory.push(itemId);
+        // Another TUI may have moved focus since this explicitly named verdict was sent.
+        if (session.cursor.itemId === itemId) {
+          const pending = new Set([
+            ...draft.groups
+              .filter((candidate) => !candidate.accepted)
+              .map((candidate) => candidate.id),
+            ...draft.hunks
+              .filter(
+                (candidate) =>
+                  candidate.title !== undefined &&
+                  !candidate.accepted &&
+                  !grouped.has(candidate.id),
+              )
+              .map((candidate) => candidate.id),
+          ]);
+          const start = draft.queue.indexOf(itemId);
+          for (let offset = 1; offset <= draft.queue.length; offset++) {
+            const destination = draft.queue[(start + offset) % draft.queue.length]!;
+            if (!pending.has(destination)) continue;
+            draft.cursor =
+              session.cursor.pane === "queue"
+                ? { itemId: destination, pane: "queue" }
+                : {
+                    itemId: destination,
+                    pane: "diff",
+                    hunkId: focusableHunkIds(draft, destination)[0]!,
+                  };
+            break;
+          }
+        }
+      }
     }
     draft.revision++;
   }

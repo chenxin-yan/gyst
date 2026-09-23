@@ -1,10 +1,9 @@
 import { describe, expect, it } from "bun:test";
-import { Result } from "effect";
-import { applyHumanAction } from "./human-action.ts";
+import { Result, Schema } from "effect";
+import { applyHumanAction, HumanActionSchema, type HumanAction } from "./human-action.ts";
 import type { Hunk, Session } from "./session.ts";
 
 const LATER = "2026-02-02T00:00:00.000Z";
-
 const hunk = (id: string, title?: string): Hunk => ({
   id,
   file: `${id}.ts`,
@@ -14,125 +13,143 @@ const hunk = (id: string, title?: string): Hunk => ({
   ...(title === undefined ? {} : { title, overview: title }),
   accepted: false,
 });
-
-const unready: Session = {
+const ready: Session = {
   id: "session",
   repoRoot: "/repo",
   source: { kind: "stdin" },
-  createdAt: "2026-01-01T00:00:00.000Z",
-  updatedAt: "2026-01-01T00:00:00.000Z",
+  createdAt: LATER,
+  updatedAt: LATER,
   revision: 3,
   seq: 3,
-  cursor: { itemId: "g1", expanded: false },
-  hunks: [hunk("h1"), hunk("h2", "read me")],
+  cursor: { itemId: "g1", pane: "queue" },
+  hunks: [hunk("h1"), hunk("h2", "read me"), hunk("h3", "other"), hunk("inbox")],
   groups: [
     {
       id: "g1",
-      title: "same edit",
+      title: "coherent edit",
       overview: "intent and behavior",
       hunkIds: ["h1"],
       accepted: false,
     },
   ],
-  queue: ["g1", "h2"],
-  queueSet: false,
+  queue: ["g1", "h2", "h3"],
+  queueSet: true,
   acceptHistory: [],
   receiptOverviews: [],
   applyReceipts: [],
 };
-const ready: Session = { ...unready, queueSet: true };
 const frame = { sessionId: "session", revision: 3 };
-
-const failure = (result: ReturnType<typeof applyHumanAction>) => {
-  if (Result.isSuccess(result)) throw new Error("expected validation failure");
-  return result.failure;
-};
+const act = (session: Session, action: HumanAction) =>
+  Result.getOrThrow(applyHumanAction(session, action, LATER));
+const toggle = (session: Session, itemId: string) =>
+  act(session, { type: "verdict.toggle", itemId, ...frame });
 
 describe("applyHumanAction", () => {
-  it("rejects verdicts until the review queue is set, keeping cursor moves and folds available", () => {
+  it("rejects verdicts until the queue is set, keeping cursor navigation available", () => {
+    const unready = { ...ready, queueSet: false };
     for (const action of [
       { type: "verdict.toggle", itemId: "g1", ...frame } as const,
       { type: "verdict.undo", ...frame } as const,
-    ]) {
-      expect(failure(applyHumanAction(unready, action, LATER))).toMatchObject({
-        _tag: "validation_failed",
-        message: "review queue is not set",
-      });
-    }
-    const moved = Result.getOrThrow(
-      applyHumanAction(unready, { type: "cursor.move", itemId: "h2" }, LATER),
-    );
-    expect(moved).toMatchObject({ cursor: { itemId: "h2", expanded: false }, revision: 3, seq: 4 });
-    const expanded = Result.getOrThrow(applyHumanAction(unready, { type: "expand.toggle" }, LATER));
-    expect(expanded).toMatchObject({
-      cursor: { itemId: "g1", expanded: true },
+    ])
+      expect(Result.isFailure(applyHumanAction(unready, action, LATER))).toBe(true);
+    expect(act(unready, { type: "cursor.move", itemId: "h2" })).toMatchObject({
+      cursor: { itemId: "h2", pane: "queue" },
       revision: 3,
       seq: 4,
     });
   });
 
-  it("focuses a hunk inside the current item, expanding groups, and drops focus on fold, move and leave", () => {
-    const focused = Result.getOrThrow(
-      applyHumanAction(unready, { type: "cursor.focus", hunkId: "h1" }, LATER),
-    );
+  it("focuses pane and hunk atomically and rejects invalid targets and legacy actions", () => {
+    const focused = act(ready, { type: "cursor.focus", itemId: "g1", pane: "diff", hunkId: "h1" });
     expect(focused).toMatchObject({
-      cursor: { itemId: "g1", expanded: true, hunkId: "h1" },
+      cursor: { itemId: "g1", pane: "diff", hunkId: "h1" },
       revision: 3,
       seq: 4,
     });
-    expect(
-      failure(applyHumanAction(unready, { type: "cursor.focus", hunkId: "h2" }, LATER)),
-    ).toMatchObject({ _tag: "validation_failed" });
-    expect(
-      Result.getOrThrow(applyHumanAction(focused, { type: "cursor.focus", hunkId: null }, LATER))
-        .cursor,
-    ).toEqual({ itemId: "g1", expanded: true });
-    expect(
-      Result.getOrThrow(applyHumanAction(focused, { type: "expand.toggle" }, LATER)).cursor,
-    ).toEqual({ itemId: "g1", expanded: false });
-    expect(
-      Result.getOrThrow(applyHumanAction(focused, { type: "cursor.move", itemId: "h2" }, LATER))
-        .cursor,
-    ).toEqual({ itemId: "h2", expanded: false });
-    // A lone hunk is its own focus target and needs no expansion.
-    const spotlight = Result.getOrThrow(
-      applyHumanAction(
-        { ...unready, cursor: { itemId: "h2", expanded: false } },
-        { type: "cursor.focus", hunkId: "h2" },
-        LATER,
-      ),
-    );
-    expect(spotlight.cursor).toEqual({ itemId: "h2", expanded: false, hunkId: "h2" });
-    expect(
-      failure(
-        applyHumanAction(
-          { ...unready, cursor: { itemId: null, expanded: false } },
-          { type: "cursor.focus", hunkId: "h1" },
-          LATER,
+    const overview = act(focused, {
+      type: "cursor.focus",
+      itemId: "g1",
+      pane: "overview",
+      hunkId: "h1",
+    });
+    expect(overview.cursor).toEqual({ itemId: "g1", pane: "overview", hunkId: "h1" });
+    expect(act(overview, { type: "cursor.focus", itemId: "g1", pane: "queue" }).cursor).toEqual({
+      itemId: "g1",
+      pane: "queue",
+    });
+    expect(act(focused, { type: "cursor.move", itemId: "h2" }).cursor).toEqual({
+      itemId: "h2",
+      pane: "queue",
+    });
+    for (const itemId of ["g1", "missing"]) {
+      expect(
+        Result.isFailure(
+          applyHumanAction(
+            ready,
+            { type: "cursor.focus", itemId, pane: "diff", hunkId: "h2" },
+            LATER,
+          ),
         ),
-      ),
-    ).toMatchObject({ _tag: "validation_failed" });
+      ).toBe(true);
+    }
+    const decode = Schema.decodeUnknownResult(HumanActionSchema);
+    for (const action of [
+      { type: "expand.toggle" },
+      { type: "cursor.focus", hunkId: "h1" },
+      { type: "cursor.focus", itemId: "g1", pane: "diff" },
+    ])
+      expect(Result.isFailure(decode(action))).toBe(true);
   });
 
-  it("toggles and undoes verdicts on a ready session, bumping seq exactly once per step", () => {
-    const accepted = Result.getOrThrow(
-      applyHumanAction(ready, { type: "verdict.toggle", itemId: "g1", ...frame }, LATER),
-    );
+  it("accepts atomically, skips accepted items and inbox, wraps once, and stays zoomed", () => {
+    const start: Session = {
+      ...ready,
+      hunks: ready.hunks.map((h) => (h.id === "h2" ? { ...h, accepted: true } : h)),
+      cursor: { itemId: "h3", pane: "overview", hunkId: "h3" },
+    };
+    const accepted = toggle(start, "h3");
     expect(accepted).toMatchObject({
       revision: 4,
       seq: 4,
-      acceptHistory: ["g1"],
+      acceptHistory: ["h3"],
       updatedAt: LATER,
     });
-    expect(accepted.groups[0]?.accepted).toBe(true);
-    const undone = Result.getOrThrow(
-      applyHumanAction(
-        accepted,
-        { type: "verdict.undo", sessionId: "session", revision: 4 },
-        LATER,
-      ),
-    );
-    expect(undone).toMatchObject({ revision: 5, seq: 5, acceptHistory: [] });
+    expect(accepted.cursor).toEqual({ itemId: "g1", pane: "diff", hunkId: "h1" });
+    const completed = toggle(accepted, "g1");
+    expect(completed.cursor).toEqual(accepted.cursor);
+    expect(completed.groups[0]?.accepted).toBe(true);
+    expect(toggle(ready, "g1").cursor).toEqual({ itemId: "h2", pane: "queue" });
+    expect(ready.groups[0]?.accepted).toBe(false);
+  });
+
+  it("unaccept does not advance; undo returns to the item and retains zoom", () => {
+    const accepted = toggle(ready, "g1");
+    expect(toggle(accepted, "g1").cursor).toEqual(accepted.cursor);
+    const zoomed = act(accepted, {
+      type: "cursor.focus",
+      itemId: "h2",
+      pane: "overview",
+      hunkId: "h2",
+    });
+    const undone = act(zoomed, { type: "verdict.undo", ...frame });
+    expect(undone.cursor).toEqual({ itemId: "g1", pane: "diff", hunkId: "h1" });
     expect(undone.groups[0]?.accepted).toBe(false);
+    expect(undone.acceptHistory).toEqual([]);
+    expect(act(accepted, { type: "verdict.undo", ...frame }).cursor).toEqual({
+      itemId: "g1",
+      pane: "queue",
+    });
+  });
+
+  it("a delayed explicitly named verdict never teleports an unrelated shared cursor", () => {
+    const moved = act(ready, {
+      type: "cursor.focus",
+      itemId: "h2",
+      pane: "overview",
+      hunkId: "h2",
+    });
+    const accepted = toggle(moved, "g1");
+    expect(accepted.groups[0]?.accepted).toBe(true);
+    expect(accepted.cursor).toEqual(moved.cursor);
   });
 });

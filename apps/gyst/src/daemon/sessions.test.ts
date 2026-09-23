@@ -101,7 +101,7 @@ const persisted: Session = {
   updatedAt: "2026-01-01T00:00:00.000Z",
   revision: 3,
   seq: 1,
-  cursor: { itemId: null, expanded: false },
+  cursor: { itemId: null, pane: "queue" },
   hunks: [
     {
       id: "h1",
@@ -626,19 +626,26 @@ describe("Sessions.tuiAction", () => {
       s.tuiAction({ command: "tui.action", cwd: otherRoot, args, ...(action ? { action } : {}) }),
     );
 
-  it("moves and folds the cursor on seq only, persisting each step", async () => {
+  it("moves and focuses the cursor on seq only, persisting each step", async () => {
     await run(
       Effect.gen(function* () {
         const sessions = yield* Sessions;
         const moved = yield* act({ type: "cursor.move", itemId: "g1" });
-        expect(moved.cursor).toEqual({ itemId: "g1", expanded: false });
+        expect(moved.cursor).toEqual({ itemId: "g1", pane: "queue" });
         expect(moved).toMatchObject({ revision: 3, seq: 2 });
-        expect(files.get("persisted")?.cursor).toEqual({ itemId: "g1", expanded: false });
-        const expanded = yield* act({ type: "expand.toggle" });
-        expect(expanded.cursor).toEqual({ itemId: "g1", expanded: true });
-        expect(expanded).toMatchObject({ revision: 3, seq: 3 });
+        expect(files.get("persisted")?.cursor).toEqual({ itemId: "g1", pane: "queue" });
+        const focused = yield* act({
+          type: "cursor.focus",
+          itemId: "g1",
+          pane: "overview",
+          hunkId: "h1",
+        });
+        expect(focused.cursor).toEqual({ itemId: "g1", pane: "overview", hunkId: "h1" });
+        expect(focused).toMatchObject({ revision: 3, seq: 3 });
         yield* act({ type: "cursor.move", itemId: "h3" });
-        const onHunk = yield* Effect.flip(act({ type: "expand.toggle" }));
+        const onHunk = yield* Effect.flip(
+          act({ type: "cursor.focus", itemId: "h3", pane: "diff", hunkId: "h1" }),
+        );
         expect(onHunk._tag).toBe("validation_failed");
         expect(onHunk.message).toBe("TUI action does not apply to the current session");
         // The fixture's queue is not finalized, so verdicts wait for the pre-pass.
@@ -661,7 +668,7 @@ describe("Sessions.tuiAction", () => {
         const sessions = yield* Sessions;
         const undone = yield* act({ type: "verdict.undo", ...frame(3) });
         expect(undone.groups[0]).toMatchObject({ id: "g1", accepted: false });
-        expect(undone.cursor).toEqual({ itemId: "g1", expanded: false });
+        expect(undone.cursor).toEqual({ itemId: "g1", pane: "queue" });
         expect(undone).toMatchObject({ revision: 4, seq: 2 });
         const undoneAgain = yield* act({ type: "verdict.undo", ...frame(4) });
         expect(undoneAgain.spotlight[0]).toMatchObject({ id: "h2", accepted: false });
@@ -687,6 +694,38 @@ describe("Sessions.tuiAction", () => {
         );
         expect(bogus._tag).toBe("bad_args");
         expect((yield* sessions.status(request("status", [], otherRoot))).revision).toBe(6);
+      }),
+    );
+  });
+
+  it("persists verdict and navigation together, and leaves both unchanged on save failure", async () => {
+    const initial: Session = {
+      ...persisted,
+      queueSet: true,
+      queue: ["g1", "h2"],
+      acceptHistory: [],
+      cursor: { itemId: "g1", pane: "overview", hunkId: "h1" },
+      groups: persisted.groups.map((group) => ({ ...group, accepted: false })),
+      hunks: persisted.hunks.map((hunk) => ({ ...hunk, accepted: false })),
+    };
+    files.set(persisted.id, initial);
+    await run(
+      Effect.gen(function* () {
+        const sessions = yield* Sessions;
+        saveFails = true;
+        const failed = yield* Effect.exit(
+          act({ type: "verdict.toggle", itemId: "g1", ...frame(3) }),
+        );
+        expect(failed._tag).toBe("Failure");
+        expect(files.get(persisted.id)).toEqual(initial);
+        expect((yield* sessions.status(request("status", [], otherRoot))).cursor).toEqual(
+          initial.cursor,
+        );
+        saveFails = false;
+        const accepted = yield* act({ type: "verdict.toggle", itemId: "g1", ...frame(3) });
+        expect(accepted.cursor).toEqual({ itemId: "h2", pane: "diff", hunkId: "h2" });
+        expect(files.get(persisted.id)?.cursor).toEqual(accepted.cursor);
+        expect(files.get(persisted.id)?.groups[0]?.accepted).toBe(true);
       }),
     );
   });
