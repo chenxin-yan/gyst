@@ -25,6 +25,7 @@ import {
 } from "solid-js";
 import type { TuiClient } from "./client.ts";
 import { TuiClientError } from "./client.ts";
+import type { EditRequest } from "./editor.ts";
 
 const C = {
   bg: "#0d1117",
@@ -324,6 +325,7 @@ const scopeLabel = (source: Source) =>
 export function App(props: {
   client: TuiClient;
   onQuit?: (cancelled: boolean) => void;
+  onEdit?: (request: EditRequest) => Promise<void>;
   pollInterval?: number;
 }) {
   const dims = useTerminalDimensions();
@@ -331,12 +333,14 @@ export function App(props: {
   const [status, setStatus] = createSignal<StatusPayload>();
   const [diff, setDiff] = createSignal<DiffPayload>();
   const [message, setMessage] = createSignal("attaching…");
+  const [editorNotice, setEditorNotice] = createSignal("");
   const [diffWidth, setDiffWidth] = createSignal(0);
   const [help, setHelp] = createSignal(false);
   const [layoutMode, setLayoutMode] = createSignal<LayoutMode>("auto");
   // `closing` stops admitting inputs and polls while the queue drains; `stopped` means the renderer is gone.
   let closing = false;
   let stopped = false;
+  let editing = false;
   let syncQueued = false;
   let latestStatus: StatusPayload | undefined;
   let inputs = Promise.resolve();
@@ -449,13 +453,15 @@ export function App(props: {
     return nextDiff?.sessionId === next.session.id && nextDiff.revision === next.revision;
   }
 
-  async function synchronize(next: StatusPayload): Promise<boolean> {
+  async function synchronize(next: StatusPayload, afterEdit = false): Promise<boolean> {
     next = observe(next);
+    if (stopped || (editing && !afterEdit)) return false;
     let nextDiff = diff();
     if (!matches(next, nextDiff)) nextDiff = await props.client.diff();
+    if (stopped || (editing && !afterEdit)) return false;
     if (!matches(next, nextDiff)) next = observe(await props.client.status());
     // A harness may mutate between reads. Keep the last coherent frame and retry on the next poll.
-    if (stopped || !matches(next, nextDiff)) return false;
+    if (stopped || (editing && !afterEdit) || !matches(next, nextDiff)) return false;
     batch(() => {
       setDiff(nextDiff);
       setStatus(next);
@@ -477,17 +483,19 @@ export function App(props: {
     void inputs.then(() => props.onQuit?.(cancelled));
   }
 
-  async function sync(): Promise<void> {
+  async function sync(afterEdit = false): Promise<void> {
     try {
-      if (!(await synchronize(await props.client.status()))) return;
+      if (!(await synchronize(await props.client.status(), afterEdit))) return;
       const next = status()!;
       const nextItems = items();
       if (!nextItems.some(({ id }) => id === next.cursor.itemId) && nextItems[0]) {
         await synchronize(
           await props.client.action({ type: "cursor.move", itemId: nextItems[0].id }),
+          afterEdit,
         );
       }
     } catch (error) {
+      if (stopped || (editing && !afterEdit)) return;
       if (error instanceof TuiClientError && error.payload.code === "no_session") {
         latestStatus = undefined;
         batch(() => {
@@ -500,11 +508,11 @@ export function App(props: {
   }
 
   function scheduleSync(): void {
-    if (syncQueued || closing) return;
+    if (syncQueued || closing || editing) return;
     syncQueued = true;
     enqueue(async () => {
       try {
-        await sync();
+        if (!editing) await sync();
       } finally {
         syncQueued = false;
       }
@@ -552,6 +560,9 @@ export function App(props: {
   });
 
   useKeyboard((key) => {
+    // Admission, not dequeue: even local help/layout/scroll and quit keys belong to the editor now.
+    if (closing || stopped || editing) return;
+    setEditorNotice("");
     if (key.name === "c" && key.ctrl) return quit(true);
     if (help()) {
       if (["?", "escape", "q"].includes(key.name)) setHelp(false);
@@ -562,6 +573,51 @@ export function App(props: {
     if (key.name === "2") return setLayoutMode("stack");
     if (key.name === "0") return setLayoutMode("auto");
     if (key.name === "q") return quit(false);
+    if (key.name === "o") {
+      const seen = status();
+      const member = selectedMember();
+      if (!seen || !zoomed() || !member || !props.onEdit) return;
+      const request: EditRequest = {
+        sessionId: seen.session.id,
+        revision: seen.revision,
+        repoRoot: seen.session.repoRoot,
+        cursor: { ...seen.cursor },
+        file: member.file,
+      };
+      editing = true;
+      return enqueue(async () => {
+        let failure = "";
+        try {
+          // A preceding poll/action or another TUI may have moved the shared focus. Never retarget.
+          const fresh = observe(await props.client.status());
+          if (
+            fresh.session.id !== request.sessionId ||
+            fresh.revision !== request.revision ||
+            fresh.session.repoRoot !== request.repoRoot ||
+            fresh.cursor.itemId !== request.cursor.itemId ||
+            fresh.cursor.pane !== request.cursor.pane ||
+            fresh.cursor.hunkId !== request.cursor.hunkId
+          )
+            throw new Error("edit target changed — re-read and press o again");
+          if (!stopped) await props.onEdit!(request);
+        } catch (error) {
+          failure = sanitizeOverview(error instanceof Error ? error.message : String(error)).slice(
+            0,
+            300,
+          );
+        } finally {
+          if (!stopped) {
+            await sync(true);
+            const guidance =
+              status()?.session.source.kind === "stdin"
+                ? "stdin snapshot unchanged — replace it from the harness"
+                : "snapshot unchanged — r refreshes the Git snapshot";
+            setEditorNotice(`${failure || "Editor returned"} · ${guidance}`);
+          }
+          editing = false;
+        }
+      });
+    }
     const activeScroll = () => (pane() === "overview" ? overviewPane : focusCard);
     if (key.name === "pagedown" || (key.name === "d" && key.ctrl))
       return activeScroll()?.scrollBy(0.5, "viewport");
@@ -757,8 +813,8 @@ export function App(props: {
                 : `ready to review these items — ${status()!.inbox.length} hunks awaiting preparation`}
         </text>
       </Show>
-      <Show when={Boolean(message()) && Boolean(status())}>
-        <text fg={C.accent}>{message()}</text>
+      <Show when={Boolean(message() || editorNotice()) && Boolean(status())}>
+        <text fg={C.accent}>{message() || editorNotice()}</text>
       </Show>
       <Show when={help()}>
         <box
@@ -792,7 +848,8 @@ export function App(props: {
               ["a", "accept whole item (all group members), advance"],
               ["u", "undo last accept"],
               ["1 / 2 / 0", "split / stack / auto layout"],
-              ["r", "refresh snapshot"],
+              ["o", "zoom: EDITOR opens working-tree file, not snapshot"],
+              ["r", "refresh Git snapshot; stdin: replace from harness"],
               ["q", "quit"],
             ]}
           >

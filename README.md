@@ -50,6 +50,7 @@ Use `/gyst-ask <question>` in your agent's chat to ask about the current review 
 | `Ctrl+D` / `Ctrl+U`, `PgDn` / `PgUp` | Scroll diff preview half a page             | Scroll diff half a page           | Scroll overview half a page   |
 | `a`                                  | Toggle whole-item acceptance                | Same, including all group members | Same                          |
 | `u`                                  | Undo last acceptance and return to its item | Same, staying zoomed              | Same, returning to diff focus |
+| `o`                                  | No-op                                       | Open selected working-tree file   | Open retained selected file   |
 
 Accepting advances atomically to the next unaccepted published item, wrapping once.
 If none remain, the current view stays put; later arrivals do not steal focus.
@@ -64,6 +65,36 @@ the first hunk and top of the overview.
 
 `r` explicitly refreshes the Git snapshot (stdin snapshots must be replaced by the
 harness). `?` shows help. `q` quits and keeps the session; `Ctrl+C` cancels.
+
+## Editing a selected file
+
+While zoomed, `o` opens the header's selected file in `$EDITOR`. This is the current
+working-tree file, **not** a reconstruction of the reviewed snapshot; a historical
+diff may not match it. The file must already exist, be regular, and resolve inside
+the session's repository (including symlink resolution). Missing/deleted files are
+not created. Stdin hunks work only when they identify such a local file.
+
+Set `EDITOR` to one executable name or path. Paths containing spaces work without
+extra quoting inside the value. There is no shell expansion, argument splitting,
+`VISUAL` fallback or guessed line-number/wait flag. For flags, use an executable
+wrapper that forwards its file argument, for example:
+
+```sh
+#!/bin/sh
+exec vim -f "$@"
+```
+
+Point `EDITOR` at the wrapper. Gyst waits for that executable, so a GUI launcher
+must be configured to wait itself. Gyst's inputs and polling pause during editing;
+the editor owns its keys (Vim's Ctrl+C may cancel a command rather than exit).
+An OS SIGINT interrupts the editor and returns to gyst after it exits; termination
+shuts both down. Only the configured child is signalled; wrappers should `exec`
+their editor rather than leave detached descendants. Unix job-control/descendant behavior and Windows
+terminal behavior are not interchangeable.
+
+Returning synchronizes session status but **never refreshes the snapshot**. Press
+`r` to refresh a Git snapshot explicitly; the harness must replace stdin snapshots
+with `gyst session refresh --stdin`. An editor error leaves navigation and quit usable.
 
 ## Sessions
 
