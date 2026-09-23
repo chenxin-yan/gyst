@@ -27,8 +27,9 @@ export class Git extends Context.Service<
 
       const run = Effect.fn("Git.run")(
         function* (cwd: string, ...args: string[]) {
+          // Timeout interruption must also terminate Git wrappers that ignore SIGTERM.
           const handle = yield* spawner.spawn(
-            ChildProcess.make("git", args, { cwd, stdin: "ignore" }),
+            ChildProcess.make("git", args, { cwd, stdin: "ignore", forceKillAfter: "500 millis" }),
           );
           const text = (stream: typeof handle.stdout) =>
             stream.pipe(Stream.decodeText(), Stream.mkString);

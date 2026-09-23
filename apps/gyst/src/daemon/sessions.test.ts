@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it } from "bun:test";
+import { BunServices } from "@effect/platform-bun";
 import {
   type ApplyEnvelope,
   BadArgs,
@@ -6,7 +7,8 @@ import {
   type Request,
   type Session,
 } from "@gyst/core";
-import { Crypto, Effect, Exit, Fiber, Layer, PlatformError } from "effect";
+import { Crypto, Effect, Exit, Fiber, Layer, PlatformError, Stream } from "effect";
+import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 import { Git } from "./git.ts";
 import { Sessions } from "./sessions.ts";
 import { SessionStore } from "./store.ts";
@@ -228,27 +230,74 @@ describe("Sessions.check", () => {
     );
   });
 
-  it("bounds a slow check without blocking status and does not save its result", async () => {
-    await run(
-      Sessions.use((sessions) =>
+  it.skipIf(process.platform === "win32")(
+    "bounds cleanup of Git ignoring SIGTERM without blocking review state or later checks",
+    async () => {
+      const ready = Promise.withResolvers<number>();
+      const spawner = Layer.effect(
+        ChildProcessSpawner.ChildProcessSpawner,
         Effect.gen(function* () {
-          const created = yield* sessions.create(request("create"));
-          const started = Promise.withResolvers<void>();
-          patchEffect = Effect.suspend(() => {
-            started.resolve();
-            return Effect.never;
+          const live = yield* ChildProcessSpawner.ChildProcessSpawner;
+          return ChildProcessSpawner.make((command) => {
+            if (command._tag !== "StandardCommand") return live.spawn(command);
+            // Replace only the executable; exercise Git.run's real cancellation options and finalizer.
+            return live
+              .spawn(
+                ChildProcess.make(
+                  process.execPath,
+                  [
+                    "-e",
+                    `
+            process.on("SIGTERM", () => {});
+            console.log("ready");
+            setTimeout(() => process.exit(0), 6000);
+          `,
+                  ],
+                  command.options,
+                ),
+              )
+              .pipe(
+                Effect.map((handle) => ({
+                  ...handle,
+                  stdout: handle.stdout.pipe(
+                    Stream.tap(() => Effect.sync(() => ready.resolve(handle.pid))),
+                  ),
+                })),
+              );
           });
-          const checking = yield* Effect.forkChild(sessions.check(request("check")));
-          yield* Effect.promise(() => started.promise);
-          expect(
-            yield* sessions.status(request("status")).pipe(Effect.timeout("1 second")),
-          ).toEqual(created);
-          expect(yield* Fiber.join(checking)).toMatchObject({ state: "unavailable" });
-          expect(yield* sessions.status(request("status"))).toEqual(created);
         }),
-      ),
-    );
-  });
+      ).pipe(Layer.provide(BunServices.layer));
+      await run(
+        Sessions.use((sessions) =>
+          Effect.gen(function* () {
+            const created = yield* sessions.create(request("create"));
+            patchEffect = Git.use((g) =>
+              g.patch(process.cwd(), process.cwd(), ["HEAD"], false),
+            ).pipe(
+              Effect.provide(
+                Git.layer.pipe(Layer.provide(Layer.merge(BunServices.layer, spawner))),
+              ),
+            );
+            const started = performance.now();
+            const checking = yield* Effect.forkChild(sessions.check(request("check")));
+            const pid = yield* Effect.promise(() => ready.promise);
+            expect(
+              yield* sessions.status(request("status")).pipe(Effect.timeout("1 second")),
+            ).toEqual(created);
+            expect(yield* Fiber.join(checking)).toMatchObject({ state: "unavailable" });
+            // Two seconds for patch execution plus bounded termination, not the child's six-second exit.
+            expect(performance.now() - started).toBeLessThan(4000);
+            expect(() => process.kill(pid, 0)).toThrow("ESRCH");
+            expect(yield* sessions.status(request("status"))).toEqual(created);
+            patchEffect = undefined;
+            yield* sessions.refresh(request("refresh"));
+            expect(yield* sessions.check(request("check"))).toMatchObject({ state: "unchanged" });
+          }),
+        ),
+      );
+    },
+    10_000,
+  );
 
   it("expires cached checks, including a return to the captured source", async () => {
     await run(
