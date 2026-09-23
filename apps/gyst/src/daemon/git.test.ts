@@ -1,9 +1,11 @@
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import { BunServices } from "@effect/platform-bun";
-import { Effect, Layer } from "effect";
+import { parseSnapshot } from "@gyst/core";
+import { Effect, Layer, Result } from "effect";
 import { mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { editorTarget } from "../tui/editor.ts";
 import { Git } from "./git.ts";
 
 let root: string;
@@ -100,5 +102,32 @@ describe("Git", () => {
     const error = await run(Effect.flip(Git.use((g) => g.patch(cwd, cwd, ["no-such-rev"], false))));
     expect(error._tag).toBe("bad_args");
     expect(error.message).toContain("no-such-rev");
+  });
+
+  it("keeps explicit pathspec output root-relative under diff.relative so the editor opens the reviewed file", async () => {
+    const cwd = await repo("relative-pathspec");
+    git(cwd, "config", "diff.relative", "true");
+    await mkdir(join(cwd, "sub"));
+    await writeFile(join(cwd, "same.txt"), "root\n");
+    await writeFile(join(cwd, "sub", "same.txt"), "sub\n");
+    git(cwd, "add", ".");
+    git(cwd, "commit", "-qm", "two files");
+    await writeFile(join(cwd, "sub", "same.txt"), "sub changed\n");
+    const patch = await run(
+      Git.use((g) => g.patch(cwd, join(cwd, "sub"), ["HEAD", "--", "same.txt"], false)),
+    );
+    const [hunk] = Result.getOrThrow(parseSnapshot(patch));
+    expect(hunk?.file).toBe("sub/same.txt");
+    const target = await editorTarget(
+      {
+        sessionId: "s",
+        revision: 0,
+        repoRoot: cwd,
+        file: hunk!.file,
+        cursor: { itemId: hunk!.id, pane: "diff", hunkId: hunk!.id },
+      },
+      process.execPath,
+    );
+    expect(target.file).toBe(join(cwd, "sub", "same.txt"));
   });
 });

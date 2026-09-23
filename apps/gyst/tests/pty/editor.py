@@ -24,7 +24,8 @@ import time
 def screen(data):
     cells = [[" "] * 240 for _ in range(40)]
     row = col = 0
-    for match in re.finditer(r"\x1b\[[0-?]*[ -/]*[@-~]|\x1b(?:\][^\x07]*(?:\x07|\x1b\\)|[P_].*?\x1b\\)|[^\x1b]", data.decode(errors="ignore"), re.S):
+    # An OSC never spans another escape; otherwise an ST-terminated OSC swallows every frame up to the next BEL.
+    for match in re.finditer(r"\x1b\[[0-?]*[ -/]*[@-~]|\x1b(?:\][^\x07\x1b]*(?:\x07|\x1b\\)|[P_].*?\x1b\\)|[^\x1b]", data.decode(errors="ignore"), re.S):
         token = match.group()
         if token.startswith("\x1b["):
             cmd = token[-1]
@@ -58,8 +59,10 @@ def run_case(name, evidence, bun, vim):
         child_log = root / "child.json"
         editor = root / "editor with spaces"
         if name.startswith("vim"):
-            # An explicit executable wrapper is the supported way to supply flags.
-            editor.write_text(f"#!{sys.executable}\nimport os,json\nfrom pathlib import Path\nPath({str(child_log)!r}).write_text(json.dumps({{'pid':os.getpid()}}))\nos.execv({vim!r}, [{vim!r}, '-N', '-u', 'NONE', '-i', 'NONE', '-n', *os.sys.argv[1:]])\n")
+            # An explicit executable wrapper is the supported way to supply flags. Only Vim itself can
+            # signal readiness: the wrapper's pre-exec window and Gyst's own frame prove nothing.
+            ready = f"autocmd VimEnter * call writefile([json_encode({{'pid': getpid()}})], {str(child_log)!r})"
+            editor.write_text(f"#!{sys.executable}\nimport os\nos.execv({vim!r}, [{vim!r}, '-N', '-u', 'NONE', '-i', 'NONE', '-n', '-c', {ready!r}, *os.sys.argv[1:]])\n")
         else:
             editor.write_text(f'''#!{sys.executable}
 import json,os,signal,sys,time,termios,subprocess
@@ -132,7 +135,8 @@ if mode == 'save': Path(sys.argv[1]).write_text('saved by fake editor\\n')
             wait(lambda: "[diff]" in screen(bytes(captured)), "initial frame")
             send(b"o")
             if name not in ["missing", "unset", "suspend"]:
-                wait(child_log.exists, "editor start")
+                # The file exists before its JSON is written.
+                wait(lambda: child_log.exists() and child_log.read_text().rstrip().endswith("}"), "editor start")
                 child = json.loads(child_log.read_text())
                 if not name.startswith("vim"):
                     assert child["argv"] == [str(target)] and child["cwd"] == str(root)
@@ -143,13 +147,13 @@ if mode == 'save': Path(sys.argv[1]).write_text('saved by fake editor\\n')
                 elif name == "destroy": os.kill(process.pid, signal.SIGUSR1)
                 elif name in ["ctrl-c", "ignore-int", "descendant-int"]: send(b"\x03")
                 elif name.startswith("vim"):
-                    wait(lambda: "before" in screen(bytes(captured)), "Vim file")
                     for width in [80, 200, 120]: resize(width); time.sleep(.08)
                     if name == "vim-save": send(b"GoREAL_EDITOR_SAVE\x1b:wq\r")
                     elif name == "vim-term": os.kill(process.pid, signal.SIGTERM)
                     else:
                         send(b"\x03")
                         time.sleep(.1)
+                        assert not event("returned"), "Vim must own Ctrl+C; never type editor commands into the resumed TUI"
                         send(b":q!\r")
                 elif name not in ["nonzero", "noop"]:
                     for width in [80, 200, 120]: resize(width); time.sleep(.05)

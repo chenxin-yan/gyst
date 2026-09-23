@@ -72,7 +72,10 @@ While zoomed, `o` opens the header's selected file in `$EDITOR`. This is the cur
 working-tree file, **not** a reconstruction of the reviewed snapshot; a historical
 diff may not match it. The file must already exist, be regular, and resolve inside
 the session's repository (including symlink resolution). Missing/deleted files are
-not created. Stdin hunks work only when they identify such a local file.
+not created. Stdin hunks work only when they identify such a local file. Filenames that
+Git quotes in diff headers (non-ASCII under the default `core.quotePath`, backslashes,
+quotes, control characters) are not decoded: `o` uses the literal header text, so
+such files are usually reported missing.
 
 Set `EDITOR` to one executable name or path. Paths containing spaces work without
 extra quoting inside the value. There is no shell expansion, argument splitting,

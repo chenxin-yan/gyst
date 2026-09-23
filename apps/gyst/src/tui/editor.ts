@@ -57,7 +57,6 @@ export function editorHandoff(renderer: Terminal, onTerminate: (signal: NodeJS.S
     let child: Bun.Subprocess | undefined;
     let reaped = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
-    let suspended = false;
     let interrupted = false;
     let failure: unknown;
     const stopChild = (signal: NodeJS.Signals) => {
@@ -87,7 +86,6 @@ export function editorHandoff(renderer: Terminal, onTerminate: (signal: NodeJS.S
     renderer.on("destroy", shutdown);
     try {
       // Even a partially failed suspend needs exactly one recovery attempt.
-      suspended = true;
       renderer.suspend();
       if (!stopping && !renderer.isDestroyed && !interrupted) {
         child = Bun.spawn([target.executable, target.file], {
@@ -113,7 +111,7 @@ export function editorHandoff(renderer: Terminal, onTerminate: (signal: NodeJS.S
           reaped = true;
         }
         if (stopping) renderer.destroy();
-        else if (suspended && !renderer.isDestroyed) {
+        else if (!renderer.isDestroyed) {
           try {
             renderer.resume();
           } catch (error) {

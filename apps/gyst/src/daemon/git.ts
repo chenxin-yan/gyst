@@ -2,8 +2,9 @@ import { BadArgs } from "@gyst/core";
 import { Context, Effect, FileSystem, Layer, Stream } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 
-// Presentation config (color.ui, diff.external) must not reach the parser.
-const patchFlags = ["--no-color", "--no-ext-diff"];
+// Presentation config (color.ui, diff.external, diff.relative) must not reach the parser: parsed
+// filenames become editor targets, so they must stay root-relative even when run from a subdirectory.
+const patchFlags = ["--no-color", "--no-ext-diff", "--no-relative"];
 
 export class Git extends Context.Service<
   Git,
