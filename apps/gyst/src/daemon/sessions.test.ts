@@ -132,14 +132,14 @@ const persisted: Session = {
     {
       id: "g1",
       title: "same edit",
-      overview: "intent and behavior",
+      notes: [{ hunkId: "h1", text: "intent and behavior" }],
       hunkIds: ["h1"],
       accepted: true,
     },
     {
       id: "g2",
       title: "read me",
-      overview: "intent and behavior",
+      notes: [{ hunkId: "h2", text: "intent and behavior" }],
       hunkIds: ["h2"],
       accepted: true,
     },
@@ -147,7 +147,7 @@ const persisted: Session = {
   queue: ["g2", "g1", "h3"],
   queueSet: false,
   acceptHistory: ["g2", "g1"],
-  receiptOverviews: [],
+  receiptNoteTexts: [],
   applyReceipts: [],
 };
 
@@ -181,7 +181,9 @@ describe("Sessions.check", () => {
                     type: "group.create",
                     id: "step",
                     title: "Change both paths",
-                    overview: "Review both changes together.",
+                    notes: [
+                      { hunkId: created.inbox[0]!.id, text: "Review both changes together." },
+                    ],
                     memberHunkIds: created.inbox.map(({ id }) => id),
                   },
                   { type: "queue.set", itemIds: ["step"] },
@@ -448,7 +450,7 @@ describe("Sessions reads", () => {
       hunkIds: ["h2"],
       count: 1,
       title: "read me",
-      overview: "intent and behavior",
+      notes: [{ hunkId: "h2", text: "intent and behavior" }],
       accepted: true,
     });
     expect(byRepo.inbox).toEqual([{ id: "h3", file: "y.txt" }]);
@@ -520,7 +522,13 @@ describe("Sessions.apply", () => {
     revision: 3,
     idempotencyKey: "first-pass",
     ops: [
-      { type: "group.create", id: "g3", memberHunkIds: ["h3"], title: "third", overview: "third" },
+      {
+        type: "group.create",
+        id: "g3",
+        memberHunkIds: ["h3"],
+        title: "third",
+        notes: [{ hunkId: "h3", text: "third" }],
+      },
       { type: "queue.set", itemIds: ["g1", "g2", "g3"] },
     ],
   };
@@ -533,8 +541,8 @@ describe("Sessions.apply", () => {
     expect(status.groups.map((group) => group.id)).toEqual(["g1", "g2", "g3"]);
     expect(status).toMatchObject({ queue: ["g1", "g2", "g3"], queueSet: true, ready: true });
     const saved = files.get("persisted")!;
-    // The receipt stores each distinct overview once; g1 and g2 share the same text.
-    expect(saved.receiptOverviews).toEqual(["intent and behavior", "third"]);
+    // The receipt stores each distinct note text once; g1 and g2 share the same text.
+    expect(saved.receiptNoteTexts).toEqual(["intent and behavior", "third"]);
     expect(saved.applyReceipts).toEqual([
       {
         key: "first-pass",
@@ -542,9 +550,9 @@ describe("Sessions.apply", () => {
         status: {
           ...status,
           groups: [
-            { ...status.groups[0]!, overview: 0 },
-            { ...status.groups[1]!, overview: 0 },
-            { ...status.groups[2]!, overview: 1 },
+            { ...status.groups[0]!, notes: [{ hunkId: "h1", text: 0 }] },
+            { ...status.groups[1]!, notes: [{ hunkId: "h2", text: 0 }] },
+            { ...status.groups[2]!, notes: [{ hunkId: "h3", text: 1 }] },
           ],
         },
       },
@@ -565,7 +573,7 @@ describe("Sessions.apply", () => {
             type: "group.create",
             id: "g3",
             title: "coherent change",
-            overview: "intent and behavior",
+            notes: [],
             memberHunkIds: ["h3"],
           },
           { type: "group.update", id: "missing", title: "nope" },
@@ -599,6 +607,9 @@ describe("Sessions.apply", () => {
 
   it("rejects legacy fields, partial metadata and controls without writes", async () => {
     for (const op of [
+      { type: "group.update", id: "g1", overview: "old" },
+      { type: "group.update", id: "g1", notes: [{ hunkId: "h2", text: "wrong group" }] },
+      { type: "group.update", id: "g1", notes: [{ hunkId: "h1", text: "bad\ntext" }] },
       { type: "group.update", id: "g1", tldr: "old" },
       { type: "group.update", id: "g1", exemplarHunkId: "h1" },
       { type: "group.update", id: "g1", title: "new", tldr: "old" },
@@ -608,7 +619,7 @@ describe("Sessions.apply", () => {
         id: "g3",
         memberHunkIds: ["h3"],
         title: "bad\u001b",
-        overview: "valid",
+        notes: [{ hunkId: "h3", text: "valid" }],
       },
       { type: "hunk.annotate", hunkId: "h3", title: "obsolete", overview: "obsolete" },
     ]) {
@@ -721,7 +732,7 @@ diff --git a/c.txt b/c.txt
                   type: "group.create",
                   id: "g",
                   title: "same",
-                  overview: "intent and behavior",
+                  notes: [{ hunkId: a, text: "intent and behavior" }],
                   memberHunkIds: [a],
                 },
                 {
@@ -729,7 +740,7 @@ diff --git a/c.txt b/c.txt
                   id: "changed",
                   memberHunkIds: [b],
                   title: "stale note",
-                  overview: "stale note",
+                  notes: [{ hunkId: b, text: "stale note" }],
                 },
                 { type: "queue.set", itemIds: ["g", "changed"] },
               ],
@@ -828,16 +839,20 @@ describe("Sessions.tuiAction", () => {
       Effect.gen(function* () {
         const sessions = yield* Sessions;
         const moved = yield* act({ type: "cursor.move", itemId: "g1" });
-        expect(moved.cursor).toEqual({ itemId: "g1", pane: "queue" });
+        expect(moved.cursor).toEqual({ itemId: "g1", pane: "queue", hunkId: "h1" });
         expect(moved).toMatchObject({ revision: 3, seq: 2 });
-        expect(files.get("persisted")?.cursor).toEqual({ itemId: "g1", pane: "queue" });
+        expect(files.get("persisted")?.cursor).toEqual({
+          itemId: "g1",
+          pane: "queue",
+          hunkId: "h1",
+        });
         const focused = yield* act({
           type: "cursor.focus",
           itemId: "g1",
-          pane: "overview",
+          pane: "diff",
           hunkId: "h1",
         });
-        expect(focused.cursor).toEqual({ itemId: "g1", pane: "overview", hunkId: "h1" });
+        expect(focused.cursor).toEqual({ itemId: "g1", pane: "diff", hunkId: "h1" });
         expect(focused).toMatchObject({ revision: 3, seq: 3 });
         yield* act({ type: "cursor.move", itemId: "h3" });
         const onHunk = yield* Effect.flip(
@@ -879,7 +894,7 @@ describe("Sessions.tuiAction", () => {
                     id: "group",
                     memberHunkIds: ids,
                     title: "change",
-                    overview: "context",
+                    notes: [],
                   },
                   { type: "queue.set", itemIds: ["group"] },
                 ],
@@ -909,7 +924,7 @@ describe("Sessions.tuiAction", () => {
               : yield* focus({
                   type: "cursor.focus",
                   itemId: "group",
-                  pane: "overview",
+                  pane: "queue",
                   hunkId: ids[0]!,
                 });
           expect(newer.groups[0]?.hunkIds).toEqual(ids);
@@ -934,7 +949,7 @@ describe("Sessions.tuiAction", () => {
         const sessions = yield* Sessions;
         const undone = yield* act({ type: "verdict.undo", ...frame(3) });
         expect(undone.groups[0]).toMatchObject({ id: "g1", accepted: false });
-        expect(undone.cursor).toEqual({ itemId: "g1", pane: "queue" });
+        expect(undone.cursor).toEqual({ itemId: "g1", pane: "queue", hunkId: "h1" });
         expect(undone).toMatchObject({ revision: 4, seq: 2 });
         const undoneAgain = yield* act({ type: "verdict.undo", ...frame(4) });
         expect(undoneAgain.groups[1]).toMatchObject({ id: "g2", accepted: false });
@@ -970,7 +985,7 @@ describe("Sessions.tuiAction", () => {
       queueSet: true,
       queue: ["g1", "g2"],
       acceptHistory: [],
-      cursor: { itemId: "g1", pane: "overview", hunkId: "h1" },
+      cursor: { itemId: "g1", pane: "diff", hunkId: "h1" },
       groups: persisted.groups.map((group) => ({ ...group, accepted: false })),
     };
     files.set(persisted.id, initial);

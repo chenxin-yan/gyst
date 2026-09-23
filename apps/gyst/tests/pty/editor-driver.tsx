@@ -45,13 +45,13 @@ let state: Session = {
       hunkIds: ["h"],
       accepted: false,
       title: "Editor handoff",
-      overview: "Working tree is separate from the snapshot.",
+      notes: [{ hunkId: "h", text: "Working tree is separate from the snapshot." }],
     },
   ],
   queue: ["editor"],
   queueSet: true,
   acceptHistory: [],
-  receiptOverviews: [],
+  receiptNoteTexts: [],
   applyReceipts: [],
 };
 let owner: ReturnType<typeof editorHandoff> | undefined;

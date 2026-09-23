@@ -167,7 +167,7 @@ export class Sessions extends Context.Service<
           queue: [],
           queueSet: false,
           acceptHistory: [],
-          receiptOverviews: [],
+          receiptNoteTexts: [],
           applyReceipts: [],
         };
         yield* store.save(session).pipe(Effect.orDie);

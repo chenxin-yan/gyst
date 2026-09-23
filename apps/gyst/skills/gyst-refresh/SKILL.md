@@ -21,9 +21,9 @@ A source-change notice alone calls for informing the user and asking whether to 
 
 ## 2. Reconcile and publish
 
-Reread status and `gyst session diff --session <id>`. Reassess affected code, tests and excerpts. Changed or removed members can clear acceptance; retained explanations may be stale. Plan coverage for every current hunk while preserving unrelated accepted groups and their order.
+Reread status and `gyst session diff --session <id>`. Reassess affected code and tests. Refresh preserves notes and acceptance only when every member survives confident matching. Losing any member clears the surviving group's notes and verdict; reauthor that group's context rather than reattaching old notes by proximity. Plan coverage for every current hunk while preserving unrelated accepted groups and their order.
 
-Revise affected groups with `group.update` (optional title, overview, memberHunkIds), or dissolve/create groups to split or merge them. Follow `gyst`'s atomic queue and retry rules. Explain restructuring; avoid no-op updates because even an explanation-only update resets acceptance.
+Revise affected groups with `group.update` (optional title, notes, memberHunkIds), or dissolve/create groups to split or merge them. Omitting notes retains them; supplying notes replaces the complete array, and `[]` clears it. Replace notes when new membership would invalidate an anchor. Follow `gyst`'s atomic queue and retry rules. Explain restructuring; avoid no-op updates because even a note-only update resets acceptance.
 
 ## 3. Hand back
 

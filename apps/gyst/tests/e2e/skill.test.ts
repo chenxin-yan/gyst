@@ -1,4 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
+import { ApplyEnvelopeSchema } from "@gyst/core";
+import { Schema } from "effect";
 import { mkdir, mkdtemp, readFile, readlink, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -56,6 +58,28 @@ afterAll(async () => {
 });
 
 describe("gyst skill installer", () => {
+  it("ships schema-valid note examples and authored skills unchanged", async () => {
+    for (const name of ["gyst", "gyst-refresh", "gyst-ask"]) {
+      const authored = await readFile(join(appDir, "skills", name, "SKILL.md"), "utf8");
+      expect(await readFile(join(skills, name, "SKILL.md"), "utf8")).toBe(authored);
+      expect(authored).not.toMatch(/overview|mermaid/i);
+      if (name === "gyst") {
+        const example = authored.match(/```json\n([\s\S]*?)\n```/)![1]!;
+        const batch = Schema.decodeUnknownSync(ApplyEnvelopeSchema, { onExcessProperty: "error" })(
+          JSON.parse(example),
+        );
+        const create = batch.ops[0]!;
+        expect(create.type).toBe("group.create");
+        if (create.type === "group.create") {
+          expect(create.notes).toHaveLength(2);
+          expect(create.notes.every(({ hunkId }) => create.memberHunkIds.includes(hunkId))).toBe(
+            true,
+          );
+        }
+      }
+      if (name === "gyst-ask") expect(authored).toContain("disable-model-invocation: true");
+    }
+  });
   it("installs the authored skills and the generated command reference for universal and Claude harnesses", async () => {
     await gyst("skill", "--all");
 

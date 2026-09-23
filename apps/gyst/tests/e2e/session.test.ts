@@ -178,7 +178,7 @@ describe("gyst session CLI seam", () => {
       {
         id: "group-1",
         title: "same edit",
-        overview: "intent and behavior",
+        notes: [{ hunkId, text: "intent and behavior" }],
         hunkIds: [hunkId],
         accepted: false,
       },
@@ -188,7 +188,7 @@ describe("gyst session CLI seam", () => {
       id: "group-2",
       hunkIds: [independentHunk.id],
       title: "needs human review",
-      overview: "intent and behavior",
+      notes: [{ hunkId: independentHunk.id, text: "intent and behavior" }],
       accepted: false,
     });
     await writeFile(statePath, JSON.stringify(state));
@@ -203,7 +203,7 @@ describe("gyst session CLI seam", () => {
       hunkIds: [independentHunk.id],
       count: 1,
       title: "needs human review",
-      overview: "intent and behavior",
+      notes: [{ hunkId: independentHunk.id, text: "intent and behavior" }],
       accepted: false,
     });
     expect(restoredStatus.inbox).toEqual([]);
@@ -393,7 +393,7 @@ describe("gyst session CLI seam", () => {
             type: "group.create",
             id: "group-1",
             title: "coherent change",
-            overview: "intent and behavior",
+            notes: [{ hunkId: first.id, text: "intent and behavior" }],
             memberHunkIds: [first.id],
           },
           { type: "group.update", id: "missing", title: "nope" },
@@ -414,7 +414,7 @@ describe("gyst session CLI seam", () => {
           type: "group.create",
           id: "group-1",
           title: "coherent change",
-          overview: "intent and behavior",
+          notes: [{ hunkId: first.id, text: "intent and behavior" }],
           memberHunkIds: [first.id],
         },
         {
@@ -422,7 +422,7 @@ describe("gyst session CLI seam", () => {
           id: "group-2",
           memberHunkIds: [second.id],
           title: "read this",
-          overview: "read this",
+          notes: [{ hunkId: second.id, text: "read this" }],
         },
         { type: "queue.set", itemIds: ["group-2", "group-1"] },
       ],
@@ -452,7 +452,12 @@ describe("gyst session CLI seam", () => {
         revision: 1,
         idempotencyKey: "change",
         ops: [
-          { type: "group.update", id: "group-2", title: "updated", overview: "updated" },
+          {
+            type: "group.update",
+            id: "group-2",
+            title: "updated",
+            notes: [{ hunkId: second.id, text: "updated" }],
+          },
           { type: "queue.set", itemIds: ["group-2", "group-1"] },
         ],
       }),
@@ -507,7 +512,7 @@ describe("gyst session CLI seam", () => {
               id: "group-1",
               memberHunkIds: [hunkId],
               title: "first",
-              overview: "first",
+              notes: [],
             },
             { type: "queue.set", itemIds: ["group-1"] },
           ],
@@ -525,7 +530,7 @@ describe("gyst session CLI seam", () => {
               id: "group-1",
               memberHunkIds: [hunkId],
               title: "second",
-              overview: "second",
+              notes: [],
             },
             { type: "queue.set", itemIds: ["group-1"] },
           ],
@@ -566,7 +571,7 @@ describe("gyst session CLI seam", () => {
                 type: "group.create",
                 id: "group-1",
                 title: "stable group",
-                overview: "intent and behavior",
+                notes: [{ hunkId: first.id, text: "intent and behavior" }],
                 memberHunkIds: [first.id],
               },
               {
@@ -574,7 +579,7 @@ describe("gyst session CLI seam", () => {
                 id: "group-2",
                 memberHunkIds: [second.id],
                 title: "stale group",
-                overview: "stale group",
+                notes: [{ hunkId: second.id, text: "stale group" }],
               },
               { type: "queue.set", itemIds: ["group-1", "group-2"] },
             ],
@@ -669,7 +674,7 @@ describe("gyst session CLI seam", () => {
             type: "group.create",
             id: "group-1",
             title: "coherent change",
-            overview: "intent and behavior",
+            notes: [{ hunkId: first.id, text: "intent and behavior" }],
             memberHunkIds: [first.id],
           },
           {
@@ -677,7 +682,7 @@ describe("gyst session CLI seam", () => {
             id: "group-2",
             memberHunkIds: [second.id],
             title: "read this",
-            overview: "read this",
+            notes: [{ hunkId: second.id, text: "read this" }],
           },
           { type: "queue.set", itemIds: ["group-1", "group-2"] },
         ],
@@ -691,7 +696,7 @@ describe("gyst session CLI seam", () => {
     await client.action({
       type: "cursor.focus",
       itemId: "group-1",
-      pane: "overview",
+      pane: "diff",
       hunkId: first.id,
     });
     // The frame the human saw is stale once the pre-pass moved the revision on.

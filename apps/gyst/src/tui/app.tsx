@@ -1,5 +1,5 @@
 import {
-  sanitizeOverview,
+  sanitizeTerminalText,
   type DiffPayload,
   type Hunk,
   type Source,
@@ -10,7 +10,6 @@ import {
   pathToFiletype,
   SyntaxStyle,
   type BoxRenderable,
-  type CodeRenderable,
   type Renderable,
   type ScrollBoxRenderable,
 } from "@opentui/core";
@@ -89,15 +88,13 @@ type ViewItem =
       kind: "group";
       id: string;
       title: string;
-      overview: string;
+      notes: StatusPayload["groups"][number]["notes"];
       accepted: boolean;
       members: Member[];
     }
   | { kind: "inbox"; id: string; accepted: false; member: Member };
 type LayoutMode = "auto" | "split" | "stack";
-// The overview keeps the same 40% beside the list and beside the diff, so opening a group never reflows it.
-const LAYOUT = { wideColumns: 120, overviewPercent: 40, splitColumns: 120 };
-const INBOX_OVERVIEW = "Unprepared hunk — awaiting agent preparation. Verdict unavailable.";
+const LAYOUT = { sidebarColumns: 28, splitColumns: 120 };
 
 function memberOf(hunk: Hunk): Member {
   const [header = "", ...body] = hunk.patch.split("\n");
@@ -120,7 +117,7 @@ function buildItems(status: StatusPayload, hunks: Map<string, Member>): ViewItem
             kind: "group",
             id: group.id,
             title: group.title,
-            overview: group.overview,
+            notes: group.notes,
             accepted: group.accepted,
             members,
           },
@@ -175,10 +172,29 @@ function FileHeader(props: { member: Member; focused: boolean }) {
 const memberElementId = (hunkId: string) => `hunk:${hunkId}`;
 const rowElementId = (itemId: string) => `row:${itemId}`;
 
-function MemberDiff(props: { member: Member; layout: "split" | "stack"; focused: boolean }) {
+function MemberDiff(props: {
+  member: Member;
+  layout: "split" | "stack";
+  focused: boolean;
+  note: string | undefined;
+}) {
   return (
     <box flexDirection="column" id={memberElementId(props.member.id)}>
       <FileHeader member={props.member} focused={props.focused} />
+      <Show when={props.note}>
+        <box
+          border={["left"]}
+          borderColor={C.dim}
+          paddingLeft={1}
+          paddingRight={1}
+          flexDirection="column"
+        >
+          <text fg={C.muted}>Agent</text>
+          <text fg={C.fg} wrapMode="word">
+            {props.note}
+          </text>
+        </box>
+      </Show>
       <diff
         diff={props.member.patch}
         view={props.layout === "split" ? "split" : "unified"}
@@ -203,6 +219,7 @@ function GroupDiff(props: {
   item: ViewItem;
   focusedHunk: string | undefined;
   layout: "split" | "stack";
+  showNotes: boolean;
 }) {
   return (
     <box flexDirection="column">
@@ -213,6 +230,11 @@ function GroupDiff(props: {
               member={member}
               layout={props.layout}
               focused={member.id === props.focusedHunk}
+              note={
+                props.showNotes && props.item.kind === "group"
+                  ? props.item.notes.find(({ hunkId }) => hunkId === member.id)?.text
+                  : undefined
+              }
             />
           </box>
         )}
@@ -248,8 +270,6 @@ export function App(props: {
   const [diffWidth, setDiffWidth] = createSignal(0);
   const [help, setHelp] = createSignal(false);
   const [layoutMode, setLayoutMode] = createSignal<LayoutMode>("auto");
-  // The focused reading pane temporarily takes the whole width; the other pane keeps its scroll.
-  const [expanded, setExpanded] = createSignal(false);
   const [revealVersion, setRevealVersion] = createSignal(0);
   // `closing` stops admitting inputs and polls while the queue drains; `stopped` means the renderer is gone.
   let closing = false;
@@ -259,7 +279,6 @@ export function App(props: {
   let latestStatus: StatusPayload | undefined;
   let inputs = Promise.resolve();
   let diffPane: ScrollBoxRenderable | undefined;
-  let overviewPane: ScrollBoxRenderable | undefined;
   let groupList: ScrollBoxRenderable | undefined;
   let diffContent: BoxRenderable | undefined;
   // Scroll-derived focus: `revealPending` holds the tracker off until an explicit focus is revealed,
@@ -273,7 +292,7 @@ export function App(props: {
   // A derived focus the daemon rejected, keyed by everything that made it: the same view at the same
   // scroll position is not retried by frames, error renders or unchanged polls, only by new input.
   let failedDerived: string | undefined;
-  // Expansion reflows the focused pane; the tracker waits until its reading position is restored.
+  // Layout reflows the diff; tracking waits until its reading position is restored.
   let anchorPending = false;
   let cancelRestore: (() => void) | undefined;
 
@@ -307,17 +326,14 @@ export function App(props: {
   // A memo, so a poll that returns the same focus does not re-run the reveal below.
   const focusedHunk = createMemo(() => status()?.cursor.hunkId);
   const pane = createMemo(() => status()?.cursor.pane ?? "queue");
-  // Browsing shows the group list; reading replaces it with the group's diff.
-  const reading = createMemo(() => pane() !== "queue");
-  const readingPane = () => (pane() === "overview" ? "overview" : "diff");
-  const wide = createMemo(() => dims().width >= LAYOUT.wideColumns);
-  const showDiff = createMemo(() => reading() && (pane() === "diff" || (wide() && !expanded())));
-  const showOverview = createMemo(() =>
-    reading() ? pane() === "overview" || (wide() && !expanded()) : wide(),
+  const reading = createMemo(() => pane() === "diff");
+  const readingPane = () => "diff" as const;
+  const sidebarWidth = createMemo(() =>
+    Math.min(LAYOUT.sidebarColumns, Math.max(8, Math.floor(dims().width / 3))),
   );
-  const overview = createMemo(() => {
+  const noteText = createMemo(() => {
     const item = current();
-    return sanitizeOverview(item && item.kind !== "inbox" ? item.overview : INBOX_OVERVIEW);
+    return item?.kind === "group" ? JSON.stringify(item.notes) : "";
   });
   const selectedMember = createMemo(() => {
     const item = current();
@@ -349,7 +365,7 @@ export function App(props: {
     const parts = [
       item.kind === "inbox" ? "no verdict (inbox)" : item.accepted ? "a unmark" : "a done",
       ...(focusable().length > 1 ? ["[ ] hunk"] : []),
-      "tab pane",
+      "s sidebar",
       "? help",
     ];
     return parts.join(" · ");
@@ -367,11 +383,18 @@ export function App(props: {
   });
   // Keyed on the id, not the item object: every poll rebuilds the items, and only a move should reset the scroll.
   createEffect(
-    on([currentKey, reading], () => {
+    on(currentKey, () => {
       cancelRestore?.();
+      roundTrip = undefined;
       diffPane?.scrollTo(0);
-      overviewPane?.scrollTo(0);
-      setExpanded(false);
+    }),
+  );
+  // A newer snapshot invalidates saved geometry even when ids and note text survive.
+  const revision = createMemo(() => status()?.revision);
+  createEffect(
+    on(revision, () => {
+      cancelRestore?.();
+      roundTrip = undefined;
     }),
   );
   // Keep the selected row visible in a long list: positions exist after a rendered frame.
@@ -390,19 +413,17 @@ export function App(props: {
     }),
   );
   // Reveal the focused member when the focus moves or its diff is (re)mounted. Positions exist only
-  // after layout, which happens inside a render, so the scroll waits for a rendered frame. A narrow
-  // overview hides the diff pane, which then has no layout: the reveal stays pending until a frame shows it.
+  // after layout, which happens inside a render, so the scroll waits for a rendered frame.
   createEffect(
     on([focusedHunk, currentKey, revealVersion], ([hunkId]) => {
       const derived = hunkId !== undefined && hunkId === derivedFocus;
       derivedFocus = undefined;
       if (!derived) {
         // An explicit jump, another TUI's focus or a new item supersedes queued tracking and any
-        // expansion restore still in flight, including its saved pre-expansion offset.
+        // layout restore still in flight, including its saved round-trip offset.
         focusGeneration++;
         cancelRestore?.();
-        // The saved position is stale, but a later pane switch must still restore this pane.
-        expansion = expanded() && expansion ? { scroll: expansion.scroll } : undefined;
+        roundTrip = undefined;
       }
       // The tracker named this hunk because it already heads the viewport: no snap to its header.
       if (hunkId === undefined || derived) return;
@@ -618,7 +639,7 @@ export function App(props: {
   }
 
   // Scrolling moves the shared focus to the hunk heading the viewport. Geometry is read after a
-  // rendered frame; an explicit jump's reveal or an expansion restore runs first so the tracker never
+  // rendered frame; an explicit jump's reveal or a layout restore runs first so the tracker never
   // fights them. The queue may carry an explicit jump, a poll with another TUI's focus or a snapshot
   // change ahead of the entry, so nothing observed here is trusted at dequeue: the entry is dropped
   // when the view changed meaning and otherwise re-derived from the latest completed geometry.
@@ -673,83 +694,60 @@ export function App(props: {
     });
   }
 
-  // Reading position of a pane as text, not as a scroll offset: the block heading the viewport and
-  // where in it the top row sits. A width change re-wraps content and clamps the offset, so the
-  // position is re-applied from this anchor once the new layout has completed.
-  type Anchor = {
-    block: Renderable;
-    row: number;
-    height: number;
-    source: number | undefined;
-    scrollTop: number;
-  };
-  // Geometry is read from the last completed layout, so a pane a pending pane switch already hid
-  // (Solid applies `visible` before this runs) still anchors correctly; the restore checks visibility.
+  // A member owns its header, note and diff. Reflow retains a relative member row;
+  // exact source-line mapping across split/unified layouts is deliberately not promised.
+  type Anchor = { block: Renderable; row: number; height: number; scrollTop: number };
   function anchorOf(scroll: ScrollBoxRenderable): Anchor | undefined {
-    const blocks: Renderable[] =
-      scroll === diffPane
-        ? focusable().flatMap((id) => diffPane!.findDescendantById(memberElementId(id)) ?? [])
-        : (overviewPane?.findDescendantById("overview-markdown")?.getChildren() ?? []);
-    const viewportTop = scroll.viewport.y;
     let block: Renderable | undefined;
-    for (const candidate of blocks) {
-      if (candidate.y <= viewportTop) block = candidate;
+    for (const id of focusable()) {
+      const candidate = scroll.findDescendantById(memberElementId(id));
+      if (!candidate) continue;
+      if (candidate.y <= scroll.viewport.y) block = candidate;
       else break;
     }
-    if (!block) return undefined;
-    const row = viewportTop - block.y;
-    // Markdown prose is one Code block whose wrapped rows map back to source lines.
-    const source = lineSources(block) ? block.getLineSources(row, 1)[0] : undefined;
-    return { block, row, height: block.height, source, scrollTop: scroll.scrollTop };
+    return (
+      block && {
+        block,
+        row: scroll.viewport.y - block.y,
+        height: block.height,
+        scrollTop: scroll.scrollTop,
+      }
+    );
   }
-  const lineSources = (block: Renderable): block is CodeRenderable =>
-    typeof (block as { getLineSources?: unknown }).getLineSources === "function";
-  function anchorRow(anchor: Anchor): number {
-    const { block, row, height, source } = anchor;
-    if (source !== undefined && lineSources(block)) {
-      const index = block.lineInfo.lineSources.indexOf(source);
-      if (index >= 0) return index;
-    }
-    return height > 0 ? Math.round((row / height) * block.height) : 0;
-  }
-  // The expansion belongs to one pane: only that pane's untouched offset is ever restored exactly.
-  let expansion: { scroll: ScrollBoxRenderable; anchor?: Anchor; expandedTop?: number } | undefined;
-  function toggleExpansion(): void {
-    // Collapsing restores the pane that was expanded, whichever pane has focus by now.
-    const scroll = expanded() ? (expansion?.scroll ?? activeScroll()) : activeScroll();
-    if (!scroll) return;
+  let roundTrip: { anchor: Anchor; browseTop?: number } | undefined;
+  function restorePosition(anchor: Anchor, exact?: number): void {
     cancelRestore?.();
-    const anchor = anchorOf(scroll);
-    // Restoring an untouched expansion returns the exact offset; otherwise the anchor is re-applied.
-    const exact =
-      expanded() &&
-      expansion?.anchor &&
-      expansion.scroll === scroll &&
-      scroll.scrollTop === expansion.expandedTop
-        ? expansion.anchor.scrollTop
-        : undefined;
-    setExpanded((value) => !value);
-    if (!anchor) {
-      expansion = undefined;
-      return;
-    }
-    expansion = expanded() ? { scroll, anchor } : undefined;
+    const scroll = diffPane!;
     const seen = status();
     anchorPending = true;
     let unchanged = 0;
     let frames = 0;
-    // Layout settles over more than one frame: a wider diff pane may switch to the split view after
-    // its width is measured. Re-apply until two frames leave the offset alone. A hidden pane, a
-    // replaced snapshot or a disposed block ends the restore instead of acting on stale content.
     const restore = () => {
-      if (!scroll.visible || anchor.block.isDestroyed || status()?.revision !== seen?.revision)
+      const fresh = status();
+      if (
+        anchor.block.isDestroyed ||
+        fresh?.session.id !== seen?.session.id ||
+        fresh?.revision !== seen?.revision ||
+        fresh?.cursor.itemId !== seen?.cursor.itemId
+      )
         return cancelRestore?.();
       const before = scroll.scrollTop;
-      if (exact !== undefined) scroll.scrollTo(exact);
-      else scroll.scrollBy(anchor.block.y + anchorRow(anchor) - scroll.viewport.y);
+      const row =
+        anchor.height > 0 ? Math.round((anchor.row / anchor.height) * anchor.block.height) : 0;
+      let target = exact ?? before + anchor.block.y + row - scroll.viewport.y;
+      const selected = seen?.cursor.hunkId
+        ? scroll.findDescendantById(memberElementId(seen.cursor.hunkId))
+        : undefined;
+      if (selected && selected !== anchor.block) {
+        // A fully visible selection can sit below the top-row anchor. Reflow must not hide it
+        // and let scroll tracking replace it. Use content coordinates from this completed frame.
+        const top = before + selected.y - scroll.viewport.y;
+        if (top < target || top + selected.height > target + scroll.viewport.height) target = top;
+      }
+      scroll.scrollTo(target);
       unchanged = scroll.scrollTop === before ? unchanged + 1 : 0;
       if (unchanged >= 2 || ++frames >= 8) {
-        if (expansion?.scroll === scroll) expansion.expandedTop = scroll.scrollTop;
+        if (!reading() && roundTrip) roundTrip.browseTop = scroll.scrollTop;
         return cancelRestore?.();
       }
       renderer.requestRender();
@@ -762,17 +760,24 @@ export function App(props: {
     renderer.on("frame", restore);
     renderer.requestRender();
   }
-
-  // Scroll the displayed pane now; a queued poll may replace the shared view.
-  const activeScroll = () =>
-    pane() === "diff" ? diffPane : showOverview() ? overviewPane : undefined;
-  // Switching panes (Tab, or another TUI) collapses the expansion first, so the expanded pane is
-  // restored to its own position and the other pane is never resized while expanded.
   createEffect(
-    on(pane, () => {
-      if (expanded()) toggleExpansion();
+    on([reading, () => dims().width, layoutMode, noteText], (next, previous) => {
+      if (!previous || !diffPane || revealPending) return;
+      const anchor = anchorOf(diffPane);
+      if (!anchor) return;
+      const viewOnly = next.slice(1).every((value, index) => value === previous[index + 1]);
+      const exact =
+        viewOnly && next[0] && roundTrip?.browseTop === diffPane.scrollTop
+          ? roundTrip.anchor.scrollTop
+          : undefined;
+      roundTrip = viewOnly && !next[0] && previous[0] ? { anchor } : undefined;
+      restorePosition(anchor, exact);
     }),
   );
+  onCleanup(() => cancelRestore?.());
+
+  // Scroll the displayed diff immediately; a queued poll must never retarget a scroll key.
+  const activeScroll = () => (reading() ? diffPane : undefined);
 
   onMount(() => {
     // Read completed geometry: changing diff mode inside onSizeChange would mutate the tree during layout.
@@ -849,10 +854,9 @@ export function App(props: {
             throw new Error("edit target changed — re-read and press o again");
           if (!stopped) await props.onEdit!(request);
         } catch (error) {
-          failure = sanitizeOverview(error instanceof Error ? error.message : String(error)).slice(
-            0,
-            300,
-          );
+          failure = sanitizeTerminalText(
+            error instanceof Error ? error.message : String(error),
+          ).slice(0, 300);
         } finally {
           if (!stopped) {
             await sync(true);
@@ -870,10 +874,6 @@ export function App(props: {
       return activeScroll()?.scrollBy(0.5, "viewport");
     if (key.name === "pageup" || (key.name === "u" && key.ctrl))
       return activeScroll()?.scrollBy(-0.5, "viewport");
-    if (key.name === "z") {
-      if (reading()) toggleExpansion();
-      return;
-    }
     if (key.name === "r")
       return enqueue(async () => {
         if (status()?.session.source.kind === "stdin") {
@@ -884,31 +884,13 @@ export function App(props: {
         }
         await refresh();
       });
-    if (key.name === "return")
-      return enqueue(async () => {
-        const first = focusable()[0];
-        const itemId = current()?.id;
-        if (itemId && first !== undefined && !reading())
-          await action({ type: "cursor.focus", itemId, pane: "diff", hunkId: first });
-      });
-    if (key.name === "escape") {
-      if (expanded()) return toggleExpansion();
-      return enqueue(async () => {
-        const itemId = current()?.id;
-        if (itemId && reading()) await action({ type: "cursor.focus", itemId, pane: "queue" });
-      });
-    }
-    if (key.name === "tab")
+    if (["return", "escape", "s"].includes(key.name))
       return enqueue(async () => {
         const itemId = current()?.id;
         const hunkId = focusedHunk();
-        if (itemId && hunkId && reading())
-          await action({
-            type: "cursor.focus",
-            itemId,
-            hunkId,
-            pane: pane() === "diff" ? "overview" : "diff",
-          });
+        const target = key.name === "s" ? !reading() : key.name === "return";
+        if (itemId && hunkId && target !== reading())
+          await action({ type: "cursor.focus", itemId, hunkId, pane: target ? "diff" : "queue" });
       });
     if (key.name === "j" || key.name === "k") {
       const delta = key.name === "j" ? 1 : -1;
@@ -969,13 +951,7 @@ export function App(props: {
     const active = () => item.id === current()?.id;
     const label = item.kind === "inbox" ? item.member.file : item.title;
     // Marker, gap, count column, padding and the scrollbar share the row with the title.
-    const columns = () =>
-      Math.max(
-        8,
-        (wide()
-          ? Math.floor((dims().width * (100 - LAYOUT.overviewPercent)) / 100)
-          : dims().width) - 8,
-      );
+    const columns = () => Math.max(1, sidebarWidth() - 8);
     return (
       <box
         id={rowElementId(item.id)}
@@ -1037,8 +1013,8 @@ export function App(props: {
                 id="group-list"
                 visible={!reading()}
                 ref={(scrollbox: ScrollBoxRenderable) => (groupList = scrollbox)}
-                width={wide() ? `${100 - LAYOUT.overviewPercent}%` : "auto"}
-                flexGrow={1}
+                width={sidebarWidth()}
+                flexShrink={0}
                 backgroundColor={C.panel}
                 paddingTop={1}
                 paddingBottom={1}
@@ -1049,8 +1025,8 @@ export function App(props: {
               </scrollbox>
               <scrollbox
                 id="diff-pane"
-                visible={showDiff()}
-                width={showDiff() && showOverview() ? `${100 - LAYOUT.overviewPercent}%` : "auto"}
+                minWidth={0}
+                flexBasis={0}
                 ref={(scrollbox: ScrollBoxRenderable) => (diffPane = scrollbox)}
                 flexGrow={1}
                 paddingLeft={1}
@@ -1070,35 +1046,10 @@ export function App(props: {
                       item={current()!}
                       focusedHunk={focusedHunk()}
                       layout={resolvedLayout()}
+                      showNotes={reading()}
                     />
                   </Show>
                 </box>
-              </scrollbox>
-              <scrollbox
-                id="overview-pane"
-                ref={(scrollbox: ScrollBoxRenderable) => (overviewPane = scrollbox)}
-                visible={showOverview()}
-                width={
-                  showOverview() && (showDiff() || !reading())
-                    ? `${LAYOUT.overviewPercent}%`
-                    : "auto"
-                }
-                flexGrow={1}
-                paddingLeft={2}
-                paddingRight={2}
-                border={["top"]}
-                borderColor={pane() === "overview" ? C.accent : C.border}
-                title={paneTitle("overview", pane() === "overview")}
-                titleColor={pane() === "overview" ? C.accent : C.dim}
-              >
-                <Show when={currentKey()} keyed>
-                  <markdown
-                    id="overview-markdown"
-                    content={overview()}
-                    syntaxStyle={syntax()}
-                    conceal={true}
-                  />
-                </Show>
               </scrollbox>
             </box>
           </box>
@@ -1156,11 +1107,10 @@ export function App(props: {
           <For
             each={[
               ["j / k", "browse: select group; reading: scroll a line"],
-              ["enter / esc", "open the group's diff / back to the group list"],
+              ["enter / esc", "hide / show the sidebar"],
               ["[ / ]", "previous / next hunk in the group"],
               ["p / n", "previous / next group without a verdict"],
-              ["tab / S-tab", "switch diff / overview while reading"],
-              ["z", "expand the focused pane / restore (esc or tab restores too)"],
+              ["s", "toggle the sidebar (notes show only while hidden)"],
               ["^d / ^u", "scroll half a page (PgDn / PgUp)"],
               ["a", "mark the group done and advance (again to unmark)"],
               ["u", "undo the last verdict"],

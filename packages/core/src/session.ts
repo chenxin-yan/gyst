@@ -1,5 +1,5 @@
 import { Schema } from "effect";
-import { metadataFields, OverviewSchema } from "./metadata.ts";
+import { metadataFields, NoteTextSchema } from "./metadata.ts";
 
 export const HunkSchema = Schema.Struct({
   id: Schema.String,
@@ -41,33 +41,39 @@ const sessionSummaryFields = {
 };
 const cursorSchema = Schema.Struct({
   itemId: Schema.NullOr(Schema.String),
-  pane: Schema.Literals(["queue", "diff", "overview"]),
+  pane: Schema.Literals(["queue", "diff"]),
   hunkId: Schema.optional(Schema.String),
 }).check(
   Schema.makeFilter(
     (cursor) =>
-      (cursor.pane === "queue"
-        ? cursor.hunkId === undefined
-        : cursor.itemId !== null && cursor.hunkId !== undefined) ||
-      "queue focus has no hunk; zoom requires an item and hunk",
+      (cursor.itemId === null
+        ? cursor.pane === "queue" && cursor.hunkId === undefined
+        : cursor.hunkId !== undefined) ||
+      "active items require a member hunk; empty focus is in the queue",
   ),
 );
 
 const HunkSummarySchema = Schema.Struct({ id: Schema.String, file: Schema.String });
-// The wire status carries overview text; a receipt status carries an index into `receiptOverviews`.
-const statusPayloadFields = <Overview extends Schema.Top>(overview: Overview) => ({
+// Wire notes carry text; receipts carry indices into `receiptNoteTexts`.
+const statusPayloadFields = <Text extends Schema.Top>(text: Text) => ({
   session: Schema.Struct(sessionSummaryFields),
   revision: Schema.Number,
   seq: Schema.Number,
   cursor: cursorSchema,
-  groups: Schema.Array(Schema.Struct({ ...GroupSchema.fields, overview, count: Schema.Number })),
+  groups: Schema.Array(
+    Schema.Struct({
+      ...GroupSchema.fields,
+      notes: Schema.Array(Schema.Struct({ hunkId: Schema.String, text })),
+      count: Schema.Number,
+    }),
+  ),
   inbox: Schema.Array(HunkSummarySchema),
   queue: Schema.Array(Schema.String),
   queueSet: Schema.Boolean,
   ready: Schema.Boolean,
   files: Schema.Array(Schema.Struct({ path: Schema.String, hunkCount: Schema.Number })),
 });
-export const StatusPayloadSchema = Schema.Struct(statusPayloadFields(OverviewSchema));
+export const StatusPayloadSchema = Schema.Struct(statusPayloadFields(NoteTextSchema));
 export type StatusPayload = typeof StatusPayloadSchema.Type;
 const ReceiptStatusSchema = Schema.Struct(statusPayloadFields(Schema.Natural));
 export type ReceiptStatus = typeof ReceiptStatusSchema.Type;
@@ -89,16 +95,17 @@ export const SessionSchema = Schema.Struct({
   queue: Schema.Array(Schema.String),
   queueSet: Schema.Boolean,
   acceptHistory: Schema.Array(Schema.String),
-  // Every distinct overview a receipt ever recorded, once; receipts reference it by index so
-  // progressive publication does not repeat all earlier Markdown in each new receipt.
-  receiptOverviews: Schema.Array(OverviewSchema),
+  // Progressive publication stores each distinct historical note text once.
+  receiptNoteTexts: Schema.Array(NoteTextSchema),
   applyReceipts: Schema.Array(ApplyReceiptSchema),
 }).check(
   Schema.makeFilter(
     (session) =>
       session.applyReceipts.every(({ status }) =>
-        status.groups.every(({ overview }) => overview < session.receiptOverviews.length),
-      ) || "receipt overview reference is outside receiptOverviews",
+        status.groups.every(({ notes }) =>
+          notes.every(({ text }) => text < session.receiptNoteTexts.length),
+        ),
+      ) || "receipt note reference is outside receiptNoteTexts",
   ),
 );
 export type Session = typeof SessionSchema.Type;

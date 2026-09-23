@@ -5,7 +5,7 @@ description: Use when the user requests a gyst walkthrough of a diff, range or P
 
 # Compose a walkthrough
 
-A **group** is one review question covering one or more hunks, with a title and Markdown overview. Ungrouped hunks form the **inbox**. Human acceptance means “done reviewing,” not correctness approval. Leave verdicts and cursor state to the human.
+A **group** is one review question covering one or more hunks, with a short title and optional member-hunk notes. Ungrouped hunks form the **inbox**. Human acceptance means “done reviewing,” not correctness approval. Leave verdicts and cursor state to the human.
 
 ## 1. Select the snapshot
 
@@ -33,13 +33,11 @@ A reader should understand each group without reconstructing another group or th
 
 **Title**: name the change in a few words (`Reject expired credentials`), not a sentence explaining it. The 120-code-point limit is a bound, not a target.
 
-**Overview**: a concise, skimmable breakdown read beside the diff. Mix short sentences, bullets, small headings, selected source context and diagrams as the change warrants; there is no template, bullet count or word quota. Explain what the diff does not make obvious: intent, prior behavior, how members connect in display order, concepts the reader needs. Line-by-line narration and test inventories belong in the diff, not here.
+**Notes**: attach one or two concise sentences to a member hunk when intent, a non-obvious consequence, a caveat or a connection needs explanation. Notes appear above their hunks only while the sidebar is hidden. Let obvious mechanical changes speak for themselves; an empty notes array is valid.
 
-- Excerpts: include unchanged code only when prose is insufficient, with the file location and the revision or working-tree source actually read; distinguish snapshot evidence from later code.
-- Verification: keep material caveats and uncertainty; distinguish tests run from tests inspected.
-- Diagrams: a `mermaid` fence when a flow or relationship is clearer drawn than described. The TUI currently shows Mermaid as source, so keep diagrams small and the surrounding prose sufficient on its own.
+Each note is `{ "hunkId": "member-id", "text": "Brief explanation." }`. Use at most one per member, anchored within its own group. Display order follows member order. Text is nonempty, single-paragraph plain text, at most 400 Unicode code points, without terminal controls. Use stable symbols and paths rather than line numbers. Keep Markdown blocks, source excerpts and diagrams out of notes; the diff supplies the code. Distinguish tests run from tests inspected and snapshot evidence from later working-tree code. Keep the walkthrough in groups, not in chat.
 
-Titles are single-line plain text, 1–120 Unicode code points, without terminal controls. Overviews are nonempty Markdown, at most 64 KiB UTF-8.
+Titles are single-line plain text, 1–120 Unicode code points, without terminal controls.
 
 ## 4. Publish atomically
 
@@ -47,7 +45,7 @@ Read the current revision. Pipe a batch to `gyst session apply --session <id>`. 
 
 Example first batch; replace the revision, key and hunk ids:
 
-````json
+```json
 {
   "revision": 0,
   "idempotencyKey": "fresh-uuid",
@@ -56,13 +54,24 @@ Example first batch; replace the revision, key and hunk ids:
       "type": "group.create",
       "id": "expiry",
       "title": "Reject expired credentials",
-      "overview": "Account data loaded before the expiry check ran, so an expired credential still reached the fetch. The guard now runs first.\n\n- `loadAccount` returns `Expired` instead of throwing after the fetch\n- The boundary test covers a credential expiring at the exact request instant\n\n```mermaid\nflowchart LR\n  request --> expired{expired?}\n  expired -- yes --> Expired\n  expired -- no --> fetch[fetch account]\n```\n\nTests inspected, not run. The clock source in `auth/time.ts` (HEAD) is unchanged.",
+      "notes": [
+        {
+          "hunkId": "guard-hunk",
+          "text": "Check expiry before loading the account so an expired credential cannot trigger a database read."
+        },
+        {
+          "hunkId": "test-hunk",
+          "text": "The boundary case treats a credential expiring at request time as expired. Test inspected, not run."
+        }
+      ],
       "memberHunkIds": ["guard-hunk", "test-hunk"]
     },
     { "type": "queue.set", "itemIds": ["expiry"] }
   ]
 }
-````
+```
+
+Creation requires `notes`, including `[]` when no explanation is needed. An update may omit notes to retain them, replace the complete array, or clear it with `[]`. Validate retained anchors against any new membership; replace notes when an anchor would become invalid. Every group update resets that group's verdict and needs a complete `queue.set` in the batch.
 
 - Successful batch: use its returned revision for the next batch.
 - `stale_revision`: reread status and reconcile concurrent human work before rebuilding.

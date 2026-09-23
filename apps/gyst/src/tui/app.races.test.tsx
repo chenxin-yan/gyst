@@ -17,12 +17,12 @@ function status(revision = 0, seq = revision, sessionId = "session"): StatusPayl
     },
     revision,
     seq,
-    cursor: { itemId: "group", pane: "queue" },
+    cursor: { itemId: "group", pane: "queue", hunkId: `hunk-${revision}` },
     groups: [
       {
         id: "group",
         title: `review ${revision}`,
-        overview: `Intent and evidence ${revision}`,
+        notes: [{ hunkId: `hunk-${revision}`, text: `Intent and evidence ${revision}` }],
         hunkIds: [`hunk-${revision}`],
         count: 1,
         accepted: false,
@@ -188,23 +188,19 @@ describe("TUI snapshot races", () => {
     }
   });
 
-  for (const [from, to] of [
-    ["overview", "diff"],
-    ["overview", "overview"],
-    ["diff", "overview"],
-  ] as const) {
+  for (const to of ["diff", "queue"] as const) {
+    const from = "diff";
     it(`does not retarget ${from} j/k to another shared ${to} view behind a poll`, async () => {
-      const overview = Array.from({ length: 60 }, (_, i) => `Paragraph ${i}\n`).join("\n");
       let state: StatusPayload = {
         ...status(),
         cursor: { itemId: "group", pane: from, hunkId: "hunk-0" },
         groups: [
-          { ...status().groups[0]!, overview },
+          status().groups[0]!,
           {
             ...status().groups[0]!,
             id: "other",
             title: "Other item",
-            overview,
+            notes: [],
             hunkIds: ["other-1", "other-2"],
             count: 2,
           },
@@ -254,9 +250,9 @@ describe("TUI snapshot races", () => {
         release.resolve();
         await tui.waitForFrame((frame) => frame.includes("Other item") && reads >= 3);
         await tui.renderOnce();
-        const pane = tui.renderer.root.findDescendantById("overview-pane") as ScrollBoxRenderable;
+        const pane = tui.renderer.root.findDescendantById("diff-pane") as ScrollBoxRenderable;
         assert.equal(actions, 0, "a scroll key never becomes navigation on another item");
-        assert.equal(pane.scrollTop, 0, "an old key never scrolls another item's overview");
+        assert.equal(pane.scrollTop, 0, "an old key never scrolls another item's diff");
       } finally {
         release.resolve();
         tui.renderer.destroy();

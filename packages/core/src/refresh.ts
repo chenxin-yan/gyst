@@ -47,6 +47,7 @@ export function refreshSession(
       {
         ...group,
         hunkIds,
+        notes: hunkIds.length === group.hunkIds.length ? group.notes : [],
         // A verdict covers every member, not just the surviving ones.
         accepted: hunkIds.length === group.hunkIds.length && group.accepted,
       },

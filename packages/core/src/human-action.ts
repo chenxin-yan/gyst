@@ -10,19 +10,13 @@ export const HumanActionSchema = Schema.Union([
   Schema.Struct({
     type: Schema.Literal("cursor.focus"),
     itemId: Schema.String,
-    pane: Schema.Literal("queue"),
-    hunkId: Schema.optional(Schema.Never),
-  }),
-  Schema.Struct({
-    type: Schema.Literal("cursor.focus"),
-    itemId: Schema.String,
-    pane: Schema.Literals(["diff", "overview"]),
+    pane: Schema.Literals(["queue", "diff"]),
     hunkId: Schema.String,
   }),
   Schema.Struct({
     type: Schema.Literal("cursor.follow"),
     itemId: Schema.String,
-    pane: Schema.Literals(["diff", "overview"]),
+    pane: Schema.Literal("diff"),
     hunkId: Schema.String,
     ...frameFields,
     seq: Schema.Number,
@@ -57,12 +51,15 @@ export function applyHumanAction(
 
   if (action.type === "cursor.move") {
     if (!visibleIds.has(action.itemId)) return inapplicable;
-    draft.cursor = { itemId: action.itemId, pane: "queue" };
+    draft.cursor = {
+      itemId: action.itemId,
+      pane: "queue",
+      hunkId: focusableHunkIds(draft, action.itemId)[0]!,
+    };
   } else if (action.type === "cursor.focus" || action.type === "cursor.follow") {
     const { itemId, pane } = action;
     if (!visibleIds.has(itemId)) return inapplicable;
-    if (pane === "queue") draft.cursor = { itemId, pane };
-    else if (focusableHunkIds(session, itemId).includes(action.hunkId))
+    if (focusableHunkIds(session, itemId).includes(action.hunkId))
       draft.cursor = { itemId, pane, hunkId: action.hunkId };
     else return inapplicable;
   } else {
@@ -76,10 +73,11 @@ export function applyHumanAction(
     if (action.type === "verdict.undo") {
       item.accepted = false;
       draft.acceptHistory.pop();
-      draft.cursor =
-        session.cursor.pane === "queue"
-          ? { itemId, pane: "queue" }
-          : { itemId, pane: "diff", hunkId: focusableHunkIds(draft, itemId)[0]! };
+      draft.cursor = {
+        itemId,
+        pane: session.cursor.pane,
+        hunkId: focusableHunkIds(draft, itemId)[0]!,
+      };
     } else {
       item.accepted = !item.accepted;
       draft.acceptHistory = draft.acceptHistory.filter((id) => id !== itemId);
@@ -96,14 +94,11 @@ export function applyHumanAction(
           for (let offset = 1; offset <= draft.queue.length; offset++) {
             const destination = draft.queue[(start + offset) % draft.queue.length]!;
             if (!pending.has(destination)) continue;
-            draft.cursor =
-              session.cursor.pane === "queue"
-                ? { itemId: destination, pane: "queue" }
-                : {
-                    itemId: destination,
-                    pane: "diff",
-                    hunkId: focusableHunkIds(draft, destination)[0]!,
-                  };
+            draft.cursor = {
+              itemId: destination,
+              pane: session.cursor.pane,
+              hunkId: focusableHunkIds(draft, destination)[0]!,
+            };
             break;
           }
         }
