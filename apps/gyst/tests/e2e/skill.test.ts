@@ -59,7 +59,7 @@ describe("gyst skill installer", () => {
   it("installs the authored skills and the generated command reference for universal and Claude harnesses", async () => {
     await gyst("skill", "--all");
 
-    for (const name of ["gyst", "gyst-ask", "gyst-cli"]) {
+    for (const name of ["gyst", "gyst-ask", "gyst-refresh", "gyst-cli"]) {
       await expectLink(join(home, ".agents", "skills", name), name);
       await expectLink(join(home, ".claude", "skills", name), name);
     }

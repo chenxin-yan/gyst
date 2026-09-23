@@ -62,6 +62,10 @@ changes; press `r` to refresh explicitly. `gyst session check` reports `unchange
 periodic and cached, not a real-time guarantee. Stdin snapshots have no source to
 check; replace them explicitly with `gyst session refresh --stdin`.
 
+Use `/gyst-refresh` in your agent's chat to refresh the existing review and revise
+its affected groups and explanations while preserving unrelated review progress.
+If you already pressed `r`, ask it to regroup the current snapshot instead.
+
 Run `gyst` again to resume. There is one session per repository. When you are done,
 close it before starting a review with a different scope:
 
