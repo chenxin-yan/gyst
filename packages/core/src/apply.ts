@@ -1,9 +1,9 @@
 import { Result, Schema } from "effect";
-import { draftOf, groupedIds, reconcileQueue } from "./draft.ts";
+import { draftOf, groupedIds, type MutableSession, reconcileQueue } from "./draft.ts";
 import { StaleRevision, ValidationFailed } from "./errors.ts";
 import { hash } from "./hash.ts";
 import { metadataFields, MetadataSchema, OverviewSchema, TitleSchema } from "./metadata.ts";
-import type { Session, StatusPayload } from "./session.ts";
+import type { ReceiptStatus, Session, StatusPayload } from "./session.ts";
 import { statusOf } from "./status.ts";
 
 export const GroupCreateSchema = Schema.Struct({
@@ -50,6 +50,34 @@ export type ValidationDetail = { opIndex: number; message: string };
 /** A replayed idempotency key returns the recorded status and no session to persist. */
 export type ApplyOutcome = { readonly status: StatusPayload; readonly session?: Session };
 
+const mapOverviews = <From, To, Item extends { overview: From }>(
+  items: readonly Item[],
+  map: (overview: From) => To,
+) => items.map((item) => ({ ...item, overview: map(item.overview) }));
+
+// A receipt records each overview once as an index into `receiptOverviews`, so replay stays exact
+// while a hundred one-item publications do not repeat every earlier overview a hundred times.
+function receiptStatusOf(draft: MutableSession, status: StatusPayload): ReceiptStatus {
+  // ponytail: linear indexOf over distinct overviews; a hash index if a session publishes thousands.
+  const intern = (overview: string) => {
+    const index = draft.receiptOverviews.indexOf(overview);
+    return index >= 0 ? index : draft.receiptOverviews.push(overview) - 1;
+  };
+  return {
+    ...status,
+    groups: mapOverviews(status.groups, intern),
+    spotlight: mapOverviews(status.spotlight, intern),
+  };
+}
+function recordedStatusOf(session: Session, status: ReceiptStatus): StatusPayload {
+  const text = (index: number) => session.receiptOverviews[index]!;
+  return {
+    ...status,
+    groups: mapOverviews(status.groups, text),
+    spotlight: mapOverviews(status.spotlight, text),
+  };
+}
+
 export function applyBatch(
   session: Session,
   envelope: ApplyEnvelope,
@@ -59,7 +87,8 @@ export function applyBatch(
   const digest = hash(JSON.stringify(envelope));
   const receipt = session.applyReceipts.find(({ key }) => key === envelope.idempotencyKey);
   if (receipt) {
-    if (receipt.digest === digest) return Result.succeed({ status: receipt.status });
+    if (receipt.digest === digest)
+      return Result.succeed({ status: recordedStatusOf(session, receipt.status) });
     return Result.fail(
       new ValidationFailed({
         message: "idempotency key reused with a different batch",
@@ -240,6 +269,10 @@ export function applyBatch(
   draft.seq++;
   draft.updatedAt = updatedAt;
   const status = statusOf(draft);
-  draft.applyReceipts.push({ key: envelope.idempotencyKey, digest, status });
+  draft.applyReceipts.push({
+    key: envelope.idempotencyKey,
+    digest,
+    status: receiptStatusOf(draft, status),
+  });
   return Result.succeed({ session: draft, status });
 }

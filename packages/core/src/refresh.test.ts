@@ -54,6 +54,7 @@ function session(): Session {
     queue: ["old-b", "group-1", "old-c", "old-d"],
     queueSet: true,
     acceptHistory: ["group-1"],
+    receiptOverviews: [],
     applyReceipts: [],
   };
 }

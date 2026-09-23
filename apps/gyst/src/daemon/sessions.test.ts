@@ -144,6 +144,7 @@ const persisted: Session = {
   queue: ["h2", "g1", "h3"],
   queueSet: false,
   acceptHistory: ["h2", "g1"],
+  receiptOverviews: [],
   applyReceipts: [],
 };
 
@@ -351,8 +352,21 @@ describe("Sessions.apply", () => {
     expect(status.spotlight.map((hunk) => hunk.id)).toEqual(["h2", "h3"]);
     expect(status).toMatchObject({ queue: ["g1", "h2", "h3"], queueSet: true, ready: true });
     const saved = files.get("persisted")!;
+    // The receipt stores each distinct overview once; g1 and h2 share the same text.
+    expect(saved.receiptOverviews).toEqual(["intent and behavior", "third"]);
     expect(saved.applyReceipts).toEqual([
-      { key: "first-pass", digest: expect.any(String), status },
+      {
+        key: "first-pass",
+        digest: expect.any(String),
+        status: {
+          ...status,
+          groups: [{ ...status.groups[0]!, overview: 0 }],
+          spotlight: [
+            { ...status.spotlight[0]!, overview: 0 },
+            { ...status.spotlight[1]!, overview: 1 },
+          ],
+        },
+      },
     ]);
     expect(saved.hunks[2]?.title).toBe("third");
     // The receipt answers a replay before the revision check, so a retried batch is a no-op.

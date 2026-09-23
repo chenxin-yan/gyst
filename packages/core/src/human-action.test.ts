@@ -38,6 +38,7 @@ const unready: Session = {
   queue: ["g1", "h2"],
   queueSet: false,
   acceptHistory: [],
+  receiptOverviews: [],
   applyReceipts: [],
 };
 const ready: Session = { ...unready, queueSet: true };

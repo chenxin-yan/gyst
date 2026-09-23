@@ -30,6 +30,7 @@ const session: Session = {
   queue: ["h1", "h2", "h3"],
   queueSet: false,
   acceptHistory: ["h1", "h2"],
+  receiptOverviews: [],
   applyReceipts: [],
 };
 

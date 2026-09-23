@@ -25,6 +25,7 @@ const session = (id: string): Session => ({
   queue: [],
   queueSet: false,
   acceptHistory: [],
+  receiptOverviews: [],
   applyReceipts: [],
 });
 
@@ -107,9 +108,17 @@ describe("SessionStore", () => {
         },
       ],
     };
+    const status = statusOf(prepared);
     const saved: Session = {
       ...prepared,
-      applyReceipts: [{ key: "publish", digest: "digest", status: statusOf(prepared) }],
+      receiptOverviews: [prepared.groups[0]!.overview],
+      applyReceipts: [
+        {
+          key: "publish",
+          digest: "digest",
+          status: { ...status, groups: [{ ...status.groups[0]!, overview: 0 }], spotlight: [] },
+        },
+      ],
     };
     await run(SessionStore.use((s) => s.save(saved)));
     const loaded = await run(SessionStore.use((s) => s.loadAll));

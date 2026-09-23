@@ -1,10 +1,10 @@
 import { expect, it } from "bun:test";
 import { Result, Schema } from "effect";
-import { ApplyEnvelopeSchema, applyBatch } from "./apply.ts";
+import { type ApplyEnvelope, ApplyEnvelopeSchema, applyBatch } from "./apply.ts";
 import { applyHumanAction } from "./human-action.ts";
 import { refreshSession } from "./refresh.ts";
 import { sanitizeOverview } from "./metadata.ts";
-import { HunkSchema, SessionSchema } from "./session.ts";
+import { HunkSchema, SessionSchema, type StatusPayload } from "./session.ts";
 
 const decode = Schema.decodeUnknownSync(ApplyEnvelopeSchema, { onExcessProperty: "error" });
 const hunk = (id: string) => ({
@@ -31,6 +31,7 @@ const initial = () =>
     queue: [],
     queueSet: false,
     acceptHistory: [],
+    receiptOverviews: [],
     applyReceipts: [],
   });
 const group = {
@@ -94,6 +95,107 @@ it("publishes complete ordered items progressively without losing verdicts or re
     accepted: false,
   });
   expect(refreshed.acceptHistory).toEqual([]);
+});
+
+it("stores each receipt overview once and replays exact historical statuses after edits", () => {
+  const count = 50;
+  const overview = (index: number) => `overview-${index}-`.padEnd(1024, "x");
+  let session = Schema.decodeUnknownSync(SessionSchema)({
+    ...initial(),
+    cursor: { itemId: null, expanded: false },
+    hunks: Array.from({ length: count }, (_, index) => hunk(`h${index}`)),
+  });
+  const published: string[] = [];
+  const envelopes: ApplyEnvelope[] = [];
+  const statuses: StatusPayload[] = [];
+  for (let index = 0; index < count; index++) {
+    published.push(`h${index}`);
+    const batch = envelope(
+      [
+        {
+          type: "hunk.annotate",
+          hunkId: `h${index}`,
+          title: `item ${index}`,
+          overview: overview(index),
+        },
+        { type: "queue.set", itemIds: [...published] },
+      ],
+      session.revision,
+      `publish-${index}`,
+    );
+    const outcome = Result.getOrThrow(applyBatch(session, batch, "later"));
+    envelopes.push(batch);
+    statuses.push(outcome.status);
+    session = outcome.session!;
+  }
+  // Each overview appears in the current hunk and once in the receipt table; never once per receipt.
+  const json = JSON.stringify(session);
+  for (let index = 0; index < count; index++)
+    expect(json.split(`overview-${index}-`).length - 1).toBe(2);
+  expect(session.applyReceipts).toHaveLength(count);
+
+  const moved = Result.getOrThrow(
+    applyHumanAction(session, { type: "cursor.move", itemId: "h3" }, "later"),
+  );
+  const accepted = Result.getOrThrow(
+    applyHumanAction(
+      moved,
+      { type: "verdict.toggle", itemId: "h3", sessionId: "session", revision: moved.revision },
+      "later",
+    ),
+  );
+  const edited = Result.getOrThrow(
+    applyBatch(
+      accepted,
+      envelope(
+        [{ type: "hunk.annotate", hunkId: "h0", title: "item 0", overview: "rewritten" }],
+        accepted.revision,
+        "edit",
+      ),
+      "later",
+    ),
+  ).session!;
+  const reloaded = Schema.decodeUnknownSync(SessionSchema)(JSON.parse(JSON.stringify(edited)));
+  expect(reloaded).toEqual(edited);
+  for (const index of [0, count - 1]) {
+    expect(applyBatch(reloaded, envelopes[index]!, "later")).toEqual(
+      Result.succeed({ status: statuses[index]! }),
+    );
+  }
+  expect(statuses[count - 1]!.spotlight[0]?.overview).toBe(overview(0));
+  expect(reloaded.hunks[0]?.overview).toBe("rewritten");
+  expect(reloaded.hunks[3]).toMatchObject({ accepted: true });
+  expect(reloaded.cursor).toEqual({ itemId: "h3", expanded: false });
+
+  // Interned text must retain the same validation as the wire overview it reconstructs.
+  for (const invalid of ["", "x".repeat(64 * 1024 + 1)]) {
+    expect(() =>
+      Schema.decodeUnknownSync(SessionSchema)({
+        ...edited,
+        receiptOverviews: [invalid, ...edited.receiptOverviews.slice(1)],
+      }),
+    ).toThrow();
+  }
+
+  // A persisted reference outside the overview table must not decode into an undefined wire overview.
+  const receipt = edited.applyReceipts[0]!;
+  for (const overviewRef of [-1, 1.5, edited.receiptOverviews.length]) {
+    const corrupt = {
+      ...edited,
+      applyReceipts: [
+        {
+          ...receipt,
+          status: {
+            ...receipt.status,
+            spotlight: [{ ...receipt.status.spotlight[0]!, overview: overviewRef }],
+          },
+        },
+      ],
+    };
+    expect(() =>
+      Schema.decodeUnknownSync(SessionSchema)(JSON.parse(JSON.stringify(corrupt))),
+    ).toThrow();
+  }
 });
 
 it("validates Unicode title/UTF-8 overview bounds, paired metadata and legacy fields", () => {
