@@ -1,78 +1,73 @@
 ---
 name: gyst
-description: Compose a self-contained walkthrough and publish complete groups top to bottom for human co-review.
-disable-model-invocation: true
+description: Use when the user requests a gyst walkthrough of a diff, range or PR, or when gyst-refresh needs authoring rules. Plan full coverage, then publish self-contained groups for human review.
 ---
 
-# Gyst co-review
+# Compose a walkthrough
 
-Compose a walkthrough of one scoped diff. Each **group** is one review step containing one or more hunks, a plain-text **title**, and a Markdown **overview** with the context needed to understand it. Every changed hunk belongs to exactly one group when preparation is complete. The **inbox** contains hunks not yet published in a group. The human alone supplies **verdicts**: accept means done reviewing every member, not a claim that the code is correct.
+A **group** is one review question covering one or more hunks, with a title and Markdown overview. Ungrouped hunks form the **inbox**. Human acceptance means “done reviewing,” not correctness approval. Leave verdicts and cursor state to the human.
 
-## 1. Establish the session
+## 1. Select the snapshot
 
-Resolve the requested scope from the repository. Fetch remote refs yourself when needed; gyst does not fetch them.
+Resolve the requested scope; fetch remote refs when needed. Use the `gyst-cli` skill when command syntax is uncertain.
 
-- Uncommitted changes: `gyst session create` includes the Git diff and untracked files.
-- Replayable range: `gyst session create -- <revisions> [-- <pathspecs>]`. Git options are rejected; pathspecs resolve from your current directory.
-- An obtained unified diff: pipe it to `gyst session create --stdin`. Filenames in the patch must be repository-root-relative.
+- Working changes, including untracked files: `gyst session create`.
+- Git range: `gyst session create -- <revisions> [-- <pathspecs>]`. Git options are rejected; pathspecs are caller-relative.
+- Supplied patch: pipe to `gyst session create --stdin`; filenames must be repository-root-relative.
 
-On `session_exists`, read `gyst session status`. Refresh only if the recorded source matches the requested scope: `gyst session refresh` for Git, or a replacement patch through `gyst session refresh --stdin`. For a different scope, ask the user whether to keep or explicitly close the session. Never discard human work automatically.
+On `session_exists`, read `gyst session status` and reuse a matching snapshot. Ask before closing a session or changing its scope. For a requested snapshot update or regrouping, use `gyst-refresh`.
 
-## 2. Plan the entire walkthrough
+Record the session id; use `--session <id>` on subsequent commands to avoid targeting a replacement session.
 
-Read status and `gyst session diff`, then the surrounding implementation, callers and relevant tests. For large snapshots, read by `--file`; use `--hunk` or `--group` for targeted reads. Distinguish the frozen snapshot from unchanged context and any newer working-tree content.
+## 2. Plan full coverage
 
-Before publishing, map every snapshot hunk to exactly one planned group and choose the complete top-to-bottom order. Keep this plan in your working context; gyst stores published groups, not an unfinished outline. A plan is complete when its members cover the whole snapshot without overlap and you can explain each group's review question, necessary context and position in the story.
+Read status, `gyst session diff`, surrounding code, callers and relevant tests. Narrow reads with `--file`, `--group` or `--hunk` as needed.
 
-Group code that is best understood together: an entry point, implementation and decisive tests can form one step across files. An independent one-hunk change is also a group. Split independent review questions; a shared file, directory or vague topic alone does not make a coherent group. Keep related changed code together rather than making a group's explanation depend on code hidden in another step.
+Before publishing, assign **every snapshot hunk to exactly one planned group** and choose the complete order. Group by review question, not filename: an entry point, implementation and tests can belong together across files. Independent changes can be one-hunk groups. Include mechanical changes.
 
-Order groups by comprehension: establish the needed concepts before their consequences. Within each group, order members along the explanation, such as entry point → behavior → tests. Account for supporting and mechanical changes too; every hunk remains visible and reviewable.
+Order concepts before consequences, and members along the explanation: entry point → behavior → tests. Keep the plan in agent context; publish only finished groups.
 
-## 3. Author and publish complete groups
+## 3. Author self-contained groups
 
-Write each overview so the human can understand the group without reconstructing another step or the harness conversation:
+A reader should understand each group without reconstructing another group or the chat:
 
-- Explain why this change exists, the relevant prior behavior, and what changes now.
-- Introduce necessary domain concepts and connect the members in their display order.
-- Include small, relevant unchanged-code excerpts when prose is insufficient. Cite file locations and the revision or working-tree source you actually read; clearly distinguish those excerpts from the snapshot hunks being reviewed. Explain any source drift rather than presenting newer code as snapshot evidence.
-- State supported evidence and remaining uncertainty. Name tests that matter and distinguish inspected tests from tests actually run.
+- Name the change in the title; explain intent, prior behavior and new behavior in the overview.
+- Introduce necessary concepts and connect members in display order.
+- When prose is insufficient, include selected unchanged-code excerpts with file locations and the revision or working-tree source actually read. Distinguish snapshot evidence from later code.
+- State evidence and uncertainty; distinguish inspected tests from tests run.
 
-Use only the context needed for this review question, not whole-file dumps or a fixed section template. The title names the change rather than a filename. Titles are single-line plain text (1–120 Unicode code points, no terminal controls); overviews are nonempty Markdown (at most 64 KiB UTF-8). Ordinary code fences, compact tables and source references are supported; Mermaid fences remain source text. Never substitute an assurance of correctness for the human's judgment.
+Titles are single-line plain text, 1–120 Unicode code points, without terminal controls. Overviews are nonempty Markdown, at most 64 KiB UTF-8. Use only context needed for the review question.
 
-Before publishing a group, check that its title, explanation, context and ordered hunks tell the same complete story. Read the current revision, then pipe an envelope to `gyst session apply`:
+## 4. Publish atomically
+
+Read the current revision. Pipe a batch to `gyst session apply --session <id>`. Publish one complete group or a small consecutive batch; include `queue.set` with **every published group exactly once**, excluding inbox ids. Append planned groups in order.
+
+Example first batch; replace the revision, key and hunk ids:
 
 ```json
 {
   "revision": 0,
-  "idempotencyKey": "a-fresh-uuid",
+  "idempotencyKey": "fresh-uuid",
   "ops": [
     {
       "type": "group.create",
-      "id": "reject-expired-credentials",
+      "id": "expiry",
       "title": "Reject expired credentials",
-      "overview": "## Behavior\nPreviously the entry point loaded account data before checking expiry. It now rejects expired credentials first. Read the entry point, expiry check and tests in that order.\n\nThe tests exercise expiry and the still-valid path. Evidence: source inspection; tests not run.",
-      "memberHunkIds": ["entry-hunk", "implementation-hunk", "test-hunk"]
+      "overview": "Check expiry before loading account data. Read the guard, then its boundary test. Evidence: tests inspected, not run.",
+      "memberHunkIds": ["guard-hunk", "test-hunk"]
     },
-    {
-      "type": "queue.set",
-      "itemIds": ["reject-expired-credentials"]
-    }
+    { "type": "queue.set", "itemIds": ["expiry"] }
   ]
 }
 ```
 
-Publish one complete group or a small consecutive batch from the plan. Include `queue.set` **in the same transaction**, containing every currently published group id exactly once, excluding inbox ids. Preserve published order and append the next planned groups. One-hunk groups use the same operation; hunks carry no separate explanation or verdict.
+- Successful batch: use its returned revision for the next batch.
+- `stale_revision`: reread status and reconcile concurrent human work before rebuilding.
+- Identical retry: reuse the key, but its receipt is historical; reread status before continuing.
+- Changed content or corrected `validation_failed`: use a fresh key.
 
-Use the returned revision for the next batch. On `stale_revision`, reread status and reassess concurrent human work before rebuilding; never blindly retry obsolete operations or overwrite verdicts. An identical retry with the same idempotency key returns its historical receipt, not current status; reread before continuing. Use a new key for changed content. On `validation_failed`, correct the batch and use a new key. Never stream incomplete Markdown into published groups or write verdict/cursor state.
+As soon as groups are published, tell the human they can run `gyst`; leave launching it to them. Continue at complete-group boundaries. Finish when status has `ready: true` (empty inbox and set queue); otherwise report remaining work. Accepted groups with inbox hunks do not mean review completion.
 
-## 4. Hand off while preparing
+## Source changes
 
-As soon as groups are published, tell the human they can run `gyst` in this repository; do not launch it. Continue down the planned walkthrough at complete-group boundaries. Report published group and remaining inbox counts briefly. Empty inbox plus a set queue means preparation is ready; all published groups accepted while inbox remains is **not review complete**.
-
-## Source awareness and explicit refresh
-
-Use `gyst session check` to compare the recorded Git scope with its captured patch without mutating the session. The response names the session and review revision, `checkedAt`, and `state`: `unchanged`, `changed`, `unavailable` (with a reason), or `stdin`. Results can be cached for five seconds. Unavailable and stdin are not evidence of freshness; unrelated working-tree changes outside the recorded scope need not change it. Status and historical apply receipts remain review-state records, not live source checks.
-
-When the source changed, tell the human the snapshot is still fixed. Do not refresh merely because a check noticed changes. Refresh only on an explicit request; the TUI's `r` key does this for Git sessions. Stdin requires a replacement patch through `gyst session refresh --stdin`.
-
-After an explicit refresh, account for new inbox hunks before publishing further groups. Preserve the order and unrelated accepted groups the human has already seen. Removed or changed members invalidate a surviving group's verdict; its title and overview remain a proposal needing re-review. Reassess source excerpts and explanation against the new snapshot, and revise affected groups deliberately with `group.update` (optional title, overview, memberHunkIds) or `group.dissolve`, setting the resulting queue atomically. If new evidence requires restructuring the published walkthrough, explain why rather than silently reshuffling the human's progress.
+`gyst session check` reports freshness of the recorded scope without replacing the snapshot. Results are cached; `unavailable` and `stdin` do not establish freshness. A changed result is a notice, not authorization to refresh. Use `gyst-refresh` when the user requests an update.

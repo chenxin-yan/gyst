@@ -1,5 +1,5 @@
 interface:
   display_name: "Gyst Ask"
-  short_description: "Answer a question about the reviewer's current item"
+  short_description: "Answer a question about the focused group or hunk"
 policy:
   allow_implicit_invocation: false

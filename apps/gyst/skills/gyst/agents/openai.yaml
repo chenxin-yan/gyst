@@ -1,5 +1,5 @@
 interface:
   display_name: "Gyst"
-  short_description: "Pre-pass a diff for human co-review"
+  short_description: "Compose a group-based code-review walkthrough"
 policy:
-  allow_implicit_invocation: false
+  allow_implicit_invocation: true
