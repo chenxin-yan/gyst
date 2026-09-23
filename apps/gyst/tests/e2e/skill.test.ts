@@ -83,7 +83,7 @@ describe("gyst skill installer", () => {
     const universal = join(home, ".agents", "skills", "gyst");
     const claude = join(home, ".claude", "skills", "gyst");
 
-    for (const args of [["skill", "update", "--scope", "global"], ["--help"]]) {
+    for (const args of [["skills", "repair", "--scope", "global"], ["--help"]]) {
       await rm(universal);
       await rm(claude);
       await symlink(stale, universal);

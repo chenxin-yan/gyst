@@ -42,13 +42,13 @@
     "test": "bun test"
   },
   "devDependencies": {
-    "@crustjs/crust": "0.3.5"
+    "@crustjs/crust": "0.4.0"
   },
   "dependencies": {
-    "@crustjs/core": "0.3.5",
-    "@crustjs/effect": "0.1.1",
-    "@crustjs/extensions": "0.3.5",
-    "@crustjs/skills": "0.3.5",
+    "@crustjs/core": "0.4.0",
+    "@crustjs/effect": "0.1.2",
+    "@crustjs/extensions": "0.4.0",
+    "@crustjs/skills": "0.4.0",
     "@crustjs/tui": "0.0.2",
     "@effect/platform-bun": "4.0.0-rc.116",
     "@gyst/core": "workspace:*",
