@@ -1066,7 +1066,7 @@ describe("TUI", () => {
       await settled();
       assert.equal(pane().scrollTop, top, "polls and the derived focus do not move the viewport");
       const focusActions = state.actions.filter(
-        (action) => action.type === "cursor.focus" && action.hunkId === "a.ts",
+        (action) => action.type === "cursor.follow" && action.hunkId === "a.ts",
       );
       assert.equal(focusActions.length, 1, "the derived focus is sent once, not in a loop");
       assert.deepEqual(state.status().cursor, { itemId: "group", pane: "diff", hunkId: "a.ts" });
@@ -1124,6 +1124,117 @@ describe("TUI", () => {
     };
   }
 
+  it("refuses editor handoff while displayed focus is queued behind a poll", async () => {
+    const state = fixture();
+    const base = threeTall(state);
+    const started = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    let reads = 0;
+    const opened: string[] = [];
+    const polled = Promise.withResolvers<void>();
+    const client: TuiClient = {
+      ...base,
+      status: async () => {
+        if (++reads === 2) {
+          started.resolve();
+          await release.promise;
+        }
+        if (reads >= 4) polled.resolve();
+        return base.status();
+      },
+    };
+    const tui = await testRender(
+      () => (
+        <App
+          client={client}
+          pollInterval={5}
+          onEdit={async (request) => {
+            opened.push(request.file);
+          }}
+        />
+      ),
+      { width: 100, height: 30 },
+    );
+    try {
+      await tui.waitForFrame((frame) => frame.includes("first_0"));
+      await started.promise;
+      for (let i = 0; i < 6; i++) await press(tui, "d", { ctrl: true });
+      assert(tui.captureCharFrame().includes("second_"));
+      assert(!tui.captureCharFrame().includes("first_"));
+      await press(tui, "o");
+      release.resolve();
+      await polled.promise;
+      assert.deepEqual(opened, [], "never open the file that scrolled out of view");
+      await tui.waitFor(() => state.status().cursor.hunkId === "a.ts");
+      await press(tui, "o");
+      await tui.waitFor(() => opened.length > 0);
+      assert.deepEqual(opened, ["a.ts"], "retry opens the displayed member after focus catches up");
+    } finally {
+      release.resolve();
+      tui.renderer.destroy();
+    }
+  });
+
+  for (const change of ["remote focus", "refresh"] as const) {
+    it(`does not overwrite ${change} with an in-flight scroll-derived focus`, async () => {
+      const state = fixture();
+      const base = threeTall(state);
+      const started = Promise.withResolvers<void>();
+      const release = Promise.withResolvers<void>();
+      let held = false;
+      let finished = false;
+      const client: TuiClient = {
+        ...base,
+        action: async (action) => {
+          if (!held && "hunkId" in action && action.hunkId === "a.ts") {
+            held = true;
+            started.resolve();
+            await release.promise;
+            const result = await base.action(action);
+            finished = true;
+            return result;
+          }
+          return base.action(action);
+        },
+      };
+      const tui = await testRender(() => <App client={client} pollInterval={5} />, {
+        width: 100,
+        height: 30,
+      });
+      try {
+        await tui.waitForFrame((frame) => frame.includes("first_0"));
+        for (let i = 0; i < 6; i++) await press(tui, "d", { ctrl: true });
+        await started.promise;
+        if (change === "remote focus")
+          await base.action({
+            type: "cursor.focus",
+            itemId: "group",
+            pane: "diff",
+            hunkId: "c.ts",
+          });
+        else {
+          const current = state.status();
+          state.setStatus({ ...current, revision: current.revision + 1, seq: current.seq + 1 });
+        }
+        const expected = structuredClone(state.status());
+        release.resolve();
+        await tui.waitFor(() => finished);
+        for (let i = 0; i < 8; i++) {
+          await tui.renderOnce();
+          await Bun.sleep(10);
+        }
+        assert.deepEqual(
+          state.status(),
+          expected,
+          "the obsolete request and unchanged frames cannot overwrite newer state",
+        );
+      } finally {
+        release.resolve();
+        tui.renderer.destroy();
+      }
+    });
+  }
+
   it("discards a scroll-derived focus queued behind a blocked poll once an explicit jump lands", async () => {
     const state = fixture();
     const base = threeTall(state);
@@ -1142,7 +1253,7 @@ describe("TUI", () => {
         return base.status();
       },
       action: async (action) => {
-        if (failing && action.type === "cursor.focus" && action.hunkId === "b.ts") {
+        if (failing && action.type === "cursor.follow" && action.hunkId === "b.ts") {
           failures++;
           throw new TuiClientError({ code: "internal_error", message: "daemon hiccup" });
         }
@@ -1178,7 +1289,9 @@ describe("TUI", () => {
       );
       assert(tui.captureCharFrame().includes("\u258cc.ts"), "the jump target is revealed");
       assert(
-        !state.actions.some((action) => action.type === "cursor.focus" && action.hunkId === "a.ts"),
+        !state.actions.some(
+          (action) => action.type === "cursor.follow" && action.hunkId === "a.ts",
+        ),
         "no derived focus for B was sent",
       );
       // The tracker still works afterwards; a derived action the daemon rejects leaves no trace that
@@ -1355,7 +1468,7 @@ describe("TUI", () => {
       const before = { top: pane().scrollTop, line: topLine() };
       assert(before.line.includes("a_old_"), `reading inside the second hunk (${before.line})`);
       const focusActions = () =>
-        state.actions.filter((action) => action.type === "cursor.focus").length;
+        state.actions.filter((action) => action.type === "cursor.follow").length;
       const sent = focusActions();
       await press(tui, "z");
       await settle();

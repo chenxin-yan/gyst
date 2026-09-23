@@ -101,6 +101,38 @@ describe("applyHumanAction", () => {
       expect(Result.isFailure(decode(action))).toBe(true);
   });
 
+  it("follows only the observed session, revision and sequence, with required wire guards", () => {
+    const follow = {
+      type: "cursor.follow",
+      itemId: "g1",
+      pane: "diff",
+      hunkId: "h1",
+      ...frame,
+      seq: ready.seq,
+    } as const;
+    const decode = Schema.decodeUnknownResult(HumanActionSchema);
+    expect(Result.getOrThrow(decode(follow))).toEqual(follow);
+    for (const field of ["sessionId", "revision", "seq"] as const) {
+      const incomplete: Record<string, unknown> = { ...follow };
+      delete incomplete[field];
+      expect(Result.isFailure(decode(incomplete))).toBe(true);
+    }
+    expect(act(ready, follow)).toMatchObject({
+      cursor: { itemId: "g1", pane: "diff", hunkId: "h1" },
+      revision: ready.revision,
+      seq: ready.seq + 1,
+    });
+    for (const changed of [
+      { ...ready, id: "replacement" },
+      { ...ready, revision: ready.revision + 1 },
+      act(ready, { type: "cursor.focus", itemId: "g2", pane: "diff", hunkId: "h2" }),
+    ])
+      expect(act(changed, follow)).toBe(changed);
+    expect(Result.isFailure(applyHumanAction(ready, { ...follow, hunkId: "h2" }, LATER))).toBe(
+      true,
+    );
+  });
+
   it("accepts atomically, skips accepted items and inbox, wraps once, and stays zoomed", () => {
     const start: Session = {
       ...ready,

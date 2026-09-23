@@ -250,6 +250,7 @@ export function App(props: {
   const [layoutMode, setLayoutMode] = createSignal<LayoutMode>("auto");
   // The focused reading pane temporarily takes the whole width; the other pane keeps its scroll.
   const [expanded, setExpanded] = createSignal(false);
+  const [revealVersion, setRevealVersion] = createSignal(0);
   // `closing` stops admitting inputs and polls while the queue drains; `stopped` means the renderer is gone.
   let closing = false;
   let stopped = false;
@@ -392,7 +393,7 @@ export function App(props: {
   // after layout, which happens inside a render, so the scroll waits for a rendered frame. A narrow
   // overview hides the diff pane, which then has no layout: the reveal stays pending until a frame shows it.
   createEffect(
-    on([focusedHunk, currentKey], ([hunkId]) => {
+    on([focusedHunk, currentKey, revealVersion], ([hunkId]) => {
       const derived = hunkId !== undefined && hunkId === derivedFocus;
       derivedFocus = undefined;
       if (!derived) {
@@ -582,7 +583,12 @@ export function App(props: {
 
   async function action(next: Parameters<TuiClient["action"]>[0]): Promise<void> {
     try {
-      await synchronize(await props.client.action(next));
+      const coherent = await synchronize(await props.client.action(next));
+      if (coherent && next.type === "cursor.follow" && focusedHunk() !== next.hunkId) {
+        // A rejected observation can leave the hunk id unchanged (e.g. after refresh); reveal it anyway.
+        derivedFocus = undefined;
+        setRevealVersion((version) => version + 1);
+      }
     } catch (error) {
       if (error instanceof TuiClientError && error.payload.code === "stale_revision") {
         await sync();
@@ -649,7 +655,15 @@ export function App(props: {
         ].join(":");
         if (attempt === failedDerived) return;
         derivedFocus = top;
-        await action({ type: "cursor.focus", itemId: item.id, pane: readingPane(), hunkId: top });
+        await action({
+          type: "cursor.follow",
+          sessionId: fresh.session.id,
+          revision: fresh.revision,
+          seq: fresh.seq,
+          itemId: item.id,
+          pane: readingPane(),
+          hunkId: top,
+        });
         if (focusedHunk() !== top) failedDerived = attempt;
       } finally {
         // A failed or no-op action leaves nothing for the reveal effect to consume.
@@ -808,6 +822,9 @@ export function App(props: {
       const seen = status();
       const member = selectedMember();
       if (!seen || !reading() || !member || !props.onEdit) return;
+      const displayed = memberAtTop();
+      if (revealPending || anchorPending || (displayed !== undefined && displayed !== member.id))
+        return setEditorNotice("focus is synchronizing — re-read and press o again");
       const request: EditRequest = {
         sessionId: seen.session.id,
         revision: seen.revision,

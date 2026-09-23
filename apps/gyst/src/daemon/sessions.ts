@@ -331,6 +331,7 @@ export class Sessions extends Context.Service<
         const updated = yield* Effect.fromResult(
           applyHumanAction(session, request.action, DateTime.formatIso(yield* DateTime.now)),
         );
+        if (updated === session) return statusOf(session);
         yield* store.save(updated).pipe(Effect.orDie);
         sessions.set(session.id, updated);
         return statusOf(updated);

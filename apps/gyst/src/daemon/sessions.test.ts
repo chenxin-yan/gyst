@@ -858,6 +858,75 @@ describe("Sessions.tuiAction", () => {
     );
   });
 
+  for (const change of ["remote focus", "refresh"] as const) {
+    it(`no-ops stale viewport focus after ${change} without persisting it`, async () => {
+      await run(
+        Effect.gen(function* () {
+          const sessions = yield* Sessions;
+          const created = yield* sessions.create(request("create", ["HEAD"]));
+          const ids = created.inbox.map(({ id }) => id);
+          yield* sessions.apply(
+            request(
+              "apply",
+              [],
+              root,
+              JSON.stringify({
+                revision: created.revision,
+                idempotencyKey: "prepare",
+                ops: [
+                  {
+                    type: "group.create",
+                    id: "group",
+                    memberHunkIds: ids,
+                    title: "change",
+                    overview: "context",
+                  },
+                  { type: "queue.set", itemIds: ["group"] },
+                ],
+              }),
+            ),
+          );
+          const focus = (action: HumanAction) =>
+            sessions.tuiAction({ ...request("tui.action"), action });
+          const seen = yield* focus({
+            type: "cursor.focus",
+            itemId: "group",
+            pane: "diff",
+            hunkId: ids[0]!,
+          });
+          const pending = {
+            type: "cursor.follow",
+            itemId: "group",
+            pane: "diff",
+            hunkId: ids[1]!,
+            sessionId: seen.session.id,
+            revision: seen.revision,
+            seq: seen.seq,
+          } as const;
+          const newer =
+            change === "refresh"
+              ? yield* sessions.refresh(request("refresh"))
+              : yield* focus({
+                  type: "cursor.focus",
+                  itemId: "group",
+                  pane: "overview",
+                  hunkId: ids[0]!,
+                });
+          expect(newer.groups[0]?.hunkIds).toEqual(ids);
+          const saved = files.get(seen.session.id);
+          saveFails = true;
+          expect(yield* focus(pending)).toEqual(newer);
+          expect(files.get(seen.session.id)).toBe(saved);
+          saveFails = false;
+          const applied = yield* focus({ ...pending, revision: newer.revision, seq: newer.seq });
+          expect(applied.cursor).toEqual({ itemId: "group", pane: "diff", hunkId: ids[1] });
+          expect(applied.seq).toBe(newer.seq + 1);
+          expect(files.get(seen.session.id)?.cursor).toEqual(applied.cursor);
+        }),
+      );
+    });
+  }
+
   it("toggles verdicts on the revision and undoes them in accept order", async () => {
     files.set(persisted.id, { ...persisted, queueSet: true });
     await run(

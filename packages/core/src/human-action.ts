@@ -3,8 +3,8 @@ import { draftOf, focusableHunkIds, visibleItemIds } from "./draft.ts";
 import { ValidationFailed } from "./errors.ts";
 import type { Session } from "./session.ts";
 
-// A verdict names the frame the human saw; the daemon rejects it once that frame is stale.
-const verdictFrameFields = { sessionId: Schema.String, revision: Schema.Number };
+// Verdicts and viewport observations name the snapshot they were based on.
+const frameFields = { sessionId: Schema.String, revision: Schema.Number };
 export const HumanActionSchema = Schema.Union([
   Schema.Struct({ type: Schema.Literal("cursor.move"), itemId: Schema.String }),
   Schema.Struct({
@@ -20,11 +20,19 @@ export const HumanActionSchema = Schema.Union([
     hunkId: Schema.String,
   }),
   Schema.Struct({
+    type: Schema.Literal("cursor.follow"),
+    itemId: Schema.String,
+    pane: Schema.Literals(["diff", "overview"]),
+    hunkId: Schema.String,
+    ...frameFields,
+    seq: Schema.Number,
+  }),
+  Schema.Struct({
     type: Schema.Literal("verdict.toggle"),
     itemId: Schema.String,
-    ...verdictFrameFields,
+    ...frameFields,
   }),
-  Schema.Struct({ type: Schema.Literal("verdict.undo"), ...verdictFrameFields }),
+  Schema.Struct({ type: Schema.Literal("verdict.undo"), ...frameFields }),
 ]);
 export type HumanAction = typeof HumanActionSchema.Type;
 /** Cursor focus bumps only `seq`; verdicts and their atomic navigation bump `revision` too. */
@@ -33,6 +41,14 @@ export function applyHumanAction(
   action: HumanAction,
   updatedAt: string,
 ): Result.Result<Session, ValidationFailed> {
+  // Viewport observations are conditional; explicit human navigation remains unconditional.
+  if (
+    action.type === "cursor.follow" &&
+    (action.sessionId !== session.id ||
+      action.revision !== session.revision ||
+      action.seq !== session.seq)
+  )
+    return Result.succeed(session);
   const inapplicable = Result.fail(
     new ValidationFailed({ message: "TUI action does not apply to the current session" }),
   );
@@ -42,7 +58,7 @@ export function applyHumanAction(
   if (action.type === "cursor.move") {
     if (!visibleIds.has(action.itemId)) return inapplicable;
     draft.cursor = { itemId: action.itemId, pane: "queue" };
-  } else if (action.type === "cursor.focus") {
+  } else if (action.type === "cursor.focus" || action.type === "cursor.follow") {
     const { itemId, pane } = action;
     if (!visibleIds.has(itemId)) return inapplicable;
     if (pane === "queue") draft.cursor = { itemId, pane };
