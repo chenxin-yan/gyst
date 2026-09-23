@@ -19,7 +19,6 @@ const listeners = () =>
     process.listenerCount(s),
   );
 let state: Session = {
-  formatVersion: 1,
   id: "pty",
   repoRoot: process.cwd(),
   createdAt: "now",
@@ -90,7 +89,6 @@ try {
                 return statusOf(state);
               },
               diff: async () => ({
-                formatVersion: 1,
                 sessionId: state.id,
                 revision: state.revision,
                 hunks: state.hunks,
