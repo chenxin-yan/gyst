@@ -46,15 +46,15 @@
   },
   "dependencies": {
     "@crustjs/core": "0.4.1",
-    "@crustjs/effect": "0.1.2",
+    "@crustjs/effect": "0.1.3",
     "@crustjs/extensions": "0.4.1",
     "@crustjs/skills": "0.4.1",
     "@crustjs/tui": "0.0.2",
-    "@effect/platform-bun": "4.0.0-rc.116",
+    "@effect/platform-bun": "4.0.0-rc.117",
     "@gyst/core": "workspace:*",
     "@opentui/core": "0.5.12",
     "@opentui/solid": "0.5.12",
-    "effect": "4.0.0-rc.116",
+    "effect": "4.0.0-rc.117",
     "solid-js": "1.9.15"
   }
 }
