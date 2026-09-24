@@ -1,5 +1,5 @@
 ---
-"@gyst/cli": minor
+"@gyst/cli": patch
 ---
 
 Show a compact item sidebar beside the selected diff. Enter hides the sidebar, Esc restores it, and s toggles the same two-state view. Optional plain-text Agent notes appear above their owning hunks only while reading. Preserve member focus and reading position across sidebar reflow; remove the separate overview pane, Tab switching and z expansion.
