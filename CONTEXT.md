@@ -18,15 +18,15 @@ One `@@` text block of the diff, addressed by a stable id. Gyst reviews text hun
 The ordered sequence of groups explaining a scoped change from top to bottom. Every changed hunk belongs to exactly one group when preparation is complete.
 
 **Group**:
-One self-contained walkthrough step and the unit of a human verdict, containing one or more hunks contributing to one coherent change. Its explanation and selected source context let the human understand the change without reconstructing other steps.
+One self-contained walkthrough step and the unit of a human verdict, containing one or more hunks contributing to one coherent change. Its ordered hunks and any attached notes provide the context for the human to understand the change.
 _Avoid_: Spotlight, pattern, cluster, fold
 
 **Title**:
 The short, plain-text name of a group, identifying its change in the walkthrough.
 
-**Overview**:
-An agent-authored explanation of a group's intent, relevant context, and behavioral changes, with selected source-located code excerpts where needed. It supports the human's judgment without replacing the changed hunks or asserting an unverified verdict.
-_Avoid_: TLDR, annotation
+**Note**:
+An agent-authored explanation attached to a member hunk of a group, using one or two concise sentences to convey intent, a non-obvious consequence, or relevant context. A note guides the human's reading; it is not a verdict or a separate review item.
+_Avoid_: Overview, comment thread
 
 **Inbox**:
 Hunks not yet published in a group. Published groups can be reviewed while the inbox still contains hunks awaiting preparation.

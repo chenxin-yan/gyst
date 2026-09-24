@@ -24,7 +24,7 @@ function session(): Session {
     updatedAt: "2026-01-01T00:00:00.000Z",
     revision: 4,
     seq: 7,
-    cursor: { itemId: "group-1", pane: "queue" },
+    cursor: { itemId: "group-1", pane: "queue", hunkId: "old-a" },
     hunks: [
       hunk("old-a", "a.ts", "same"),
       hunk("old-b", "b.ts", "changed"),
@@ -35,18 +35,24 @@ function session(): Session {
       {
         id: "group-1",
         title: "coherent change",
-        overview: "intent and behavior",
+        notes: [{ hunkId: "old-a", text: "intent and behavior" }],
         hunkIds: ["old-a"],
         accepted: true,
       },
-      { id: "group-b", title: "changed", overview: "stale", hunkIds: ["old-b"], accepted: true },
-      { id: "group-c", title: "gone", overview: "gone", hunkIds: ["old-c"], accepted: true },
-      { id: "group-d", title: "stable", overview: "keep", hunkIds: ["old-d"], accepted: true },
+      { id: "group-b", title: "changed", notes: [], hunkIds: ["old-b"], accepted: true },
+      { id: "group-c", title: "gone", notes: [], hunkIds: ["old-c"], accepted: true },
+      {
+        id: "group-d",
+        title: "stable",
+        notes: [{ hunkId: "old-d", text: "keep" }],
+        hunkIds: ["old-d"],
+        accepted: true,
+      },
     ],
     queue: ["group-b", "group-1", "group-c", "group-d"],
     queueSet: true,
     acceptHistory: ["group-1", "group-d"],
-    receiptOverviews: [],
+    receiptNoteTexts: [],
     applyReceipts: [],
   };
 }
@@ -77,7 +83,7 @@ describe("refreshSession", () => {
       expect.objectContaining({ id: "group-1", hunkIds: ["old-a"], accepted: true }),
       expect.objectContaining({
         id: "group-d",
-        overview: "keep",
+        notes: [{ hunkId: "old-d", text: "keep" }],
         hunkIds: ["old-d"],
         accepted: true,
       }),
@@ -102,7 +108,7 @@ describe("refreshSession", () => {
         {
           id: "group-1",
           title: "coherent change",
-          overview: "intent and behavior",
+          notes: [{ hunkId: "old-a", text: "intent and behavior" }],
           hunkIds: ["old-a", "old-c"],
           accepted: true,
         },
@@ -114,7 +120,7 @@ describe("refreshSession", () => {
     expect(refreshed.groups[0]).toEqual(
       expect.objectContaining({
         title: "coherent change",
-        overview: "intent and behavior",
+        notes: [],
         hunkIds: ["old-a"],
         accepted: false,
       }),
@@ -141,11 +147,11 @@ describe("refreshSession", () => {
 
     // The focused member vanished; zoom and pane survive on the first remaining member.
     const focused = refreshSession(
-      { ...original, cursor: { itemId: "group-1", pane: "overview", hunkId: "old-c" } },
+      { ...original, cursor: { itemId: "group-1", pane: "diff", hunkId: "old-c" } },
       [hunk("fresh-a", "a.ts", "same")],
       LATER,
     );
-    expect(focused.cursor).toEqual({ itemId: "group-1", pane: "overview", hunkId: "old-a" });
+    expect(focused.cursor).toEqual({ itemId: "group-1", pane: "diff", hunkId: "old-a" });
   });
 
   it("preserves stable duplicate identities only when the whole duplicate set is unchanged", () => {
@@ -158,12 +164,12 @@ describe("refreshSession", () => {
       groups: fresh.map((hunk, index) => ({
         id: `duplicate-${index}`,
         title: `note ${index}`,
-        overview: `note ${index}`,
+        notes: [{ hunkId: hunk.id, text: `note ${index}` }],
         hunkIds: [hunk.id],
         accepted: index === 0,
       })),
       queue: ["duplicate-0", "duplicate-1"],
-      cursor: { itemId: "duplicate-0", pane: "queue" },
+      cursor: { itemId: "duplicate-0", pane: "queue", hunkId: fresh[0]!.id },
       acceptHistory: ["duplicate-0"],
     };
     const unchanged = refreshSession(original, snapshot(patch), LATER);
@@ -197,7 +203,7 @@ describe("refreshSession", () => {
         {
           id: "group-1",
           title: "duplicate edits",
-          overview: "intent and behavior",
+          notes: [],
           hunkIds: ["old-first", "old-second"],
           accepted: true,
         },

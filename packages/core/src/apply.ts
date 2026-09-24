@@ -2,7 +2,7 @@ import { Result, Schema } from "effect";
 import { draftOf, type MutableSession, reconcileQueue } from "./draft.ts";
 import { StaleRevision, ValidationFailed } from "./errors.ts";
 import { hash } from "./hash.ts";
-import { metadataFields, MetadataSchema, OverviewSchema, TitleSchema } from "./metadata.ts";
+import { metadataFields, MetadataSchema, NotesSchema, TitleSchema } from "./metadata.ts";
 import type { ReceiptStatus, Session, StatusPayload } from "./session.ts";
 import { statusOf } from "./status.ts";
 
@@ -16,7 +16,7 @@ export const GroupUpdateSchema = Schema.Struct({
   type: Schema.Literal("group.update"),
   id: Schema.String,
   title: Schema.optional(TitleSchema),
-  overview: Schema.optional(OverviewSchema),
+  notes: Schema.optional(NotesSchema),
   memberHunkIds: Schema.optional(Schema.Array(Schema.String)),
 });
 export const GroupDissolveSchema = Schema.Struct({
@@ -44,26 +44,35 @@ export type ValidationDetail = { opIndex: number; message: string };
 /** A replayed idempotency key returns the recorded status and no session to persist. */
 export type ApplyOutcome = { readonly status: StatusPayload; readonly session?: Session };
 
-// A receipt records each overview once as an index into `receiptOverviews`, so replay stays exact
-// while a hundred one-item publications do not repeat every earlier overview a hundred times.
+// Receipts intern note text while preserving exact historical anchors and status.
 function receiptStatusOf(draft: MutableSession, status: StatusPayload): ReceiptStatus {
-  // ponytail: linear indexOf over distinct overviews; a hash index if a session publishes thousands.
-  const intern = (overview: string) => {
-    const index = draft.receiptOverviews.indexOf(overview);
-    return index >= 0 ? index : draft.receiptOverviews.push(overview) - 1;
+  // ponytail: linear indexOf over distinct texts; a hash index if a session publishes thousands.
+  const intern = (text: string) => {
+    const index = draft.receiptNoteTexts.indexOf(text);
+    return index >= 0 ? index : draft.receiptNoteTexts.push(text) - 1;
   };
   return {
     ...status,
-    groups: status.groups.map((group) => ({ ...group, overview: intern(group.overview) })),
+    groups: status.groups.map((group) => ({
+      ...group,
+      notes: group.notes.map((note) => ({ ...note, text: intern(note.text) })),
+    })),
   };
 }
 function recordedStatusOf(session: Session, status: ReceiptStatus): StatusPayload {
-  const text = (index: number) => session.receiptOverviews[index]!;
+  const text = (index: number) => session.receiptNoteTexts[index]!;
   return {
     ...status,
-    groups: status.groups.map((group) => ({ ...group, overview: text(group.overview) })),
+    groups: status.groups.map((group) => ({
+      ...group,
+      notes: group.notes.map((note) => ({ ...note, text: text(note.text) })),
+    })),
   };
 }
+
+const validAnchors = (notes: typeof NotesSchema.Type, members: readonly string[]) =>
+  new Set(notes.map(({ hunkId }) => hunkId)).size === notes.length &&
+  notes.every(({ hunkId }) => members.includes(hunkId));
 
 export function applyBatch(
   session: Session,
@@ -118,8 +127,8 @@ export function applyBatch(
         fail(opIndex, `item id ${op.id} already exists`);
         continue;
       }
-      if (!Schema.is(MetadataSchema)(op)) {
-        fail(opIndex, "invalid group title or overview");
+      if (!Schema.is(MetadataSchema)(op) || !validAnchors(op.notes, op.memberHunkIds)) {
+        fail(opIndex, "invalid group title, notes or anchors");
         continue;
       }
       if (
@@ -140,7 +149,7 @@ export function applyBatch(
       draft.groups.push({
         id: op.id,
         title: op.title,
-        overview: op.overview,
+        notes: op.notes.map((note) => ({ ...note })),
         hunkIds: [...op.memberHunkIds],
         accepted: false,
       });
@@ -172,15 +181,15 @@ export function applyBatch(
         continue;
       }
       const title = op.title ?? group.title;
-      const overview = op.overview ?? group.overview;
-      if (!Schema.is(MetadataSchema)({ title, overview })) {
-        fail(opIndex, "invalid group title or overview");
+      const notes = op.notes ?? group.notes;
+      if (!Schema.is(MetadataSchema)({ title, notes }) || !validAnchors(notes, members)) {
+        fail(opIndex, "invalid group title, notes or anchors");
         continue;
       }
       Object.assign(group, {
         hunkIds: [...members],
         title,
-        overview,
+        notes: notes.map((note) => ({ ...note })),
         accepted: false,
       });
       draft.queueSet = false;
@@ -219,6 +228,8 @@ export function applyBatch(
   ) {
     fail(queueOpIndex, "queue.set must describe the batch's final groups");
   }
+  if (!errors.length && !draft.queueSet && envelope.ops.some((op) => op.type !== "queue.set"))
+    fail(envelope.ops.length - 1, "group changes require a complete queue.set");
   if (errors.length)
     return Result.fail(
       new ValidationFailed({ message: "apply validation failed", detail: errors }),

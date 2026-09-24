@@ -17,12 +17,12 @@ function status(revision = 0, seq = revision, sessionId = "session"): StatusPayl
     },
     revision,
     seq,
-    cursor: { itemId: "group", pane: "queue" },
+    cursor: { itemId: "group", pane: "queue", hunkId: `hunk-${revision}` },
     groups: [
       {
         id: "group",
         title: `review ${revision}`,
-        overview: `Intent and evidence ${revision}`,
+        notes: [{ hunkId: `hunk-${revision}`, text: `Intent and evidence ${revision}` }],
         hunkIds: [`hunk-${revision}`],
         count: 1,
         accepted: false,
@@ -90,7 +90,7 @@ describe("TUI snapshot races", () => {
         assert.equal(refreshes, 0);
         await tui.mockInput.pressKey("r");
         await tui.waitForFrame(
-          (frame) => frame.includes("TEXT_1") && !frame.includes("snapshot unchanged"),
+          (frame) => frame.includes("review 1") && !frame.includes("snapshot unchanged"),
         );
         assert.equal(refreshes, 1);
       } finally {
@@ -130,7 +130,7 @@ describe("TUI snapshot races", () => {
       try {
         await started.promise;
         await tui.mockInput.pressKey("r");
-        await tui.waitForFrame((frame) => frame.includes("TEXT_1"));
+        await tui.waitForFrame((frame) => frame.includes("review 1"));
         release.resolve();
         await tui.waitForFrame(() => checks === 2);
         await tui.renderOnce();
@@ -176,37 +176,31 @@ describe("TUI snapshot races", () => {
       height: 30,
     });
     try {
-      await tui.waitForFrame((frame) => frame.includes("TEXT_0"));
+      await tui.waitForFrame((frame) => frame.includes("review 0"));
       await started.promise;
       await tui.mockInput.pressKey("RETURN");
       await tui.renderOnce();
       release.resolve();
-      await tui.waitForFrame(
-        (frame) => frame.includes("TEXT_1") && frame.includes("j/k to step, esc to leave"),
-      );
+      await tui.waitForFrame((frame) => frame.includes("TEXT_1") && frame.includes("▍diff"));
     } finally {
       release.resolve();
       tui.renderer.destroy();
     }
   });
 
-  for (const [from, to] of [
-    ["overview", "diff"],
-    ["overview", "overview"],
-    ["diff", "overview"],
-  ] as const) {
+  for (const to of ["diff", "queue"] as const) {
+    const from = "diff";
     it(`does not retarget ${from} j/k to another shared ${to} view behind a poll`, async () => {
-      const overview = Array.from({ length: 60 }, (_, i) => `Paragraph ${i}\n`).join("\n");
       let state: StatusPayload = {
         ...status(),
         cursor: { itemId: "group", pane: from, hunkId: "hunk-0" },
         groups: [
-          { ...status().groups[0]!, overview },
+          status().groups[0]!,
           {
             ...status().groups[0]!,
             id: "other",
             title: "Other item",
-            overview,
+            notes: [],
             hunkIds: ["other-1", "other-2"],
             count: 2,
           },
@@ -244,7 +238,7 @@ describe("TUI snapshot races", () => {
         height: 30,
       });
       try {
-        await tui.waitForFrame((frame) => frame.includes(`[${from}]`));
+        await tui.waitForFrame((frame) => frame.includes(`▍${from}`));
         await started.promise;
         await tui.mockInput.pressKey("j");
         await tui.renderOnce();
@@ -256,9 +250,9 @@ describe("TUI snapshot races", () => {
         release.resolve();
         await tui.waitForFrame((frame) => frame.includes("Other item") && reads >= 3);
         await tui.renderOnce();
-        const pane = tui.renderer.root.findDescendantById("overview-pane") as ScrollBoxRenderable;
+        const pane = tui.renderer.root.findDescendantById("diff-pane") as ScrollBoxRenderable;
         assert.equal(actions, 0, "a scroll key never becomes navigation on another item");
-        assert.equal(pane.scrollTop, 0, "an old key never scrolls another item's overview");
+        assert.equal(pane.scrollTop, 0, "an old key never scrolls another item's diff");
       } finally {
         release.resolve();
         tui.renderer.destroy();
@@ -292,7 +286,7 @@ describe("TUI snapshot races", () => {
       height: 30,
     });
     try {
-      await tui.waitForFrame((frame) => frame.includes("TEXT_0"));
+      await tui.waitForFrame((frame) => frame.includes("review 0"));
       await started.promise;
       await tui.mockInput.pressKey("r");
       await tui.renderOnce();
@@ -338,7 +332,7 @@ describe("TUI snapshot races", () => {
         height: 30,
       });
       try {
-        await tui.waitForFrame((frame) => frame.includes("TEXT_0"));
+        await tui.waitForFrame((frame) => frame.includes("review 0"));
         await tui.mockInput.pressKey("r");
         await started.promise;
         release.resolve();
@@ -347,7 +341,7 @@ describe("TUI snapshot races", () => {
             !frame.includes("no review items"),
             "never combine status with another diff revision/session",
           );
-          return frame.includes("TEXT_3");
+          return frame.includes("review 3");
         });
         assert(diffReads >= 3, "retry uses actual cached diff identity, not status alone");
       } finally {
@@ -371,12 +365,12 @@ describe("TUI snapshot races", () => {
       height: 30,
     });
     try {
-      await tui.waitForFrame((frame) => frame.includes("TEXT_0"));
+      await tui.waitForFrame((frame) => frame.includes("review 0"));
       await tui.mockInput.pressKey("r");
       const frame = await tui.waitForFrame((value) =>
         value.includes("refreshed; waiting for a coherent view"),
       );
-      assert(frame.includes("TEXT_0"), "the last coherent frame stays on screen");
+      assert(frame.includes("review 0"), "the last coherent frame stays on screen");
       assert(!frame.includes("snapshot refreshed"));
     } finally {
       tui.renderer.destroy();
@@ -404,11 +398,11 @@ describe("TUI snapshot races", () => {
       height: 30,
     });
     try {
-      await tui.waitForFrame((frame) => frame.includes("j/k to step, esc to leave"));
+      await tui.waitForFrame((frame) => frame.includes("▍diff"));
       await tui.mockInput.pressKey("ESCAPE");
       await Bun.sleep(60);
       await tui.renderOnce();
-      assert(tui.captureCharFrame().includes("j/k to step, esc to leave"));
+      assert(tui.captureCharFrame().includes("▍diff"));
     } finally {
       tui.renderer.destroy();
     }

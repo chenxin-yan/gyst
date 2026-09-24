@@ -6,24 +6,24 @@ type MutableGroup = Mutable<Omit<Group, "hunkIds">> & { hunkIds: string[] };
 export type MutableSession = Mutable<
   Omit<
     Session,
-    "hunks" | "groups" | "queue" | "acceptHistory" | "receiptOverviews" | "applyReceipts"
+    "hunks" | "groups" | "queue" | "acceptHistory" | "receiptNoteTexts" | "applyReceipts"
   >
 > & {
   hunks: MutableHunk[];
   groups: MutableGroup[];
   queue: string[];
   acceptHistory: string[];
-  receiptOverviews: string[];
+  receiptNoteTexts: string[];
   applyReceipts: ApplyReceipt[];
 };
 
 export function draftOf(session: Session): MutableSession {
-  const { receiptOverviews, applyReceipts, ...live } = session;
+  const { receiptNoteTexts, applyReceipts, ...live } = session;
   // SAFETY: structuredClone returns a detached copy, so dropping readonly cannot alias the caller's
   // session. Receipt history is append-only and its entries are never mutated, so sharing them is safe.
   return {
     ...(structuredClone(live) as Mutable<typeof live>),
-    receiptOverviews: [...receiptOverviews],
+    receiptNoteTexts: [...receiptNoteTexts],
     applyReceipts: [...applyReceipts],
   } as MutableSession;
 }
@@ -61,7 +61,7 @@ export function reconcileQueue(session: MutableSession): void {
   const { itemId, pane, hunkId } = session.cursor;
   if (itemId !== null && !visibleSet.has(itemId)) {
     session.cursor = { itemId: null, pane: "queue" };
-  } else if (itemId !== null && pane !== "queue") {
+  } else if (itemId !== null) {
     const members = focusableHunkIds(session, itemId);
     if (hunkId === undefined || !members.includes(hunkId))
       session.cursor = { itemId, pane, hunkId: members[0]! };

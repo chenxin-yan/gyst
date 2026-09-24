@@ -22,11 +22,11 @@
   "devDependencies": {
     "@changesets/changelog-github": "^1.0.1",
     "@changesets/cli": "^3.0.3",
-    "@types/bun": "^1.4.0",
-    "oxfmt": "^0.66.0",
-    "oxlint": "^1.81.0",
-    "oxlint-tsgolint": "^7.0.2001",
-    "turbo": "^2.10.11",
+    "@types/bun": "^1.4.2",
+    "oxfmt": "^0.70.0",
+    "oxlint": "^1.85.0",
+    "oxlint-tsgolint": "^7.0.2002",
+    "turbo": "^2.11.3",
     "typescript": "^7.0.2"
   },
   "packageManager": "bun@1.4.2"

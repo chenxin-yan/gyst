@@ -24,7 +24,7 @@ const session = (id: string): Session => ({
   queue: [],
   queueSet: false,
   acceptHistory: [],
-  receiptOverviews: [],
+  receiptNoteTexts: [],
   applyReceipts: [],
 });
 
@@ -60,7 +60,12 @@ describe("SessionStore", () => {
     await writeFile(join(dataDir, "corrupt.json"), "{not json");
     await writeFile(join(dataDir, "wrong-shape.json"), JSON.stringify({ id: "x" }));
     // The schema is the contract: a file missing a review field is not migrated, it is skipped.
-    const older = JSON.stringify({ ...session("older"), queue: undefined });
+    const { receiptNoteTexts: _, ...oldFields } = session("older");
+    const older = JSON.stringify({
+      ...oldFields,
+      receiptOverviews: [],
+      groups: [{ id: "g", title: "old", overview: "old", hunkIds: ["h"], accepted: false }],
+    });
     await writeFile(join(dataDir, "older.json"), older);
     const loaded = await run(SessionStore.use((s) => s.loadAll));
     expect(loaded.map((loadedSession) => loadedSession.id)).toEqual(["a"]);
@@ -74,7 +79,7 @@ describe("SessionStore", () => {
         {
           id: "g",
           title: "API and tests",
-          overview: "## Intent\nDifferent operations, one behavior.",
+          notes: [{ hunkId: "h", text: "Different operations, one behavior." }],
           hunkIds: ["h"],
           accepted: false,
         },
@@ -83,12 +88,15 @@ describe("SessionStore", () => {
     const status = statusOf(prepared);
     const saved: Session = {
       ...prepared,
-      receiptOverviews: [prepared.groups[0]!.overview],
+      receiptNoteTexts: [prepared.groups[0]!.notes[0]!.text],
       applyReceipts: [
         {
           key: "publish",
           digest: "digest",
-          status: { ...status, groups: [{ ...status.groups[0]!, overview: 0 }] },
+          status: {
+            ...status,
+            groups: [{ ...status.groups[0]!, notes: [{ hunkId: "h", text: 0 }] }],
+          },
         },
       ],
     };

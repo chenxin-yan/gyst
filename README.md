@@ -3,8 +3,7 @@
 Review code changes with your coding agent, in your terminal.
 
 Your agent plans a top-to-bottom walkthrough of all changes, then publishes
-self-contained groups with short titles, explanations and relevant source
-excerpts. Each group contains one or more hunks, all shown for review. You decide
+self-contained groups with short titles and concise notes attached to hunks. Each group contains one or more hunks, all shown for review. You decide
 what to accept. Accepting marks a group reviewed—it does not stage, commit, or
 modify your code.
 
@@ -43,16 +42,31 @@ Use `/gyst-ask <question>` in your agent's chat to ask about the current group.
 
 ## Review keys
 
-| Key                                  | Queue                                       | Zoom: diff                        | Zoom: overview                |
-| ------------------------------------ | ------------------------------------------- | --------------------------------- | ----------------------------- |
-| `j` / `k`                            | Next / previous entry                       | Next / previous hunk, wrapping    | Scroll one line               |
-| `Enter`                              | Zoom into the first hunk                    | No-op                             | No-op                         |
-| `Tab` / `Shift+Tab`                  | No-op                                       | Focus overview                    | Focus diff                    |
-| `Esc`                                | No-op                                       | Return to queue                   | Return to queue               |
-| `Ctrl+D` / `Ctrl+U`, `PgDn` / `PgUp` | Scroll diff preview half a page             | Scroll diff half a page           | Scroll overview half a page   |
-| `a`                                  | Toggle whole-group acceptance               | Same, including all group members | Same                          |
-| `u`                                  | Undo last acceptance and return to its item | Same, staying zoomed              | Same, returning to diff focus |
-| `o`                                  | No-op                                       | Open selected working-tree file   | Open retained selected file   |
+Gyst opens with a compact item sidebar and the selected diff preview, including on
+narrow terminals. `Enter` hides the sidebar to read; `Esc` restores it and `s` toggles
+it. Optional Agent notes appear above their hunks only with the sidebar hidden.
+Each is one or two concise plain-text sentences, at most 400 Unicode code points.
+An item can have no notes. Notes explain; the whole group receives the verdict.
+
+Sidebar toggles retain the focused member and a stable reading position. While
+reading, the hunk at the top of the diff is the shared focus that `/gyst-ask` and the
+editor use. Passive browse previews do not change that focus.
+
+| Key                                  | Sidebar visible                                  | Sidebar hidden (reading)                              |
+| ------------------------------------ | ------------------------------------------------ | ----------------------------------------------------- |
+| `j` / `k`                            | Select next / previous item                      | Scroll one line                                       |
+| `Enter`                              | Hide sidebar                                     | No-op                                                 |
+| `Esc`                                | No-op                                            | Show sidebar                                          |
+| `s`                                  | Hide sidebar                                     | Show sidebar                                          |
+| `[` / `]`                            | No-op                                            | Previous / next member hunk                           |
+| `p` / `n`                            | Previous / next item without a verdict           | Same, opening its first hunk                          |
+| `Ctrl+D` / `Ctrl+U`, `PgDn` / `PgUp` | No-op                                            | Scroll half a page                                    |
+| `a`                                  | Mark the group done and advance; again to unmark | Same, covering all group members                      |
+| `u`                                  | Undo the last verdict and return to its group    | Same, staying in reading mode                         |
+| `o`                                  | No-op                                            | Open the focused hunk's working-tree file in `EDITOR` |
+| `1` / `2` / `0`                      | Split / stacked / automatic diff layout          | Same                                                  |
+| `r`                                  | Refresh the Git snapshot                         | Same                                                  |
+| `?`                                  | Show all keys; Esc dismisses help first          | Same                                                  |
 
 ## Sessions
 
@@ -65,6 +79,11 @@ check; replace them explicitly with `gyst session refresh --stdin`.
 Use `/gyst-refresh` in your agent's chat to refresh the existing review and revise
 its affected groups and explanations while preserving unrelated review progress.
 If you already pressed `r`, ask it to regroup the current snapshot instead.
+Refresh retains notes and verdicts only for wholly surviving groups; losing any
+member clears that group's notes and verdict without changing unrelated groups.
+
+Use the updated CLI/TUI and daemon together. Sessions saved by the former
+explanation format require recreation; their files are not migrated or deleted.
 
 Run `gyst` again to resume. There is one session per repository. When you are done,
 close it before starting a review with a different scope:

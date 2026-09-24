@@ -5,7 +5,7 @@ description: Use when the user requests a gyst walkthrough of a diff, range or P
 
 # Compose a walkthrough
 
-A **group** is one review question covering one or more hunks, with a title and Markdown overview. Ungrouped hunks form the **inbox**. Human acceptance means “done reviewing,” not correctness approval. Leave verdicts and cursor state to the human.
+A **group** is one review question covering one or more hunks, with a short title and optional member-hunk notes. Ungrouped hunks form the **inbox**. Human acceptance means “done reviewing,” not correctness approval. Leave verdicts and cursor state to the human.
 
 ## 1. Select the snapshot
 
@@ -29,14 +29,15 @@ Order concepts before consequences, and members along the explanation: entry poi
 
 ## 3. Author self-contained groups
 
-A reader should understand each group without reconstructing another group or the chat:
+A reader should understand each group without reconstructing another group or the chat.
 
-- Name the change in the title; explain intent, prior behavior and new behavior in the overview.
-- Introduce necessary concepts and connect members in display order.
-- When prose is insufficient, include selected unchanged-code excerpts with file locations and the revision or working-tree source actually read. Distinguish snapshot evidence from later code.
-- State evidence and uncertainty; distinguish inspected tests from tests run.
+**Title**: name the change in a few words (`Reject expired credentials`), not a sentence explaining it. The 120-code-point limit is a bound, not a target.
 
-Titles are single-line plain text, 1–120 Unicode code points, without terminal controls. Overviews are nonempty Markdown, at most 64 KiB UTF-8. Use only context needed for the review question.
+**Notes**: attach one or two concise sentences to a member hunk when intent, a non-obvious consequence, a caveat or a connection needs explanation. Notes appear above their hunks only while the sidebar is hidden. Let obvious mechanical changes speak for themselves; an empty notes array is valid.
+
+Each note is `{ "hunkId": "member-id", "text": "Brief explanation." }`. Use at most one per member, anchored within its own group. Display order follows member order. Text is nonempty, single-paragraph plain text, at most 400 Unicode code points, without terminal controls. Use stable symbols and paths rather than line numbers. Keep Markdown blocks, source excerpts and diagrams out of notes; the diff supplies the code. Distinguish tests run from tests inspected and snapshot evidence from later working-tree code. Keep the walkthrough in groups, not in chat.
+
+Titles are single-line plain text, 1–120 Unicode code points, without terminal controls.
 
 ## 4. Publish atomically
 
@@ -53,13 +54,24 @@ Example first batch; replace the revision, key and hunk ids:
       "type": "group.create",
       "id": "expiry",
       "title": "Reject expired credentials",
-      "overview": "Check expiry before loading account data. Read the guard, then its boundary test. Evidence: tests inspected, not run.",
+      "notes": [
+        {
+          "hunkId": "guard-hunk",
+          "text": "Check expiry before loading the account so an expired credential cannot trigger a database read."
+        },
+        {
+          "hunkId": "test-hunk",
+          "text": "The boundary case treats a credential expiring at request time as expired. Test inspected, not run."
+        }
+      ],
       "memberHunkIds": ["guard-hunk", "test-hunk"]
     },
     { "type": "queue.set", "itemIds": ["expiry"] }
   ]
 }
 ```
+
+Creation requires `notes`, including `[]` when no explanation is needed. An update may omit notes to retain them, replace the complete array, or clear it with `[]`. Validate retained anchors against any new membership; replace notes when an anchor would become invalid. Every group update resets that group's verdict and needs a complete `queue.set` in the batch.
 
 - Successful batch: use its returned revision for the next batch.
 - `stale_revision`: reread status and reconcile concurrent human work before rebuilding.

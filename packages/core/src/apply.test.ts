@@ -25,13 +25,19 @@ const session: Session = {
   cursor: { itemId: null, pane: "queue" },
   hunks: [hunk("h1"), hunk("h2"), hunk("h3")],
   groups: [
-    { id: "g1", title: "first", overview: "first", hunkIds: ["h1"], accepted: true },
-    { id: "g2", title: "second", overview: "second", hunkIds: ["h2"], accepted: true },
+    {
+      id: "g1",
+      title: "first",
+      notes: [{ hunkId: "h1", text: "first" }],
+      hunkIds: ["h1"],
+      accepted: true,
+    },
+    { id: "g2", title: "second", notes: [], hunkIds: ["h2"], accepted: true },
   ],
   queue: ["g1", "g2", "h3"],
   queueSet: false,
   acceptHistory: ["g1", "g2"],
-  receiptOverviews: [],
+  receiptNoteTexts: [],
   applyReceipts: [],
 };
 
@@ -52,15 +58,15 @@ const third: ApplyOp = {
   type: "group.create",
   id: "g3",
   title: "third",
-  overview: "third",
+  notes: [],
   memberHunkIds: ["h3"],
 };
 
 describe("applyBatch", () => {
-  it("invalidates title, overview and membership edits without losing unrelated verdicts", () => {
+  it("invalidates title, notes and membership edits without losing unrelated verdicts", () => {
     for (const update of [
       { title: "Reworded" },
-      { overview: "Updated context" },
+      { notes: [{ hunkId: "h1", text: "Updated context" }] },
       { memberHunkIds: ["h1", "h3"] },
     ]) {
       const changed = applied([
