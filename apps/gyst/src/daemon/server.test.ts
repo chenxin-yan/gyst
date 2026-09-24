@@ -18,9 +18,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Git } from "./git.ts";
 import { Paths } from "./paths.ts";
+import { DaemonInfoSchema, daemonVersion } from "./protocol.ts";
 import { DaemonServer } from "./server.ts";
 import { Sessions } from "./sessions.ts";
-import { SessionStore } from "./store.ts";
+import { inspectSavedSessions, SessionStore } from "./store.ts";
 import { readLine, writeLine } from "./wire.ts";
 
 const patch = `diff --git a/a.txt b/a.txt
@@ -76,12 +77,18 @@ const serverLayerOver = (platform: Layer.Layer<Layer.Success<typeof BunServices.
 const serverLayer = serverLayerOver(BunServices.layer);
 
 const decodeReply = Schema.decodeUnknownSync(Schema.fromJsonString(ReplySchema));
-const send = Effect.fn("send")(function* (command: Request["command"], cwd: string) {
+const exchange = Effect.fn("exchange")(function* (message: unknown) {
   const socket = yield* BunSocket.makeNet({ path: socketPath });
   const pull = yield* Socket.readerBytes(socket);
-  yield* writeLine(socket, JSON.stringify({ command, cwd, args: [] } satisfies Request));
+  yield* writeLine(socket, JSON.stringify(message));
   return decodeReply(yield* readLine(pull));
 }, Effect.scoped);
+const send = Effect.fn("send")(function* (command: Request["command"], cwd: string) {
+  const hello = yield* exchange({ command: "daemon.info" });
+  if (!hello.ok) return hello;
+  const info = Schema.decodeUnknownSync(DaemonInfoSchema)(hello.value);
+  return yield* exchange({ ...info, request: { command, cwd, args: [] } satisfies Request });
+});
 const ok = (reply: Reply) => reply.ok;
 
 beforeAll(async () => {
@@ -121,6 +128,64 @@ describe("DaemonServer", () => {
         yield* Fiber.join(running);
       }).pipe(Effect.provide(serverLayer)),
     );
+  }, 10_000);
+
+  it("guards restart by identity, version, saved bytes and in-flight requests", async () => {
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        statusHeld = yield* Deferred.make<void>();
+        statusRelease = yield* Deferred.make<void>();
+        const server = yield* DaemonServer;
+        const running = yield* Effect.forkChild(server.run);
+        const hello = yield* exchange({ command: "daemon.info" }).pipe(
+          Effect.retry({ schedule: Schedule.spaced("10 millis"), times: 100 }),
+        );
+        if (!hello.ok) throw new Error("handshake failed");
+        const info = Schema.decodeUnknownSync(DaemonInfoSchema)(hello.value);
+        const saved = yield* inspectSavedSessions;
+        const restart = {
+          command: "daemon.restart",
+          version: "999.0.0",
+          instanceId: info.instanceId,
+          fingerprint: saved.fingerprint,
+        };
+        for (const invalid of [
+          { ...restart, instanceId: "another-daemon" },
+          { ...restart, version: daemonVersion },
+          { ...restart, version: "0.0.0" },
+          { ...restart, fingerprint: "changed-after-inspection" },
+        ])
+          expect(yield* exchange(invalid)).toEqual({ ok: true, value: { restarting: false } });
+        expect(
+          ok(
+            yield* exchange({
+              ...info,
+              instanceId: "another-daemon",
+              request: { command: "create", cwd: "/wrong", args: [] },
+            }),
+          ),
+        ).toBe(false);
+        expect(files.size).toBe(0);
+        const fs = yield* FileSystem.FileSystem;
+        const changed = join(dataDir, "changed.json");
+        yield* fs.writeFileString(changed, "{}");
+        expect(yield* exchange(restart)).toEqual({ ok: true, value: { restarting: false } });
+        expect(yield* fs.readFileString(changed)).toBe("{}");
+        yield* fs.remove(changed);
+        const status = yield* Effect.forkChild(send("status", slowRoot));
+        yield* Deferred.await(statusHeld);
+        expect(yield* exchange(restart)).toEqual({ ok: true, value: { restarting: false } });
+        yield* Deferred.succeed(statusRelease, undefined);
+        yield* Fiber.join(status);
+        expect(yield* exchange(restart)).toEqual({ ok: true, value: { restarting: true } });
+        yield* Fiber.join(running);
+      }).pipe(
+        Effect.provide(serverLayer),
+        Effect.provide(paths),
+        Effect.provide(BunServices.layer),
+      ),
+    );
+    expect((await readdir(dataDir)).filter((name) => name.startsWith("daemon.sock"))).toEqual([]);
   }, 10_000);
 
   it("releases the published socket when startup fails after the link", async () => {

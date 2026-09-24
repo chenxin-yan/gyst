@@ -1,9 +1,35 @@
 import { type Session, SessionSchema } from "@gyst/core";
-import { Array, Context, Effect, FileSystem, Layer, type PlatformError, Schema } from "effect";
+import {
+  Array,
+  Context,
+  Effect,
+  FileSystem,
+  Layer,
+  Option,
+  type PlatformError,
+  Schema,
+} from "effect";
 import { Paths } from "./paths.ts";
 
 const decodeSessionFile = Schema.decodeUnknownEffect(Schema.fromJsonString(SessionSchema), {
   onExcessProperty: "error",
+});
+
+// Compare the exact persisted bytes again after the old daemon stops admitting commands.
+export const inspectSavedSessions = Effect.gen(function* () {
+  const fs = yield* FileSystem.FileSystem;
+  const paths = yield* Paths;
+  const names = (yield* fs.readDirectory(paths.dataDir)).filter((name) => name.endsWith(".json"));
+  const hash = new Bun.CryptoHasher("sha256");
+  const incompatible: string[] = [];
+  for (const name of names.sort()) {
+    const content = yield* fs.readFile(paths.sessionFile(name.slice(0, -5)));
+    hash.update(JSON.stringify([name, content.byteLength]));
+    hash.update(content);
+    if (Option.isNone(yield* Effect.option(decodeSessionFile(new TextDecoder().decode(content)))))
+      incompatible.push(name);
+  }
+  return { fingerprint: hash.digest("hex"), incompatible };
 });
 
 export class SessionStore extends Context.Service<

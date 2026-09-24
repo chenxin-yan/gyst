@@ -2,10 +2,10 @@ import { BunSocket, BunSocketServer } from "@effect/platform-bun";
 import {
   BadArgs,
   DaemonError,
+  DaemonUnreachable,
   type Reply,
   ReplySchema,
   type Request,
-  RequestSchema,
 } from "@gyst/core";
 import {
   Context,
@@ -13,6 +13,7 @@ import {
   Equal,
   FileSystem,
   Layer,
+  Latch,
   Option,
   type PlatformError,
   Ref,
@@ -22,10 +23,14 @@ import {
 import * as Socket from "effect/unstable/socket/Socket";
 import type * as SocketServer from "effect/unstable/socket/SocketServer";
 import { Paths } from "./paths.ts";
+import { DaemonMessageSchema, daemonVersion } from "./protocol.ts";
 import { Sessions } from "./sessions.ts";
+import { inspectSavedSessions } from "./store.ts";
 import { daemonAbsent, readLine, writeLine } from "./wire.ts";
 
-const decodeRequest = Schema.decodeUnknownEffect(Schema.fromJsonString(RequestSchema));
+const decodeRequest = Schema.decodeUnknownEffect(Schema.fromJsonString(DaemonMessageSchema), {
+  onExcessProperty: "error",
+});
 const encodeReply = Schema.encodeSync(Schema.fromJsonString(ReplySchema));
 
 const isAlreadyExists = (error: PlatformError.PlatformError | Socket.SocketError) =>
@@ -130,6 +135,9 @@ export class DaemonServer extends Context.Service<
       > = { ...sessions, "tui.action": (request) => sessions.tuiAction(request) };
       // Accepted connections that have not replied yet; idle shutdown must not interrupt them.
       const active = yield* Ref.make(0);
+      const restart = yield* Latch.make(false);
+      const instanceId = crypto.randomUUID();
+      let draining = false;
       const handleConnection = Effect.fnUntraced(
         function* (socket: Socket.Socket) {
           yield* Effect.acquireRelease(
@@ -137,17 +145,76 @@ export class DaemonServer extends Context.Service<
             () => Ref.update(active, (n) => n - 1),
           );
           const line = yield* readLine(yield* Socket.readerBytes(socket));
+          let restartAfterReply = false;
           const reply: Reply = yield* decodeRequest(line).pipe(
             Effect.mapError(
-              (error) => new BadArgs({ message: "invalid daemon request", detail: error.message }),
+              (error) =>
+                new BadArgs({
+                  message: "invalid daemon request; update the CLI if its protocol is older",
+                  detail: error.message,
+                }),
             ),
-            Effect.flatMap((request) => handlers[request.command](request)),
+            Effect.flatMap(
+              Effect.fnUntraced(function* (message) {
+                if ("command" in message && message.command === "daemon.info")
+                  return { version: daemonVersion, instanceId };
+                if ("command" in message) {
+                  if (
+                    message.instanceId !== instanceId ||
+                    Bun.semver.order(message.version, daemonVersion) <= 0
+                  )
+                    return { restarting: false };
+                  // Admission and draining change together; no request can slip between them.
+                  const admitted = yield* Ref.modify(active, (count) => {
+                    const ready = count === 1 && !draining;
+                    if (ready) draining = true;
+                    return [ready, count];
+                  });
+                  if (!admitted) return { restarting: false };
+                  const saved = yield* inspectSavedSessions.pipe(
+                    Effect.provideService(Paths, paths),
+                    Effect.provideService(FileSystem.FileSystem, fs),
+                    Effect.mapError(
+                      () =>
+                        new DaemonUnreachable({
+                          message: "could not verify saved reviews; daemon restart refused",
+                        }),
+                    ),
+                    Effect.onError(() =>
+                      Effect.sync(() => {
+                        draining = false;
+                      }),
+                    ),
+                  );
+                  if (saved.fingerprint !== message.fingerprint) {
+                    draining = false;
+                    return { restarting: false };
+                  }
+                  restartAfterReply = true;
+                  return { restarting: true };
+                }
+                if (
+                  draining ||
+                  message.version !== daemonVersion ||
+                  message.instanceId !== instanceId
+                )
+                  return yield* Effect.fail(
+                    new DaemonUnreachable({
+                      message:
+                        "daemon identity changed or upgrade is in progress; no review command was executed",
+                    }),
+                  );
+                return yield* handlers[message.request.command](message.request);
+              }),
+            ),
             Effect.map((value) => ({ ok: true as const, value })),
             Effect.catchIf(Schema.is(DaemonError), (error) =>
               Effect.succeed({ ok: false as const, error }),
             ),
           );
-          yield* writeLine(socket, encodeReply(reply));
+          yield* writeLine(socket, encodeReply(reply)).pipe(
+            Effect.ensuring(restartAfterReply ? restart.open : Effect.void),
+          );
         },
         Effect.scoped,
         Effect.catchTag("SocketError", () => Effect.void),
@@ -183,6 +250,7 @@ export class DaemonServer extends Context.Service<
           server.run(handleConnection),
           untilIdle,
           untilOrphaned(ownsSocket),
+          restart.await,
           signalled,
         ]);
       }).pipe(Effect.scoped, Effect.withSpan("DaemonServer.run"));

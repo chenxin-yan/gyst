@@ -2,11 +2,13 @@ import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import { chmod, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { connect } from "node:net";
 import { BunServices } from "@effect/platform-bun";
 import { SourceCheckPayloadSchema, StatusPayloadSchema } from "@gyst/core";
 import { ConfigProvider, Layer, ManagedRuntime, Schema } from "effect";
 import { DaemonClient } from "../../src/daemon/client.ts";
 import { Paths } from "../../src/daemon/paths.ts";
+import { daemonVersion } from "../../src/daemon/protocol.ts";
 import { daemonTuiClient } from "../../src/tui/client.ts";
 import { isolatedHome } from "./isolated-home.ts";
 
@@ -58,6 +60,23 @@ async function gyst(cwd: string, args: string[], stdin?: string, dataDir = data)
 }
 
 const daemonPid = () => readFile(join(data, "daemon.pid"), "utf8").then(Number, () => Number.NaN);
+
+function socketRequest(dataDir: string, message: unknown): Promise<string> {
+  return new Promise((resolve, reject) => {
+    let reply = "";
+    const socket = connect(join(dataDir, "daemon.sock"));
+    socket.setTimeout(2000, () => socket.destroy(new Error("socket request timed out")));
+    socket.once("error", reject);
+    socket.once("connect", () => socket.write(`${JSON.stringify(message)}\n`));
+    socket.on("data", (bytes) => {
+      reply += bytes.toString();
+      if (reply.includes("\n")) {
+        socket.destroy();
+        resolve(reply.split("\n")[0]!);
+      }
+    });
+  });
+}
 
 beforeAll(async () => {
   root = await mkdtemp(join(tmpdir(), "gyst-e2e-"));
@@ -268,8 +287,9 @@ describe("gyst session CLI seam", () => {
 -one
 +café
 `;
+    const hello = JSON.parse(await socketRequest(data, { command: "daemon.info" }));
     const request = new TextEncoder().encode(
-      `${JSON.stringify({ command: "create", cwd, args: ["--stdin"], stdin: patch })}\n`,
+      `${JSON.stringify({ ...hello.value, request: { command: "create", cwd, args: ["--stdin"], stdin: patch } })}\n`,
     );
     const marker = new TextEncoder().encode("é");
     const markerStart = request.findIndex(
@@ -751,14 +771,226 @@ describe("gyst session CLI seam", () => {
     }
   }, 20_000);
 
+  it("automatically replaces an older cooperative daemon without changing saved review state", async () => {
+    const cwd = await repo("automatic-upgrade");
+    const ownData = await mkdtemp(join(root, "automatic-upgrade-data-"));
+    const pidPath = join(ownData, "daemon.pid");
+    let stopFake = () => {};
+    try {
+      await writeFile(join(cwd, "tracked.txt"), "changed\n");
+      const created = await gyst(cwd, ["session", "create"], undefined, ownData);
+      expect(created.exitCode).toBe(0);
+      const initial = JSON.parse(created.stdout);
+      const hunkId = initial.inbox[0].id;
+      const prepared = await gyst(
+        cwd,
+        ["session", "apply"],
+        JSON.stringify({
+          revision: 0,
+          idempotencyKey: "before-upgrade",
+          ops: [
+            {
+              type: "group.create",
+              id: "group",
+              memberHunkIds: [hunkId],
+              title: "Review",
+              notes: [{ hunkId, text: "Keep this note." }],
+            },
+            { type: "queue.set", itemIds: ["group"] },
+          ],
+        }),
+        ownData,
+      );
+      expect(prepared.exitCode).toBe(0);
+      const hello = JSON.parse(await socketRequest(ownData, { command: "daemon.info" }));
+      const verdict = JSON.parse(
+        await socketRequest(ownData, {
+          ...hello.value,
+          request: {
+            command: "tui.action",
+            cwd,
+            args: [],
+            action: {
+              type: "verdict.toggle",
+              sessionId: initial.session.id,
+              revision: 1,
+              itemId: "group",
+            },
+          },
+        }),
+      );
+      expect(verdict.ok).toBe(true);
+      const status = verdict.value;
+      expect(status.groups[0].accepted).toBe(true);
+      const savedPath = join(ownData, `${status.session.id}.json`);
+      const saved = await readFile(savedPath, "utf8");
+      process.kill(Number(await readFile(pidPath, "utf8")), "SIGTERM");
+      for (let i = 0; i < 100 && (await Bun.file(pidPath).exists()); i++) await Bun.sleep(10);
+      expect(await Bun.file(pidPath).exists()).toBe(false);
+      const commands: string[] = [];
+      const fake = Bun.listen({
+        unix: join(ownData, "daemon.sock"),
+        socket: {
+          data(socket, bytes) {
+            const request = JSON.parse(bytes.toString());
+            commands.push(request.command ?? request.request?.command);
+            const restarting = request.command === "daemon.restart";
+            socket.end(
+              JSON.stringify({
+                ok: true,
+                value: restarting ? { restarting: true } : { version: "0.0.0", instanceId: "old" },
+              }) + "\n",
+            );
+            if (restarting) setTimeout(() => fake.stop(true), 5);
+          },
+        },
+      });
+      stopFake = () => fake.stop(true);
+      const results = await Promise.all([
+        gyst(cwd, ["session", "status"], undefined, ownData),
+        gyst(cwd, ["session", "status"], undefined, ownData),
+      ]);
+      for (const result of results) {
+        expect(result.exitCode).toBe(0);
+        expect(JSON.parse(result.stdout)).toEqual(status);
+      }
+      expect(await readFile(savedPath, "utf8")).toBe(saved);
+      expect(commands).toContain("daemon.restart");
+      expect(commands.every((command) => ["daemon.info", "daemon.restart"].includes(command))).toBe(
+        true,
+      );
+      expect((await gyst(cwd, ["session", "close"], undefined, ownData)).exitCode).toBe(0);
+    } finally {
+      stopFake();
+      await readFile(pidPath, "utf8")
+        .then((pid) => process.kill(Number(pid), "SIGTERM"))
+        .catch(() => {});
+    }
+  }, 20_000);
+
+  it("bounds recovery when an older daemon stays busy or never answers the handshake", async () => {
+    for (const mode of ["busy", "silent"] as const) {
+      const ownData = await mkdtemp(join(root, `${mode}-upgrade-`));
+      const commands: string[] = [];
+      const fake = Bun.listen({
+        unix: join(ownData, "daemon.sock"),
+        socket: {
+          data(socket, bytes) {
+            const message = JSON.parse(bytes.toString());
+            commands.push(message.command ?? message.request?.command);
+            if (mode === "busy")
+              socket.end(
+                JSON.stringify({
+                  ok: true,
+                  value:
+                    message.command === "daemon.info"
+                      ? { version: "0.0.0", instanceId: "busy" }
+                      : { restarting: false },
+                }) + "\n",
+              );
+          },
+        },
+      });
+      try {
+        const started = performance.now();
+        const result = await gyst(root, ["session", "create"], undefined, ownData);
+        expect(result.exitCode).toBe(1);
+        expect(JSON.parse(result.stderr).message).toContain(mode === "busy" ? "busy" : "timed out");
+        expect(performance.now() - started).toBeLessThan(10_000);
+        expect(
+          commands.every((command) => ["daemon.info", "daemon.restart"].includes(command)),
+        ).toBe(true);
+      } finally {
+        fake.stop(true);
+      }
+    }
+  }, 20_000);
+
+  it("never retries a mutation when its reply is lost after a successful handshake", async () => {
+    const ownData = await mkdtemp(join(root, "lost-mutation-reply-"));
+    let mutations = 0;
+    const fake = Bun.listen({
+      unix: join(ownData, "daemon.sock"),
+      socket: {
+        data(socket, bytes) {
+          const message = JSON.parse(bytes.toString());
+          if (message.command === "daemon.info")
+            socket.end(
+              JSON.stringify({ ok: true, value: { version: daemonVersion, instanceId: "same" } }) +
+                "\n",
+            );
+          else {
+            mutations++;
+            socket.end();
+          }
+        },
+      },
+    });
+    try {
+      const result = await gyst(root, ["session", "create"], undefined, ownData);
+      expect(result.exitCode).toBe(1);
+      expect(JSON.parse(result.stderr).code).toBe("daemon_unreachable");
+      expect(mutations).toBe(1);
+    } finally {
+      fake.stop(true);
+    }
+  }, 20_000);
+
+  it("blocks legacy, newer and incompatible daemons before sending a mutation", async () => {
+    for (const mode of ["legacy", "newer", "incompatible"] as const) {
+      const ownData = await mkdtemp(join(root, `${mode}-daemon-`));
+      const saved = JSON.stringify({ id: "old", spotlight: [] });
+      await writeFile(join(ownData, "old.json"), saved);
+      const commands: string[] = [];
+      const fake = Bun.listen({
+        unix: join(ownData, "daemon.sock"),
+        socket: {
+          data(socket, bytes) {
+            const request = JSON.parse(bytes.toString());
+            commands.push(request.command ?? request.request?.command);
+            socket.end(
+              JSON.stringify({
+                ok: true,
+                value:
+                  mode === "legacy"
+                    ? { spotlight: [] }
+                    : { version: mode === "newer" ? "999.0.0" : "0.0.0", instanceId: mode },
+              }) + "\n",
+            );
+          },
+        },
+      });
+      try {
+        const result = await gyst(root, ["session", "create"], undefined, ownData);
+        expect(result.exitCode).toBe(1);
+        const error = JSON.parse(result.stderr);
+        expect(error.code).toBe("daemon_unreachable");
+        expect(`${error.message} ${error.detail}`).toContain(
+          mode === "legacy" ? "compatibility" : mode === "newer" ? "newer" : "incompatible",
+        );
+        expect(commands).toEqual(["daemon.info"]);
+        expect(await readFile(join(ownData, "old.json"), "utf8")).toBe(saved);
+      } finally {
+        fake.stop(true);
+      }
+    }
+  }, 20_000);
+
   it("rejects malformed success replies visibly in both CLI and TUI clients", async () => {
     const ownData = await mkdtemp(join(root, "mismatched-reply-"));
     const fake = Bun.listen({
       unix: join(ownData, "daemon.sock"),
       socket: {
-        data(socket) {
+        data(socket, bytes) {
+          const request = JSON.parse(bytes.toString());
           socket.end(
-            JSON.stringify({ ok: true, value: { sessionId: "invalid", revision: 0 } }) + "\n",
+            JSON.stringify({
+              ok: true,
+              value:
+                request.command === "daemon.info"
+                  ? { version: daemonVersion, instanceId: "fake" }
+                  : { sessionId: "invalid", revision: 0 },
+            }) + "\n",
           );
         },
       },
