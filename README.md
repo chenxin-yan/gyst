@@ -82,8 +82,16 @@ If you already pressed `r`, ask it to regroup the current snapshot instead.
 Refresh retains notes and verdicts only for wholly surviving groups; losing any
 member clears that group's notes and verdict without changing unrelated groups.
 
-Use the updated CLI/TUI and daemon together. Sessions saved by the former
-explanation format require recreation; their files are not migrated or deleted.
+Installing a new CLI does not itself restart the background daemon. On the next
+command, gyst checks compatibility before sending review operations. It automatically
+restarts an older daemon that supports the handshake only when all saved sessions
+are readable by the new version and no command is in flight. Saved review state
+is preserved; older clients cannot downgrade a newer daemon.
+
+Incompatible saved sessions or a legacy daemon without a handshake block automatic
+recovery with an explicit error. Keep using the old version, or inspect your saved
+reviews before manually restarting and recreating incompatible sessions. Gyst never
+kills an unverified PID, migrates a session, or deletes its file during recovery.
 
 Run `gyst` again to resume. There is one session per repository. When you are done,
 close it before starting a review with a different scope:
