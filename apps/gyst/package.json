@@ -1,7 +1,7 @@
 {
   "$schema": "./node_modules/@crustjs/crust/schema/package.json",
   "name": "@gyst/cli",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Keyboard-centric agent/human co-review TUI",
   "license": "MIT",
   "type": "module",
