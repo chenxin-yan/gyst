@@ -17,7 +17,7 @@
     },
     "apps/gyst": {
       "name": "@gyst/cli",
-      "version": "0.1.0",
+      "version": "0.1.1",
       "bin": {
         "gyst": "src/index.tsx",
       },
