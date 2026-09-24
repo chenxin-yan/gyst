@@ -327,7 +327,6 @@ export function App(props: {
   const focusedHunk = createMemo(() => status()?.cursor.hunkId);
   const pane = createMemo(() => status()?.cursor.pane ?? "queue");
   const reading = createMemo(() => pane() === "diff");
-  const readingPane = () => "diff" as const;
   const sidebarWidth = createMemo(() =>
     Math.min(LAYOUT.sidebarColumns, Math.max(8, Math.floor(dims().width / 3))),
   );
@@ -682,7 +681,7 @@ export function App(props: {
           revision: fresh.revision,
           seq: fresh.seq,
           itemId: item.id,
-          pane: readingPane(),
+          pane: "diff",
           hunkId: top,
         });
         if (focusedHunk() !== top) failedDerived = attempt;
@@ -804,7 +803,7 @@ export function App(props: {
     await action({
       type: "cursor.focus",
       itemId: destination.id,
-      pane: readingPane(),
+      pane: "diff",
       hunkId: first,
     });
   }
@@ -913,7 +912,7 @@ export function App(props: {
         await action({
           type: "cursor.focus",
           itemId: current()!.id,
-          pane: readingPane(),
+          pane: "diff",
           hunkId: next,
         });
       });
@@ -972,7 +971,6 @@ export function App(props: {
       </box>
     );
   };
-  const paneTitle = (name: string, focused: boolean) => (focused ? ` ▍${name} ` : ` ${name} `);
 
   return (
     <box flexDirection="column" flexGrow={1} backgroundColor={C.bg}>
@@ -1033,7 +1031,7 @@ export function App(props: {
                 paddingRight={1}
                 border={["top"]}
                 borderColor={pane() === "diff" ? C.accent : C.border}
-                title={paneTitle("diff", pane() === "diff")}
+                title={reading() ? " ▍diff " : " diff "}
                 titleColor={pane() === "diff" ? C.accent : C.dim}
               >
                 <box

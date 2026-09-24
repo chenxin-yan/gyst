@@ -145,15 +145,8 @@ async function press(
   await tui.renderOnce();
 }
 
-// Wait for wrapped text to appear after layout.
-async function textFrame(tui: Awaited<ReturnType<typeof testRender>>, text: string) {
-  for (let attempt = 0; attempt < 200; attempt++) {
-    await tui.renderOnce();
-    const frame = tui.captureCharFrame();
-    if (frame.includes(text)) return frame;
-    await Bun.sleep(10);
-  }
-  assert.fail(`Text did not render ${text}:\n${tui.captureCharFrame()}`);
+function textFrame(tui: Awaited<ReturnType<typeof testRender>>, text: string) {
+  return tui.waitForFrame((frame) => frame.includes(text));
 }
 
 // The group list shows only while browsing; reading replaces it with the diff.
@@ -906,19 +899,10 @@ describe("TUI", () => {
     const lines = Array.from({ length: 263 }, (_, i) => `+export const line_${i} = ${i};`).join(
       "\n",
     );
-    const client: TuiClient = {
-      ...state.client,
-      diff: async () => {
-        const value = await state.client.diff();
-        return {
-          ...value,
-          hunks: value.hunks.map((hunk) =>
-            hunk.id === "c.ts" ? { ...hunk, patch: `@@ -0,0 +1,263 @@\n${lines}` } : hunk,
-          ),
-        };
-      },
-    };
-    const tui = await testRender(() => <App client={client} pollInterval={60_000} />, {
+    state.setDiff((hunk) =>
+      hunk.id === "c.ts" ? { ...hunk, patch: `@@ -0,0 +1,263 @@\n${lines}` } : hunk,
+    );
+    const tui = await testRender(() => <App client={state.client} pollInterval={60_000} />, {
       width: 200,
       height: 60,
     });
@@ -968,23 +952,14 @@ describe("TUI", () => {
     // Both members are taller than the viewport, so either can head it.
     const tall = (prefix: string) =>
       `@@ -1 +1,60 @@\n${Array.from({ length: 60 }, (_, i) => `+${prefix}_${i}`).join("\n")}`;
-    const client: TuiClient = {
-      ...state.client,
-      diff: async () => {
-        const value = await state.client.diff();
-        return {
-          ...value,
-          hunks: value.hunks.map((hunk) =>
-            hunk.id === "b.ts"
-              ? { ...hunk, patch: tall("first") }
-              : hunk.id === "a.ts"
-                ? { ...hunk, patch: tall("second") }
-                : hunk,
-          ),
-        };
-      },
-    };
-    const tui = await testRender(() => <App client={client} pollInterval={5} />, {
+    state.setDiff((hunk) =>
+      hunk.id === "b.ts"
+        ? { ...hunk, patch: tall("first") }
+        : hunk.id === "a.ts"
+          ? { ...hunk, patch: tall("second") }
+          : hunk,
+    );
+    const tui = await testRender(() => <App client={state.client} pollInterval={5} />, {
       width: 100,
       height: 30,
     });
@@ -1059,22 +1034,14 @@ describe("TUI", () => {
     next.queue = ["group"];
     next.cursor = { itemId: "group", pane: "diff", hunkId: "b.ts" };
     state.setStatus(next);
-    return {
-      ...state.client,
-      diff: async () => {
-        const value = await state.client.diff();
-        return {
-          ...value,
-          hunks: value.hunks.map((hunk) =>
-            hunk.id === "b.ts"
-              ? { ...hunk, patch: tall("first") }
-              : hunk.id === "a.ts"
-                ? { ...hunk, patch: tall("second") }
-                : hunk,
-          ),
-        };
-      },
-    };
+    state.setDiff((hunk) =>
+      hunk.id === "b.ts"
+        ? { ...hunk, patch: tall("first") }
+        : hunk.id === "a.ts"
+          ? { ...hunk, patch: tall("second") }
+          : hunk,
+    );
+    return state.client;
   }
 
   it("refuses editor handoff while displayed focus is queued behind a poll", async () => {
