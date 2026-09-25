@@ -1,0 +1,15 @@
+{
+  "name": "gyst-web-prototype",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "data": "cd ../.. && bun prototype/web/make-data.ts",
+    "dev": "bun --port 4747 ./index.html",
+    "build": "rm -rf dist && bun build ./index.html --outdir dist --minify --splitting",
+    "deploy": "bun run build && bunx wrangler@4.139.0 deploy"
+  },
+  "dependencies": {
+    "@pierre/diffs": "1.4.3",
+    "@pierre/trees": "1.0.0-beta.6"
+  }
+}

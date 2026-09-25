@@ -1,0 +1,421 @@
+{
+  "scope": "7239806",
+  "scopeTitle": "Simplify the review UI",
+  "repo": "chenxin-yan/gyst",
+  "groups": [
+    {
+      "id": "notes-schema",
+      "title": "Replace overviews with hunk notes",
+      "hunkIds": [
+        "7ab386d932a8d7b7",
+        "7d97ca73d0e996a7",
+        "15c4be79cf5557c4",
+        "1eab974847e01821",
+        "9d2c99a4f9edccf1",
+        "cf00bfd9776dc0ae"
+      ],
+      "notes": [
+        {
+          "hunkId": "7d97ca73d0e996a7",
+          "text": "Notes cap at 400 code points and reject terminal controls, so agent prose stays readable inline without a Markdown sanitizer."
+        },
+        {
+          "hunkId": "1eab974847e01821",
+          "text": "Receipts still intern text, so exact historical replay survives progressive publication without repeating every note."
+        }
+      ],
+      "accepted": true
+    },
+    {
+      "id": "anchors",
+      "title": "Validate note anchors on publish",
+      "hunkIds": [
+        "9f13504edd96529e",
+        "c1aec29b7b70e6b2",
+        "a26fdd3693d2ada5",
+        "9ddc971bdb2132d6",
+        "0b12ee7eabc14861",
+        "2d070cca0187b3fe",
+        "b96d42e4a4ca805b",
+        "3bc6a49641ea018c",
+        "02f4dea68b7df03a"
+      ],
+      "notes": [
+        {
+          "hunkId": "a26fdd3693d2ada5",
+          "text": "A note must anchor to a member of its own group; the whole batch is rejected rather than silently retargeting a note."
+        },
+        {
+          "hunkId": "b96d42e4a4ca805b",
+          "text": "Until the first queue exists, any group change must arrive with a queue.set in the same batch."
+        }
+      ],
+      "accepted": false
+    },
+    {
+      "id": "focus",
+      "title": "Keep the focused hunk across sidebar toggles",
+      "hunkIds": [
+        "683529737bf2f509",
+        "def4da0574ffc3f2",
+        "85cf1027d2a89f7a",
+        "9edd2123d6344697",
+        "fb4148053c39ea8d",
+        "d6e6a196b3298be7",
+        "f8721445cf593aaf",
+        "26213723073c58d2",
+        "842dfa7261999bef",
+        "0c980acd58727c08",
+        "06806535bc3b0c8c",
+        "3699d19e7efe998e",
+        "efb66562726e973b",
+        "2e4ba588fc9ecb7f"
+      ],
+      "notes": [
+        {
+          "hunkId": "683529737bf2f509",
+          "text": "Every active item now carries a focused hunk, so hiding the sidebar returns to the same member instead of the first."
+        },
+        {
+          "hunkId": "85cf1027d2a89f7a",
+          "text": "Scroll observations apply only to the exact session, revision and sequence they saw; explicit navigation stays unconditional."
+        },
+        {
+          "hunkId": "0c980acd58727c08",
+          "text": "These cases pin the guard: a stale follow is a no-op, never an error."
+        }
+      ],
+      "accepted": false
+    },
+    {
+      "id": "refresh",
+      "title": "Drop notes when refresh loses a member",
+      "hunkIds": [
+        "3229ede64714720f"
+      ],
+      "notes": [
+        {
+          "hunkId": "3229ede64714720f",
+          "text": "A surviving note may describe the vanished sibling, so any lost member clears the group's notes."
+        }
+      ],
+      "accepted": false
+    },
+    {
+      "id": "noop",
+      "title": "Skip saving unchanged cursor actions",
+      "hunkIds": [
+        "13a60cf3bea21362",
+        "c44235f242375397"
+      ],
+      "notes": [
+        {
+          "hunkId": "c44235f242375397",
+          "text": "A cursor action that changes nothing no longer rewrites the session file."
+        }
+      ],
+      "accepted": false
+    },
+    {
+      "id": "skills",
+      "title": "Teach the skills to write notes",
+      "hunkIds": [
+        "da19497342436a51",
+        "83d0a56d27834059",
+        "fa6df23fa5821e3a",
+        "2bf4c39b11cf2269",
+        "5f8f6d0f190e7722"
+      ],
+      "notes": [
+        {
+          "hunkId": "83d0a56d27834059",
+          "text": "Titles name the change in a few words; explanation moves into notes on the hunks that need it."
+        },
+        {
+          "hunkId": "5f8f6d0f190e7722",
+          "text": "/gyst-ask now reads the focused hunk's note before answering."
+        }
+      ],
+      "accepted": false
+    }
+  ],
+  "inbox": [
+    "0784e1e1d2c84e99",
+    "04aa2fafe677cd1d"
+  ],
+  "hunks": {
+    "0784e1e1d2c84e99": {
+      "id": "0784e1e1d2c84e99",
+      "file": ".changeset/minimal-review-ui.md",
+      "header": "@@ -0,0 +1,11 @@",
+      "patch": "@@ -0,0 +1,11 @@\n+---\n+\"@gyst/cli\": patch\n+---\n+\n+Show a compact item sidebar beside the selected diff. Enter hides the sidebar, Esc restores it, and s toggles the same two-state view. Optional plain-text Agent notes appear above their owning hunks only while reading. Preserve member focus and reading position across sidebar reflow; remove the separate overview pane, Tab switching and z expansion.\n+\n+Replace group overviews with notes throughout authoring, status, persistence and exact historical receipts. Notes have unique own-group hunk anchors and a 400-Unicode-code-point limit; empty arrays are valid. Partial refresh invalidation clears the affected group's notes and verdict while unrelated work survives. Existing saved sessions require recreation; files are left untouched rather than migrated. Use the updated CLI/TUI and daemon together.\n+\n+Retain atomic progressive publication, group-only done-reviewing verdicts, frozen snapshots, guarded scroll-derived focus and synchronized editor handoff. Update gyst, gyst-refresh and gyst-ask authoring and focus guidance.\n+\n+Update runtime dependencies and development tooling, including @pierre/diffs 1.4.3 and Effect 4 RC117. Git-quoted filename decoding still awaits an upstream release.",
+      "contentHash": "78e77ea00fd23783"
+    },
+    "04aa2fafe677cd1d": {
+      "id": "04aa2fafe677cd1d",
+      "file": "CONTEXT.md",
+      "header": "@@ -18,15 +18,15 @@ One `@@` text block of the diff, addressed by a stable id. Gyst reviews text hun",
+      "patch": "@@ -18,15 +18,15 @@ One `@@` text block of the diff, addressed by a stable id. Gyst reviews text hun\n The ordered sequence of groups explaining a scoped change from top to bottom. Every changed hunk belongs to exactly one group when preparation is complete.\n \n **Group**:\n-One self-contained walkthrough step and the unit of a human verdict, containing one or more hunks contributing to one coherent change. Its explanation and selected source context let the human understand the change without reconstructing other steps.\n+One self-contained walkthrough step and the unit of a human verdict, containing one or more hunks contributing to one coherent change. Its ordered hunks and any attached notes provide the context for the human to understand the change.\n _Avoid_: Spotlight, pattern, cluster, fold\n \n **Title**:\n The short, plain-text name of a group, identifying its change in the walkthrough.\n \n-**Overview**:\n-An agent-authored explanation of a group's intent, relevant context, and behavioral changes, with selected source-located code excerpts where needed. It supports the human's judgment without replacing the changed hunks or asserting an unverified verdict.\n-_Avoid_: TLDR, annotation\n+**Note**:\n+An agent-authored explanation attached to a member hunk of a group, using one or two concise sentences to convey intent, a non-obvious consequence, or relevant context. A note guides the human's reading; it is not a verdict or a separate review item.\n+_Avoid_: Overview, comment thread\n \n **Inbox**:\n Hunks not yet published in a group. Published groups can be reviewed while the inbox still contains hunks awaiting preparation.",
+      "contentHash": "f39221f34615efa1"
+    },
+    "5f8f6d0f190e7722": {
+      "id": "5f8f6d0f190e7722",
+      "file": "apps/gyst/skills/gyst-ask/SKILL.md",
+      "header": "@@ -7,9 +7,9 @@ disable-model-invocation: true",
+      "patch": "@@ -7,9 +7,9 @@ disable-model-invocation: true\n # Answer from the live review\n \n 1. Read `gyst session status`. Use its session id with `--session <id>` on subsequent commands, rather than relying on pre-pass memory.\n-2. Resolve `cursor.itemId` and read its group's title and overview. Interpret focus:\n-   - **diff:** address `cursor.hunkId` first, within the group's context.\n-   - **overview / queue:** address the whole group; a retained hunk id does not narrow overview focus.\n+2. Resolve `cursor.itemId` and read its group's title and notes. Interpret focus:\n+   - **diff (sidebar hidden):** address `cursor.hunkId` first, with its attached note and group context; reading scroll follows the owning hunk even on note rows.\n+   - **queue (sidebar visible):** address the selected group; `cursor.hunkId` retains its focused member for the preview and return to reading. Passive preview scrolling does not update it.\n    - **Inbox or no cursor:** state that limitation; use a targeted hunk if the question identifies one, otherwise ask which change.\n-3. Read `gyst session diff --group <id>` or `--hunk <id>` and surrounding code as needed. Verify excerpt provenance; distinguish the snapshot from later working-tree code. Use `gyst session check` when freshness matters; cached, unavailable or stdin results cannot guarantee current source.\n+3. Read `gyst session diff --group <id>` or `--hunk <id>` and surrounding code as needed. Distinguish the snapshot from later working-tree code. Use `gyst session check` when freshness matters; cached, unavailable or stdin results cannot guarantee current source.\n 4. Answer in harness chat with evidence and uncertainty. Keep the session read-only: no refresh, regrouping, verdict changes or wait loop. Acceptance remains the human's judgment, not a correctness claim.",
+      "contentHash": "6ad035326af05a2c"
+    },
+    "da19497342436a51": {
+      "id": "da19497342436a51",
+      "file": "apps/gyst/skills/gyst/SKILL.md",
+      "header": "@@ -5,7 +5,7 @@ description: Use when the user requests a gyst walkthrough of a diff, range or P",
+      "patch": "@@ -5,7 +5,7 @@ description: Use when the user requests a gyst walkthrough of a diff, range or P\n \n # Compose a walkthrough\n \n-A **group** is one review question covering one or more hunks, with a title and Markdown overview. Ungrouped hunks form the **inbox**. Human acceptance means “done reviewing,” not correctness approval. Leave verdicts and cursor state to the human.\n+A **group** is one review question covering one or more hunks, with a short title and optional member-hunk notes. Ungrouped hunks form the **inbox**. Human acceptance means “done reviewing,” not correctness approval. Leave verdicts and cursor state to the human.\n \n ## 1. Select the snapshot\n ",
+      "contentHash": "536d267bd6cf2831"
+    },
+    "83d0a56d27834059": {
+      "id": "83d0a56d27834059",
+      "file": "apps/gyst/skills/gyst/SKILL.md",
+      "header": "@@ -29,14 +29,15 @@ Order concepts before consequences, and members along the explanation: entry poi",
+      "patch": "@@ -29,14 +29,15 @@ Order concepts before consequences, and members along the explanation: entry poi\n \n ## 3. Author self-contained groups\n \n-A reader should understand each group without reconstructing another group or the chat:\n+A reader should understand each group without reconstructing another group or the chat.\n \n-- Name the change in the title; explain intent, prior behavior and new behavior in the overview.\n-- Introduce necessary concepts and connect members in display order.\n-- When prose is insufficient, include selected unchanged-code excerpts with file locations and the revision or working-tree source actually read. Distinguish snapshot evidence from later code.\n-- State evidence and uncertainty; distinguish inspected tests from tests run.\n+**Title**: name the change in a few words (`Reject expired credentials`), not a sentence explaining it. The 120-code-point limit is a bound, not a target.\n \n-Titles are single-line plain text, 1–120 Unicode code points, without terminal controls. Overviews are nonempty Markdown, at most 64 KiB UTF-8. Use only context needed for the review question.\n+**Notes**: attach one or two concise sentences to a member hunk when intent, a non-obvious consequence, a caveat or a connection needs explanation. Notes appear above their hunks only while the sidebar is hidden. Let obvious mechanical changes speak for themselves; an empty notes array is valid.\n+\n+Each note is `{ \"hunkId\": \"member-id\", \"text\": \"Brief explanation.\" }`. Use at most one per member, anchored within its own group. Display order follows member order. Text is nonempty, single-paragraph plain text, at most 400 Unicode code points, without terminal controls. Use stable symbols and paths rather than line numbers. Keep Markdown blocks, source excerpts and diagrams out of notes; the diff supplies the code. Distinguish tests run from tests inspected and snapshot evidence from later working-tree code. Keep the walkthrough in groups, not in chat.\n+\n+Titles are single-line plain text, 1–120 Unicode code points, without terminal controls.\n \n ## 4. Publish atomically\n ",
+      "contentHash": "2102070a3222ade8"
+    },
+    "fa6df23fa5821e3a": {
+      "id": "fa6df23fa5821e3a",
+      "file": "apps/gyst/skills/gyst/SKILL.md",
+      "header": "@@ -53,7 +54,16 @@ Example first batch; replace the revision, key and hunk ids:",
+      "patch": "@@ -53,7 +54,16 @@ Example first batch; replace the revision, key and hunk ids:\n       \"type\": \"group.create\",\n       \"id\": \"expiry\",\n       \"title\": \"Reject expired credentials\",\n-      \"overview\": \"Check expiry before loading account data. Read the guard, then its boundary test. Evidence: tests inspected, not run.\",\n+      \"notes\": [\n+        {\n+          \"hunkId\": \"guard-hunk\",\n+          \"text\": \"Check expiry before loading the account so an expired credential cannot trigger a database read.\"\n+        },\n+        {\n+          \"hunkId\": \"test-hunk\",\n+          \"text\": \"The boundary case treats a credential expiring at request time as expired. Test inspected, not run.\"\n+        }\n+      ],\n       \"memberHunkIds\": [\"guard-hunk\", \"test-hunk\"]\n     },\n     { \"type\": \"queue.set\", \"itemIds\": [\"expiry\"] }",
+      "contentHash": "b5558182c4f75f17"
+    },
+    "2bf4c39b11cf2269": {
+      "id": "2bf4c39b11cf2269",
+      "file": "apps/gyst/skills/gyst/SKILL.md",
+      "header": "@@ -61,6 +71,8 @@ Example first batch; replace the revision, key and hunk ids:",
+      "patch": "@@ -61,6 +71,8 @@ Example first batch; replace the revision, key and hunk ids:\n }\n ```\n \n+Creation requires `notes`, including `[]` when no explanation is needed. An update may omit notes to retain them, replace the complete array, or clear it with `[]`. Validate retained anchors against any new membership; replace notes when an anchor would become invalid. Every group update resets that group's verdict and needs a complete `queue.set` in the batch.\n+\n - Successful batch: use its returned revision for the next batch.\n - `stale_revision`: reread status and reconcile concurrent human work before rebuilding.\n - Identical retry: reuse the key, but its receipt is historical; reread status before continuing.",
+      "contentHash": "34f67b87019e515b"
+    },
+    "13a60cf3bea21362": {
+      "id": "13a60cf3bea21362",
+      "file": "apps/gyst/src/daemon/sessions.ts",
+      "header": "@@ -167,7 +167,7 @@ export class Sessions extends Context.Service<",
+      "patch": "@@ -167,7 +167,7 @@ export class Sessions extends Context.Service<\n           queue: [],\n           queueSet: false,\n           acceptHistory: [],\n-          receiptOverviews: [],\n+          receiptNoteTexts: [],\n           applyReceipts: [],\n         };\n         yield* store.save(session).pipe(Effect.orDie);",
+      "contentHash": "80617192d976df7c"
+    },
+    "c44235f242375397": {
+      "id": "c44235f242375397",
+      "file": "apps/gyst/src/daemon/sessions.ts",
+      "header": "@@ -331,6 +331,7 @@ export class Sessions extends Context.Service<",
+      "patch": "@@ -331,6 +331,7 @@ export class Sessions extends Context.Service<\n         const updated = yield* Effect.fromResult(\n           applyHumanAction(session, request.action, DateTime.formatIso(yield* DateTime.now)),\n         );\n+        if (updated === session) return statusOf(session);\n         yield* store.save(updated).pipe(Effect.orDie);\n         sessions.set(session.id, updated);\n         return statusOf(updated);",
+      "contentHash": "568bac6cf959a739"
+    },
+    "3bc6a49641ea018c": {
+      "id": "3bc6a49641ea018c",
+      "file": "packages/core/src/apply.test.ts",
+      "header": "@@ -25,13 +25,19 @@ const session: Session = {",
+      "patch": "@@ -25,13 +25,19 @@ const session: Session = {\n   cursor: { itemId: null, pane: \"queue\" },\n   hunks: [hunk(\"h1\"), hunk(\"h2\"), hunk(\"h3\")],\n   groups: [\n-    { id: \"g1\", title: \"first\", overview: \"first\", hunkIds: [\"h1\"], accepted: true },\n-    { id: \"g2\", title: \"second\", overview: \"second\", hunkIds: [\"h2\"], accepted: true },\n+    {\n+      id: \"g1\",\n+      title: \"first\",\n+      notes: [{ hunkId: \"h1\", text: \"first\" }],\n+      hunkIds: [\"h1\"],\n+      accepted: true,\n+    },\n+    { id: \"g2\", title: \"second\", notes: [], hunkIds: [\"h2\"], accepted: true },\n   ],\n   queue: [\"g1\", \"g2\", \"h3\"],\n   queueSet: false,\n   acceptHistory: [\"g1\", \"g2\"],\n-  receiptOverviews: [],\n+  receiptNoteTexts: [],\n   applyReceipts: [],\n };\n ",
+      "contentHash": "2fd59afcae00f643"
+    },
+    "02f4dea68b7df03a": {
+      "id": "02f4dea68b7df03a",
+      "file": "packages/core/src/apply.test.ts",
+      "header": "@@ -52,15 +58,15 @@ const third: ApplyOp = {",
+      "patch": "@@ -52,15 +58,15 @@ const third: ApplyOp = {\n   type: \"group.create\",\n   id: \"g3\",\n   title: \"third\",\n-  overview: \"third\",\n+  notes: [],\n   memberHunkIds: [\"h3\"],\n };\n \n describe(\"applyBatch\", () => {\n-  it(\"invalidates title, overview and membership edits without losing unrelated verdicts\", () => {\n+  it(\"invalidates title, notes and membership edits without losing unrelated verdicts\", () => {\n     for (const update of [\n       { title: \"Reworded\" },\n-      { overview: \"Updated context\" },\n+      { notes: [{ hunkId: \"h1\", text: \"Updated context\" }] },\n       { memberHunkIds: [\"h1\", \"h3\"] },\n     ]) {\n       const changed = applied([",
+      "contentHash": "891d4f093cfd4e29"
+    },
+    "9f13504edd96529e": {
+      "id": "9f13504edd96529e",
+      "file": "packages/core/src/apply.ts",
+      "header": "@@ -2,7 +2,7 @@ import { Result, Schema } from \"effect\";",
+      "patch": "@@ -2,7 +2,7 @@ import { Result, Schema } from \"effect\";\n import { draftOf, type MutableSession, reconcileQueue } from \"./draft.ts\";\n import { StaleRevision, ValidationFailed } from \"./errors.ts\";\n import { hash } from \"./hash.ts\";\n-import { metadataFields, MetadataSchema, OverviewSchema, TitleSchema } from \"./metadata.ts\";\n+import { metadataFields, MetadataSchema, NotesSchema, TitleSchema } from \"./metadata.ts\";\n import type { ReceiptStatus, Session, StatusPayload } from \"./session.ts\";\n import { statusOf } from \"./status.ts\";\n ",
+      "contentHash": "6428721061a2a2fb"
+    },
+    "c1aec29b7b70e6b2": {
+      "id": "c1aec29b7b70e6b2",
+      "file": "packages/core/src/apply.ts",
+      "header": "@@ -16,7 +16,7 @@ export const GroupUpdateSchema = Schema.Struct({",
+      "patch": "@@ -16,7 +16,7 @@ export const GroupUpdateSchema = Schema.Struct({\n   type: Schema.Literal(\"group.update\"),\n   id: Schema.String,\n   title: Schema.optional(TitleSchema),\n-  overview: Schema.optional(OverviewSchema),\n+  notes: Schema.optional(NotesSchema),\n   memberHunkIds: Schema.optional(Schema.Array(Schema.String)),\n });\n export const GroupDissolveSchema = Schema.Struct({",
+      "contentHash": "6b21479a88ed78cf"
+    },
+    "a26fdd3693d2ada5": {
+      "id": "a26fdd3693d2ada5",
+      "file": "packages/core/src/apply.ts",
+      "header": "@@ -44,27 +44,36 @@ export type ValidationDetail = { opIndex: number; message: string };",
+      "patch": "@@ -44,27 +44,36 @@ export type ValidationDetail = { opIndex: number; message: string };\n /** A replayed idempotency key returns the recorded status and no session to persist. */\n export type ApplyOutcome = { readonly status: StatusPayload; readonly session?: Session };\n \n-// A receipt records each overview once as an index into `receiptOverviews`, so replay stays exact\n-// while a hundred one-item publications do not repeat every earlier overview a hundred times.\n+// Receipts intern note text while preserving exact historical anchors and status.\n function receiptStatusOf(draft: MutableSession, status: StatusPayload): ReceiptStatus {\n-  // ponytail: linear indexOf over distinct overviews; a hash index if a session publishes thousands.\n-  const intern = (overview: string) => {\n-    const index = draft.receiptOverviews.indexOf(overview);\n-    return index >= 0 ? index : draft.receiptOverviews.push(overview) - 1;\n+  // ponytail: linear indexOf over distinct texts; a hash index if a session publishes thousands.\n+  const intern = (text: string) => {\n+    const index = draft.receiptNoteTexts.indexOf(text);\n+    return index >= 0 ? index : draft.receiptNoteTexts.push(text) - 1;\n   };\n   return {\n     ...status,\n-    groups: status.groups.map((group) => ({ ...group, overview: intern(group.overview) })),\n+    groups: status.groups.map((group) => ({\n+      ...group,\n+      notes: group.notes.map((note) => ({ ...note, text: intern(note.text) })),\n+    })),\n   };\n }\n function recordedStatusOf(session: Session, status: ReceiptStatus): StatusPayload {\n-  const text = (index: number) => session.receiptOverviews[index]!;\n+  const text = (index: number) => session.receiptNoteTexts[index]!;\n   return {\n     ...status,\n-    groups: status.groups.map((group) => ({ ...group, overview: text(group.overview) })),\n+    groups: status.groups.map((group) => ({\n+      ...group,\n+      notes: group.notes.map((note) => ({ ...note, text: text(note.text) })),\n+    })),\n   };\n }\n \n+const validAnchors = (notes: typeof NotesSchema.Type, members: readonly string[]) =>\n+  new Set(notes.map(({ hunkId }) => hunkId)).size === notes.length &&\n+  notes.every(({ hunkId }) => members.includes(hunkId));\n+\n export function applyBatch(\n   session: Session,\n   envelope: ApplyEnvelope,",
+      "contentHash": "01b5992e4ccbfabe"
+    },
+    "9ddc971bdb2132d6": {
+      "id": "9ddc971bdb2132d6",
+      "file": "packages/core/src/apply.ts",
+      "header": "@@ -118,8 +127,8 @@ export function applyBatch(",
+      "patch": "@@ -118,8 +127,8 @@ export function applyBatch(\n         fail(opIndex, `item id ${op.id} already exists`);\n         continue;\n       }\n-      if (!Schema.is(MetadataSchema)(op)) {\n-        fail(opIndex, \"invalid group title or overview\");\n+      if (!Schema.is(MetadataSchema)(op) || !validAnchors(op.notes, op.memberHunkIds)) {\n+        fail(opIndex, \"invalid group title, notes or anchors\");\n         continue;\n       }\n       if (",
+      "contentHash": "c4827d37d7bf8f7c"
+    },
+    "0b12ee7eabc14861": {
+      "id": "0b12ee7eabc14861",
+      "file": "packages/core/src/apply.ts",
+      "header": "@@ -140,7 +149,7 @@ export function applyBatch(",
+      "patch": "@@ -140,7 +149,7 @@ export function applyBatch(\n       draft.groups.push({\n         id: op.id,\n         title: op.title,\n-        overview: op.overview,\n+        notes: op.notes.map((note) => ({ ...note })),\n         hunkIds: [...op.memberHunkIds],\n         accepted: false,\n       });",
+      "contentHash": "0f076bc23c28f992"
+    },
+    "2d070cca0187b3fe": {
+      "id": "2d070cca0187b3fe",
+      "file": "packages/core/src/apply.ts",
+      "header": "@@ -172,15 +181,15 @@ export function applyBatch(",
+      "patch": "@@ -172,15 +181,15 @@ export function applyBatch(\n         continue;\n       }\n       const title = op.title ?? group.title;\n-      const overview = op.overview ?? group.overview;\n-      if (!Schema.is(MetadataSchema)({ title, overview })) {\n-        fail(opIndex, \"invalid group title or overview\");\n+      const notes = op.notes ?? group.notes;\n+      if (!Schema.is(MetadataSchema)({ title, notes }) || !validAnchors(notes, members)) {\n+        fail(opIndex, \"invalid group title, notes or anchors\");\n         continue;\n       }\n       Object.assign(group, {\n         hunkIds: [...members],\n         title,\n-        overview,\n+        notes: notes.map((note) => ({ ...note })),\n         accepted: false,\n       });\n       draft.queueSet = false;",
+      "contentHash": "61b16c9222fe1cd3"
+    },
+    "b96d42e4a4ca805b": {
+      "id": "b96d42e4a4ca805b",
+      "file": "packages/core/src/apply.ts",
+      "header": "@@ -219,6 +228,8 @@ export function applyBatch(",
+      "patch": "@@ -219,6 +228,8 @@ export function applyBatch(\n   ) {\n     fail(queueOpIndex, \"queue.set must describe the batch's final groups\");\n   }\n+  if (!errors.length && !draft.queueSet && envelope.ops.some((op) => op.type !== \"queue.set\"))\n+    fail(envelope.ops.length - 1, \"group changes require a complete queue.set\");\n   if (errors.length)\n     return Result.fail(\n       new ValidationFailed({ message: \"apply validation failed\", detail: errors }),",
+      "contentHash": "3315ca6e192c558a"
+    },
+    "9d2c99a4f9edccf1": {
+      "id": "9d2c99a4f9edccf1",
+      "file": "packages/core/src/draft.ts",
+      "header": "@@ -6,24 +6,24 @@ type MutableGroup = Mutable<Omit<Group, \"hunkIds\">> & { hunkIds: string[] };",
+      "patch": "@@ -6,24 +6,24 @@ type MutableGroup = Mutable<Omit<Group, \"hunkIds\">> & { hunkIds: string[] };\n export type MutableSession = Mutable<\n   Omit<\n     Session,\n-    \"hunks\" | \"groups\" | \"queue\" | \"acceptHistory\" | \"receiptOverviews\" | \"applyReceipts\"\n+    \"hunks\" | \"groups\" | \"queue\" | \"acceptHistory\" | \"receiptNoteTexts\" | \"applyReceipts\"\n   >\n > & {\n   hunks: MutableHunk[];\n   groups: MutableGroup[];\n   queue: string[];\n   acceptHistory: string[];\n-  receiptOverviews: string[];\n+  receiptNoteTexts: string[];\n   applyReceipts: ApplyReceipt[];\n };\n \n export function draftOf(session: Session): MutableSession {\n-  const { receiptOverviews, applyReceipts, ...live } = session;\n+  const { receiptNoteTexts, applyReceipts, ...live } = session;\n   // SAFETY: structuredClone returns a detached copy, so dropping readonly cannot alias the caller's\n   // session. Receipt history is append-only and its entries are never mutated, so sharing them is safe.\n   return {\n     ...(structuredClone(live) as Mutable<typeof live>),\n-    receiptOverviews: [...receiptOverviews],\n+    receiptNoteTexts: [...receiptNoteTexts],\n     applyReceipts: [...applyReceipts],\n   } as MutableSession;\n }",
+      "contentHash": "5a7252c1e0fe531c"
+    },
+    "f8721445cf593aaf": {
+      "id": "f8721445cf593aaf",
+      "file": "packages/core/src/draft.ts",
+      "header": "@@ -61,7 +61,7 @@ export function reconcileQueue(session: MutableSession): void {",
+      "patch": "@@ -61,7 +61,7 @@ export function reconcileQueue(session: MutableSession): void {\n   const { itemId, pane, hunkId } = session.cursor;\n   if (itemId !== null && !visibleSet.has(itemId)) {\n     session.cursor = { itemId: null, pane: \"queue\" };\n-  } else if (itemId !== null && pane !== \"queue\") {\n+  } else if (itemId !== null) {\n     const members = focusableHunkIds(session, itemId);\n     if (hunkId === undefined || !members.includes(hunkId))\n       session.cursor = { itemId, pane, hunkId: members[0]! };",
+      "contentHash": "035f3b0b70ad02cc"
+    },
+    "26213723073c58d2": {
+      "id": "26213723073c58d2",
+      "file": "packages/core/src/human-action.test.ts",
+      "header": "@@ -19,23 +19,23 @@ const ready: Session = {",
+      "patch": "@@ -19,23 +19,23 @@ const ready: Session = {\n   updatedAt: LATER,\n   revision: 3,\n   seq: 3,\n-  cursor: { itemId: \"g1\", pane: \"queue\" },\n+  cursor: { itemId: \"g1\", pane: \"queue\", hunkId: \"h1\" },\n   hunks: [hunk(\"h1\"), hunk(\"h2\"), hunk(\"h3\"), hunk(\"inbox\")],\n   groups: [\n     {\n       id: \"g1\",\n       title: \"coherent edit\",\n-      overview: \"intent and behavior\",\n+      notes: [{ hunkId: \"h1\", text: \"intent and behavior\" }],\n       hunkIds: [\"h1\"],\n       accepted: false,\n     },\n-    { id: \"g2\", title: \"read me\", overview: \"context\", hunkIds: [\"h2\"], accepted: false },\n-    { id: \"g3\", title: \"other\", overview: \"context\", hunkIds: [\"h3\"], accepted: false },\n+    { id: \"g2\", title: \"read me\", notes: [], hunkIds: [\"h2\"], accepted: false },\n+    { id: \"g3\", title: \"other\", notes: [], hunkIds: [\"h3\"], accepted: false },\n   ],\n   queue: [\"g1\", \"g2\", \"g3\"],\n   queueSet: true,\n   acceptHistory: [],\n-  receiptOverviews: [],\n+  receiptNoteTexts: [],\n   applyReceipts: [],\n };\n const frame = { sessionId: \"session\", revision: 3 };",
+      "contentHash": "0cb01b0994c2cde3"
+    },
+    "842dfa7261999bef": {
+      "id": "842dfa7261999bef",
+      "file": "packages/core/src/human-action.test.ts",
+      "header": "@@ -66,20 +66,17 @@ describe(\"applyHumanAction\", () => {",
+      "patch": "@@ -66,20 +66,17 @@ describe(\"applyHumanAction\", () => {\n       revision: 3,\n       seq: 4,\n     });\n-    const overview = act(focused, {\n+    const browse = act(focused, {\n       type: \"cursor.focus\",\n-      itemId: \"g1\",\n-      pane: \"overview\",\n-      hunkId: \"h1\",\n-    });\n-    expect(overview.cursor).toEqual({ itemId: \"g1\", pane: \"overview\", hunkId: \"h1\" });\n-    expect(act(overview, { type: \"cursor.focus\", itemId: \"g1\", pane: \"queue\" }).cursor).toEqual({\n       itemId: \"g1\",\n       pane: \"queue\",\n+      hunkId: \"h1\",\n     });\n+    expect(browse.cursor).toEqual({ itemId: \"g1\", pane: \"queue\", hunkId: \"h1\" });\n     expect(act(focused, { type: \"cursor.move\", itemId: \"g2\" }).cursor).toEqual({\n       itemId: \"g2\",\n       pane: \"queue\",\n+      hunkId: \"h2\",\n     });\n     for (const itemId of [\"g1\", \"missing\"]) {\n       expect(",
+      "contentHash": "0e94a95445444e8b"
+    },
+    "0c980acd58727c08": {
+      "id": "0c980acd58727c08",
+      "file": "packages/core/src/human-action.test.ts",
+      "header": "@@ -95,19 +92,53 @@ describe(\"applyHumanAction\", () => {",
+      "patch": "@@ -95,19 +92,53 @@ describe(\"applyHumanAction\", () => {\n     const decode = Schema.decodeUnknownResult(HumanActionSchema);\n     for (const action of [\n       { type: \"expand.toggle\" },\n+      { type: \"cursor.focus\", itemId: \"g1\", pane: \"overview\", hunkId: \"h1\" },\n+      { type: \"cursor.focus\", itemId: \"g1\", pane: \"queue\" },\n       { type: \"cursor.focus\", hunkId: \"h1\" },\n       { type: \"cursor.focus\", itemId: \"g1\", pane: \"diff\" },\n     ])\n       expect(Result.isFailure(decode(action))).toBe(true);\n   });\n \n+  it(\"follows only the observed session, revision and sequence, with required wire guards\", () => {\n+    const follow = {\n+      type: \"cursor.follow\",\n+      itemId: \"g1\",\n+      pane: \"diff\",\n+      hunkId: \"h1\",\n+      ...frame,\n+      seq: ready.seq,\n+    } as const;\n+    const decode = Schema.decodeUnknownResult(HumanActionSchema);\n+    expect(Result.getOrThrow(decode(follow))).toEqual(follow);\n+    for (const field of [\"sessionId\", \"revision\", \"seq\"] as const) {\n+      const incomplete: Record<string, unknown> = { ...follow };\n+      delete incomplete[field];\n+      expect(Result.isFailure(decode(incomplete))).toBe(true);\n+    }\n+    expect(act(ready, follow)).toMatchObject({\n+      cursor: { itemId: \"g1\", pane: \"diff\", hunkId: \"h1\" },\n+      revision: ready.revision,\n+      seq: ready.seq + 1,\n+    });\n+    for (const changed of [\n+      { ...ready, id: \"replacement\" },\n+      { ...ready, revision: ready.revision + 1 },\n+      act(ready, { type: \"cursor.focus\", itemId: \"g2\", pane: \"diff\", hunkId: \"h2\" }),\n+    ])\n+      expect(act(changed, follow)).toBe(changed);\n+    expect(Result.isFailure(applyHumanAction(ready, { ...follow, hunkId: \"h2\" }, LATER))).toBe(\n+      true,\n+    );\n+  });\n+\n   it(\"accepts atomically, skips accepted items and inbox, wraps once, and stays zoomed\", () => {\n     const start: Session = {\n       ...ready,\n       groups: ready.groups.map((group) =>\n         group.id === \"g2\" ? { ...group, accepted: true } : group,\n       ),\n-      cursor: { itemId: \"g3\", pane: \"overview\", hunkId: \"h3\" },\n+      cursor: { itemId: \"g3\", pane: \"diff\", hunkId: \"h3\" },\n     };\n     const accepted = toggle(start, \"g3\");\n     expect(accepted).toMatchObject({",
+      "contentHash": "e1c4f1a2d18f7b6b"
+    },
+    "06806535bc3b0c8c": {
+      "id": "06806535bc3b0c8c",
+      "file": "packages/core/src/human-action.test.ts",
+      "header": "@@ -120,7 +151,7 @@ describe(\"applyHumanAction\", () => {",
+      "patch": "@@ -120,7 +151,7 @@ describe(\"applyHumanAction\", () => {\n     const completed = toggle(accepted, \"g1\");\n     expect(completed.cursor).toEqual(accepted.cursor);\n     expect(completed.groups[0]?.accepted).toBe(true);\n-    expect(toggle(ready, \"g1\").cursor).toEqual({ itemId: \"g2\", pane: \"queue\" });\n+    expect(toggle(ready, \"g1\").cursor).toEqual({ itemId: \"g2\", pane: \"queue\", hunkId: \"h2\" });\n     expect(ready.groups[0]?.accepted).toBe(false);\n   });\n ",
+      "contentHash": "61e6f51337095f4b"
+    },
+    "3699d19e7efe998e": {
+      "id": "3699d19e7efe998e",
+      "file": "packages/core/src/human-action.test.ts",
+      "header": "@@ -130,7 +161,7 @@ describe(\"applyHumanAction\", () => {",
+      "patch": "@@ -130,7 +161,7 @@ describe(\"applyHumanAction\", () => {\n     const zoomed = act(accepted, {\n       type: \"cursor.focus\",\n       itemId: \"g2\",\n-      pane: \"overview\",\n+      pane: \"diff\",\n       hunkId: \"h2\",\n     });\n     const undone = act(zoomed, { type: \"verdict.undo\", ...frame });",
+      "contentHash": "a14c8a3468972e06"
+    },
+    "efb66562726e973b": {
+      "id": "efb66562726e973b",
+      "file": "packages/core/src/human-action.test.ts",
+      "header": "@@ -140,6 +171,7 @@ describe(\"applyHumanAction\", () => {",
+      "patch": "@@ -140,6 +171,7 @@ describe(\"applyHumanAction\", () => {\n     expect(act(accepted, { type: \"verdict.undo\", ...frame }).cursor).toEqual({\n       itemId: \"g1\",\n       pane: \"queue\",\n+      hunkId: \"h1\",\n     });\n   });\n ",
+      "contentHash": "969b5fa4a587b5c8"
+    },
+    "2e4ba588fc9ecb7f": {
+      "id": "2e4ba588fc9ecb7f",
+      "file": "packages/core/src/human-action.test.ts",
+      "header": "@@ -147,7 +179,7 @@ describe(\"applyHumanAction\", () => {",
+      "patch": "@@ -147,7 +179,7 @@ describe(\"applyHumanAction\", () => {\n     const moved = act(ready, {\n       type: \"cursor.focus\",\n       itemId: \"g2\",\n-      pane: \"overview\",\n+      pane: \"diff\",\n       hunkId: \"h2\",\n     });\n     const accepted = toggle(moved, \"g1\");",
+      "contentHash": "b5c04aa1d14ad998"
+    },
+    "def4da0574ffc3f2": {
+      "id": "def4da0574ffc3f2",
+      "file": "packages/core/src/human-action.ts",
+      "header": "@@ -3,28 +3,30 @@ import { draftOf, focusableHunkIds, visibleItemIds } from \"./draft.ts\";",
+      "patch": "@@ -3,28 +3,30 @@ import { draftOf, focusableHunkIds, visibleItemIds } from \"./draft.ts\";\n import { ValidationFailed } from \"./errors.ts\";\n import type { Session } from \"./session.ts\";\n \n-// A verdict names the frame the human saw; the daemon rejects it once that frame is stale.\n-const verdictFrameFields = { sessionId: Schema.String, revision: Schema.Number };\n+// Verdicts and viewport observations name the snapshot they were based on.\n+const frameFields = { sessionId: Schema.String, revision: Schema.Number };\n export const HumanActionSchema = Schema.Union([\n   Schema.Struct({ type: Schema.Literal(\"cursor.move\"), itemId: Schema.String }),\n   Schema.Struct({\n     type: Schema.Literal(\"cursor.focus\"),\n     itemId: Schema.String,\n-    pane: Schema.Literal(\"queue\"),\n-    hunkId: Schema.optional(Schema.Never),\n+    pane: Schema.Literals([\"queue\", \"diff\"]),\n+    hunkId: Schema.String,\n   }),\n   Schema.Struct({\n-    type: Schema.Literal(\"cursor.focus\"),\n+    type: Schema.Literal(\"cursor.follow\"),\n     itemId: Schema.String,\n-    pane: Schema.Literals([\"diff\", \"overview\"]),\n+    pane: Schema.Literal(\"diff\"),\n     hunkId: Schema.String,\n+    ...frameFields,\n+    seq: Schema.Number,\n   }),\n   Schema.Struct({\n     type: Schema.Literal(\"verdict.toggle\"),\n     itemId: Schema.String,\n-    ...verdictFrameFields,\n+    ...frameFields,\n   }),\n-  Schema.Struct({ type: Schema.Literal(\"verdict.undo\"), ...verdictFrameFields }),\n+  Schema.Struct({ type: Schema.Literal(\"verdict.undo\"), ...frameFields }),\n ]);\n export type HumanAction = typeof HumanActionSchema.Type;\n /** Cursor focus bumps only `seq`; verdicts and their atomic navigation bump `revision` too. */",
+      "contentHash": "347d3db49cfa7d1d"
+    },
+    "85cf1027d2a89f7a": {
+      "id": "85cf1027d2a89f7a",
+      "file": "packages/core/src/human-action.ts",
+      "header": "@@ -33,6 +35,14 @@ export function applyHumanAction(",
+      "patch": "@@ -33,6 +35,14 @@ export function applyHumanAction(\n   action: HumanAction,\n   updatedAt: string,\n ): Result.Result<Session, ValidationFailed> {\n+  // Viewport observations are conditional; explicit human navigation remains unconditional.\n+  if (\n+    action.type === \"cursor.follow\" &&\n+    (action.sessionId !== session.id ||\n+      action.revision !== session.revision ||\n+      action.seq !== session.seq)\n+  )\n+    return Result.succeed(session);\n   const inapplicable = Result.fail(\n     new ValidationFailed({ message: \"TUI action does not apply to the current session\" }),\n   );",
+      "contentHash": "6e893089e580decf"
+    },
+    "9edd2123d6344697": {
+      "id": "9edd2123d6344697",
+      "file": "packages/core/src/human-action.ts",
+      "header": "@@ -41,12 +51,15 @@ export function applyHumanAction(",
+      "patch": "@@ -41,12 +51,15 @@ export function applyHumanAction(\n \n   if (action.type === \"cursor.move\") {\n     if (!visibleIds.has(action.itemId)) return inapplicable;\n-    draft.cursor = { itemId: action.itemId, pane: \"queue\" };\n-  } else if (action.type === \"cursor.focus\") {\n+    draft.cursor = {\n+      itemId: action.itemId,\n+      pane: \"queue\",\n+      hunkId: focusableHunkIds(draft, action.itemId)[0]!,\n+    };\n+  } else if (action.type === \"cursor.focus\" || action.type === \"cursor.follow\") {\n     const { itemId, pane } = action;\n     if (!visibleIds.has(itemId)) return inapplicable;\n-    if (pane === \"queue\") draft.cursor = { itemId, pane };\n-    else if (focusableHunkIds(session, itemId).includes(action.hunkId))\n+    if (focusableHunkIds(session, itemId).includes(action.hunkId))\n       draft.cursor = { itemId, pane, hunkId: action.hunkId };\n     else return inapplicable;\n   } else {",
+      "contentHash": "3ce6af828d889abd"
+    },
+    "fb4148053c39ea8d": {
+      "id": "fb4148053c39ea8d",
+      "file": "packages/core/src/human-action.ts",
+      "header": "@@ -60,10 +73,11 @@ export function applyHumanAction(",
+      "patch": "@@ -60,10 +73,11 @@ export function applyHumanAction(\n     if (action.type === \"verdict.undo\") {\n       item.accepted = false;\n       draft.acceptHistory.pop();\n-      draft.cursor =\n-        session.cursor.pane === \"queue\"\n-          ? { itemId, pane: \"queue\" }\n-          : { itemId, pane: \"diff\", hunkId: focusableHunkIds(draft, itemId)[0]! };\n+      draft.cursor = {\n+        itemId,\n+        pane: session.cursor.pane,\n+        hunkId: focusableHunkIds(draft, itemId)[0]!,\n+      };\n     } else {\n       item.accepted = !item.accepted;\n       draft.acceptHistory = draft.acceptHistory.filter((id) => id !== itemId);",
+      "contentHash": "877aad6ed8d9d343"
+    },
+    "d6e6a196b3298be7": {
+      "id": "d6e6a196b3298be7",
+      "file": "packages/core/src/human-action.ts",
+      "header": "@@ -80,14 +94,11 @@ export function applyHumanAction(",
+      "patch": "@@ -80,14 +94,11 @@ export function applyHumanAction(\n           for (let offset = 1; offset <= draft.queue.length; offset++) {\n             const destination = draft.queue[(start + offset) % draft.queue.length]!;\n             if (!pending.has(destination)) continue;\n-            draft.cursor =\n-              session.cursor.pane === \"queue\"\n-                ? { itemId: destination, pane: \"queue\" }\n-                : {\n-                    itemId: destination,\n-                    pane: \"diff\",\n-                    hunkId: focusableHunkIds(draft, destination)[0]!,\n-                  };\n+            draft.cursor = {\n+              itemId: destination,\n+              pane: session.cursor.pane,\n+              hunkId: focusableHunkIds(draft, destination)[0]!,\n+            };\n             break;\n           }\n         }",
+      "contentHash": "b6ed3fd26a4fbf8d"
+    },
+    "cf00bfd9776dc0ae": {
+      "id": "cf00bfd9776dc0ae",
+      "file": "packages/core/src/index.ts",
+      "header": "@@ -38,7 +38,13 @@ export {",
+      "patch": "@@ -38,7 +38,13 @@ export {\n   type StatusPayload,\n   StatusPayloadSchema,\n } from \"./session.ts\";\n-export { sanitizeOverview, TitleSchema, OverviewSchema } from \"./metadata.ts\";\n+export {\n+  sanitizeTerminalText,\n+  TitleSchema,\n+  NoteTextSchema,\n+  NoteSchema,\n+  NotesSchema,\n+} from \"./metadata.ts\";\n export { parseSnapshot } from \"./snapshot.ts\";\n export { statusOf } from \"./status.ts\";\n export {",
+      "contentHash": "5b1a4616bfb57507"
+    },
+    "7ab386d932a8d7b7": {
+      "id": "7ab386d932a8d7b7",
+      "file": "packages/core/src/metadata.ts",
+      "header": "@@ -2,9 +2,9 @@",
+      "patch": "@@ -2,9 +2,9 @@\n import { Schema } from \"effect\";\n \n export const TITLE_MAX_CODE_POINTS = 120;\n-export const OVERVIEW_MAX_BYTES = 64 * 1024;\n-// Keep Markdown whitespace, never pass terminal controls or directional overrides to the renderer.\n-export const sanitizeOverview = (text: string): string =>\n+export const NOTE_MAX_CODE_POINTS = 400;\n+// Error messages may be multiline; never pass terminal controls or directional overrides.\n+export const sanitizeTerminalText = (text: string): string =>\n   text.replace(/[\\x00-\\x08\\x0b-\\x1f\\x7f-\\x9f\\u202a-\\u202e\\u2066-\\u2069]/g, \"\");\n \n export const TitleSchema = Schema.String.check(",
+      "contentHash": "5c0de6f27f3ea6c8"
+    },
+    "7d97ca73d0e996a7": {
+      "id": "7d97ca73d0e996a7",
+      "file": "packages/core/src/metadata.ts",
+      "header": "@@ -16,13 +16,16 @@ export const TitleSchema = Schema.String.check(",
+      "patch": "@@ -16,13 +16,16 @@ export const TitleSchema = Schema.String.check(\n       \"title must be 1–120 code points, single-line plain text without controls\",\n   ),\n );\n-export const OverviewSchema = Schema.String.check(\n+export const NoteTextSchema = Schema.String.check(\n   Schema.makeFilter(\n-    (overview) =>\n-      (sanitizeOverview(overview).trim().length > 0 &&\n-        new TextEncoder().encode(overview).length <= OVERVIEW_MAX_BYTES) ||\n-      \"overview must be nonempty and at most 64 KiB UTF-8\",\n+    (text) =>\n+      (text.trim().length > 0 &&\n+        Array.from(text).length <= NOTE_MAX_CODE_POINTS &&\n+        !/[\\x00-\\x1f\\x7f-\\x9f\\u2028-\\u202e\\u2066-\\u2069]/.test(text)) ||\n+      \"note must be 1–400 code points, single-paragraph plain text without controls\",\n   ),\n );\n-export const metadataFields = { title: TitleSchema, overview: OverviewSchema };\n+export const NoteSchema = Schema.Struct({ hunkId: Schema.String, text: NoteTextSchema });\n+export const NotesSchema = Schema.Array(NoteSchema);\n+export const metadataFields = { title: TitleSchema, notes: NotesSchema };\n export const MetadataSchema = Schema.Struct(metadataFields);",
+      "contentHash": "3e55a4e3ae49d43a"
+    },
+    "3229ede64714720f": {
+      "id": "3229ede64714720f",
+      "file": "packages/core/src/refresh.ts",
+      "header": "@@ -47,6 +47,7 @@ export function refreshSession(",
+      "patch": "@@ -47,6 +47,7 @@ export function refreshSession(\n       {\n         ...group,\n         hunkIds,\n+        notes: hunkIds.length === group.hunkIds.length ? group.notes : [],\n         // A verdict covers every member, not just the surviving ones.\n         accepted: hunkIds.length === group.hunkIds.length && group.accepted,\n       },",
+      "contentHash": "d7c2ddac900f31c8"
+    },
+    "15c4be79cf5557c4": {
+      "id": "15c4be79cf5557c4",
+      "file": "packages/core/src/session.ts",
+      "header": "@@ -1,5 +1,5 @@",
+      "patch": "@@ -1,5 +1,5 @@\n import { Schema } from \"effect\";\n-import { metadataFields, OverviewSchema } from \"./metadata.ts\";\n+import { metadataFields, NoteTextSchema } from \"./metadata.ts\";\n \n export const HunkSchema = Schema.Struct({\n   id: Schema.String,",
+      "contentHash": "f1d1c53694a91608"
+    },
+    "683529737bf2f509": {
+      "id": "683529737bf2f509",
+      "file": "packages/core/src/session.ts",
+      "header": "@@ -41,33 +41,39 @@ const sessionSummaryFields = {",
+      "patch": "@@ -41,33 +41,39 @@ const sessionSummaryFields = {\n };\n const cursorSchema = Schema.Struct({\n   itemId: Schema.NullOr(Schema.String),\n-  pane: Schema.Literals([\"queue\", \"diff\", \"overview\"]),\n+  pane: Schema.Literals([\"queue\", \"diff\"]),\n   hunkId: Schema.optional(Schema.String),\n }).check(\n   Schema.makeFilter(\n     (cursor) =>\n-      (cursor.pane === \"queue\"\n-        ? cursor.hunkId === undefined\n-        : cursor.itemId !== null && cursor.hunkId !== undefined) ||\n-      \"queue focus has no hunk; zoom requires an item and hunk\",\n+      (cursor.itemId === null\n+        ? cursor.pane === \"queue\" && cursor.hunkId === undefined\n+        : cursor.hunkId !== undefined) ||\n+      \"active items require a member hunk; empty focus is in the queue\",\n   ),\n );\n \n const HunkSummarySchema = Schema.Struct({ id: Schema.String, file: Schema.String });\n-// The wire status carries overview text; a receipt status carries an index into `receiptOverviews`.\n-const statusPayloadFields = <Overview extends Schema.Top>(overview: Overview) => ({\n+// Wire notes carry text; receipts carry indices into `receiptNoteTexts`.\n+const statusPayloadFields = <Text extends Schema.Top>(text: Text) => ({\n   session: Schema.Struct(sessionSummaryFields),\n   revision: Schema.Number,\n   seq: Schema.Number,\n   cursor: cursorSchema,\n-  groups: Schema.Array(Schema.Struct({ ...GroupSchema.fields, overview, count: Schema.Number })),\n+  groups: Schema.Array(\n+    Schema.Struct({\n+      ...GroupSchema.fields,\n+      notes: Schema.Array(Schema.Struct({ hunkId: Schema.String, text })),\n+      count: Schema.Number,\n+    }),\n+  ),\n   inbox: Schema.Array(HunkSummarySchema),\n   queue: Schema.Array(Schema.String),\n   queueSet: Schema.Boolean,\n   ready: Schema.Boolean,\n   files: Schema.Array(Schema.Struct({ path: Schema.String, hunkCount: Schema.Number })),\n });\n-export const StatusPayloadSchema = Schema.Struct(statusPayloadFields(OverviewSchema));\n+export const StatusPayloadSchema = Schema.Struct(statusPayloadFields(NoteTextSchema));\n export type StatusPayload = typeof StatusPayloadSchema.Type;\n const ReceiptStatusSchema = Schema.Struct(statusPayloadFields(Schema.Natural));\n export type ReceiptStatus = typeof ReceiptStatusSchema.Type;",
+      "contentHash": "1b5159728c3d656a"
+    },
+    "1eab974847e01821": {
+      "id": "1eab974847e01821",
+      "file": "packages/core/src/session.ts",
+      "header": "@@ -89,16 +95,17 @@ export const SessionSchema = Schema.Struct({",
+      "patch": "@@ -89,16 +95,17 @@ export const SessionSchema = Schema.Struct({\n   queue: Schema.Array(Schema.String),\n   queueSet: Schema.Boolean,\n   acceptHistory: Schema.Array(Schema.String),\n-  // Every distinct overview a receipt ever recorded, once; receipts reference it by index so\n-  // progressive publication does not repeat all earlier Markdown in each new receipt.\n-  receiptOverviews: Schema.Array(OverviewSchema),\n+  // Progressive publication stores each distinct historical note text once.\n+  receiptNoteTexts: Schema.Array(NoteTextSchema),\n   applyReceipts: Schema.Array(ApplyReceiptSchema),\n }).check(\n   Schema.makeFilter(\n     (session) =>\n       session.applyReceipts.every(({ status }) =>\n-        status.groups.every(({ overview }) => overview < session.receiptOverviews.length),\n-      ) || \"receipt overview reference is outside receiptOverviews\",\n+        status.groups.every(({ notes }) =>\n+          notes.every(({ text }) => text < session.receiptNoteTexts.length),\n+        ),\n+      ) || \"receipt note reference is outside receiptNoteTexts\",\n   ),\n );\n export type Session = typeof SessionSchema.Type;",
+      "contentHash": "75f3adc7f8bd29f0"
+    }
+  }
+}
