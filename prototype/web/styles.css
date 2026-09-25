@@ -449,90 +449,7 @@ kbd {
   padding-top: 20px;
 }
 
-/* ─── stacked, foldable hunks ───────────────────────────────────────────── */
-.stack {
-  border-top: 1px solid var(--line);
-}
-.hunk {
-  border-bottom: 1px solid var(--line);
-  scroll-margin-top: 0;
-}
-.hunk-head {
-  position: sticky;
-  top: -24px;
-  z-index: 2;
-  display: flex;
-  align-items: baseline;
-  gap: 10px;
-  width: 100%;
-  padding: 8px 12px 8px 10px;
-  background: var(--surface);
-  font-size: 12.5px;
-  box-shadow: inset 2px 0 transparent;
-}
-.hunk:not(.folded) .hunk-head {
-  border-bottom: 1px solid var(--line);
-}
-.hunk.focused .hunk-head {
-  box-shadow: inset 2px 0 var(--accent);
-}
-.chevron {
-  width: 12px;
-  align-self: center;
-  flex-shrink: 0;
-}
-.chevron::before {
-  content: "";
-  display: block;
-  width: 6px;
-  height: 6px;
-  margin: 0 auto;
-  border-right: 1.5px solid var(--faint);
-  border-bottom: 1.5px solid var(--faint);
-  transform: rotate(45deg) translate(-1px, -1px);
-  transition: transform 0.15s;
-}
-.hunk.folded .chevron::before {
-  transform: rotate(-45deg);
-}
-.hunk-head .path {
-  white-space: nowrap;
-  font-weight: 500;
-}
-.hunk-head .path .muted {
-  font-weight: 400;
-}
-.hunk-head .range {
-  font-size: 11.5px;
-  color: var(--hunk-header);
-  white-space: nowrap;
-}
-.hunk-head .ctx {
-  flex: 1;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-size: 11.5px;
-  color: var(--metadata);
-}
-.preview {
-  flex: 1;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  color: var(--muted);
-}
-.preview .note-label {
-  margin-right: 8px;
-}
-.preview.code {
-  font-size: 11.5px;
-}
-.preview.code > span {
-  margin-right: 6px;
-}
+/* ─── hunks, grouped by file ────────────────────────────────────────────── */
 .head-actions {
   display: flex;
   align-items: center;
@@ -541,10 +458,8 @@ kbd {
 .head-actions .pill {
   height: 32px;
 }
-
-/* H2: one sticky header per file; hunk rows nest under it and stick just below it */
-.file {
-  border-bottom: 1px solid var(--line);
+.file + .file {
+  margin-top: 28px;
 }
 .file-head {
   position: sticky;
@@ -552,67 +467,106 @@ kbd {
   z-index: 3;
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 8px;
   width: 100%;
-  height: 36px;
-  padding: 0 12px 0 10px;
-  background: var(--surface);
+  height: 38px;
+  padding: 0 2px;
+  background: var(--panel-bg);
   border-bottom: 1px solid var(--line);
-  font-size: 12.5px;
+  font-size: 13px;
 }
-.file.folded .file-head .chevron::before {
-  transform: rotate(-45deg);
+.file-head .path {
+  font-weight: 500;
 }
-.file.has-focus .file-head {
-  box-shadow: inset 2px 0 var(--accent);
+.file-head .path .muted {
+  font-weight: 400;
 }
-.H2 .file .hunk:last-child {
-  border-bottom: 0;
-}
-.H2 .file.folded .hunk {
-  display: none;
-}
-.H2 .hunk-head {
-  top: 12px;
-  padding-left: 28px;
-  background: var(--panel-bg);
-}
-.H2 .hunk.focused .hunk-head {
-  box-shadow: none;
-}
-.H2 .hunk.focused .range {
-  text-decoration: underline;
-  text-decoration-color: var(--accent);
-  text-underline-offset: 4px;
-}
-
-/* H3/H4: folded rows are one-line summaries, lighter than an open hunk's header */
-.H3 .hunk.folded .hunk-head,
-.H4 .hunk.folded .hunk-head {
-  background: var(--panel-bg);
-}
-.H3 .hunk.folded:hover .hunk-head,
-.H4 .hunk.folded:hover .hunk-head {
-  background: var(--surface);
-}
-
-/* H4: an explained hunk leads with its note */
-.note.lead {
-  padding: 14px 16px 14px 34px;
-  font-size: 14px;
-  line-height: 1.6;
-}
-.hunk-head .stat {
+.file-head .stat {
   display: flex;
   gap: 6px;
   font: 11.5px var(--mono);
 }
+/* Chevrons stay out of sight until the row is hovered or focused. */
+.chevron {
+  width: 12px;
+  flex-shrink: 0;
+  opacity: 0;
+  transition: opacity 0.12s;
+}
+.file-head:hover .chevron,
+.file-head:focus-visible .chevron,
+.sep:hover .chevron,
+.sep:focus-visible .chevron,
+.folded > .file-head .chevron,
+.hunk.folded .sep .chevron {
+  opacity: 1;
+}
+.chevron::before {
+  content: "";
+  display: block;
+  width: 5px;
+  height: 5px;
+  margin: 0 auto;
+  border-right: 1.5px solid var(--faint);
+  border-bottom: 1.5px solid var(--faint);
+  transform: rotate(45deg) translate(-1px, -1px);
+  transition: transform 0.15s;
+}
+.file.folded > .file-head .chevron::before,
+.hunk.folded .chevron::before {
+  transform: rotate(-45deg);
+}
+
+.hunk {
+  position: relative;
+  scroll-margin-top: 16px;
+}
+/* The separator is the only thing between hunks: one quiet line of context. */
+.sep {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  width: 100%;
+  padding: 10px 2px 6px;
+  font-size: 11.5px;
+  color: var(--metadata);
+}
+.sep:hover {
+  color: var(--muted);
+}
+.sep .ctx {
+  flex-shrink: 0;
+  max-width: 50%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.preview {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--faint);
+}
+/* The focused hunk gets one lavender rule beside its code, nothing else. */
+.hunk.focused::before {
+  content: "";
+  position: absolute;
+  left: -12px;
+  top: 12px;
+  bottom: 2px;
+  width: 2px;
+  border-radius: 1px;
+  background: var(--accent);
+}
 .note {
   display: flex;
-  gap: 12px;
-  padding: 9px 14px 9px 32px;
-  border-bottom: 1px solid var(--line);
+  gap: 10px;
+  max-width: 80ch;
+  padding: 0 2px 10px 22px;
   line-height: 1.55;
+  color: var(--ctp-subtext1);
 }
 .note-label {
   flex-shrink: 0;
@@ -620,6 +574,12 @@ kbd {
   font-weight: 500;
   color: var(--info);
 }
+.hunk .diff {
+  border-radius: 3px;
+  overflow: hidden;
+  box-shadow: 0 0 0 1px var(--line);
+}
+
 /* Diff colours per the guide's Diff & Merge table. @pierre/diffs mixes the line override into the
    background itself (20% in dark themes, 12% in light), and layers the emphasis colour over it, which
    matches the guide's line background plus 10–20% word background. */
