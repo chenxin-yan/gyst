@@ -516,9 +516,91 @@ kbd {
   font-size: 11.5px;
   color: var(--metadata);
 }
-.has-note {
-  font-size: 11px;
-  color: var(--info);
+.preview {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--muted);
+}
+.preview .note-label {
+  margin-right: 8px;
+}
+.preview.code {
+  font-size: 11.5px;
+}
+.preview.code > span {
+  margin-right: 6px;
+}
+.head-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.head-actions .pill {
+  height: 32px;
+}
+
+/* H2: one sticky header per file; hunk rows nest under it and stick just below it */
+.file {
+  border-bottom: 1px solid var(--line);
+}
+.file-head {
+  position: sticky;
+  top: -24px;
+  z-index: 3;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  height: 36px;
+  padding: 0 12px 0 10px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--line);
+  font-size: 12.5px;
+}
+.file.folded .file-head .chevron::before {
+  transform: rotate(-45deg);
+}
+.file.has-focus .file-head {
+  box-shadow: inset 2px 0 var(--accent);
+}
+.H2 .file .hunk:last-child {
+  border-bottom: 0;
+}
+.H2 .file.folded .hunk {
+  display: none;
+}
+.H2 .hunk-head {
+  top: 12px;
+  padding-left: 28px;
+  background: var(--panel-bg);
+}
+.H2 .hunk.focused .hunk-head {
+  box-shadow: none;
+}
+.H2 .hunk.focused .range {
+  text-decoration: underline;
+  text-decoration-color: var(--accent);
+  text-underline-offset: 4px;
+}
+
+/* H3/H4: folded rows are one-line summaries, lighter than an open hunk's header */
+.H3 .hunk.folded .hunk-head,
+.H4 .hunk.folded .hunk-head {
+  background: var(--panel-bg);
+}
+.H3 .hunk.folded:hover .hunk-head,
+.H4 .hunk.folded:hover .hunk-head {
+  background: var(--surface);
+}
+
+/* H4: an explained hunk leads with its note */
+.note.lead {
+  padding: 14px 16px 14px 34px;
+  font-size: 14px;
+  line-height: 1.6;
 }
 .hunk-head .stat {
   display: flex;
@@ -528,7 +610,7 @@ kbd {
 .note {
   display: flex;
   gap: 12px;
-  padding: 9px 14px 9px 34px;
+  padding: 9px 14px 9px 32px;
   border-bottom: 1px solid var(--line);
   line-height: 1.55;
 }

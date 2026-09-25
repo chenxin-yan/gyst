@@ -40,7 +40,8 @@ export const state = {
   sourceChanged: true,
   sidebar: true,
   overlay: "" as "" | "help" | "palette",
-  folded: new Set<string>(),
+  // Hunks whose fold state the user flipped away from the presentation's default.
+  flipped: new Set<string>(),
   toast: "",
 };
 state.focus = state.items[state.index]!.hunkIds[0]!;
@@ -71,7 +72,13 @@ export function onChange(render: () => void) {
   rerender = render;
 }
 // A variant may register how its tree takes keyboard focus (`f`) and opens search (`/`).
-export const hooks = { focusTree: () => {}, searchTree: () => {} };
+export const hooks = {
+  focusTree: () => {},
+  searchTree: () => {},
+  // Each hunk presentation decides which hunks start folded.
+  defaultFolded: (_hunkId: string) => false,
+};
+export const isFolded = (hunkId: string) => hooks.defaultFolded(hunkId) !== state.flipped.has(hunkId);
 
 export function toast(text: string) {
   state.toast = text;
@@ -165,17 +172,24 @@ const toggleLayout = () => {
   rerender();
 };
 // Folding is view state only: it hides a hunk's code, never its place in the walkthrough.
+const setFolded = (hunkId: string, folded: boolean) => {
+  if (folded === hooks.defaultFolded(hunkId)) state.flipped.delete(hunkId);
+  else state.flipped.add(hunkId);
+};
 export function toggleFold(hunkId = state.focus) {
-  if (state.folded.has(hunkId)) state.folded.delete(hunkId);
-  else state.folded.add(hunkId);
+  const wasFolded = isFolded(hunkId);
+  // Focus first: a presentation's default may depend on which hunk is focused.
   state.focus = hunkId;
+  setFolded(hunkId, !wasFolded);
   rerender();
 }
-function toggleFoldAll() {
-  const members = current().hunkIds;
-  const fold = members.some((id) => !state.folded.has(id));
-  for (const id of members) fold ? state.folded.add(id) : state.folded.delete(id);
+export function setFoldedMany(hunkIds: string[], folded: boolean) {
+  for (const id of hunkIds) setFolded(id, folded);
   rerender();
+}
+export function toggleFoldAll() {
+  const members = current().hunkIds;
+  setFoldedMany(members, members.some((id) => !isFolded(id)));
 }
 const cycleFlavor = () => {
   state.flavor = flavors[(flavors.indexOf(state.flavor) + 1) % flavors.length]!;

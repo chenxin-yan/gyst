@@ -1,7 +1,7 @@
 // PROTOTYPE, throwaway. The locked-in design: sidebar (walkthrough above the snapshot's file tree)
-// framing an inset panel; stacked, foldable hunks; Catppuccin with lavender as the only accent and
-// every other colour used for its style-guide role (see the colour notes in styles.css).
-// Inter for the interface, JetBrains Mono for code; t cycles Catppuccin flavors.
+// framing an inset panel; Catppuccin with lavender as the only accent and every other colour used
+// for its style-guide role (see the colour notes in styles.css); Inter UI, JetBrains Mono code.
+// Variations compare hunk presentations (H1–H4); t cycles Catppuccin flavors.
 import { FileTree, type GitStatusEntry } from "@pierre/trees";
 import {
   actions,
@@ -16,15 +16,18 @@ import {
   h,
   hooks,
   hunks,
+  isFolded,
   isNewFile,
   meta,
   noteFor,
   openOverlay,
   refresh,
   select,
+  setFoldedMany,
   state,
   toggleDone,
   toggleFold,
+  type Item,
 } from "./engine.ts";
 
 const kbd = (...keys: string[]) => keys.map((key) => h("kbd", {}, key));
@@ -73,15 +76,66 @@ function statusLine() {
   );
 }
 
-// Hunks form one stack: a full-width header row per hunk (sticky while reading), then its note
-// and code. Clicking the header folds the hunk; clicking the code only moves agent focus.
-function hunkRow(hunkId: string) {
-  const item = current();
+// ─── hunk presentations ──────────────────────────────────────────────────────
+
+function hunkParts(hunkId: string) {
   const hunk = hunks[hunkId]!;
-  const note = noteFor(item, hunkId);
-  const folded = state.folded.has(hunkId);
-  const { added, removed } = counts(hunkId);
-  const [range, context] = [hunk.header.match(/^@@ .*? @@/)?.[0] ?? "", hunk.header.replace(/^@@ .*? @@ ?/, "")];
+  const lines = hunk.patch.split("\n").slice(1);
+  const firstChange = lines.find((line) => line[0] === "+" || line[0] === "-") ?? "";
+  return {
+    hunk,
+    note: noteFor(current(), hunkId),
+    range: hunk.header.match(/^@@ .*? @@/)?.[0] ?? "",
+    context: hunk.header.replace(/^@@ .*? @@ ?/, ""),
+    firstChange,
+    ...counts(hunkId),
+  };
+}
+
+const chevron = () => h("span", { class: "chevron", "aria-hidden": true });
+const stat = (added: number, removed: number) =>
+  h("span", { class: "stat" }, h("span", { class: "add" }, `+${added}`), h("span", { class: "del" }, `−${removed}`));
+const pathLabel = (file: string) =>
+  h("span", { class: "path" }, h("span", { class: "muted" }, dirname(file) + "/"), basename(file));
+
+// What a folded hunk shows in place of its code: the agent's note if it has one, else its first change.
+function preview(hunkId: string) {
+  const { note, firstChange } = hunkParts(hunkId);
+  if (note) return h("span", { class: "preview" }, h("span", { class: "note-label" }, "Agent"), note);
+  return h(
+    "code",
+    { class: "preview code" },
+    h("span", { class: firstChange[0] === "+" ? "add" : "del" }, firstChange[0] ?? ""),
+    firstChange.slice(1).trim(),
+  );
+}
+
+// The clickable row that folds a hunk. `withPath` is false when a file header already names the file.
+function hunkHeader(hunkId: string, withPath: boolean) {
+  const { hunk, range, context, added, removed } = hunkParts(hunkId);
+  const folded = isFolded(hunkId);
+  return h(
+    "button",
+    {
+      class: "hunk-head",
+      "aria-expanded": !folded,
+      title: folded ? "Unfold (z)" : "Fold (z)",
+      onclick: (event: Event) => {
+        event.stopPropagation();
+        toggleFold(hunkId);
+      },
+    },
+    chevron(),
+    withPath && pathLabel(hunk.file),
+    h("code", { class: "range" }, range),
+    folded ? preview(hunkId) : h("code", { class: "ctx" }, context),
+    stat(added, removed),
+  );
+}
+
+function hunkBlock(hunkId: string, withPath: boolean, noteClass = "note") {
+  const { note } = hunkParts(hunkId);
+  const folded = isFolded(hunkId);
   return h(
     "section",
     {
@@ -89,31 +143,72 @@ function hunkRow(hunkId: string) {
       "data-hunk": hunkId,
       onclick: () => focusHunk(hunkId, false),
     },
-    h(
-      "button",
-      {
-        class: "hunk-head",
-        "aria-expanded": !folded,
-        title: folded ? "Unfold (z)" : "Fold (z)",
-        onclick: (event: Event) => {
-          event.stopPropagation();
-          toggleFold(hunkId);
-        },
-      },
-      h("span", { class: "chevron", "aria-hidden": true }),
-      h("span", { class: "path" }, h("span", { class: "muted" }, dirname(hunk.file) + "/"), basename(hunk.file)),
-      h("code", { class: "range" }, range),
-      h("code", { class: "ctx" }, context),
-      note && folded && h("span", { class: "has-note", title: "Has an agent note" }, "note"),
-      h("span", { class: "stat" }, h("span", { class: "add" }, `+${added}`), h("span", { class: "del" }, `−${removed}`)),
-    ),
-    !folded && note && h("p", { class: "note" }, h("span", { class: "note-label" }, "Agent"), note),
+    hunkHeader(hunkId, withPath),
+    !folded && note && h("p", { class: noteClass }, h("span", { class: "note-label" }, "Agent"), note),
     !folded && diffElement(hunkId),
   );
 }
 
-function groupPane() {
+// Consecutive hunks of the same file share one file header.
+function byFile(item: Item) {
+  const runs: { file: string; hunkIds: string[] }[] = [];
+  for (const id of item.hunkIds) {
+    const file = hunks[id]!.file;
+    if (runs.at(-1)?.file === file) runs.at(-1)!.hunkIds.push(id);
+    else runs.push({ file, hunkIds: [id] });
+  }
+  return runs.map(({ file, hunkIds }) => {
+    const allFolded = hunkIds.every(isFolded);
+    const { added, removed } = counts(hunkIds);
+    return h(
+      "div",
+      { class: `file ${allFolded ? "folded" : ""} ${hunkIds.includes(state.focus) ? "has-focus" : ""}` },
+      h(
+        "button",
+        {
+          class: "file-head",
+          "aria-expanded": !allFolded,
+          title: allFolded ? "Unfold file" : "Fold file",
+          onclick: () => setFoldedMany(hunkIds, !allFolded),
+        },
+        chevron(),
+        pathLabel(file),
+        h("span", { class: "muted small" }, hunkIds.length === 1 ? "1 hunk" : `${hunkIds.length} hunks`),
+        h("span", { class: "grow" }),
+        stat(added, removed),
+      ),
+      hunkIds.map((id) => hunkBlock(id, false)),
+    );
+  });
+}
+
+type Presentation = {
+  key: string;
+  name: string;
+  defaultFolded: (hunkId: string) => boolean;
+  stack: (item: Item) => Node[];
+};
+const presentations: Presentation[] = [
+  // Every hunk open, each with its own sticky header.
+  { key: "H1", name: "Stack", defaultFolded: () => false, stack: (item) => item.hunkIds.map((id) => hunkBlock(id, true)) },
+  // Hunks nested under one header per file, so a file's path is read once.
+  { key: "H2", name: "By file", defaultFolded: () => false, stack: byFile },
+  // Only the focused hunk is open; the rest are one-line summaries. j/k opens the next one.
+  { key: "H3", name: "Accordion", defaultFolded: (id) => id !== state.focus, stack: (item) => item.hunkIds.map((id) => hunkBlock(id, true)) },
+  // Hunks the agent explained are open with the note as a lead; unexplained ones stay folded
+  // until you reach them.
+  {
+    key: "H4",
+    name: "Guided",
+    defaultFolded: (id) => !noteFor(current(), id) && id !== state.focus,
+    stack: (item) => item.hunkIds.map((id) => hunkBlock(id, true, "note lead")),
+  },
+];
+
+function groupPane(presentation: Presentation) {
   const item = current();
+  const members = item.hunkIds;
+  const anyOpen = members.some((id) => !isFolded(id));
   return h(
     "main",
     { class: "pane", "data-scroll": true, tabindex: -1 },
@@ -126,16 +221,27 @@ function groupPane() {
         h("p", { class: "muted small" }, item.inbox ? "Inbox" : `Group ${state.index + 1} of ${groups().length}`),
         h("h1", {}, item.title),
       ),
-      !item.inbox &&
-        h(
-          "button",
-          { class: `done-btn ${item.accepted ? "is-done" : ""}`, onclick: toggleDone },
-          item.accepted ? "Done" : "Mark done",
-          kbd("a"),
-        ),
+      h(
+        "div",
+        { class: "head-actions" },
+        members.length > 1 &&
+          h(
+            "button",
+            { class: "pill", onclick: () => setFoldedMany(members, anyOpen) },
+            anyOpen ? "Fold all" : "Unfold all",
+            kbd("Z"),
+          ),
+        !item.inbox &&
+          h(
+            "button",
+            { class: `done-btn ${item.accepted ? "is-done" : ""}`, onclick: toggleDone },
+            item.accepted ? "Done" : "Mark done",
+            kbd("a"),
+          ),
+      ),
     ),
     item.inbox && h("p", { class: "muted lede" }, "The agent hasn’t grouped these hunks yet. Read ahead; they become reviewable once published."),
-    h("div", { class: "stack" }, item.hunkIds.map(hunkRow)),
+    h("div", { class: `stack ${presentation.key}` }, presentation.stack(item)),
     !item.inbox &&
       h(
         "footer",
@@ -300,7 +406,8 @@ function syncTree() {
   tree.setComposition(tree.getComposition());
 }
 
-function render() {
+function render(presentation: Presentation) {
+  hooks.defaultFolded = presentation.defaultFolded;
   syncTree();
   return h(
     "div",
@@ -314,10 +421,14 @@ function render() {
       h("p", { class: "side-head files-head" }, "Changed files", h("span", { class: "muted" }, String(allFiles().length))),
       treeElement,
     ),
-    h("div", { class: "panel" }, topBar(), groupPane(), statusLine()),
+    h("div", { class: "panel" }, topBar(), groupPane(presentation), statusLine()),
     overlays(),
     state.toast && h("div", { class: "toast", role: "status" }, state.toast),
   );
 }
 
-export const variants = [{ key: "final", name: "Final", render }];
+export const variants = presentations.map((presentation) => ({
+  key: presentation.key,
+  name: presentation.name,
+  render: () => render(presentation),
+}));
