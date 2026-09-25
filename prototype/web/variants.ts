@@ -1,15 +1,8 @@
-// PROTOTYPE, throwaway. One layout (sidebar with walkthrough and file tree framing an inset panel),
-// painted with Catppuccin (t cycles Mocha, Macchiato, Frappé, Latte). Each group owns one Catppuccin
-// accent, which ties its walkthrough row, tree marks, focus ring, notes and Done button together.
-// Variants differ only in typography:
-//   N · Sans    Inter for the interface, JetBrains Mono for code
-//   O · Mono    one monospace for everything (JetBrains Mono)
-//   P · Split   mono chrome (IBM Plex Mono), sans prose for titles and notes (IBM Plex Sans)
-import {
-  FileTree,
-  type FileTreeOptions,
-  type GitStatusEntry,
-} from "@pierre/trees";
+// PROTOTYPE, throwaway. The locked-in design: sidebar (walkthrough above the snapshot's file tree)
+// framing an inset panel; stacked, foldable hunks; Catppuccin with lavender as the only accent and
+// every other colour used for its style-guide role (see the colour notes in styles.css).
+// Inter for the interface, JetBrains Mono for code; t cycles Catppuccin flavors.
+import { FileTree, type GitStatusEntry } from "@pierre/trees";
 import {
   actions,
   allFiles,
@@ -31,17 +24,12 @@ import {
   select,
   state,
   toggleDone,
+  toggleFold,
 } from "./engine.ts";
-
-// ─── shared shell ────────────────────────────────────────────────────────────
 
 const kbd = (...keys: string[]) => keys.map((key) => h("kbd", {}, key));
 const basename = (path: string) => path.split("/").at(-1)!;
 const dirname = (path: string) => path.split("/").slice(0, -1).join("/");
-// Semantic colours (green done, red deletions, yellow warnings) are never used as group colours.
-const groupColors = ["lavender", "sapphire", "peach", "pink", "teal", "flamingo"];
-const colorOf = (index: number) =>
-  state.items[index]?.inbox ? "var(--ctp-overlay1)" : `var(--ctp-${groupColors[index % groupColors.length]})`;
 const lineOf = (hunkId: string) => hunks[hunkId]!.header.match(/\+(\d+)/)?.[1] ?? "1";
 
 function topBar() {
@@ -81,7 +69,46 @@ function statusLine() {
     h("span", {}, `Hunk ${members.indexOf(state.focus) + 1}/${members.length}`),
     h("span", { class: "ask", title: "What /gyst-ask will refer to" }, h("span", { class: "muted" }, "Agent focus "), `${hunk.file}:${lineOf(state.focus)}`),
     h("span", { class: "grow" }),
-    h("span", { class: "hints" }, kbd("j"), kbd("k"), " hunk ", kbd("a"), " done ", kbd("f"), " files ", kbd("?"), " keys"),
+    h("span", { class: "hints" }, kbd("j"), kbd("k"), " hunk ", kbd("z"), " fold ", kbd("a"), " done ", kbd("?"), " keys"),
+  );
+}
+
+// Hunks form one stack: a full-width header row per hunk (sticky while reading), then its note
+// and code. Clicking the header folds the hunk; clicking the code only moves agent focus.
+function hunkRow(hunkId: string) {
+  const item = current();
+  const hunk = hunks[hunkId]!;
+  const note = noteFor(item, hunkId);
+  const folded = state.folded.has(hunkId);
+  const { added, removed } = counts(hunkId);
+  const [range, context] = [hunk.header.match(/^@@ .*? @@/)?.[0] ?? "", hunk.header.replace(/^@@ .*? @@ ?/, "")];
+  return h(
+    "section",
+    {
+      class: `hunk ${hunkId === state.focus ? "focused" : ""} ${folded ? "folded" : ""}`,
+      "data-hunk": hunkId,
+      onclick: () => focusHunk(hunkId, false),
+    },
+    h(
+      "button",
+      {
+        class: "hunk-head",
+        "aria-expanded": !folded,
+        title: folded ? "Unfold (z)" : "Fold (z)",
+        onclick: (event: Event) => {
+          event.stopPropagation();
+          toggleFold(hunkId);
+        },
+      },
+      h("span", { class: "chevron", "aria-hidden": true }),
+      h("span", { class: "path" }, h("span", { class: "muted" }, dirname(hunk.file) + "/"), basename(hunk.file)),
+      h("code", { class: "range" }, range),
+      h("code", { class: "ctx" }, context),
+      note && folded && h("span", { class: "has-note", title: "Has an agent note" }, "note"),
+      h("span", { class: "stat" }, h("span", { class: "add" }, `+${added}`), h("span", { class: "del" }, `−${removed}`)),
+    ),
+    !folded && note && h("p", { class: "note" }, h("span", { class: "note-label" }, "Agent"), note),
+    !folded && diffElement(hunkId),
   );
 }
 
@@ -108,24 +135,7 @@ function groupPane() {
         ),
     ),
     item.inbox && h("p", { class: "muted lede" }, "The agent hasn’t grouped these hunks yet. Read ahead; they become reviewable once published."),
-    item.hunkIds.map((hunkId) => {
-      const hunk = hunks[hunkId]!;
-      const note = noteFor(item, hunkId);
-      const { added, removed } = counts(hunkId);
-      return h(
-        "section",
-        { class: `hunk ${hunkId === state.focus ? "focused" : ""}`, "data-hunk": hunkId, onclick: () => focusHunk(hunkId, false) },
-        h(
-          "div",
-          { class: "hunk-head" },
-          h("span", { class: "path" }, h("span", { class: "muted" }, dirname(hunk.file) + "/"), basename(hunk.file)),
-          h("code", { class: "ctx muted" }, hunk.header.replace(/^@@ .* @@ ?/, "")),
-          h("span", { class: "stat" }, h("span", { class: "add" }, `+${added}`), h("span", { class: "del" }, `−${removed}`)),
-        ),
-        note && h("p", { class: "note" }, note),
-        diffElement(hunkId),
-      );
-    }),
+    h("div", { class: "stack" }, item.hunkIds.map(hunkRow)),
     !item.inbox &&
       h(
         "footer",
@@ -148,7 +158,6 @@ function walkthroughList() {
           {
             class: `walk-row ${index === state.index ? "current" : ""} ${item.accepted ? "done" : ""} ${item.inbox ? "inbox" : ""}`,
             "aria-current": index === state.index && "step",
-            style: `--row-color:${colorOf(index)}`,
             onclick: () => select(index),
           },
           h("span", { class: "glyph", "aria-hidden": true }, item.inbox ? "" : item.accepted ? "✓" : String(index + 1)),
@@ -233,121 +242,82 @@ function overlays() {
   );
 }
 
-function shell(style: string, side: Node, main: Node) {
+// ─── file tree: every changed file, marked with the groups it belongs to ────
+
+// The tree lives across re-renders; the shell re-attaches its element and re-syncs selection.
+let syncing = false;
+const trimSlash = (path: string) => path.replace(/\/$/, "");
+const gitStatus = (): GitStatusEntry[] =>
+  allFiles().map((path) => ({ path, status: isNewFile(path) ? "added" : "modified" }));
+const treeElement = h("div", { class: "tree" });
+const tree = new FileTree({
+  density: "compact",
+  flattenEmptyDirectories: true,
+  initialExpansion: "open",
+  paths: allFiles(),
+  gitStatus: gitStatus(),
+  // Only the status letter carries the git colour; names stay body text so the tree reads calmly.
+  unsafeCSS: `[data-item-section="content"] { color: var(--trees-fg) !important; }`,
+  onSelectionChange: (paths) => {
+    if (syncing || paths.length !== 1) return;
+    const file = trimSlash(paths[0]!);
+    // A file may span groups: prefer its hunks in the current group, else its first group.
+    const inCurrent = current().hunkIds.find((id) => hunks[id]!.file === file);
+    const first = Object.values(hunks).find((hunk) => hunk.file === file);
+    if (inCurrent ?? first) focusHunk(inCurrent ?? first!.id);
+  },
+  // Group numbers stay neutral; only a completed group earns the success colour.
+  renderRowDecoration: ({ row }) => {
+    if (row.kind !== "file") return null;
+    const owners = state.items
+      .map((item, index) => ({ item, index }))
+      .filter(({ item }) => item.hunkIds.some((id) => hunks[id]!.file === row.path));
+    const parts = owners.flatMap(({ item, index }, i) => [
+      ...(i ? [{ text: "\u00a0" }] : []),
+      item.accepted ? { text: "✓", color: "var(--done)" } : { text: item.inbox ? "·" : String(index + 1) },
+    ]);
+    return { text: parts.map((part) => part.text).join(""), parts, title: owners.map(({ item }) => item.title).join(", ") };
+  },
+});
+tree.render({ containerWrapper: treeElement });
+hooks.focusTree = () => {
+  const path = tree.getSelectedPaths()[0];
+  if (path) tree.focusPath(path);
+  else tree.focusFirstItem();
+};
+hooks.searchTree = () => tree.openSearch();
+
+function syncTree() {
+  const paths = filesOf(current());
+  const selected = tree.getSelectedPaths();
+  if (!(selected.length === paths.length && paths.every((path) => selected.includes(path)))) {
+    syncing = true;
+    for (const path of selected) tree.getItem(path)?.deselect();
+    for (const path of paths) tree.getItem(path)?.select();
+    syncing = false;
+    if (paths[0]) tree.scrollToPath(paths[0], { focus: false, offset: "nearest" });
+  }
+  tree.setComposition(tree.getComposition());
+}
+
+function render() {
+  syncTree();
   return h(
     "div",
-    {
-      class: `app ${style} f-${state.flavor} ${state.sidebar ? "" : "no-sidebar"}`,
-      style: `--group:${colorOf(state.index)}`,
-    },
-    side,
-    h("div", { class: "panel" }, topBar(), main, statusLine()),
+    { class: `app f-${state.flavor} ${state.sidebar ? "" : "no-sidebar"}` },
+    h(
+      "nav",
+      { class: "side", "aria-label": "Walkthrough and files" },
+      h("div", { class: "brand" }, h("span", { class: "logo", "aria-hidden": true }), h("span", { class: "brand-name" }, "gyst")),
+      h("p", { class: "side-head" }, "Walkthrough", h("span", { class: "muted" }, `${doneCount()}/${groups().length} done`)),
+      walkthroughList(),
+      h("p", { class: "side-head files-head" }, "Changed files", h("span", { class: "muted" }, String(allFiles().length))),
+      treeElement,
+    ),
+    h("div", { class: "panel" }, topBar(), groupPane(), statusLine()),
     overlays(),
     state.toast && h("div", { class: "toast", role: "status" }, state.toast),
   );
 }
 
-// ─── tree plumbing ───────────────────────────────────────────────────────────
-
-// Trees live across shell re-renders: each variant keeps one instance and re-attaches its element.
-type Mounted = { tree: FileTree; element: HTMLElement; syncing: boolean };
-const trees = new Map<string, Mounted>();
-function mountTree(key: string, options: (mounted: Mounted) => FileTreeOptions): Mounted {
-  let mounted = trees.get(key);
-  if (!mounted) {
-    const element = h("div", { class: "tree" });
-    mounted = { element, syncing: false } as Mounted;
-    mounted.tree = new FileTree({ density: "compact", flattenEmptyDirectories: true, initialExpansion: "open", ...options(mounted) });
-    mounted.tree.render({ containerWrapper: element });
-    trees.set(key, mounted);
-  }
-  const { tree } = mounted;
-  hooks.focusTree = () => {
-    const path = tree.getSelectedPaths()[0];
-    if (path) tree.focusPath(path);
-    else tree.focusFirstItem();
-  };
-  hooks.searchTree = () => tree.openSearch();
-  return mounted;
-}
-// Programmatic selection must not echo back through onSelectionChange.
-function syncSelection(mounted: Mounted, paths: string[]) {
-  const { tree } = mounted;
-  const selected = tree.getSelectedPaths();
-  if (selected.length === paths.length && paths.every((path) => selected.includes(path))) return;
-  mounted.syncing = true;
-  for (const path of selected) tree.getItem(path)?.deselect();
-  for (const path of paths) tree.getItem(path)?.select();
-  mounted.syncing = false;
-  if (paths[0]) tree.scrollToPath(paths[0], { focus: false, offset: "nearest" });
-}
-const redecorate = (mounted: Mounted) => mounted.tree.setComposition(mounted.tree.getComposition());
-const trimSlash = (path: string) => path.replace(/\/$/, "");
-const gitStatus = (): GitStatusEntry[] =>
-  allFiles().map((path) => ({ path, status: isNewFile(path) ? "added" : "modified" }));
-
-// ─── the layout: walkthrough list above the snapshot's file tree ─────────────
-
-function layout(style: string) {
-  // One tree per style so each keeps its own scroll and expansion.
-  const mounted = mountTree(style, (m) => ({
-    paths: allFiles(),
-    gitStatus: gitStatus(),
-    onSelectionChange: (paths) => {
-      if (m.syncing || paths.length !== 1) return;
-      const file = trimSlash(paths[0]!);
-      // A file may span groups: prefer its hunks in the current group, else its first group.
-      const inCurrent = current().hunkIds.find((id) => hunks[id]!.file === file);
-      const first = Object.values(hunks).find((hunk) => hunk.file === file);
-      if (inCurrent ?? first) focusHunk(inCurrent ?? first!.id);
-    },
-    renderRowDecoration: ({ row }) => {
-      if (row.kind !== "file") return null;
-      const owners = state.items
-        .map((item, index) => ({ item, index }))
-        .filter(({ item }) => item.hunkIds.some((id) => hunks[id]!.file === row.path));
-      const parts = owners.flatMap(({ item, index }, i) => [
-        ...(i ? [{ text: "\u00a0" }] : []),
-        {
-          text: item.inbox ? "·" : item.accepted ? "✓" : String(index + 1),
-          color: item.accepted ? "var(--done)" : colorOf(index),
-        },
-      ]);
-      return {
-        text: parts.map((part) => part.text).join(""),
-        parts,
-        title: owners.map(({ item }) => item.title).join(", "),
-      };
-    },
-  }));
-  syncSelection(mounted, filesOf(current()));
-  redecorate(mounted);
-  return shell(
-    style,
-    h(
-      "nav",
-      { class: "side", "aria-label": "Walkthrough and files" },
-      h(
-        "div",
-        { class: "brand" },
-        h(
-          "span",
-          { class: "avatar", "aria-hidden": true },
-          groupColors.map((color) => h("span", { style: `background:var(--ctp-${color})` })),
-        ),
-        h("span", { class: "brand-name" }, "gyst"),
-      ),
-      h("p", { class: "side-head" }, "Walkthrough", h("span", { class: "muted" }, `${doneCount()}/${groups().length} done`)),
-      walkthroughList(),
-      h("p", { class: "side-head files-head" }, "Changed files", h("span", { class: "muted" }, String(allFiles().length))),
-      mounted.element,
-    ),
-    groupPane(),
-  );
-}
-
-export const variants = [
-  { key: "N", name: "Sans", render: () => layout("t-sans") },
-  { key: "O", name: "Mono", render: () => layout("t-mono") },
-  { key: "P", name: "Split", render: () => layout("t-split") },
-];
+export const variants = [{ key: "final", name: "Final", render }];

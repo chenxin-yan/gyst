@@ -1,4 +1,13 @@
-/* PROTOTYPE, throwaway. Shared structure first, then one block per visual style. */
+/* PROTOTYPE, throwaway.
+   Colour follows the Catppuccin style guide (catppuccin/catppuccin docs/style-guide.md):
+   one accent, lavender (the guide's active border / active line number), with Base as text on it.
+   Every other colour is used only for its guide role:
+     base    reading pane          crust/mantle  secondary panes      surface0  borders
+     text    body, headlines       subtext0/1    labels               overlay1  subtle text, line numbers
+     overlay2 @20%  selection      green  success, inserted lines     red   removed lines
+     yellow  warnings              blue   changed files               teal  information (agent notes)
+     peach   hunk headers          overlay2  diff index metadata (hunk context)
+   Syntax colours come from Catppuccin's own Shiki themes, which implement the guide's language table. */
 *,
 *::before,
 *::after {
@@ -34,10 +43,7 @@ code {
   font-family: var(--mono);
 }
 
-/* ─── Catppuccin ────────────────────────────────────────────────────────────
-   Hex values from catppuccin/palette palette.json. Roles follow Catppuccin's style guide: crust frames,
-   base is the reading surface, surface0 borders, overlay2 at low opacity for selection. --group is set
-   inline to the current group's accent. */
+/* ─── palette (hex from catppuccin/palette palette.json) ─────────────────── */
 .f-mocha {
   --ctp-rosewater: #f5e0dc;
   --ctp-flamingo: #f2cdcd;
@@ -154,47 +160,40 @@ code {
   --ctp-crust: #dce0e8;
   color-scheme: light;
 }
+
+/* ─── roles ─────────────────────────────────────────────────────────────── */
 .app {
   --frame: var(--ctp-crust);
   --panel-bg: var(--ctp-base);
   --surface: var(--ctp-mantle);
-  --raised: var(--ctp-surface0);
-  --select: color-mix(in oklch, var(--ctp-overlay2) 16%, transparent);
-  --line: color-mix(in oklch, var(--ctp-surface0) 75%, var(--ctp-base));
+  --line: var(--ctp-surface0);
+  --select: color-mix(in srgb, var(--ctp-overlay2) 20%, transparent);
   --ink: var(--ctp-text);
   --muted: var(--ctp-subtext0);
-  --faint: var(--ctp-overlay0);
-  --accent: var(--group);
-  --accent-ink: var(--ctp-crust);
-  --accent-soft: color-mix(in oklch, var(--group) 11%, transparent);
-  --warn: var(--ctp-yellow);
+  --faint: var(--ctp-overlay1);
+  --accent: var(--ctp-lavender);
+  --on-accent: var(--ctp-base);
   --done: var(--ctp-green);
+  --warn: var(--ctp-yellow);
   --add: var(--ctp-green);
   --del: var(--ctp-red);
-  --code-bg: var(--ctp-base);
-  --scrim: color-mix(in oklch, var(--ctp-crust) 60%, transparent);
-  --panel-shadow: 0 0 0 1px var(--line);
-  --prose: var(--sans);
-}
-.f-latte {
-  --accent-ink: var(--ctp-base);
-  --panel-shadow: 0 0 0 1px var(--ctp-surface0), 0 1px 3px rgb(76 79 105 / 0.06);
-}
+  --changed: var(--ctp-blue);
+  --info: var(--ctp-teal);
+  --hunk-header: var(--ctp-peach);
+  --metadata: var(--ctp-overlay2);
+  --sans: "Inter", system-ui, sans-serif;
+  --mono: "JetBrains Mono", ui-monospace, monospace;
 
-/* ─── structure ─────────────────────────────────────────────────────────── */
-.app {
   height: 100%;
   display: grid;
-  grid-template-columns: var(--side-w, 264px) minmax(0, 1fr);
+  grid-template-columns: 264px minmax(0, 1fr);
   background: var(--frame);
   color: var(--ink);
-  font: 400 var(--size, 13.5px) / 1.5 var(--sans);
+  font: 400 13px / 1.5 var(--sans);
   -webkit-font-smoothing: antialiased;
-
 }
-/* Declared on .side too: var() resolves where declared, so a repainted sidebar needs its own copy. */
-.app,
-.side {
+/* The tree renders in a shadow root; its variables inherit resolved values from here. */
+.app {
   --trees-bg-override: transparent;
   --trees-fg-override: var(--ink);
   --trees-fg-muted-override: var(--muted);
@@ -208,28 +207,16 @@ code {
   --trees-font-size-override: 13px;
   --trees-padding-inline-override: 8px;
   --trees-git-added-color-override: var(--add);
-  --trees-git-modified-color-override: var(--muted);
+  --trees-git-modified-color-override: var(--changed);
+  --trees-git-deleted-color-override: var(--del);
   --trees-search-bg-override: var(--select);
-  --trees-input-bg-override: var(--select);
+  --trees-input-bg-override: var(--surface);
 }
 .no-sidebar {
   grid-template-columns: 0 minmax(0, 1fr);
 }
 .no-sidebar .side {
   display: none;
-}
-.panel {
-  min-height: 0;
-  display: grid;
-  grid-template-rows: 44px minmax(0, 1fr) 30px;
-  margin: var(--inset, 8px) var(--inset, 8px) var(--inset, 8px) 0;
-  border-radius: var(--panel-radius, 10px);
-  background: var(--panel-bg);
-  box-shadow: var(--panel-shadow);
-  overflow: hidden;
-}
-.no-sidebar .panel {
-  margin-left: var(--inset, 8px);
 }
 .muted {
   color: var(--muted);
@@ -259,30 +246,117 @@ kbd {
   padding: 0 4px;
   margin-left: 3px;
   border-radius: 4px;
-  background: var(--select);
+  background: var(--line);
   color: var(--muted);
   font: 500 10.5px/1 var(--mono);
 }
 
+/* ─── sidebar ───────────────────────────────────────────────────────────── */
+.side {
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  padding: 10px 8px 12px;
+}
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 4px 10px 14px;
+}
+.logo {
+  width: 12px;
+  height: 12px;
+  border-radius: 3.5px;
+  background: var(--accent);
+}
+.brand-name {
+  font-weight: 600;
+}
+.side-head {
+  display: flex;
+  justify-content: space-between;
+  padding: 4px 10px 8px;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--muted);
+}
+.files-head {
+  margin-top: 14px;
+}
+.walk {
+  display: grid;
+  gap: 1px;
+  flex-shrink: 0;
+}
+.walk-row {
+  display: grid;
+  grid-template-columns: 20px 1fr auto;
+  gap: 8px;
+  align-items: start;
+  width: 100%;
+  padding: 6px 10px;
+  border-radius: 6px;
+  color: var(--muted);
+}
+.walk-row:hover {
+  color: var(--ink);
+}
+.walk-row.current {
+  background: var(--select);
+  color: var(--ink);
+}
+.walk-row .glyph {
+  font: 500 11.5px/20px var(--mono);
+  color: var(--faint);
+}
+.walk-row.current .glyph {
+  color: var(--accent);
+}
+.walk-row.done .glyph {
+  color: var(--done);
+}
+.walk-row .title {
+  line-height: 20px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.walk-row.inbox .title {
+  font-style: italic;
+}
+.walk-row .n {
+  font: 11px/20px var(--mono);
+  color: var(--faint);
+}
+.tree {
+  flex: 1;
+  min-height: 120px;
+}
+.tree > * {
+  height: 100%;
+}
+
+/* ─── panel ─────────────────────────────────────────────────────────────── */
+.panel {
+  min-height: 0;
+  display: grid;
+  grid-template-rows: 44px minmax(0, 1fr) 30px;
+  margin: 8px 8px 8px 0;
+  border-radius: 10px;
+  background: var(--panel-bg);
+  box-shadow: 0 0 0 1px var(--line);
+  overflow: hidden;
+}
+.no-sidebar .panel {
+  margin-left: 8px;
+}
 .top {
   display: flex;
   align-items: center;
   gap: 14px;
   padding: 0 12px 0 20px;
   border-bottom: 1px solid var(--line);
-}
-.mark {
-  display: flex;
-  align-items: center;
-  gap: 7px;
-  font-weight: 600;
-  letter-spacing: -0.01em;
-}
-.mark span {
-  width: 9px;
-  height: 9px;
-  border-radius: 3px;
-  background: var(--accent);
 }
 .crumb {
   display: flex;
@@ -312,7 +386,7 @@ kbd {
 }
 .pill.warn {
   color: var(--warn);
-  background: color-mix(in oklch, var(--warn) 12%, transparent);
+  background: color-mix(in srgb, var(--warn) 12%, transparent);
 }
 .pill .dot {
   width: 6px;
@@ -321,100 +395,11 @@ kbd {
   background: currentColor;
 }
 
-.side {
-  min-height: 0;
-  display: flex;
-  flex-direction: column;
-  padding: 10px 8px 12px;
-}
-.brand {
-  display: flex;
-  align-items: center;
-  gap: 9px;
-  padding: 4px 10px 14px;
-}
-.avatar {
-  display: grid;
-  grid-template-columns: repeat(3, 5px);
-  gap: 2px;
-}
-.avatar span {
-  width: 5px;
-  height: 5px;
-  border-radius: 1.5px;
-}
-.brand-name {
-  font-weight: 600;
-}
-.side-head {
-  display: flex;
-  justify-content: space-between;
-  padding: 4px 10px 8px;
-  font-size: 12px;
-  font-weight: 500;
-  color: var(--muted);
-}
-.files-head {
-  margin-top: 14px;
-}
-.tree {
-  flex: 1;
-  min-height: 120px;
-}
-.tree > * {
-  height: 100%;
-}
-.walk {
-  display: grid;
-  gap: 1px;
-  flex-shrink: 0;
-}
-.walk-row {
-  display: grid;
-  grid-template-columns: 20px 1fr auto;
-  gap: 8px;
-  align-items: start;
-  width: 100%;
-  padding: 6px 10px;
-  border-radius: 7px;
-  color: var(--muted);
-}
-.walk-row:hover {
-  color: var(--ink);
-}
-.walk-row.current {
-  background: var(--select);
-  color: var(--ink);
-}
-.walk-row .glyph {
-  font: 500 11.5px/20px var(--mono);
-}
-.walk-row .glyph,
-.walk-row.current .glyph {
-  color: var(--row-color);
-}
-.walk-row.done .glyph {
-  color: var(--done);
-}
-.walk-row .title {
-  line-height: 20px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.walk-row.inbox .title {
-  font-style: italic;
-}
-.walk-row .n {
-  font: 11px/20px var(--mono);
-  color: var(--faint);
-}
-
 .pane {
   min-height: 0;
   overflow: auto;
   padding: 24px 32px 120px;
-  scroll-padding-top: 16px;
+  scroll-padding-top: 40px;
   outline: none;
 }
 .group-head {
@@ -426,12 +411,11 @@ kbd {
 }
 .group-head h1 {
   margin-top: 2px;
-  font-size: var(--title-size, 22px);
+  font-size: 20px;
   line-height: 1.2;
-  font-weight: var(--title-weight, 600);
+  font-weight: 600;
   letter-spacing: -0.022em;
   font-variation-settings: "opsz" 32;
-  font-family: var(--prose);
 }
 .lede {
   margin-bottom: 18px;
@@ -443,14 +427,14 @@ kbd {
   flex-shrink: 0;
   height: 32px;
   padding: 0 7px 0 13px;
-  border-radius: var(--btn-radius, 8px);
+  border-radius: 7px;
   background: var(--accent);
-  color: var(--accent-ink);
+  color: var(--on-accent);
   font-weight: 500;
 }
 .done-btn kbd {
-  background: color-mix(in srgb, var(--accent-ink) 16%, transparent);
-  color: var(--accent-ink);
+  background: color-mix(in srgb, var(--on-accent) 18%, transparent);
+  color: var(--on-accent);
 }
 .done-btn.is-done {
   background: transparent;
@@ -461,24 +445,55 @@ kbd {
   background: color-mix(in srgb, var(--done) 12%, transparent);
   color: var(--done);
 }
-.hunk {
-  margin-bottom: 14px;
-  scroll-margin-top: 12px;
-  overflow: hidden;
-  background: var(--code-bg);
-  border-radius: var(--hunk-radius, 8px);
-  box-shadow: 0 0 0 1px var(--line);
-  transition: box-shadow 0.15s;
+.group-foot {
+  padding-top: 20px;
 }
-.hunk.focused {
-  box-shadow: 0 0 0 1px var(--accent), 0 0 0 4px var(--accent-soft);
+
+/* ─── stacked, foldable hunks ───────────────────────────────────────────── */
+.stack {
+  border-top: 1px solid var(--line);
+}
+.hunk {
+  border-bottom: 1px solid var(--line);
+  scroll-margin-top: 0;
 }
 .hunk-head {
+  position: sticky;
+  top: -24px;
+  z-index: 2;
   display: flex;
   align-items: baseline;
-  gap: 12px;
-  padding: 10px 14px;
+  gap: 10px;
+  width: 100%;
+  padding: 8px 12px 8px 10px;
+  background: var(--surface);
   font-size: 12.5px;
+  box-shadow: inset 2px 0 transparent;
+}
+.hunk:not(.folded) .hunk-head {
+  border-bottom: 1px solid var(--line);
+}
+.hunk.focused .hunk-head {
+  box-shadow: inset 2px 0 var(--accent);
+}
+.chevron {
+  width: 12px;
+  align-self: center;
+  flex-shrink: 0;
+}
+.chevron::before {
+  content: "";
+  display: block;
+  width: 6px;
+  height: 6px;
+  margin: 0 auto;
+  border-right: 1.5px solid var(--faint);
+  border-bottom: 1.5px solid var(--faint);
+  transform: rotate(45deg) translate(-1px, -1px);
+  transition: transform 0.15s;
+}
+.hunk.folded .chevron::before {
+  transform: rotate(-45deg);
 }
 .hunk-head .path {
   white-space: nowrap;
@@ -487,6 +502,11 @@ kbd {
 .hunk-head .path .muted {
   font-weight: 400;
 }
+.hunk-head .range {
+  font-size: 11.5px;
+  color: var(--hunk-header);
+  white-space: nowrap;
+}
 .hunk-head .ctx {
   flex: 1;
   min-width: 0;
@@ -494,6 +514,11 @@ kbd {
   text-overflow: ellipsis;
   white-space: nowrap;
   font-size: 11.5px;
+  color: var(--metadata);
+}
+.has-note {
+  font-size: 11px;
+  color: var(--info);
 }
 .hunk-head .stat {
   display: flex;
@@ -502,39 +527,47 @@ kbd {
 }
 .note {
   display: flex;
-  gap: 10px;
-  margin: 0 12px 12px;
-  padding: 9px 12px;
-  border-radius: 7px;
+  gap: 12px;
+  padding: 9px 14px 9px 34px;
+  border-bottom: 1px solid var(--line);
   line-height: 1.55;
-  color: var(--ink);
-  background: var(--accent-soft);
-  font-family: var(--prose);
 }
-.note::before {
-  content: "";
+.note-label {
   flex-shrink: 0;
-  background: var(--group);
-  width: 3px;
-  height: auto;
-  margin: 2px 0;
-  border-radius: 2px;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--info);
 }
+/* Diff colours per the guide's Diff & Merge table. @pierre/diffs mixes the line override into the
+   background itself (20% in dark themes, 12% in light), and layers the emphasis colour over it, which
+   matches the guide's line background plus 10–20% word background. */
 .diff {
+  --code-bg: var(--panel-bg);
   --diffs-font-family: var(--mono);
   --diffs-header-font-family: var(--sans);
   --diffs-font-size: 12.5px;
   --diffs-line-height: 19px;
-}
-.group-foot {
-  padding-top: 6px;
+  --diffs-addition-color-override: var(--add);
+  --diffs-deletion-color-override: var(--del);
+  --diffs-bg-context-override: var(--panel-bg);
+  --diffs-bg-buffer-override: var(--surface);
+  --diffs-bg-separator-override: var(--surface);
+  --diffs-bg-addition-override: var(--add);
+  --diffs-bg-addition-number-override: var(--add);
+  --diffs-bg-addition-emphasis-override: color-mix(in srgb, var(--add) 18%, transparent);
+  --diffs-bg-deletion-override: var(--del);
+  --diffs-bg-deletion-number-override: var(--del);
+  --diffs-bg-deletion-emphasis-override: color-mix(in srgb, var(--del) 18%, transparent);
+  --diffs-fg-number-override: var(--faint);
+  --diffs-bg-selection-override: var(--select);
 }
 
+/* ─── status line ───────────────────────────────────────────────────────── */
 .status {
   display: flex;
   align-items: center;
   gap: 14px;
-  padding: 0 14px 0 8px;
+  padding: 0 14px 0 12px;
   border-top: 1px solid var(--line);
   font: 11.5px var(--mono);
   color: var(--muted);
@@ -545,7 +578,6 @@ kbd {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  padding: 0 4px;
   color: var(--ink);
   font-weight: 500;
 }
@@ -571,6 +603,7 @@ kbd {
   margin: 0 1px;
 }
 
+/* ─── overlays ──────────────────────────────────────────────────────────── */
 .overlay {
   position: fixed;
   inset: 0;
@@ -578,12 +611,12 @@ kbd {
   display: grid;
   place-items: start center;
   padding-top: 14vh;
-  background: var(--scrim, rgb(0 0 0 / 0.3));
+  background: color-mix(in srgb, var(--ctp-crust) 60%, transparent);
 }
 .modal,
 .palette {
   width: min(520px, 92vw);
-  border-radius: 12px;
+  border-radius: 10px;
   background: var(--surface);
   box-shadow: 0 0 0 1px var(--line), 0 30px 80px rgb(0 0 0 / 0.25);
 }
@@ -641,43 +674,9 @@ kbd {
   z-index: 30;
   padding: 8px 14px;
   border-radius: 8px;
-  background: var(--raised);
+  background: var(--surface);
   color: var(--ink);
   box-shadow: 0 0 0 1px var(--line), 0 12px 32px rgb(0 0 0 / 0.2);
-}
-
-
-/* ─── typography variants ───────────────────────────────────────────────── */
-.t-sans {
-  --sans: "Inter", system-ui, sans-serif;
-  --mono: "JetBrains Mono", ui-monospace, monospace;
-  --size: 13px;
-  --title-size: 20px;
-}
-.t-mono {
-  --sans: "JetBrains Mono", ui-monospace, monospace;
-  --mono: "JetBrains Mono", ui-monospace, monospace;
-  --size: 12.5px;
-  --title-size: 17px;
-}
-/* Monospace wants its own spacing: no negative tracking, no optical sizing. */
-.t-mono .group-head h1 {
-  letter-spacing: -0.01em;
-  font-variation-settings: normal;
-}
-.t-mono .walk-row .glyph,
-.t-mono .walk-row .n {
-  font-size: 11.5px;
-}
-.t-split {
-  --sans: "IBM Plex Mono", ui-monospace, monospace;
-  --mono: "IBM Plex Mono", ui-monospace, monospace;
-  --prose: "IBM Plex Sans", system-ui, sans-serif;
-  --size: 12.5px;
-  --title-size: 21px;
-}
-.t-split .note {
-  font-size: 14px;
 }
 
 /* prototype switcher, deliberately not part of the design */
@@ -695,7 +694,6 @@ kbd {
   color: #fff;
   border-radius: 999px;
   font: 600 12px/1 system-ui, sans-serif;
-  box-shadow: 0 6px 24px rgb(255 61 127 / 0.35);
 }
 .proto-switcher span {
   padding: 0 10px;

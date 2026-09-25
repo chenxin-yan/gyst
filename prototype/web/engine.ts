@@ -40,6 +40,7 @@ export const state = {
   sourceChanged: true,
   sidebar: true,
   overlay: "" as "" | "help" | "palette",
+  folded: new Set<string>(),
   toast: "",
 };
 state.focus = state.items[state.index]!.hunkIds[0]!;
@@ -163,6 +164,19 @@ const toggleLayout = () => {
   state.layout = state.layout === "split" ? "unified" : "split";
   rerender();
 };
+// Folding is view state only: it hides a hunk's code, never its place in the walkthrough.
+export function toggleFold(hunkId = state.focus) {
+  if (state.folded.has(hunkId)) state.folded.delete(hunkId);
+  else state.folded.add(hunkId);
+  state.focus = hunkId;
+  rerender();
+}
+function toggleFoldAll() {
+  const members = current().hunkIds;
+  const fold = members.some((id) => !state.folded.has(id));
+  for (const id of members) fold ? state.folded.add(id) : state.folded.delete(id);
+  rerender();
+}
 const cycleFlavor = () => {
   state.flavor = flavors[(flavors.indexOf(state.flavor) + 1) % flavors.length]!;
   rerender();
@@ -185,6 +199,8 @@ export const actions: { keys: string[]; label: string; run: () => void }[] = [
   { keys: ["n", "p"], label: "Next / previous unreviewed group", run: () => pending(1) },
   { keys: ["a"], label: "Mark group done", run: toggleDone },
   { keys: ["u"], label: "Undo last done", run: undo },
+  { keys: ["z"], label: "Fold or unfold hunk", run: () => toggleFold() },
+  { keys: ["Z"], label: "Fold or unfold all hunks in group", run: toggleFoldAll },
   { keys: ["f"], label: "Focus the file tree", run: () => hooks.focusTree() },
   { keys: ["/"], label: "Search files", run: () => hooks.searchTree() },
   { keys: ["s"], label: "Split or unified diff", run: toggleLayout },
@@ -227,6 +243,8 @@ addEventListener("keydown", (event) => {
     p: () => pending(-1),
     a: toggleDone,
     u: undo,
+    z: () => toggleFold(),
+    Z: toggleFoldAll,
     f: () => hooks.focusTree(),
     "/": () => hooks.searchTree(),
     s: toggleLayout,
