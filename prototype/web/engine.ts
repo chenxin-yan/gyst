@@ -70,7 +70,11 @@ export const counts = (hunkIds: string | string[]) => {
 
 let rerender = () => {};
 export function onChange(render: () => void) {
-  rerender = render;
+  // Layout can move under an open popover, so any state change closes it.
+  rerender = () => {
+    hideNote();
+    render();
+  };
 }
 // A variant may register how its tree takes keyboard focus (`f`) and opens search (`/`).
 export const hooks = {
@@ -211,6 +215,7 @@ export const actions: { keys: string[]; label: string; run: () => void }[] = [
   { keys: ["n", "p"], label: "Next / previous unreviewed group", run: () => pending(1) },
   { keys: ["a"], label: "Mark group done", run: toggleDone },
   { keys: ["u"], label: "Undo last done", run: undo },
+  { keys: ["i"], label: "Show the next agent note in this hunk", run: () => nextNote() },
   { keys: ["z"], label: "Fold or unfold file", run: () => toggleFile() },
   { keys: ["Z"], label: "Fold or unfold all files", run: toggleAllFiles },
   { keys: ["f"], label: "Focus the file tree", run: () => hooks.focusTree() },
@@ -230,6 +235,7 @@ addEventListener("keydown", (event) => {
     .composedPath()
     .some((node) => (node as Element).tagName?.toLowerCase() === FILE_TREE_TAG_NAME);
   if (event.key === "Escape") {
+    if (openMarker) return hideNote();
     if (state.overlay) return openOverlay("");
     if (inTree) return document.querySelector<HTMLElement>("[data-scroll]")?.focus();
   }
@@ -255,6 +261,7 @@ addEventListener("keydown", (event) => {
     p: () => pending(-1),
     a: toggleDone,
     u: undo,
+    i: nextNote,
     z: () => toggleFile(),
     Z: toggleAllFiles,
     f: () => hooks.focusTree(),
@@ -270,6 +277,64 @@ addEventListener("keydown", (event) => {
   event.preventDefault();
   run();
 });
+
+// ─── note popovers ───────────────────────────────────────────────────────────
+// One popover for the whole app, positioned from its marker. Hover or focus previews a note; click
+// or `i` pins it until Esc, a click elsewhere, or scrolling.
+const popover = h("div", { class: "note-popover", role: "tooltip", hidden: true });
+document.body.append(popover);
+let openMarker: HTMLElement | undefined;
+let pinned = false;
+
+function noteMarker(note: Note) {
+  const marker = h("button", {
+    class: "note-marker",
+    "aria-label": "Agent note",
+    onmouseenter: () => !pinned && showNote(marker, note, false),
+    onmouseleave: () => !pinned && hideNote(),
+    onfocus: () => !pinned && showNote(marker, note, false),
+    onblur: () => !pinned && hideNote(),
+    onclick: (event: Event) => {
+      event.stopPropagation();
+      if (pinned && openMarker === marker) hideNote();
+      else showNote(marker, note, true);
+    },
+  });
+  (marker as HTMLElement & { note?: Note }).note = note;
+  return h("div", { class: "note-anchor" }, marker);
+}
+
+function showNote(marker: HTMLElement, note: Note, pin: boolean) {
+  openMarker?.classList.remove("open");
+  openMarker = marker;
+  pinned = pin;
+  marker.classList.add("open");
+  const app = document.querySelector(".app");
+  for (const name of app?.classList ?? []) if (name.startsWith("f-")) popover.className = `note-popover ${name}`;
+  popover.replaceChildren(h("span", { class: "note-label" }, "Agent"), h("p", {}, note.text));
+  popover.hidden = false;
+  const rect = marker.getBoundingClientRect();
+  const width = Math.min(360, innerWidth - 24);
+  popover.style.width = `${width}px`;
+  popover.style.left = `${Math.max(12, Math.min(rect.right - width, innerWidth - width - 12))}px`;
+  popover.style.top = `${rect.bottom + 6}px`;
+}
+export function hideNote() {
+  openMarker?.classList.remove("open");
+  openMarker = undefined;
+  pinned = false;
+  popover.hidden = true;
+}
+// `i` steps through the focused hunk's notes, pinning each in turn.
+function nextNote() {
+  const markers = [...document.querySelectorAll<HTMLElement>(`[data-hunk="${state.focus}"] .note-marker`)];
+  if (!markers.length) return toast("This hunk has no agent notes");
+  const next = markers[(markers.indexOf(openMarker!) + 1) % markers.length]!;
+  next.scrollIntoView({ block: "nearest" });
+  showNote(next, (next as HTMLElement & { note?: Note }).note!, true);
+}
+addEventListener("click", () => pinned && hideNote());
+addEventListener("scroll", () => openMarker && hideNote(), true);
 
 // Rendered diffs are cached per flavor and layout; re-rendering the shell only re-attaches them.
 // The code background follows the app's --code-bg token instead of the Shiki theme's own.
@@ -294,11 +359,9 @@ export function diffElement(hunkId: string): HTMLElement {
       lineDiffType: "word",
       hunkSeparators: "simple",
       unsafeCSS: diffCSS,
-      // Notes render in the light DOM (slotted), so the app's stylesheet styles them.
-      renderAnnotation: (annotation) => {
-        const note = annotation.metadata as Note;
-        return h("div", { class: "line-note" }, h("span", { class: "note-label" }, "Agent"), h("p", {}, note.text));
-      },
+      // An annotation row is zero-height here: it only carries a marker that sits at the end of the
+      // annotated line (the row above) and opens the note as a popover. Slotted, so app CSS applies.
+      renderAnnotation: (annotation) => noteMarker(annotation.metadata as Note),
     }).render({
       fileDiff: getSingularPatch(`--- ${oldPath}\n+++ b/${hunk.file}\n${hunk.patch}\n`),
       containerWrapper: element,

@@ -71,24 +71,19 @@ function statusLine() {
     h("span", {}, `Hunk ${members.indexOf(state.focus) + 1}/${members.length}`),
     h("span", { class: "ask", title: "What /gyst-ask will refer to" }, h("span", { class: "muted" }, "Agent focus "), `${hunk.file}:${lineOf(state.focus)}`),
     h("span", { class: "grow" }),
-    h("span", { class: "hints" }, kbd("j"), kbd("k"), " hunk ", kbd("z"), " fold file ", kbd("a"), " done ", kbd("?"), " keys"),
+    h("span", { class: "hints" }, kbd("j"), kbd("k"), " hunk ", kbd("i"), " note ", kbd("z"), " fold ", kbd("a"), " done ", kbd("?"), " keys"),
   );
 }
 
 // ─── hunks, grouped by file ──────────────────────────────────────────────────
-// Consecutive hunks of one file share a quiet sticky file row, which folds the file. Inside, each
-// hunk is introduced by one line of enclosing context (the diff's line numbers already carry the @@
-// range). Agent notes sit inside the code, under the exact line they discuss.
-
-const pathLabel = (file: string) =>
-  h("span", { class: "path" }, h("span", { class: "muted" }, dirname(file) + "/"), basename(file));
+// One block per file: a file header, then the file's hunks as one continuous run of code separated
+// only by hairlines (the diff's line numbers show where each hunk starts). Agent notes are markers at
+// the end of their line that open as popovers. Variations only restyle the file header.
 
 function hunkBlock(hunkId: string) {
-  const context = hunks[hunkId]!.header.replace(/^@@ .*? @@ ?/, "");
   return h(
     "section",
     { class: `hunk ${hunkId === state.focus ? "focused" : ""}`, "data-hunk": hunkId, onclick: () => focusHunk(hunkId, false) },
-    h("code", { class: "sep" }, context || "…"),
     diffElement(hunkId),
   );
 }
@@ -106,24 +101,18 @@ function fileBlocks(item: Item) {
     const notes = hunkIds.flatMap((id) => notesFor(item, id)).length;
     return h(
       "div",
-      { class: `file ${folded ? "folded" : ""}` },
+      { class: `file ${folded ? "folded" : ""} ${hunkIds.includes(state.focus) ? "has-focus" : ""}` },
       h(
         "button",
         { class: "file-head", "aria-expanded": !folded, title: folded ? "Unfold file (z)" : "Fold file (z)", onclick: () => toggleFile(file) },
         h("span", { class: "chevron", "aria-hidden": true }),
-        pathLabel(file),
-        folded &&
-          h(
-            "span",
-            { class: "fold-summary" },
-            [`${hunkIds.length} ${hunkIds.length === 1 ? "hunk" : "hunks"}`, notes && `${notes} ${notes === 1 ? "note" : "notes"}`]
-              .filter(Boolean)
-              .join(" · "),
-          ),
+        h("span", { class: "name" }, basename(file)),
+        h("span", { class: "dir" }, dirname(file)),
         h("span", { class: "grow" }),
+        notes > 0 && h("span", { class: "note-count", title: `${notes} agent ${notes === 1 ? "note" : "notes"}` }, String(notes)),
         h("span", { class: "stat" }, h("span", { class: "add" }, `+${added}`), h("span", { class: "del" }, `−${removed}`)),
       ),
-      !folded && hunkIds.map(hunkBlock),
+      !folded && h("div", { class: "file-body" }, hunkIds.map(hunkBlock)),
     );
   });
 }
@@ -331,11 +320,11 @@ function syncTree() {
   tree.setComposition(tree.getComposition());
 }
 
-function render() {
+function render(headerStyle: string) {
   syncTree();
   return h(
     "div",
-    { class: `app f-${state.flavor} ${state.sidebar ? "" : "no-sidebar"}` },
+    { class: `app ${headerStyle} f-${state.flavor} ${state.sidebar ? "" : "no-sidebar"}` },
     h(
       "nav",
       { class: "side", "aria-label": "Walkthrough and files" },
@@ -351,4 +340,8 @@ function render() {
   );
 }
 
-export const variants = [{ key: "final", name: "By file", render }];
+export const variants = [
+  { key: "F1", name: "Tab", render: () => render("fh-tab") },
+  { key: "F2", name: "Inset bar", render: () => render("fh-bar") },
+  { key: "F3", name: "Label", render: () => render("fh-label") },
+];
