@@ -458,8 +458,14 @@ kbd {
 .head-actions .pill {
   height: 32px;
 }
+/* ─── files: compact blocks, an inset header bar, one continuous diff ───── */
+.file {
+  border-radius: 6px;
+  box-shadow: 0 0 0 1px var(--line);
+  scroll-margin-top: 12px;
+}
 .file + .file {
-  margin-top: 26px;
+  margin-top: 10px;
 }
 .file-head {
   position: sticky;
@@ -467,9 +473,28 @@ kbd {
   z-index: 3;
   display: flex;
   align-items: center;
-  gap: 8px;
-  width: 100%;
+  gap: 10px;
+  height: 34px;
+  padding: 0 8px 0 4px;
+  background: var(--surface);
+  border-radius: 6px 6px 0 0;
   font-size: 13px;
+}
+.file:not(.folded) .file-head {
+  border-bottom: 1px solid var(--line);
+}
+.file.folded .file-head {
+  border-radius: 6px;
+}
+.file.has-focus .file-head {
+  box-shadow: inset 2px 0 var(--accent);
+}
+.file-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  height: 100%;
 }
 .file-head .name {
   font-weight: 500;
@@ -483,10 +508,18 @@ kbd {
   color: var(--faint);
   font-size: 12px;
 }
+.file.viewed .file-head .name {
+  color: var(--muted);
+}
 .file-head .stat {
   display: flex;
   gap: 6px;
   font: 11.5px var(--mono);
+}
+.shared {
+  font-size: 11.5px;
+  color: var(--faint);
+  white-space: nowrap;
 }
 .note-count {
   display: inline-flex;
@@ -502,6 +535,45 @@ kbd {
   border-radius: 50%;
   background: currentColor;
 }
+/* GitHub-style "Viewed": a quiet checkbox that turns green when checked. */
+.viewed-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 24px;
+  padding: 0 8px;
+  border-radius: 5px;
+  font-size: 12px;
+  color: var(--muted);
+}
+.viewed-toggle:hover {
+  color: var(--ink);
+  background: var(--select);
+}
+.viewed-toggle .box {
+  width: 13px;
+  height: 13px;
+  border-radius: 3.5px;
+  box-shadow: inset 0 0 0 1.5px var(--faint);
+}
+.viewed-toggle[aria-checked="true"] {
+  color: var(--done);
+}
+.viewed-toggle[aria-checked="true"] .box {
+  background: var(--done);
+  box-shadow: none;
+  -webkit-mask: none;
+}
+.viewed-toggle[aria-checked="true"] .box::after {
+  content: "";
+  display: block;
+  width: 3px;
+  height: 6px;
+  margin: 2px 0 0 4.5px;
+  border-right: 1.5px solid var(--on-accent);
+  border-bottom: 1.5px solid var(--on-accent);
+  transform: rotate(45deg);
+}
 /* The chevron stays out of sight until the file row is hovered, focused or folded. */
 .chevron {
   width: 10px;
@@ -509,8 +581,8 @@ kbd {
   opacity: 0;
   transition: opacity 0.12s;
 }
-.file-head:hover .chevron,
-.file-head:focus-visible .chevron,
+.file-toggle:hover .chevron,
+.file-toggle:focus-visible .chevron,
 .file.folded .chevron {
   opacity: 1;
 }
@@ -528,169 +600,85 @@ kbd {
 .file.folded .chevron::before {
   transform: rotate(-45deg);
 }
+.file > .diff {
+  border-radius: 0 0 6px 6px;
+  overflow: hidden;
+}
 
-/* The file body is one continuous code surface; hunks meet at a hairline. */
-.file-body {
-  border-radius: 4px;
-  box-shadow: 0 0 0 1px var(--line);
-}
-.hunk {
+/* ─── agent notes, folded into their line ───────────────────────────────── */
+/* Closed: a zero-height row whose toggle sits at the end of the line above it. Open: the note
+   expands in place under that line, aligned with the code. */
+.line-note {
   position: relative;
-  scroll-margin-top: 44px;
 }
-.hunk + .hunk {
-  border-top: 1px solid var(--line);
-}
-.hunk .diff {
-  border-radius: inherit;
-}
-.hunk:first-child .diff {
-  border-radius: 4px 4px 0 0;
-  overflow: hidden;
-}
-.hunk:last-child .diff {
-  border-radius: 0 0 4px 4px;
-  overflow: hidden;
-}
-.hunk:only-child .diff {
-  border-radius: 4px;
-}
-/* The focused hunk gets one lavender rule beside its code, nothing else. */
-.hunk.focused::before {
-  content: "";
+.note-toggle {
   position: absolute;
-  left: -12px;
-  top: 2px;
+  right: 8px;
   bottom: 2px;
-  width: 2px;
-  border-radius: 1px;
-  background: var(--accent);
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 15px;
+  padding: 0 6px;
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--info) 14%, transparent);
+  color: var(--info);
+  font: 500 10.5px/1 var(--sans);
 }
-
-/* F1 · Tab: the file name is a tab attached to the top of its code */
-.fh-tab .file-head {
-  width: auto;
-  max-width: 100%;
-  height: 30px;
-  margin-bottom: -1px;
-  padding: 0 12px 0 8px;
-  border-radius: 6px 6px 0 0;
-  background: var(--surface);
-  box-shadow: 0 0 0 1px var(--line);
-  clip-path: inset(-1px -1px 0 -1px);
-}
-.fh-tab .file-head .grow {
-  display: none;
-}
-.fh-tab .file-head .note-count,
-.fh-tab .file-head .stat {
-  margin-left: 6px;
-}
-.fh-tab .file-body {
-  border-top-left-radius: 0;
-}
-.fh-tab .hunk:first-child .diff {
-  border-top-left-radius: 0;
-}
-.fh-tab .file.folded .file-head {
-  border-radius: 6px;
-  clip-path: none;
-}
-
-/* F2 · Inset bar: the header is the first row inside the file's frame */
-.fh-bar .file {
-  border-radius: 6px;
-  box-shadow: 0 0 0 1px var(--line);
-}
-.fh-bar .file-head {
-  height: 36px;
-  padding: 0 12px 0 8px;
-  background: var(--surface);
-  border-radius: 6px 6px 0 0;
-}
-.fh-bar .file.folded .file-head {
-  border-radius: 6px;
-}
-.fh-bar .file-body {
-  border-radius: 0 0 6px 6px;
-  box-shadow: none;
-  border-top: 1px solid var(--line);
-}
-.fh-bar .hunk:first-child .diff {
-  border-radius: 0;
-}
-.fh-bar .hunk:last-child .diff,
-.fh-bar .hunk:only-child .diff {
-  border-radius: 0 0 6px 6px;
-}
-
-/* F3 · Label: no bar at all; the name is typography above its code */
-.fh-label .file-head {
-  height: 40px;
-  padding: 0 2px 0 0;
-  background: var(--panel-bg);
-  font-size: 14px;
-}
-.fh-label .file-head .chevron {
-  margin-left: -16px;
-  margin-right: -2px;
-}
-.fh-label .file-head .dir {
-  font-size: 12.5px;
-}
-
-/* ─── agent notes: a marker at the end of the line, opening a popover ───── */
-.note-anchor {
-  position: relative;
-  height: 0;
-}
-.note-marker {
-  position: absolute;
-  right: 10px;
-  bottom: 0;
-  height: var(--diffs-line-height, 19px);
-  display: grid;
-  place-items: center;
-  width: 20px;
-}
-.note-marker::before {
+.note-toggle::before {
   content: "";
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  background: var(--info);
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--info) 18%, transparent);
-  transition: transform 0.12s;
+  width: 4px;
+  height: 4px;
+  border-right: 1.2px solid currentColor;
+  border-bottom: 1.2px solid currentColor;
+  transform: rotate(45deg) translateY(-1px);
 }
-.note-marker:hover::before,
-.note-marker.open::before {
-  transform: scale(1.25);
+.note-toggle:hover {
+  background: color-mix(in srgb, var(--info) 24%, transparent);
 }
-.note-popover {
-  position: fixed;
-  z-index: 40;
-  display: grid;
-  gap: 4px;
-  padding: 10px 12px;
-  border-radius: 8px;
-  background: var(--ctp-mantle);
-  color: var(--ctp-text);
-  box-shadow: 0 0 0 1px var(--ctp-surface0), 0 12px 32px rgb(0 0 0 / 0.3);
-  font: 400 13px/1.55 "Inter", system-ui, sans-serif;
-}
-.note-popover[hidden] {
+.line-note.open .note-toggle {
   display: none;
 }
-.note-popover p {
+.note-body {
+  display: none;
+}
+.line-note.open .note-body {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  margin: 3px 10px 5px 0;
+  padding: 7px 10px 7px 12px;
+  border-radius: 5px;
+  background: var(--surface);
+  box-shadow: inset 0 0 0 1px var(--line);
+  font: 400 13px/1.55 var(--sans);
+  color: var(--ctp-subtext1);
+  white-space: normal;
+}
+.note-body p {
+  flex: 1;
   margin: 0;
+  max-width: 80ch;
 }
 .note-label {
+  flex-shrink: 0;
   font-size: 11.5px;
   font-weight: 500;
   color: var(--info);
 }
-.note-popover .note-label {
-  color: var(--ctp-teal);
+.note-close {
+  align-self: flex-start;
+  width: 18px;
+  height: 18px;
+  border-radius: 4px;
+  color: var(--faint);
+  font-size: 14px;
+  line-height: 18px;
+  text-align: center;
+}
+.note-close:hover {
+  color: var(--ink);
+  background: var(--select);
 }
 
 /* Diff colours per the guide's Diff & Merge table. @pierre/diffs mixes the line override into the

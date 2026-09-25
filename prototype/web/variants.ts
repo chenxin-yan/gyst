@@ -8,7 +8,7 @@ import {
   allFiles,
   counts,
   current,
-  diffElement,
+  fileDiffElement,
   doneCount,
   filesOf,
   focusHunk,
@@ -18,14 +18,16 @@ import {
   hunks,
   isNewFile,
   meta,
-  notesFor,
   openOverlay,
   refresh,
   select,
   setFilesFolded,
+  sharedWith,
   state,
   toggleDone,
   toggleFile,
+  toggleViewed,
+  viewedKey,
   type Item,
 } from "./engine.ts";
 
@@ -71,48 +73,64 @@ function statusLine() {
     h("span", {}, `Hunk ${members.indexOf(state.focus) + 1}/${members.length}`),
     h("span", { class: "ask", title: "What /gyst-ask will refer to" }, h("span", { class: "muted" }, "Agent focus "), `${hunk.file}:${lineOf(state.focus)}`),
     h("span", { class: "grow" }),
-    h("span", { class: "hints" }, kbd("j"), kbd("k"), " hunk ", kbd("i"), " note ", kbd("z"), " fold ", kbd("a"), " done ", kbd("?"), " keys"),
+    h("span", { class: "hints" }, kbd("j"), kbd("k"), " hunk ", kbd("i"), " notes ", kbd("v"), " viewed ", kbd("a"), " done ", kbd("?"), " keys"),
   );
 }
 
-// ─── hunks, grouped by file ──────────────────────────────────────────────────
-// One block per file: a file header, then the file's hunks as one continuous run of code separated
-// only by hairlines (the diff's line numbers show where each hunk starts). Agent notes are markers at
-// the end of their line that open as popovers. Variations only restyle the file header.
+// ─── files ───────────────────────────────────────────────────────────────────
+// One compact block per file: an inset header bar, then the file's hunks as one continuous diff.
+// Agent notes fold into their lines; separators expand to full-file context when available.
 
-function hunkBlock(hunkId: string) {
-  return h(
-    "section",
-    { class: `hunk ${hunkId === state.focus ? "focused" : ""}`, "data-hunk": hunkId, onclick: () => focusHunk(hunkId, false) },
-    diffElement(hunkId),
-  );
-}
-
-function fileBlocks(item: Item) {
+function fileRuns(item: Item) {
   const runs: { file: string; hunkIds: string[] }[] = [];
   for (const id of item.hunkIds) {
     const file = hunks[id]!.file;
     if (runs.at(-1)?.file === file) runs.at(-1)!.hunkIds.push(id);
     else runs.push({ file, hunkIds: [id] });
   }
-  return runs.map(({ file, hunkIds }) => {
+  return runs;
+}
+
+function fileBlocks(item: Item) {
+  return fileRuns(item).map(({ file, hunkIds }) => {
     const folded = state.foldedFiles.has(file);
+    const viewed = state.viewed.has(viewedKey(file));
     const { added, removed } = counts(hunkIds);
-    const notes = hunkIds.flatMap((id) => notesFor(item, id)).length;
+    const notes = item.notes.filter((note) => hunkIds.includes(note.hunkId)).length;
+    const shared = sharedWith(item, file);
     return h(
       "div",
-      { class: `file ${folded ? "folded" : ""} ${hunkIds.includes(state.focus) ? "has-focus" : ""}` },
+      {
+        class: `file ${folded ? "folded" : ""} ${viewed ? "viewed" : ""} ${hunkIds.includes(state.focus) ? "has-focus" : ""}`,
+        "data-file": file,
+      },
       h(
-        "button",
-        { class: "file-head", "aria-expanded": !folded, title: folded ? "Unfold file (z)" : "Fold file (z)", onclick: () => toggleFile(file) },
-        h("span", { class: "chevron", "aria-hidden": true }),
-        h("span", { class: "name" }, basename(file)),
-        h("span", { class: "dir" }, dirname(file)),
+        "div",
+        { class: "file-head" },
+        h(
+          "button",
+          { class: "file-toggle", "aria-expanded": !folded, title: folded ? "Unfold file (z)" : "Fold file (z)", onclick: () => toggleFile(file) },
+          h("span", { class: "chevron", "aria-hidden": true }),
+          h("span", { class: "name" }, basename(file)),
+          h("span", { class: "dir" }, dirname(file)),
+        ),
         h("span", { class: "grow" }),
-        notes > 0 && h("span", { class: "note-count", title: `${notes} agent ${notes === 1 ? "note" : "notes"}` }, String(notes)),
+        shared.length > 0 &&
+          h(
+            "span",
+            { class: "shared", title: `Also changed in: ${shared.map((other) => other.title).join(", ")}. Context can't expand across those changes.` },
+            `also in ${shared.map((other) => (other.inbox ? "inbox" : `group ${state.items.indexOf(other) + 1}`)).join(", ")}`,
+          ),
+        notes > 0 && h("span", { class: "note-count", title: `${notes} agent ${notes === 1 ? "note" : "notes"} (i)` }, String(notes)),
         h("span", { class: "stat" }, h("span", { class: "add" }, `+${added}`), h("span", { class: "del" }, `−${removed}`)),
+        h(
+          "button",
+          { class: "viewed-toggle", role: "checkbox", "aria-checked": viewed, title: "Mark file viewed (v)", onclick: () => toggleViewed(file) },
+          h("span", { class: "box", "aria-hidden": true }),
+          "Viewed",
+        ),
       ),
-      !folded && h("div", { class: "file-body" }, hunkIds.map(hunkBlock)),
+      !folded && fileDiffElement(item, file, hunkIds),
     );
   });
 }
@@ -121,6 +139,7 @@ function groupPane() {
   const item = current();
   const files = filesOf(item);
   const anyOpen = files.some((file) => !state.foldedFiles.has(file));
+  const viewedCount = files.filter((file) => state.viewed.has(viewedKey(file))).length;
   return h(
     "main",
     { class: "pane", "data-scroll": true, tabindex: -1 },
@@ -130,7 +149,11 @@ function groupPane() {
       h(
         "div",
         {},
-        h("p", { class: "muted small" }, item.inbox ? "Inbox" : `Group ${state.index + 1} of ${groups().length}`),
+        h(
+          "p",
+          { class: "muted small" },
+          item.inbox ? "Inbox" : `Group ${state.index + 1} of ${groups().length} · ${viewedCount}/${files.length} files viewed`,
+        ),
         h("h1", {}, item.title),
       ),
       h(
@@ -320,11 +343,11 @@ function syncTree() {
   tree.setComposition(tree.getComposition());
 }
 
-function render(headerStyle: string) {
+function render() {
   syncTree();
   return h(
     "div",
-    { class: `app ${headerStyle} f-${state.flavor} ${state.sidebar ? "" : "no-sidebar"}` },
+    { class: `app f-${state.flavor} ${state.sidebar ? "" : "no-sidebar"}` },
     h(
       "nav",
       { class: "side", "aria-label": "Walkthrough and files" },
@@ -340,8 +363,4 @@ function render(headerStyle: string) {
   );
 }
 
-export const variants = [
-  { key: "F1", name: "Tab", render: () => render("fh-tab") },
-  { key: "F2", name: "Inset bar", render: () => render("fh-bar") },
-  { key: "F3", name: "Label", render: () => render("fh-label") },
-];
+export const variants = [{ key: "final", name: "Final", render }];

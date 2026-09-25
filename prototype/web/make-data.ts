@@ -111,6 +111,18 @@ const groups = [
 ];
 const grouped = new Set(groups.flatMap((group) => group.hunkIds));
 
+// Full old/new contents per changed file, so the viewer can expand context around hunks.
+// A snapshot of a git range can capture these from the same two revisions it diffed.
+const show = (spec: string) => Bun.$`git show ${spec}`.quiet().nothrow().text();
+const contents = Object.fromEntries(
+  await Promise.all(
+    [...new Set(hunks.map((hunk) => hunk.file))].map(async (file) => {
+      const added = hunks.some((hunk) => hunk.file === file && hunk.header.startsWith("@@ -0,0 "));
+      return [file, { old: added ? null : await show(`7239806^:${file}`), new: await show(`7239806:${file}`) }] as const;
+    }),
+  ),
+);
+
 await Bun.write(
   new URL("./sample.json", import.meta.url),
   JSON.stringify(
@@ -121,6 +133,7 @@ await Bun.write(
       groups,
       inbox: hunks.filter((hunk) => !grouped.has(hunk.id)).map((hunk) => hunk.id),
       hunks: Object.fromEntries(hunks.map((hunk) => [hunk.id, hunk])),
+      contents,
     },
     null,
     2,
