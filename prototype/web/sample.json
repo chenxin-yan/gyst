@@ -17,10 +17,14 @@
       "notes": [
         {
           "hunkId": "7d97ca73d0e996a7",
+          "side": "additions",
+          "line": 23,
           "text": "Notes cap at 400 code points and reject terminal controls, so agent prose stays readable inline without a Markdown sanitizer."
         },
         {
           "hunkId": "1eab974847e01821",
+          "side": "additions",
+          "line": 99,
           "text": "Receipts still intern text, so exact historical replay survives progressive publication without repeating every note."
         }
       ],
@@ -43,10 +47,26 @@
       "notes": [
         {
           "hunkId": "a26fdd3693d2ada5",
+          "side": "additions",
+          "line": 73,
           "text": "A note must anchor to a member of its own group; the whole batch is rejected rather than silently retargeting a note."
         },
         {
+          "hunkId": "2d070cca0187b3fe",
+          "side": "additions",
+          "line": 184,
+          "text": "Omitting notes keeps the old ones; an update replaces them only when it supplies an array."
+        },
+        {
+          "hunkId": "2d070cca0187b3fe",
+          "side": "additions",
+          "line": 185,
+          "text": "Anchors are rechecked against the updated membership, so moving a hunk out of a group can't strand its note."
+        },
+        {
           "hunkId": "b96d42e4a4ca805b",
+          "side": "additions",
+          "line": 232,
           "text": "Until the first queue exists, any group change must arrive with a queue.set in the same batch."
         }
       ],
@@ -74,14 +94,20 @@
       "notes": [
         {
           "hunkId": "683529737bf2f509",
+          "side": "additions",
+          "line": 49,
           "text": "Every active item now carries a focused hunk, so hiding the sidebar returns to the same member instead of the first."
         },
         {
           "hunkId": "85cf1027d2a89f7a",
+          "side": "additions",
+          "line": 40,
           "text": "Scroll observations apply only to the exact session, revision and sequence they saw; explicit navigation stays unconditional."
         },
         {
           "hunkId": "0c980acd58727c08",
+          "side": "additions",
+          "line": 103,
           "text": "These cases pin the guard: a stale follow is a no-op, never an error."
         }
       ],
@@ -96,6 +122,8 @@
       "notes": [
         {
           "hunkId": "3229ede64714720f",
+          "side": "additions",
+          "line": 50,
           "text": "A surviving note may describe the vanished sibling, so any lost member clears the group's notes."
         }
       ],
@@ -111,6 +139,8 @@
       "notes": [
         {
           "hunkId": "c44235f242375397",
+          "side": "additions",
+          "line": 334,
           "text": "A cursor action that changes nothing no longer rewrites the session file."
         }
       ],
@@ -129,10 +159,14 @@
       "notes": [
         {
           "hunkId": "83d0a56d27834059",
+          "side": "additions",
+          "line": 34,
           "text": "Titles name the change in a few words; explanation moves into notes on the hunks that need it."
         },
         {
           "hunkId": "5f8f6d0f190e7722",
+          "side": "additions",
+          "line": 10,
           "text": "/gyst-ask now reads the focused hunk's note before answering."
         }
       ],

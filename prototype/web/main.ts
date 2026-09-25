@@ -9,8 +9,6 @@ let index = Math.max(
 );
 
 function go(delta: number) {
-  // Fold overrides are relative to a presentation's defaults, so they don't carry across variants.
-  state.flipped.clear();
   index = (index + delta + variants.length) % variants.length;
   const url = new URL(location.href);
   url.searchParams.set("variant", variants[index]!.key);

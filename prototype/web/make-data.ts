@@ -23,17 +23,34 @@ const parsed = parseSnapshot(patch);
 if (parsed._tag !== "Success") throw new Error(String(parsed.failure));
 const hunks = parsed.success;
 const id = (index: number) => hunks[index]!.id;
+// A line-level note anchor: the first line of the hunk containing `match`, on the side it exists
+// (context and added lines anchor to the new file, removed lines to the old one).
+function anchor(hunkIndex: number, match: string) {
+  const lines = hunks[hunkIndex]!.patch.split("\n");
+  const [, oldStart, newStart] = lines[0]!.match(/^@@ -(\d+)(?:,\d+)? \+(\d+)/)!;
+  let oldLine = Number(oldStart);
+  let newLine = Number(newStart);
+  for (const line of lines.slice(1)) {
+    if (line.includes(match))
+      return line[0] === "-"
+        ? { side: "deletions", line: oldLine }
+        : { side: "additions", line: newLine };
+    if (line[0] !== "+") oldLine++;
+    if (line[0] !== "-") newLine++;
+  }
+  throw new Error(`no line matching ${JSON.stringify(match)} in hunk ${hunkIndex}`);
+}
 const group = (
   key: string,
   title: string,
   members: number[],
-  notes: [number, string][],
+  notes: [number, string, string][],
   accepted = false,
 ) => ({
   id: key,
   title,
   hunkIds: members.map(id),
-  notes: notes.map(([hunk, text]) => ({ hunkId: id(hunk), text })),
+  notes: notes.map(([hunk, match, text]) => ({ hunkId: id(hunk), ...anchor(hunk, match), text })),
   accepted,
 });
 
@@ -44,8 +61,8 @@ const groups = [
     "Replace overviews with hunk notes",
     [33, 34, 36, 38, 18, 32],
     [
-      [34, "Notes cap at 400 code points and reject terminal controls, so agent prose stays readable inline without a Markdown sanitizer."],
-      [38, "Receipts still intern text, so exact historical replay survives progressive publication without repeating every note."],
+      [34, "NOTE_MAX_CODE_POINTS", "Notes cap at 400 code points and reject terminal controls, so agent prose stays readable inline without a Markdown sanitizer."],
+      [38, "receiptNoteTexts: Schema.Array", "Receipts still intern text, so exact historical replay survives progressive publication without repeating every note."],
     ],
     true,
   ),
@@ -54,8 +71,10 @@ const groups = [
     "Validate note anchors on publish",
     [11, 12, 13, 14, 15, 16, 17, 9, 10],
     [
-      [13, "A note must anchor to a member of its own group; the whole batch is rejected rather than silently retargeting a note."],
-      [17, "Until the first queue exists, any group change must arrive with a queue.set in the same batch."],
+      [13, "validAnchors", "A note must anchor to a member of its own group; the whole batch is rejected rather than silently retargeting a note."],
+      [16, "op.notes ?? group.notes", "Omitting notes keeps the old ones; an update replaces them only when it supplies an array."],
+      [16, "|| !validAnchors(notes, members)", "Anchors are rechecked against the updated membership, so moving a hunk out of a group can't strand its note."],
+      [17, "group changes require a complete queue.set", "Until the first queue exists, any group change must arrive with a queue.set in the same batch."],
     ],
   ),
   group(
@@ -63,30 +82,30 @@ const groups = [
     "Keep the focused hunk across sidebar toggles",
     [37, 27, 28, 29, 30, 31, 19, 20, 21, 22, 23, 24, 25, 26],
     [
-      [37, "Every active item now carries a focused hunk, so hiding the sidebar returns to the same member instead of the first."],
-      [28, "Scroll observations apply only to the exact session, revision and sequence they saw; explicit navigation stays unconditional."],
-      [22, "These cases pin the guard: a stale follow is a no-op, never an error."],
+      [37, "cursor.itemId === null", "Every active item now carries a focused hunk, so hiding the sidebar returns to the same member instead of the first."],
+      [28, "action.type === \"cursor.follow\"", "Scroll observations apply only to the exact session, revision and sequence they saw; explicit navigation stays unconditional."],
+      [22, "follows only the observed session", "These cases pin the guard: a stale follow is a no-op, never an error."],
     ],
   ),
   group(
     "refresh",
     "Drop notes when refresh loses a member",
     [35],
-    [[35, "A surviving note may describe the vanished sibling, so any lost member clears the group's notes."]],
+    [[35, "hunkIds.length === group.hunkIds.length", "A surviving note may describe the vanished sibling, so any lost member clears the group's notes."]],
   ),
   group(
     "noop",
     "Skip saving unchanged cursor actions",
     [7, 8],
-    [[8, "A cursor action that changes nothing no longer rewrites the session file."]],
+    [[8, "updated === session", "A cursor action that changes nothing no longer rewrites the session file."]],
   ),
   group(
     "skills",
     "Teach the skills to write notes",
     [3, 4, 5, 6, 2],
     [
-      [4, "Titles name the change in a few words; explanation moves into notes on the hunks that need it."],
-      [2, "/gyst-ask now reads the focused hunk's note before answering."],
+      [4, "**Title**", "Titles name the change in a few words; explanation moves into notes on the hunks that need it."],
+      [2, "title and notes", "/gyst-ask now reads the focused hunk's note before answering."],
     ],
   ),
 ];

@@ -5,7 +5,8 @@ import { FILE_TREE_TAG_NAME } from "@pierre/trees";
 import sample from "./sample.json";
 
 export type Hunk = { id: string; file: string; header: string; patch: string };
-export type Note = { hunkId: string; text: string };
+// Notes anchor to one line of a hunk: `side` picks the old (deletions) or new (additions) file.
+export type Note = { hunkId: string; side: "additions" | "deletions"; line: number; text: string };
 export type Item = {
   id: string;
   title: string;
@@ -40,8 +41,8 @@ export const state = {
   sourceChanged: true,
   sidebar: true,
   overlay: "" as "" | "help" | "palette",
-  // Hunks whose fold state the user flipped away from the presentation's default.
-  flipped: new Set<string>(),
+  // Files folded in the group view; view state only, never part of the review.
+  foldedFiles: new Set<string>(),
   toast: "",
 };
 state.focus = state.items[state.index]!.hunkIds[0]!;
@@ -49,8 +50,8 @@ state.focus = state.items[state.index]!.hunkIds[0]!;
 export const current = () => state.items[state.index]!;
 export const groups = () => state.items.filter((item) => !item.inbox);
 export const doneCount = () => groups().filter((item) => item.accepted).length;
-export const noteFor = (item: Item, hunkId: string) =>
-  item.notes.find((note) => note.hunkId === hunkId)?.text;
+export const notesFor = (item: Item, hunkId: string) =>
+  item.notes.filter((note) => note.hunkId === hunkId);
 export const filesOf = (item: Item) => [...new Set(item.hunkIds.map((id) => hunks[id]!.file))];
 export const allFiles = () => [...new Set(Object.values(hunks).map((hunk) => hunk.file))];
 export const isNewFile = (file: string) =>
@@ -75,10 +76,7 @@ export function onChange(render: () => void) {
 export const hooks = {
   focusTree: () => {},
   searchTree: () => {},
-  // Each hunk presentation decides which hunks start folded.
-  defaultFolded: (_hunkId: string) => false,
 };
-export const isFolded = (hunkId: string) => hooks.defaultFolded(hunkId) !== state.flipped.has(hunkId);
 
 export function toast(text: string) {
   state.toast = text;
@@ -91,11 +89,17 @@ export function toast(text: string) {
   }, 2200);
 }
 
+// Walking onto a hunk in a folded file opens that file.
+function setFocus(hunkId: string) {
+  state.focus = hunkId;
+  state.foldedFiles.delete(hunks[hunkId]!.file);
+}
+
 export function select(index: number, hunkId?: string) {
   if (index < 0 || index >= state.items.length) return;
   const changed = index !== state.index;
   state.index = index;
-  state.focus = hunkId ?? current().hunkIds[0]!;
+  setFocus(hunkId ?? current().hunkIds[0]!);
   state.overlay = "";
   rerender();
   if (changed && !hunkId) document.querySelector("[data-scroll]")?.scrollTo({ top: 0 });
@@ -105,7 +109,7 @@ export function select(index: number, hunkId?: string) {
 export function focusHunk(hunkId: string, scroll = true) {
   const index = itemIndexOfHunk(hunkId);
   if (index !== state.index) return select(index, hunkId);
-  state.focus = hunkId;
+  setFocus(hunkId);
   rerender();
   if (scroll) reveal();
 }
@@ -172,24 +176,18 @@ const toggleLayout = () => {
   rerender();
 };
 // Folding is view state only: it hides a hunk's code, never its place in the walkthrough.
-const setFolded = (hunkId: string, folded: boolean) => {
-  if (folded === hooks.defaultFolded(hunkId)) state.flipped.delete(hunkId);
-  else state.flipped.add(hunkId);
-};
-export function toggleFold(hunkId = state.focus) {
-  const wasFolded = isFolded(hunkId);
-  // Focus first: a presentation's default may depend on which hunk is focused.
-  state.focus = hunkId;
-  setFolded(hunkId, !wasFolded);
+export function toggleFile(file = hunks[state.focus]!.file) {
+  if (state.foldedFiles.has(file)) state.foldedFiles.delete(file);
+  else state.foldedFiles.add(file);
   rerender();
 }
-export function setFoldedMany(hunkIds: string[], folded: boolean) {
-  for (const id of hunkIds) setFolded(id, folded);
+export function setFilesFolded(files: string[], folded: boolean) {
+  for (const file of files) folded ? state.foldedFiles.add(file) : state.foldedFiles.delete(file);
   rerender();
 }
-export function toggleFoldAll() {
-  const members = current().hunkIds;
-  setFoldedMany(members, members.some((id) => !isFolded(id)));
+export function toggleAllFiles() {
+  const files = filesOf(current());
+  setFilesFolded(files, files.some((file) => !state.foldedFiles.has(file)));
 }
 const cycleFlavor = () => {
   state.flavor = flavors[(flavors.indexOf(state.flavor) + 1) % flavors.length]!;
@@ -213,8 +211,8 @@ export const actions: { keys: string[]; label: string; run: () => void }[] = [
   { keys: ["n", "p"], label: "Next / previous unreviewed group", run: () => pending(1) },
   { keys: ["a"], label: "Mark group done", run: toggleDone },
   { keys: ["u"], label: "Undo last done", run: undo },
-  { keys: ["z"], label: "Fold or unfold hunk", run: () => toggleFold() },
-  { keys: ["Z"], label: "Fold or unfold all hunks in group", run: toggleFoldAll },
+  { keys: ["z"], label: "Fold or unfold file", run: () => toggleFile() },
+  { keys: ["Z"], label: "Fold or unfold all files", run: toggleAllFiles },
   { keys: ["f"], label: "Focus the file tree", run: () => hooks.focusTree() },
   { keys: ["/"], label: "Search files", run: () => hooks.searchTree() },
   { keys: ["s"], label: "Split or unified diff", run: toggleLayout },
@@ -257,8 +255,8 @@ addEventListener("keydown", (event) => {
     p: () => pending(-1),
     a: toggleDone,
     u: undo,
-    z: () => toggleFold(),
-    Z: toggleFoldAll,
+    z: () => toggleFile(),
+    Z: toggleAllFiles,
     f: () => hooks.focusTree(),
     "/": () => hooks.searchTree(),
     s: toggleLayout,
@@ -279,13 +277,14 @@ const diffCSS = `pre,[data-diffs]{--diffs-dark-bg:var(--code-bg)!important;--dif
 const cache = new Map<string, HTMLElement>();
 export function diffElement(hunkId: string): HTMLElement {
   const key = `${state.flavor}:${state.layout}:${hunkId}`;
+  const notes = notesFor(state.items[itemIndexOfHunk(hunkId)]!, hunkId);
   let element = cache.get(key);
   if (!element) {
     element = document.createElement("div");
     element.className = "diff";
     const hunk = hunks[hunkId]!;
     const oldPath = hunk.header.startsWith("@@ -0,0 ") ? "/dev/null" : `a/${hunk.file}`;
-    new FileDiff({
+    new FileDiff<Note>({
       theme: `catppuccin-${state.flavor}`,
       themeType: state.flavor === "latte" ? "light" : "dark",
       diffStyle: state.layout,
@@ -295,9 +294,15 @@ export function diffElement(hunkId: string): HTMLElement {
       lineDiffType: "word",
       hunkSeparators: "simple",
       unsafeCSS: diffCSS,
+      // Notes render in the light DOM (slotted), so the app's stylesheet styles them.
+      renderAnnotation: (annotation) => {
+        const note = annotation.metadata as Note;
+        return h("div", { class: "line-note" }, h("span", { class: "note-label" }, "Agent"), h("p", {}, note.text));
+      },
     }).render({
       fileDiff: getSingularPatch(`--- ${oldPath}\n+++ b/${hunk.file}\n${hunk.patch}\n`),
       containerWrapper: element,
+      lineAnnotations: notes.map((note) => ({ side: note.side, lineNumber: note.line, metadata: note })),
     });
     cache.set(key, element);
   }

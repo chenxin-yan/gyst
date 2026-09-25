@@ -16,17 +16,16 @@ import {
   h,
   hooks,
   hunks,
-  isFolded,
   isNewFile,
   meta,
-  noteFor,
+  notesFor,
   openOverlay,
   refresh,
   select,
-  setFoldedMany,
+  setFilesFolded,
   state,
   toggleDone,
-  toggleFold,
+  toggleFile,
   type Item,
 } from "./engine.ts";
 
@@ -72,58 +71,25 @@ function statusLine() {
     h("span", {}, `Hunk ${members.indexOf(state.focus) + 1}/${members.length}`),
     h("span", { class: "ask", title: "What /gyst-ask will refer to" }, h("span", { class: "muted" }, "Agent focus "), `${hunk.file}:${lineOf(state.focus)}`),
     h("span", { class: "grow" }),
-    h("span", { class: "hints" }, kbd("j"), kbd("k"), " hunk ", kbd("z"), " fold ", kbd("a"), " done ", kbd("?"), " keys"),
+    h("span", { class: "hints" }, kbd("j"), kbd("k"), " hunk ", kbd("z"), " fold file ", kbd("a"), " done ", kbd("?"), " keys"),
   );
 }
 
 // ─── hunks, grouped by file ──────────────────────────────────────────────────
-// Consecutive hunks of one file share a quiet sticky file row. Inside a file, a hunk is introduced
-// only by a one-line separator with its enclosing context (the diff's own line numbers already carry
-// the @@ range), then its note and code. No per-hunk borders, chevrons or counts.
-
-function hunkParts(hunkId: string) {
-  const hunk = hunks[hunkId]!;
-  const firstChange = hunk.patch.split("\n").slice(1).find((line) => line[0] === "+" || line[0] === "-") ?? "";
-  return { hunk, note: noteFor(current(), hunkId), context: hunk.header.replace(/^@@ .*? @@ ?/, ""), firstChange };
-}
+// Consecutive hunks of one file share a quiet sticky file row, which folds the file. Inside, each
+// hunk is introduced by one line of enclosing context (the diff's line numbers already carry the @@
+// range). Agent notes sit inside the code, under the exact line they discuss.
 
 const pathLabel = (file: string) =>
   h("span", { class: "path" }, h("span", { class: "muted" }, dirname(file) + "/"), basename(file));
 
-// A folded hunk keeps its separator and says what it holds: the agent's note, else its first change.
-function preview(hunkId: string) {
-  const { note, firstChange } = hunkParts(hunkId);
-  if (note) return h("span", { class: "preview" }, note);
-  return h("code", { class: "preview" }, firstChange.slice(1).trim());
-}
-
 function hunkBlock(hunkId: string) {
-  const { note, context } = hunkParts(hunkId);
-  const folded = isFolded(hunkId);
+  const context = hunks[hunkId]!.header.replace(/^@@ .*? @@ ?/, "");
   return h(
     "section",
-    {
-      class: `hunk ${hunkId === state.focus ? "focused" : ""} ${folded ? "folded" : ""}`,
-      "data-hunk": hunkId,
-      onclick: () => focusHunk(hunkId, false),
-    },
-    h(
-      "button",
-      {
-        class: "sep",
-        "aria-expanded": !folded,
-        title: folded ? "Unfold hunk (z)" : "Fold hunk (z)",
-        onclick: (event: Event) => {
-          event.stopPropagation();
-          toggleFold(hunkId);
-        },
-      },
-      h("span", { class: "chevron", "aria-hidden": true }),
-      h("code", { class: "ctx" }, context || "…"),
-      folded && preview(hunkId),
-    ),
-    !folded && note && h("p", { class: "note" }, h("span", { class: "note-label" }, "Agent"), note),
-    !folded && diffElement(hunkId),
+    { class: `hunk ${hunkId === state.focus ? "focused" : ""}`, "data-hunk": hunkId, onclick: () => focusHunk(hunkId, false) },
+    h("code", { class: "sep" }, context || "…"),
+    diffElement(hunkId),
   );
 }
 
@@ -135,21 +101,25 @@ function fileBlocks(item: Item) {
     else runs.push({ file, hunkIds: [id] });
   }
   return runs.map(({ file, hunkIds }) => {
-    const folded = hunkIds.every(isFolded);
+    const folded = state.foldedFiles.has(file);
     const { added, removed } = counts(hunkIds);
+    const notes = hunkIds.flatMap((id) => notesFor(item, id)).length;
     return h(
       "div",
       { class: `file ${folded ? "folded" : ""}` },
       h(
         "button",
-        {
-          class: "file-head",
-          "aria-expanded": !folded,
-          title: folded ? "Unfold file" : "Fold file",
-          onclick: () => setFoldedMany(hunkIds, !folded),
-        },
+        { class: "file-head", "aria-expanded": !folded, title: folded ? "Unfold file (z)" : "Fold file (z)", onclick: () => toggleFile(file) },
         h("span", { class: "chevron", "aria-hidden": true }),
         pathLabel(file),
+        folded &&
+          h(
+            "span",
+            { class: "fold-summary" },
+            [`${hunkIds.length} ${hunkIds.length === 1 ? "hunk" : "hunks"}`, notes && `${notes} ${notes === 1 ? "note" : "notes"}`]
+              .filter(Boolean)
+              .join(" · "),
+          ),
         h("span", { class: "grow" }),
         h("span", { class: "stat" }, h("span", { class: "add" }, `+${added}`), h("span", { class: "del" }, `−${removed}`)),
       ),
@@ -160,8 +130,8 @@ function fileBlocks(item: Item) {
 
 function groupPane() {
   const item = current();
-  const members = item.hunkIds;
-  const anyOpen = members.some((id) => !isFolded(id));
+  const files = filesOf(item);
+  const anyOpen = files.some((file) => !state.foldedFiles.has(file));
   return h(
     "main",
     { class: "pane", "data-scroll": true, tabindex: -1 },
@@ -177,10 +147,10 @@ function groupPane() {
       h(
         "div",
         { class: "head-actions" },
-        members.length > 1 &&
+        files.length > 1 &&
           h(
             "button",
-            { class: "pill", onclick: () => setFoldedMany(members, anyOpen) },
+            { class: "pill", onclick: () => setFilesFolded(files, anyOpen) },
             anyOpen ? "Fold all" : "Unfold all",
             kbd("Z"),
           ),
