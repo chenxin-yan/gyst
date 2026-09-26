@@ -685,10 +685,10 @@ export function activateNote(key: string) {
   state.activeNote = key;
   paintAnnotations();
 }
-// `r` replies in the open discussion; on the active note it continues the note's latest open
-// discussion, or starts one.
+// `r` replies to what the cursor is on: a note continues its discussion (or starts one), a thread or
+// commented line continues that thread. Only elsewhere does it fall back to the open discussion,
+// which stays open after posting and would otherwise hijack `r` on another note.
 function replyHere() {
-  if (state.activeThread) return reply();
   const cursor = (ensureCursor(), state.cursor);
   if (cursor?.kind === "anno") {
     const [kind, ...rest] = cursor.key.split(":");
@@ -711,6 +711,7 @@ function replyHere() {
       return reply();
     }
   }
+  if (state.activeThread) return reply();
   toast("Nothing to reply to here: move onto a note or thread (c comments on code)");
 }
 // A note is the first message of at most one thread: replying continues it, creating it on the
