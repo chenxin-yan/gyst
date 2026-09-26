@@ -1,0 +1,26 @@
+<!doctype html>
+<!--
+  PROTOTYPE, throwaway. The review loop (per-hunk Viewed, Markdown/Mermaid agent notes, inline
+  discussions, harness handoff with simulated agent replies) on a copy of the locked-in design
+  from prototype/web. Real hunks from commit 7239806, parsed by @gyst/core; state is in memory
+  only; t cycles Catppuccin flavors. Fonts load from Google Fonts here; a real build would bundle them.
+  Run: cd prototype/web-review-loop && bun install && bun run dev
+-->
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>gyst · review prototype</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      rel="stylesheet"
+      href="https://fonts.googleapis.com/css2?family=Inter:opsz,wght@14..32,400..600&family=JetBrains+Mono:wght@400;500&display=swap"
+    />
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <div id="app"></div>
+    <script type="module" src="./main.ts"></script>
+  </body>
+</html>

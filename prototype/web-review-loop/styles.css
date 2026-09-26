@@ -1,0 +1,1093 @@
+/* PROTOTYPE, throwaway.
+   Colour follows the Catppuccin style guide (catppuccin/catppuccin docs/style-guide.md):
+   one accent, lavender (the guide's active border / active line number), with Base as text on it.
+   Every other colour is used only for its guide role:
+     base    reading pane          crust/mantle  secondary panes      surface0  borders
+     text    body, headlines       subtext0/1    labels               overlay1  subtle text, line numbers
+     overlay2 @20%  selection      green  success, inserted lines     red   removed lines
+     yellow  warnings              blue   changed files               teal  information (agent notes)
+     peach   hunk headers          overlay2  diff index metadata (hunk context)
+   Syntax colours come from Catppuccin's own Shiki themes, which implement the guide's language table. */
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+html,
+body,
+#app {
+  height: 100%;
+  margin: 0;
+}
+button {
+  font: inherit;
+  color: inherit;
+  background: none;
+  border: 0;
+  padding: 0;
+  cursor: pointer;
+  text-align: inherit;
+}
+ol,
+ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+p,
+h1,
+h2 {
+  margin: 0;
+}
+code {
+  font-family: var(--mono);
+}
+
+/* ─── palette (hex from catppuccin/palette palette.json) ─────────────────── */
+.f-mocha {
+  --ctp-rosewater: #f5e0dc;
+  --ctp-flamingo: #f2cdcd;
+  --ctp-pink: #f5c2e7;
+  --ctp-mauve: #cba6f7;
+  --ctp-red: #f38ba8;
+  --ctp-maroon: #eba0ac;
+  --ctp-peach: #fab387;
+  --ctp-yellow: #f9e2af;
+  --ctp-green: #a6e3a1;
+  --ctp-teal: #94e2d5;
+  --ctp-sky: #89dceb;
+  --ctp-sapphire: #74c7ec;
+  --ctp-blue: #89b4fa;
+  --ctp-lavender: #b4befe;
+  --ctp-text: #cdd6f4;
+  --ctp-subtext1: #bac2de;
+  --ctp-subtext0: #a6adc8;
+  --ctp-overlay2: #9399b2;
+  --ctp-overlay1: #7f849c;
+  --ctp-overlay0: #6c7086;
+  --ctp-surface2: #585b70;
+  --ctp-surface1: #45475a;
+  --ctp-surface0: #313244;
+  --ctp-base: #1e1e2e;
+  --ctp-mantle: #181825;
+  --ctp-crust: #11111b;
+  color-scheme: dark;
+}
+.f-macchiato {
+  --ctp-rosewater: #f4dbd6;
+  --ctp-flamingo: #f0c6c6;
+  --ctp-pink: #f5bde6;
+  --ctp-mauve: #c6a0f6;
+  --ctp-red: #ed8796;
+  --ctp-maroon: #ee99a0;
+  --ctp-peach: #f5a97f;
+  --ctp-yellow: #eed49f;
+  --ctp-green: #a6da95;
+  --ctp-teal: #8bd5ca;
+  --ctp-sky: #91d7e3;
+  --ctp-sapphire: #7dc4e4;
+  --ctp-blue: #8aadf4;
+  --ctp-lavender: #b7bdf8;
+  --ctp-text: #cad3f5;
+  --ctp-subtext1: #b8c0e0;
+  --ctp-subtext0: #a5adcb;
+  --ctp-overlay2: #939ab7;
+  --ctp-overlay1: #8087a2;
+  --ctp-overlay0: #6e738d;
+  --ctp-surface2: #5b6078;
+  --ctp-surface1: #494d64;
+  --ctp-surface0: #363a4f;
+  --ctp-base: #24273a;
+  --ctp-mantle: #1e2030;
+  --ctp-crust: #181926;
+  color-scheme: dark;
+}
+.f-frappe {
+  --ctp-rosewater: #f2d5cf;
+  --ctp-flamingo: #eebebe;
+  --ctp-pink: #f4b8e4;
+  --ctp-mauve: #ca9ee6;
+  --ctp-red: #e78284;
+  --ctp-maroon: #ea999c;
+  --ctp-peach: #ef9f76;
+  --ctp-yellow: #e5c890;
+  --ctp-green: #a6d189;
+  --ctp-teal: #81c8be;
+  --ctp-sky: #99d1db;
+  --ctp-sapphire: #85c1dc;
+  --ctp-blue: #8caaee;
+  --ctp-lavender: #babbf1;
+  --ctp-text: #c6d0f5;
+  --ctp-subtext1: #b5bfe2;
+  --ctp-subtext0: #a5adce;
+  --ctp-overlay2: #949cbb;
+  --ctp-overlay1: #838ba7;
+  --ctp-overlay0: #737994;
+  --ctp-surface2: #626880;
+  --ctp-surface1: #51576d;
+  --ctp-surface0: #414559;
+  --ctp-base: #303446;
+  --ctp-mantle: #292c3c;
+  --ctp-crust: #232634;
+  color-scheme: dark;
+}
+.f-latte {
+  --ctp-rosewater: #dc8a78;
+  --ctp-flamingo: #dd7878;
+  --ctp-pink: #ea76cb;
+  --ctp-mauve: #8839ef;
+  --ctp-red: #d20f39;
+  --ctp-maroon: #e64553;
+  --ctp-peach: #fe640b;
+  --ctp-yellow: #df8e1d;
+  --ctp-green: #40a02b;
+  --ctp-teal: #179299;
+  --ctp-sky: #04a5e5;
+  --ctp-sapphire: #209fb5;
+  --ctp-blue: #1e66f5;
+  --ctp-lavender: #7287fd;
+  --ctp-text: #4c4f69;
+  --ctp-subtext1: #5c5f77;
+  --ctp-subtext0: #6c6f85;
+  --ctp-overlay2: #7c7f93;
+  --ctp-overlay1: #8c8fa1;
+  --ctp-overlay0: #9ca0b0;
+  --ctp-surface2: #acb0be;
+  --ctp-surface1: #bcc0cc;
+  --ctp-surface0: #ccd0da;
+  --ctp-base: #eff1f5;
+  --ctp-mantle: #e6e9ef;
+  --ctp-crust: #dce0e8;
+  color-scheme: light;
+}
+
+/* ─── roles ─────────────────────────────────────────────────────────────── */
+.app {
+  --frame: var(--ctp-crust);
+  --panel-bg: var(--ctp-base);
+  --surface: var(--ctp-mantle);
+  --line: var(--ctp-surface0);
+  --select: color-mix(in srgb, var(--ctp-overlay2) 20%, transparent);
+  --ink: var(--ctp-text);
+  --muted: var(--ctp-subtext0);
+  --faint: var(--ctp-overlay1);
+  --accent: var(--ctp-lavender);
+  --on-accent: var(--ctp-base);
+  --done: var(--ctp-green);
+  --warn: var(--ctp-yellow);
+  --add: var(--ctp-green);
+  --del: var(--ctp-red);
+  --changed: var(--ctp-blue);
+  --info: var(--ctp-teal);
+  --hunk-header: var(--ctp-peach);
+  --metadata: var(--ctp-overlay2);
+  --sans: "Inter", system-ui, sans-serif;
+  --mono: "JetBrains Mono", ui-monospace, monospace;
+
+  height: 100%;
+  display: grid;
+  grid-template-columns: 264px minmax(0, 1fr);
+  background: var(--frame);
+  color: var(--ink);
+  font: 400 13px / 1.5 var(--sans);
+  -webkit-font-smoothing: antialiased;
+}
+/* The tree renders in a shadow root; its variables inherit resolved values from here. */
+.app {
+  --trees-bg-override: transparent;
+  --trees-fg-override: var(--ink);
+  --trees-fg-muted-override: var(--muted);
+  --trees-selected-bg-override: var(--select);
+  --trees-selected-fg-override: var(--ink);
+  --trees-selected-focused-border-color-override: var(--accent);
+  --trees-focus-ring-color-override: var(--accent);
+  --trees-border-color-override: var(--line);
+  --trees-indent-guide-bg-override: var(--line);
+  --trees-font-family-override: var(--sans);
+  --trees-font-size-override: 13px;
+  --trees-padding-inline-override: 8px;
+  --trees-git-added-color-override: var(--add);
+  --trees-git-modified-color-override: var(--changed);
+  --trees-git-deleted-color-override: var(--del);
+  --trees-search-bg-override: var(--select);
+  --trees-input-bg-override: var(--surface);
+}
+.no-sidebar {
+  grid-template-columns: 0 minmax(0, 1fr);
+}
+.no-sidebar .side {
+  display: none;
+}
+.muted {
+  color: var(--muted);
+}
+.small {
+  font-size: 12px;
+}
+.grow {
+  flex: 1;
+}
+.add {
+  color: var(--add);
+}
+.del {
+  color: var(--del);
+}
+:focus-visible {
+  outline: 1.5px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+kbd {
+  display: inline-grid;
+  place-items: center;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 4px;
+  margin-left: 3px;
+  border-radius: 4px;
+  background: var(--line);
+  color: var(--muted);
+  font: 500 10.5px/1 var(--mono);
+}
+
+/* ─── sidebar ───────────────────────────────────────────────────────────── */
+.side {
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  padding: 8px 8px 12px;
+}
+/* The brand row shares the panel top bar's height and centre line, so the two read as one header. */
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  height: 44px;
+  margin-bottom: 6px;
+  padding: 0 4px 0 10px;
+}
+/* No logomark until gyst has a real one: the name in the code face, a CLI tool's own voice. */
+.brand-name {
+  font: 500 15px/1 var(--mono);
+  letter-spacing: -0.01em;
+}
+.star-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 26px;
+  margin-left: auto;
+  padding: 0 7px;
+  border-radius: 6px;
+  color: var(--muted);
+  text-decoration: none;
+}
+.star-link:hover {
+  color: var(--ink);
+  background: var(--select);
+}
+.github-mark {
+  display: grid;
+}
+.star-count {
+  font: 12px/1 var(--sans);
+  font-variant-numeric: tabular-nums;
+}
+.side-head {
+  display: flex;
+  justify-content: space-between;
+  padding: 4px 10px 8px;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--muted);
+}
+.files-head {
+  margin-top: 14px;
+}
+.walk {
+  display: grid;
+  gap: 1px;
+  flex-shrink: 0;
+}
+.walk-row {
+  display: grid;
+  grid-template-columns: 20px 1fr auto;
+  gap: 8px;
+  align-items: start;
+  width: 100%;
+  padding: 6px 10px;
+  border-radius: 6px;
+  color: var(--muted);
+}
+.walk-row:hover {
+  color: var(--ink);
+}
+.walk-row.current {
+  background: var(--select);
+  color: var(--ink);
+}
+.walk-row .glyph {
+  font: 500 11.5px/20px var(--mono);
+  color: var(--faint);
+}
+.walk-row.current .glyph {
+  color: var(--accent);
+}
+.walk-row.done .glyph {
+  color: var(--done);
+}
+.walk-row .title {
+  line-height: 20px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.walk-row .n {
+  font: 11px/20px var(--mono);
+  color: var(--faint);
+}
+.tree {
+  flex: 1;
+  min-height: 120px;
+}
+.tree > * {
+  height: 100%;
+}
+
+/* ─── panel ─────────────────────────────────────────────────────────────── */
+.panel {
+  min-height: 0;
+  display: grid;
+  grid-template-rows: 44px minmax(0, 1fr) 30px;
+  margin: 8px 8px 8px 0;
+  border-radius: 10px;
+  background: var(--panel-bg);
+  box-shadow: 0 0 0 1px var(--line);
+  overflow: hidden;
+}
+.no-sidebar .panel {
+  margin-left: 8px;
+}
+.top {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 0 12px 0 20px;
+  border-bottom: 1px solid var(--line);
+}
+.crumb {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+  white-space: nowrap;
+}
+.crumb .slash {
+  color: var(--faint);
+}
+.crumb code {
+  font-size: 12px;
+}
+.pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 28px;
+  padding: 0 6px 0 10px;
+  border-radius: 7px;
+  color: var(--muted);
+  font-size: 12.5px;
+}
+.pill:hover {
+  color: var(--ink);
+}
+.pill.warn {
+  color: var(--warn);
+  background: color-mix(in srgb, var(--warn) 12%, transparent);
+}
+.pill .dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+.pane {
+  min-height: 0;
+  overflow: auto;
+  padding: 24px 32px 120px;
+  scroll-padding-top: 40px;
+  outline: none;
+}
+.group-head {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 20px;
+  padding-bottom: 20px;
+}
+.group-head h1 {
+  margin-top: 2px;
+  font-size: 20px;
+  line-height: 1.2;
+  font-weight: 600;
+  letter-spacing: -0.022em;
+  font-variation-settings: "opsz" 32;
+}
+.lede {
+  margin-bottom: 18px;
+}
+.overview {
+  max-width: 80ch;
+  margin: -6px 0 22px;
+  color: var(--ctp-subtext1);
+  font-size: 13.5px;
+  line-height: 1.6;
+}
+.overview .note-diagram {
+  margin-top: 4px;
+}
+.group-foot {
+  padding-top: 20px;
+}
+.next-group {
+  height: 32px;
+  color: var(--ink);
+  box-shadow: inset 0 0 0 1px var(--line);
+}
+.pill.back {
+  margin-left: -10px;
+  color: var(--accent);
+}
+
+/* ─── hunks, grouped by file ────────────────────────────────────────────── */
+.head-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.head-actions .pill {
+  height: 32px;
+}
+/* ─── files: compact blocks, an inset header bar, one continuous diff ───── */
+.file {
+  border-radius: 6px;
+  box-shadow: 0 0 0 1px var(--line);
+  scroll-margin-top: 12px;
+}
+.file + .file {
+  margin-top: 10px;
+}
+.file-head {
+  position: sticky;
+  top: -24px;
+  z-index: 3;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  height: 34px;
+  padding: 0 8px 0 4px;
+  background: var(--surface);
+  border-radius: 6px 6px 0 0;
+  font-size: 13px;
+}
+.file:not(.folded) .file-head {
+  border-bottom: 1px solid var(--line);
+}
+.file.folded .file-head {
+  border-radius: 6px;
+}
+.file-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  height: 100%;
+}
+.file-head .name {
+  font-weight: 500;
+  white-space: nowrap;
+}
+.file-head .dir {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--faint);
+  font-size: 12px;
+}
+.file.viewed .file-head .name {
+  color: var(--muted);
+}
+.file-head .stat {
+  display: flex;
+  gap: 6px;
+  font: 11.5px var(--mono);
+}
+.note-count {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font: 11.5px var(--mono);
+  color: var(--info);
+}
+.note-count::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+}
+/* GitHub-style "Viewed": a quiet checkbox that turns green when checked. */
+.viewed-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 24px;
+  padding: 0 8px;
+  border-radius: 5px;
+  font-size: 12px;
+  color: var(--muted);
+}
+.viewed-toggle:hover {
+  color: var(--ink);
+  background: var(--select);
+}
+.viewed-toggle .box {
+  width: 13px;
+  height: 13px;
+  border-radius: 3.5px;
+  box-shadow: inset 0 0 0 1.5px var(--faint);
+}
+.viewed-toggle[aria-checked="true"] {
+  color: var(--done);
+}
+.viewed-toggle[aria-checked="true"] .box {
+  background: var(--done);
+  box-shadow: none;
+  -webkit-mask: none;
+}
+.viewed-toggle[aria-checked="true"] .box::after {
+  content: "";
+  display: block;
+  width: 3px;
+  height: 6px;
+  margin: 2px 0 0 4.5px;
+  border-right: 1.5px solid var(--on-accent);
+  border-bottom: 1.5px solid var(--on-accent);
+  transform: rotate(45deg);
+}
+/* The chevron stays out of sight until the file row is hovered, focused or folded. */
+.chevron {
+  width: 10px;
+  flex-shrink: 0;
+  opacity: 0;
+  transition: opacity 0.12s;
+}
+.file-toggle:hover .chevron,
+.file-toggle:focus-visible .chevron,
+.file.folded .chevron {
+  opacity: 1;
+}
+.chevron::before {
+  content: "";
+  display: block;
+  width: 5px;
+  height: 5px;
+  margin: 0 auto;
+  border-right: 1.5px solid var(--faint);
+  border-bottom: 1.5px solid var(--faint);
+  transform: rotate(45deg) translate(-1px, -1px);
+  transition: transform 0.15s;
+}
+.file.folded .chevron::before {
+  transform: rotate(-45deg);
+}
+.file > .diff {
+  border-radius: 0 0 6px 6px;
+  overflow: hidden;
+}
+
+/* ─── agent notes, folded into their line ───────────────────────────────── */
+/* Closed: a zero-height row whose toggle sits at the end of the line above it. Open: the note
+   expands in place under that line, aligned with the code. */
+.line-note {
+  position: relative;
+}
+.note-toggle {
+  position: absolute;
+  right: 8px;
+  bottom: 2px;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 15px;
+  padding: 0 6px;
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--info) 14%, transparent);
+  color: var(--info);
+  font: 500 10.5px/1 var(--sans);
+}
+.note-toggle::before {
+  content: "";
+  width: 4px;
+  height: 4px;
+  border-right: 1.2px solid currentColor;
+  border-bottom: 1.2px solid currentColor;
+  transform: rotate(45deg) translateY(-1px);
+}
+.note-toggle:hover {
+  background: color-mix(in srgb, var(--info) 24%, transparent);
+}
+/* The toggle is a bare chevron chip; it shows a number only when the note has open discussions. */
+.note-toggle.updated {
+  background: var(--accent);
+  color: var(--on-accent);
+}
+.line-note.open .note-toggle {
+  display: none;
+}
+.note-body {
+  display: none;
+}
+.line-note.open .note-body {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  margin: 3px 10px 5px 0;
+  padding: 7px 10px 7px 12px;
+  border-radius: 5px;
+  background: var(--surface);
+  box-shadow: inset 0 0 0 1px var(--line);
+  font: 400 13px/1.55 var(--sans);
+  color: var(--ctp-subtext1);
+  white-space: normal;
+}
+.line-note.active .note-body,
+.anno.cursor .thread,
+.anno.cursor .note-body {
+  box-shadow: inset 0 0 0 1px var(--accent);
+}
+/* The cursor on a closed note, a collapsed thread or a file header. */
+.file-head.cursor {
+  box-shadow: inset 0 0 0 1.5px var(--accent);
+}
+.anno.cursor .thread-chip,
+.anno.cursor.line-note:not(.open) .note-toggle {
+  outline: 1.5px solid var(--accent);
+  outline-offset: 1px;
+}
+.thread-lines {
+  margin: 0 0 6px;
+  font: 11.5px var(--mono);
+  color: var(--faint);
+}
+.status .mode.visual::before {
+  background: var(--warn);
+}
+/* Agent notes are Markdown: compact blocks, code in the mono face, diagrams in app colours. */
+.note-md {
+  flex: 1;
+  min-width: 0;
+  max-width: 80ch;
+}
+.note-md > * {
+  margin: 0;
+}
+.note-md > * + * {
+  margin-top: 6px;
+}
+.note-md ul,
+.note-md ol {
+  padding-left: 18px;
+}
+.note-md ul {
+  list-style: disc;
+}
+.note-md ol {
+  list-style: decimal;
+}
+.note-md strong {
+  color: var(--ink);
+  font-weight: 600;
+}
+.note-md code {
+  font-size: 12px;
+  color: var(--ink);
+}
+.note-md pre {
+  overflow-x: auto;
+  padding: 6px 10px;
+  border-radius: 5px;
+  background: var(--panel-bg);
+}
+.note-md blockquote {
+  padding-left: 10px;
+  box-shadow: inset 2px 0 var(--line);
+  color: var(--muted);
+}
+.note-md .ref {
+  color: var(--accent);
+  font: 500 12px var(--mono);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.note-diagram {
+  overflow-x: auto;
+}
+.note-diagram svg {
+  display: block;
+  max-width: 100%;
+  height: auto;
+}
+.diagram-error {
+  font-size: 12px;
+  color: var(--muted);
+}
+.diagram-error summary {
+  color: var(--warn);
+  cursor: pointer;
+}
+.note-actions {
+  display: flex;
+  align-items: flex-start;
+  gap: 2px;
+  align-self: flex-start;
+}
+
+/* ─── discussions: one open at a time, anchored where they were asked ───── */
+.line-thread,
+.note-threads {
+  margin: 3px 10px 5px 0;
+  font: 400 13px/1.55 var(--sans);
+  white-space: normal;
+}
+.note-threads {
+  margin-top: 0;
+}
+.thread-chip {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  max-width: 80ch;
+  height: 24px;
+  padding: 0 8px;
+  border-radius: 5px;
+  color: var(--muted);
+  font-size: 12px;
+}
+.thread-chip:hover {
+  background: var(--select);
+  color: var(--ink);
+}
+.thread-dot {
+  width: 6px;
+  height: 6px;
+  flex-shrink: 0;
+  border-radius: 50%;
+  background: var(--accent);
+}
+.thread-chip.resolved .thread-dot {
+  background: var(--faint);
+}
+.thread-snippet {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--faint);
+}
+.thread {
+  max-width: calc(80ch + 60px);
+  padding: 8px 12px;
+  border-radius: 5px;
+  background: var(--surface);
+  box-shadow: inset 0 0 0 1px var(--line), inset 2px 0 var(--accent);
+}
+.thread.resolved {
+  box-shadow: inset 0 0 0 1px var(--line);
+}
+.msg + .msg {
+  margin-top: 8px;
+}
+.msg-author {
+  font-size: 11.5px;
+  font-weight: 500;
+  color: var(--muted);
+}
+.msg .queued {
+  font-weight: 400;
+  color: var(--warn);
+}
+.msg p {
+  margin: 0;
+  color: var(--ink);
+}
+.thread-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-top: 8px;
+}
+.act {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  height: 24px;
+  padding: 0 4px 0 8px;
+  border-radius: 5px;
+  color: var(--muted);
+  font-size: 12px;
+}
+.act:hover {
+  color: var(--ink);
+  background: var(--select);
+}
+.act.primary {
+  background: var(--accent);
+  color: var(--on-accent);
+  font-weight: 500;
+}
+.act.primary kbd {
+  background: color-mix(in srgb, var(--on-accent) 18%, transparent);
+  color: var(--on-accent);
+}
+.composer {
+  max-width: calc(80ch + 60px);
+  margin-top: 8px;
+}
+.line-thread > .composer {
+  margin-top: 0;
+  padding: 8px;
+  border-radius: 5px;
+  background: var(--surface);
+  box-shadow: inset 0 0 0 1px var(--line);
+}
+.composer textarea {
+  display: block;
+  width: 100%;
+  resize: vertical;
+  padding: 7px 9px;
+  border: 0;
+  border-radius: 5px;
+  outline: 0;
+  background: var(--panel-bg);
+  box-shadow: inset 0 0 0 1px var(--line);
+  color: var(--ink);
+  font: inherit;
+}
+.composer textarea:focus {
+  box-shadow: inset 0 0 0 1px var(--accent);
+}
+.note-label {
+  flex-shrink: 0;
+  font-size: 11.5px;
+  font-weight: 500;
+  color: var(--info);
+}
+.note-close {
+  align-self: flex-start;
+  width: 18px;
+  height: 18px;
+  border-radius: 4px;
+  color: var(--faint);
+  font-size: 14px;
+  line-height: 18px;
+  text-align: center;
+}
+.note-close:hover {
+  color: var(--ink);
+  background: var(--select);
+}
+
+/* Diff colours per the guide's Diff & Merge table. @pierre/diffs mixes the line override into the
+   background itself (20% in dark themes, 12% in light), and layers the emphasis colour over it, which
+   matches the guide's line background plus 10–20% word background. */
+.diff {
+  --code-bg: var(--panel-bg);
+  --diffs-font-family: var(--mono);
+  --diffs-header-font-family: var(--sans);
+  --diffs-font-size: 12.5px;
+  --diffs-line-height: 19px;
+  --diffs-addition-color-override: var(--add);
+  --diffs-deletion-color-override: var(--del);
+  --diffs-bg-context-override: var(--panel-bg);
+  --diffs-bg-buffer-override: var(--surface);
+  --diffs-bg-separator-override: var(--surface);
+  --diffs-bg-addition-override: var(--add);
+  --diffs-bg-addition-number-override: var(--add);
+  --diffs-bg-addition-emphasis-override: color-mix(in srgb, var(--add) 18%, transparent);
+  --diffs-bg-deletion-override: var(--del);
+  --diffs-bg-deletion-number-override: var(--del);
+  --diffs-bg-deletion-emphasis-override: color-mix(in srgb, var(--del) 18%, transparent);
+  --diffs-fg-number-override: var(--faint);
+  --diffs-bg-selection-override: var(--select);
+}
+
+/* ─── status line ───────────────────────────────────────────────────────── */
+.status {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 0 14px 0 12px;
+  border-top: 1px solid var(--line);
+  font: 11.5px var(--mono);
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+}
+.status .mode {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--ink);
+  font-weight: 500;
+}
+.status .mode::before {
+  content: "";
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--accent);
+}
+.status .mode.done::before {
+  background: var(--done);
+}
+.status .mode.file::before {
+  background: var(--faint);
+}
+.status .layout {
+  color: var(--faint);
+}
+.status .ask {
+  color: var(--ink);
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.status kbd {
+  margin: 0 1px;
+}
+
+/* ─── overlays ──────────────────────────────────────────────────────────── */
+.overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 20;
+  display: grid;
+  place-items: start center;
+  padding-top: 14vh;
+  background: color-mix(in srgb, var(--ctp-crust) 60%, transparent);
+}
+.modal,
+.palette {
+  width: min(520px, 92vw);
+  border-radius: 10px;
+  background: var(--surface);
+  box-shadow: 0 0 0 1px var(--line), 0 30px 80px rgb(0 0 0 / 0.25);
+}
+.modal {
+  padding: 20px 22px;
+}
+.modal h2 {
+  font-size: 15px;
+  font-weight: 600;
+  margin-bottom: 14px;
+}
+.modal dl {
+  display: grid;
+  grid-template-columns: 70px 1fr;
+  gap: 8px 12px;
+  margin: 0 0 16px;
+}
+.modal dd {
+  margin: 0;
+}
+.palette .entry-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.modal dt kbd:first-child {
+  margin-left: 0;
+}
+.palette input {
+  width: 100%;
+  padding: 14px 16px;
+  border: 0;
+  border-bottom: 1px solid var(--line);
+  outline: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-size: 14.5px;
+}
+.palette ul {
+  max-height: 50vh;
+  overflow: auto;
+  padding: 6px;
+}
+.palette li {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 7px 10px;
+  border-radius: 6px;
+  cursor: pointer;
+}
+.palette li[aria-selected="true"] {
+  background: var(--select);
+}
+.toast {
+  position: fixed;
+  right: 20px;
+  bottom: 48px;
+  z-index: 30;
+  padding: 8px 14px;
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--ink);
+  box-shadow: 0 0 0 1px var(--line), 0 12px 32px rgb(0 0 0 / 0.2);
+}
+
+.status .input-mode {
+  padding: 0 6px;
+  border-radius: 4px;
+  color: var(--ink);
+  box-shadow: inset 0 0 0 1px var(--line);
+}
+
+/* prototype switcher, deliberately not part of the design */
+.proto-switcher {
+  position: fixed;
+  left: 50%;
+  bottom: 44px;
+  transform: translateX(-50%);
+  z-index: 50;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 5px;
+  background: #ff3d7f;
+  color: #fff;
+  border-radius: 999px;
+  font: 600 12px/1 system-ui, sans-serif;
+}
+.proto-switcher span {
+  padding: 0 10px;
+}
+.proto-switcher button {
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  background: rgb(255 255 255 / 0.18);
+}
+@media (prefers-reduced-motion: reduce) {
+  * {
+    transition: none !important;
+    scroll-behavior: auto !important;
+  }
+}
