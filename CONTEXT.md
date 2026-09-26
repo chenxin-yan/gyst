@@ -8,6 +8,12 @@ A keyboard-centric co-review web app, served locally: the user's coding-agent ha
 One live review of one diff range, held by the gyst daemon and rendered in the web app. The unit both the human and the agent operate on.
 _Avoid_: Review, instance
 
+**Stack**:
+An ordered, linear chain of PRs whose changes build on one another, supplying navigation and context for each layer's review. Each layer is reviewed separately, not as a cumulative stack diff.
+
+**Layer**:
+One PR's contribution within a stack, reviewed in its own session. The PR keeps that session across restacks and membership changes; review state stays independent of other layers.
+
 **Snapshot**:
 The frozen diff captured from a session's source. Refresh explicitly replaces it, carrying forward surviving review work and retaining older context where needed; source changes alone never alter it.
 
