@@ -1,0 +1,714 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Gyst · Navigation lab</title>
+    <style>
+      :root {
+        color-scheme: light;
+        --ink: #172b45;
+        --muted: #526579;
+        --line: #cbd6df;
+        --paper: #f4f7fa;
+        --accent: #006c70;
+        --warn: #874600;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        background: var(--paper);
+        color: var(--ink);
+        font:
+          16px/1.5 system-ui,
+          sans-serif;
+      }
+      main {
+        max-width: 1440px;
+        margin: auto;
+        padding: 28px;
+      }
+      h1 {
+        font-size: 30px;
+        margin: 0;
+        letter-spacing: -0.8px;
+      }
+      h2 {
+        font-size: 18px;
+        margin: 0 0 12px;
+      }
+      h3 {
+        margin: 0;
+        font-size: 18px;
+      }
+      p {
+        max-width: 85ch;
+        margin: 8px 0 16px;
+      }
+      .muted {
+        color: var(--muted);
+        font-size: 14px;
+      }
+      header {
+        display: flex;
+        justify-content: space-between;
+        align-items: flex-start;
+        gap: 20px;
+      }
+      .tag {
+        color: var(--accent);
+        font-weight: 650;
+      }
+      button,
+      select,
+      textarea {
+        font: inherit;
+      }
+      button,
+      select {
+        border: 1px solid var(--line);
+        border-radius: 5px;
+        padding: 8px 12px;
+        background: white;
+        color: var(--ink);
+      }
+      button {
+        cursor: pointer;
+      }
+      button:hover {
+        border-color: var(--accent);
+        background: #edf7f6;
+      }
+      button:disabled {
+        opacity: 0.55;
+        cursor: wait;
+      }
+      :focus-visible {
+        outline: 3px solid #168cba;
+        outline-offset: 2px;
+      }
+      .primary {
+        background: var(--accent);
+        border-color: var(--accent);
+        color: white;
+      }
+      .primary:hover {
+        background: #00595d;
+        color: white;
+      }
+      .toolbar,
+      .steps {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 10px;
+        margin: 14px 0;
+      }
+      label {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+      }
+      .steps {
+        padding: 16px;
+        background: #e5eff2;
+        border-left: 4px solid var(--accent);
+      }
+      .steps strong {
+        width: 100%;
+      }
+      #status {
+        min-height: 28px;
+        color: var(--accent);
+      }
+      #divergence {
+        padding: 10px 14px;
+        border: 1px solid var(--line);
+        background: white;
+        margin: 12px 0;
+      }
+      #divergence.warn {
+        color: var(--warn);
+        background: #fff5e8;
+        border-color: #d5ac73;
+      }
+      .source {
+        background: white;
+        border: 1px solid var(--line);
+        padding: 14px 0;
+        overflow: auto;
+        max-height: 400px;
+        font:
+          14px/1.9 ui-monospace,
+          "Cascadia Code",
+          monospace;
+        tab-size: 2;
+      }
+      .line {
+        display: flex;
+        white-space: pre;
+        min-height: 26px;
+      }
+      .number {
+        display: inline-block;
+        min-width: 55px;
+        text-align: right;
+        padding-right: 16px;
+        color: #6d7f90;
+        user-select: none;
+      }
+      .code {
+        padding-right: 20px;
+      }
+      .token {
+        font: inherit;
+        line-height: inherit;
+        border: 0;
+        border-radius: 2px;
+        padding: 0;
+        background: transparent;
+        color: inherit;
+      }
+      .token:hover {
+        background: #cdeae7;
+        text-decoration: underline;
+      }
+      .token.selected {
+        background: #b9dfdb;
+        outline: 1px solid var(--accent);
+      }
+      .highlight {
+        background: #dcf0ee;
+      }
+      #selection {
+        font-size: 14px;
+        color: var(--muted);
+      }
+      .compare {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        margin-top: 18px;
+        border: 1px solid var(--line);
+        background: white;
+      }
+      .engine {
+        padding: 18px;
+        min-height: 180px;
+      }
+      .engine + .engine {
+        border-left: 1px solid var(--line);
+      }
+      .engine.live h3 {
+        color: var(--warn);
+      }
+      .timing {
+        font-size: 14px;
+        margin-top: 8px;
+        color: var(--muted);
+      }
+      .results {
+        list-style: none;
+        padding: 0;
+      }
+      .results li {
+        border-top: 1px solid #e1e7ed;
+        padding: 8px 0;
+      }
+      .target {
+        width: 100%;
+        text-align: left;
+        border: 0;
+        padding: 5px 0;
+      }
+      .snippet {
+        display: block;
+        font:
+          12px/1.6 ui-monospace,
+          monospace;
+        white-space: pre-wrap;
+        overflow-wrap: anywhere;
+        color: var(--muted);
+      }
+      .error {
+        color: #9c2828;
+        overflow-wrap: anywhere;
+      }
+      #inspector {
+        margin-top: 20px;
+      }
+      #inspector[hidden] {
+        display: none;
+      }
+      details {
+        margin-top: 20px;
+        padding: 16px;
+        border: 1px solid var(--line);
+        background: white;
+      }
+      summary {
+        cursor: pointer;
+        font-weight: 650;
+      }
+      textarea {
+        display: block;
+        width: 100%;
+        height: 210px;
+        font:
+          14px/1.6 ui-monospace,
+          monospace;
+        padding: 14px;
+        border: 1px solid var(--line);
+        resize: vertical;
+      }
+      table {
+        width: 100%;
+        border-collapse: collapse;
+        margin-top: 14px;
+        font-size: 14px;
+      }
+      td,
+      th {
+        border-bottom: 1px solid var(--line);
+        padding: 8px;
+        text-align: left;
+      }
+      code {
+        font-family: ui-monospace, monospace;
+      }
+      footer {
+        color: var(--muted);
+        font-size: 13px;
+        margin: 25px 0;
+        max-width: 105ch;
+      }
+      @media (max-width: 850px) {
+        main {
+          padding: 16px;
+        }
+        header {
+          display: block;
+        }
+        .compare {
+          grid-template-columns: 1fr;
+        }
+        .engine + .engine {
+          border-left: 0;
+          border-top: 1px solid var(--line);
+        }
+        .steps button {
+          flex: 1 1 190px;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <header>
+        <div>
+          <h1>Same symbol. Which revision?</h1>
+          <p>
+            Compare real code navigation on a live workspace, a frozen project and a saved semantic
+            index.
+          </p>
+        </div>
+        <span class="tag">Gyst navigation lab · throwaway</span>
+      </header>
+      <p class="muted">
+        The review starts with a 10% → 20% discount change. The agent can then change it to 50%
+        without refreshing your review. Which definition and usages should you see?
+      </p>
+      <div class="steps" aria-label="Guided experiment">
+        <strong>Try this sequence</strong><button id="step-start">1. Compare definitions</button
+        ><button id="step-edit">2. Agent changes the helper</button
+        ><button id="step-refs">3. Find direct-call references</button
+        ><button id="step-old">4. Inspect the old side</button
+        ><button id="step-refresh">5. Refresh the snapshot</button>
+      </div>
+      <div id="status" role="status" aria-live="polite">Preparing…</div>
+      <div id="divergence"></div>
+      <div class="toolbar">
+        <label
+          >Captured side
+          <select id="side">
+            <option value="new">New</option>
+            <option value="old">Old</option>
+          </select></label
+        ><label
+          >File
+          <select id="file"></select></label
+        ><button id="reset">Reset experiment</button>
+      </div>
+      <div id="source" class="source" aria-label="Captured source code"></div>
+      <div class="toolbar">
+        <button id="definition" class="primary">Go to definition</button
+        ><button id="references">Find references</button
+        ><label><input id="declarations" type="checkbox" /> Include declarations</label
+        ><span id="selection">Choose an identifier in the captured source.</span>
+      </div>
+      <h2 id="query-label">Query results</h2>
+      <div class="compare" id="comparison">
+        <section class="engine live" data-engine="live">
+          <h3>Live workspace LSP</h3>
+          <p class="muted">Answers about the current scratch checkout.</p>
+          <div class="output">Choose an identifier to query.</div>
+        </section>
+        <section class="engine" data-engine="frozen">
+          <h3>Frozen project LSP</h3>
+          <p class="muted">Answers about the selected captured side.</p>
+          <div class="output">Choose an identifier to query.</div>
+        </section>
+        <section class="engine" data-engine="index">
+          <h3>Snapshot SCIP index</h3>
+          <p class="muted">Saved symbol occurrences. No server at query time.</p>
+          <div class="output">Choose an identifier to query.</div>
+        </section>
+      </div>
+      <section id="inspector" hidden>
+        <h2 id="target-title"></h2>
+        <p class="muted" id="target-provenance"></p>
+        <div id="target-source" class="source"></div>
+      </section>
+      <details>
+        <summary>Edit the live scratch workspace yourself</summary>
+        <p class="muted">
+          No repository files are changed. This restarts the live language server; the captured
+          projects and saved indexes stay untouched. Changing the clicked file makes live comparison
+          unavailable until positions can be trusted again.
+        </p>
+        <div class="toolbar">
+          <label
+            >Scratch file
+            <select id="edit-file"></select></label
+          ><button id="save-edit">Save scratch changes</button
+          ><button id="refresh">Capture a fresh snapshot</button>
+        </div>
+        <textarea id="edit-text" aria-label="Scratch source code" spellcheck="false"></textarea>
+      </details>
+      <details>
+        <summary>Measurements, engine versions and limits</summary>
+        <div id="metrics"></div>
+        <p class="muted">
+          Startup means LSP initialize + document notifications, not guaranteed full indexing. Query
+          timings are real wall time; initial queries may include project loading. Engines are
+          queried sequentially. Tiny fixture timings are not repository-scale benchmarks. Editing
+          restarts the live server rather than measuring incremental updates.
+        </p>
+        <p class="muted">
+          The SCIP reader matches exact symbols, including file-scoped local symbols. It does not
+          yet expand implementation/inheritance relationships or fetch external packages. The
+          indexer uses a different TypeScript version from the native LSP; differences can reflect
+          compiler versions as well as backend design. Try references on applyDiscount in
+          checkout.ts versus discount in preview.js: alias queries can have a narrower scope in
+          native TypeScript. Results are deliberately not normalized.
+        </p>
+      </details>
+      <footer>
+        Scratch data only. Actual TypeScript LSP requests and actual SCIP artifacts; no fake
+        results. Source browsing is simplified full-file context, not a production diff renderer.
+        All projects are scratch data; reset or stop the server to discard edits. The protocol trace
+        and process handling are intentionally limited to this experiment.
+      </footer>
+    </main>
+    <script type="module">
+      const $ = (id) => document.getElementById(id);
+      let state,
+        selected,
+        lastKind = "definition",
+        working = false;
+      const titles = {
+        live: "Live workspace LSP",
+        frozen: "Frozen project LSP",
+        index: "Snapshot SCIP index",
+      };
+      const ms = (value) => `${value.toFixed(2)} ms`;
+      function element(tag, text, className) {
+        const node = document.createElement(tag);
+        if (text !== undefined) node.textContent = text;
+        if (className) node.className = className;
+        return node;
+      }
+      async function api(path, body) {
+        const response = await fetch(
+          `/api/${path}`,
+          body === undefined
+            ? {}
+            : {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify(body),
+              },
+        );
+        const value = await response.json();
+        if (!response.ok) throw new Error(value.error);
+        return value;
+      }
+      async function busy(action) {
+        if (working) return;
+        working = true;
+        document
+          .querySelectorAll("button,select,textarea,input")
+          .forEach((node) => (node.disabled = true));
+        $("status").textContent = "Working with the real engines…";
+        try {
+          await action();
+          $("status").textContent = "Ready. Click any identifier to explore.";
+        } catch (error) {
+          $("status").textContent = String(error);
+        } finally {
+          working = false;
+          document
+            .querySelectorAll("button,select,textarea,input")
+            .forEach((node) => (node.disabled = false));
+        }
+      }
+      function options(node, values, preferred) {
+        node.replaceChildren(
+          ...values.map((value) => {
+            const option = element("option", value);
+            option.value = value;
+            return option;
+          }),
+        );
+        node.value = values.includes(preferred) ? preferred : values[0];
+      }
+      function clearResults() {
+        $("query-label").textContent = "Query results";
+        document
+          .querySelectorAll(".output")
+          .forEach((node) => (node.textContent = "Choose an identifier to query."));
+        $("inspector").hidden = true;
+      }
+      function drawSource(container, text, interactive, range) {
+        container.replaceChildren();
+        text.split(/\r\n|\n|\r/).forEach((line, lineNumber) => {
+          const row = element("div", undefined, "line");
+          if (range && lineNumber >= range.start.line && lineNumber <= range.end.line)
+            row.classList.add("highlight");
+          row.append(element("span", String(lineNumber + 1), "number"));
+          const code = element("span", undefined, "code");
+          if (interactive) {
+            let end = 0;
+            for (const match of line.matchAll(/[\p{ID_Start}_$][\p{ID_Continue}$]*/gu)) {
+              code.append(document.createTextNode(line.slice(end, match.index)));
+              const token = element("button", match[0], "token");
+              token.title = `Query ${match[0]} at ${lineNumber + 1}:${match.index + 1}`;
+              token.setAttribute("aria-label", token.title);
+              if (selected?.line === lineNumber && selected.character === match.index)
+                token.classList.add("selected");
+              token.onclick = () =>
+                busy(async () => {
+                  selected = { line: lineNumber, character: match.index, word: match[0] };
+                  renderSource();
+                  await query(lastKind);
+                });
+              code.append(token);
+              end = match.index + match[0].length;
+            }
+            code.append(document.createTextNode(line.slice(end)));
+          } else code.textContent = line;
+          row.append(code);
+          container.append(row);
+        });
+      }
+      function renderSource() {
+        drawSource($("source"), state[$("side").value][$("file").value] ?? "", true);
+        $("selection").textContent = selected
+          ? `${selected.word} · ${$("file").value}:${selected.line + 1}:${selected.character + 1} (UTF-16)`
+          : "Choose an identifier in the captured source.";
+      }
+      function renderState() {
+        const file = $("file").value;
+        options($("file"), Object.keys(state[$("side").value]), file || "checkout.ts");
+        options($("edit-file"), Object.keys(state.live), $("edit-file").value || "money.ts");
+        $("edit-text").value = state.live[$("edit-file").value];
+        $("divergence").textContent =
+          `Snapshot generation ${state.generation}. ${state.diverged ? "Live workspace has changed. Captured source and indexes have NOT changed." : "Live workspace matches the captured new side. Old side remains a separate project."}`;
+        $("divergence").className = state.diverged ? "warn" : "";
+        renderSource();
+        clearResults();
+        const metrics = $("metrics");
+        metrics.replaceChildren(
+          element(
+            "p",
+            `Native TypeScript ${state.versions.native}; scip-typescript ${state.versions.indexer} using TypeScript ${state.versions.indexerTypescript}.`,
+          ),
+        );
+        const table = element("table");
+        const head = element("tr");
+        ["Context", "LSP startup", "Index build", "Index bytes / files"].forEach((text) =>
+          head.append(element("th", text)),
+        );
+        table.append(head);
+        for (const side of ["old", "new", "live"]) {
+          const row = element("tr");
+          const index = state.indexes[side];
+          [
+            side,
+            ms(state.engines[side].startupMs),
+            index ? ms(index.buildMs) : "—",
+            index ? `${index.bytes.toLocaleString()} / ${index.files}` : "—",
+          ].forEach((text) => row.append(element("td", text)));
+          table.append(row);
+        }
+        metrics.append(table);
+        for (const [side, error] of Object.entries(state.indexErrors))
+          metrics.append(element("p", `${side} index unavailable: ${error}`, "error"));
+      }
+      function inspect(target, provenance) {
+        $("inspector").hidden = false;
+        $("target-title").textContent =
+          `${target.file}:${target.range.start.line + 1}:${target.range.start.character + 1}`;
+        $("target-provenance").textContent = provenance;
+        drawSource(
+          $("target-source"),
+          target.text ?? target.unavailable ?? "Source unavailable",
+          false,
+          target.range,
+        );
+        $("inspector").scrollIntoView({ block: "nearest" });
+      }
+      async function query(kind) {
+        if (!selected) throw new Error("Select an identifier first.");
+        lastKind = kind;
+        $("query-label").textContent =
+          `${kind === "definition" ? "Definition" : "References"} for ${selected.word} — captured ${$("side").value} side`;
+        const result = await api("query", {
+          side: $("side").value,
+          file: $("file").value,
+          line: selected.line,
+          character: selected.character,
+          kind,
+          includeDeclaration: $("declarations").checked,
+          generation: state.generation,
+        });
+        $("inspector").hidden = true;
+        for (const engine of result.results) {
+          const output = document.querySelector(`[data-engine="${engine.engine}"] .output`);
+          output.replaceChildren();
+          output.append(
+            element(
+              "div",
+              `${ms(engine.ms)} · ${engine.error ? "Unavailable" : `${engine.targets.length} location(s)`}`,
+              "timing",
+            ),
+          );
+          if (engine.error) {
+            output.append(element("p", engine.error, "error"));
+            continue;
+          }
+          output.append(element("p", engine.provenance, "muted"));
+          if (!engine.targets.length)
+            output.append(
+              element(
+                "p",
+                "No locations returned within this engine’s scope. This is not a claim of no usages anywhere.",
+                "muted",
+              ),
+            );
+          const list = element("ul", undefined, "results");
+          for (const target of engine.targets) {
+            const row = element("li");
+            const button = element(
+              "button",
+              `${target.file}:${target.range.start.line + 1}:${target.range.start.character + 1}`,
+              "target",
+            );
+            button.onclick = () =>
+              inspect(target, `${titles[engine.engine]} — ${engine.provenance}`);
+            row.append(
+              button,
+              element(
+                "span",
+                target.unavailable ??
+                  target.text?.split(/\r\n|\n|\r/)[target.range.start.line]?.trim() ??
+                  "",
+                "snippet",
+              ),
+            );
+            list.append(row);
+          }
+          output.append(list);
+        }
+      }
+      function chooseExample(side = "new") {
+        $("side").value = side;
+        options($("file"), Object.keys(state[side]), "checkout.ts");
+        const lines = state[side]["checkout.ts"].split("\n");
+        const line = lines.findIndex((text) => text.includes("applyDiscount(100)"));
+        selected = { line, character: lines[line].indexOf("applyDiscount"), word: "applyDiscount" };
+        renderSource();
+      }
+      $("side").onchange = () => {
+        selected = undefined;
+        renderState();
+      };
+      $("file").onchange = () => {
+        selected = undefined;
+        renderSource();
+        clearResults();
+      };
+      $("edit-file").onchange = () => {
+        $("edit-text").value = state.live[$("edit-file").value];
+      };
+      $("definition").onclick = () => busy(() => query("definition"));
+      $("references").onclick = () => busy(() => query("references"));
+      $("reset").onclick = () =>
+        busy(async () => {
+          state = await api("reset", {});
+          selected = undefined;
+          renderState();
+        });
+      $("save-edit").onclick = () =>
+        busy(async () => {
+          state = await api("edit", { file: $("edit-file").value, text: $("edit-text").value });
+          renderState();
+          if (selected) await query(lastKind);
+        });
+      async function refresh() {
+        state = await api("refresh", {});
+        selected = undefined;
+        renderState();
+        chooseExample();
+        await query("definition");
+      }
+      $("refresh").onclick = () => busy(refresh);
+      $("step-start").onclick = () =>
+        busy(async () => {
+          state = await api("reset", {});
+          renderState();
+          chooseExample();
+          await query("definition");
+        });
+      $("step-edit").onclick = () =>
+        busy(async () => {
+          state = await api("mutate", {});
+          renderState();
+          chooseExample();
+          await query("definition");
+        });
+      $("step-refs").onclick = () =>
+        busy(async () => {
+          $("side").value = "new";
+          options($("file"), Object.keys(state.new), "preview.js");
+          const line = state.new["preview.js"].split("\n")[1];
+          selected = { line: 1, character: line.indexOf("discount"), word: "discount" };
+          renderSource();
+          await query("references");
+        });
+      $("step-old").onclick = () =>
+        busy(async () => {
+          chooseExample("old");
+          await query("definition");
+        });
+      $("step-refresh").onclick = () => busy(refresh);
+      await busy(async () => {
+        state = await api("state");
+        renderState();
+        chooseExample();
+        await query("definition");
+      });
+    </script>
+  </body>
+</html>

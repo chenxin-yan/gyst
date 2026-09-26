@@ -1,0 +1,12 @@
+{
+  "name": "gyst-navigation-lab",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "bun server.ts",
+    "check": "bun check.ts"
+  },
+  "dependencies": {
+    "@sourcegraph/scip-typescript": "0.4.0"
+  }
+}
