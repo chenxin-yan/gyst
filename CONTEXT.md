@@ -36,7 +36,7 @@ _Avoid_: Comment thread
 A retained explanation whose supporting code or referenced context changed during refresh and has not yet been revalidated. Outdated signals that the explanation may no longer describe the current snapshot.
 
 **Reference**:
-A code link within an overview or note to an exact captured file, side and line range, including unchanged code outside the diff. It supplies supporting context, not a separate explanation or review item.
+An agent-authored code link within an overview or note to an exact captured file, side and line range, including unchanged code outside the diff. It supplies supporting context, not a separate explanation or review item; the Find references action instead discovers symbol usages.
 
 **Comment**:
 A human message starting a thread on one contiguous range of captured code, on one side of one file.
