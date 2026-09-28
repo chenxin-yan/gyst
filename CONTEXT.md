@@ -5,11 +5,11 @@ A keyboard-centric co-review web app, served locally: the user's coding-agent ha
 ## Language
 
 **Session**:
-One live review of one diff range, held by the gyst daemon and rendered in the web app. The unit both the human and the agent operate on.
+One saved review of one recorded scope, with its captured code, walkthrough and human review work. The unit both the human and the agent operate on.
 _Avoid_: Review, instance
 
 **Snapshot**:
-The frozen diff captured from a session's source. Refresh explicitly replaces it, carrying forward surviving review work and retaining older context where needed; source changes alone never alter it.
+The frozen diff and captured project files from a session's source, including unchanged code that supplies supporting context. Refresh explicitly replaces it, carrying forward surviving review work and retaining older context where needed; source changes alone never alter it.
 
 **Hunk**:
 One `@@` text block of the diff, addressed by a stable id. Gyst reviews text hunks only: mode bits, renames and binary content are not part of a session, and a file that changes nothing else is rejected.
@@ -17,6 +17,9 @@ One `@@` text block of the diff, addressed by a stable id. Gyst reviews text hun
 **Walkthrough**:
 The ordered sequence of groups explaining a scoped change from top to bottom, including the reading order of files within each group. Every changed hunk belongs to exactly one group when preparation is complete. Until then, ungrouped hunks appear only under their files, never as a list of their own; with no groups at all, the session is a plain diff viewer.
 _Avoid_: Inbox
+
+**Walkthrough export**:
+A standalone, read-only copy of one complete walkthrough and its included captured code, shared independently of the live session. It excludes private conversations and reading progress and cannot be imported as a session.
 
 **Group**:
 One self-contained walkthrough step containing hunks contributing to one coherent change. Its overview, ordered files and anchored notes provide context; after refresh, an Outdated group may temporarily retain its place and guidance without any current hunks.
@@ -36,16 +39,16 @@ _Avoid_: Comment thread
 A retained explanation whose supporting code or referenced context changed during refresh and has not yet been revalidated. Outdated signals that the explanation may no longer describe the current snapshot.
 
 **Reference**:
-A code link within an overview or note to an exact captured file, side and line range, including unchanged code outside the diff. It supplies supporting context, not a separate explanation or review item.
+A code link within an overview or note to an exact captured snapshot, file, side and line range, including unchanged code outside the diff. It supplies supporting context, not a separate explanation or review item or the symbol usages discovered by Find references.
 
 **Comment**:
 A human message starting a thread on one contiguous range of captured code, on one side of one file.
 
 **Reply**:
-A subsequent message in a thread, from the human or agent, or the human message starting a conversation on a note or overview.
+A subsequent message in a thread, from the human or agent, or the human message starting a conversation on a note.
 
 **Thread**:
-A flat conversation anchored to captured code, a note or an overview. Code ranges may host separate conversations; each note or overview has at most one thread.
+A flat conversation anchored to captured code or a note. Code ranges may host separate conversations; each note has at most one thread, and overviews are not conversation targets.
 
 **Pending message**:
 A human comment or reply not yet read by the agent, still editable and deletable by its author. Reading freezes that message; corrections then become new replies.
@@ -65,11 +68,17 @@ The agent's preparation of a walkthrough: understand the whole scoped change, pl
 _Avoid_: Analysis phase, triage
 
 **Scope**:
-What a session reviews: uncommitted changes (the default) or a Git revision range such as `main...feature`. A PR is resolved to its range before capture. Named in the invocation (`gyst main...feature`, "/gyst this PR") and shown exactly in the session header.
+What a session reviews: uncommitted changes (the default), a recorded Git revision range such as `main...feature`, or a PR whose range is resolved for capture. The scope remains the same as its source changes; it is distinct from a snapshot's frozen contents.
 _Avoid_: Target, range
 
+**Stack**:
+An ordered, linear set of GitHub-native PRs providing context and navigation around a selected PR's session, not a shared review or completion state.
+
+**Layer**:
+One PR's position in a stack. Its session belongs to the PR, not its position or current head, and keeps independent captured code and review work.
+
 **Source check**:
-An informational comparison of the recorded Git scope with the snapshot. It may report changed, unchanged or unavailable. A check never changes the snapshot or review progress.
+An informational comparison of the recorded Git scope's source with the snapshot, including captured supporting files rather than only changed hunks. It may report changed, unchanged or unavailable; a check never changes the snapshot or review progress.
 
 **Co-review**:
 The live phase once groups are published: the human drives the web app while the agent operates the same session through the control plane. It can overlap preparation of later groups.
