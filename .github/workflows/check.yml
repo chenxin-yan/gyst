@@ -14,16 +14,20 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+    strategy:
+      matrix:
+        # Minimum and current supported Node 24 runtimes.
+        node-version: ["24.11.0", "24"]
     steps:
       - uses: actions/checkout@v7
         with:
           persist-credentials: false
-      - uses: oven-sh/setup-bun@v2
-      - run: bun install --frozen-lockfile
-      - uses: actions/cache@v6
+      - uses: actions/setup-node@v7
         with:
-          path: .turbo
-          key: turbo-check-${{ runner.os }}-${{ github.sha }}
-          restore-keys: turbo-check-${{ runner.os }}-
-      - run: bun run check
-      - run: bun run test
+          node-version: ${{ matrix.node-version }}
+          cache: npm
+      - run: npm ci
+      - run: npm run check
+      - run: npm test
+      - run: npm run build
+      - run: npm pack ./apps/gyst/stage --dry-run

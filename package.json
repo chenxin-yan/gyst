@@ -6,28 +6,29 @@
     "apps/*",
     "packages/*"
   ],
+  "engines": {
+    "node": ">=24.11.0 <25"
+  },
   "scripts": {
-    "build": "turbo run build",
-    "lint": "oxlint",
-    "lint:fix": "oxlint --fix",
-    "format": "oxfmt --check",
-    "format:fix": "oxfmt",
-    "check": "turbo run //#lint //#format check:types",
-    "check:fix": "oxlint --fix && oxfmt",
-    "test": "turbo run test",
+    "build": "vp run @gyst/cli#build",
+    "check": "vp check",
+    "check:fix": "vp check --fix",
+    "test": "vp test",
     "changeset": "changeset",
-    "release:version": "changeset version && bun install --lockfile-only",
-    "release:publish": "bun scripts/publish.ts"
+    "release:version": "changeset version && npm install --package-lock-only",
+    "release:publish": "node scripts/publish.mjs"
   },
   "devDependencies": {
     "@changesets/changelog-github": "^1.0.1",
     "@changesets/cli": "^3.0.3",
-    "@types/bun": "^1.4.2",
-    "oxfmt": "^0.70.0",
-    "oxlint": "^1.85.0",
-    "oxlint-tsgolint": "^7.0.2002",
-    "turbo": "^2.11.3",
-    "typescript": "^7.0.2"
+    "@types/node": "~24.11.2",
+    "typescript": "^7.0.2",
+    "vite": "npm:@voidzero-dev/vite-plus-core@1.0.0-rc.1",
+    "vite-plus": "1.0.0-rc.1"
   },
-  "packageManager": "bun@1.4.2"
+  "overrides": {
+    "vite": "npm:@voidzero-dev/vite-plus-core@1.0.0-rc.1",
+    "vitest": "5.0.1"
+  },
+  "packageManager": "npm@11.19.0"
 }

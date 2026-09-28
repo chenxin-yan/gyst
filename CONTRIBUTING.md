@@ -1,70 +1,55 @@
 # Contributing
 
-Run commands from the repository root. Use the Bun version in
-[`package.json`](package.json) (`mise` reads it automatically).
+Run commands from the repository root with Node.js `>=24.11.0 <25` and npm (see
+`engines` and `packageManager` in [`package.json`](package.json)). Bun is not used.
 
 ## Develop
 
 ```sh
-bun install --frozen-lockfile
-bun run --cwd apps/gyst dev --help
-bun run check
-bun run test
+npm ci
+npm run check
+npm test
 ```
 
-`check` runs lint, formatting, and type checks. `bun run check:fix` fixes lint and
-formatting issues. Run both checks and tests before opening a PR.
-
-For editor lifecycle changes, also run the Linux PTY regression (Bun, Vim, `stty`
-and `setsid` must be available; artifacts go outside the repository):
-
-```sh
-bun apps/gyst/tests/pty/editor.ts --evidence /path/outside/repo/editor-pty
-```
-
-It exercises real OpenTUI/App handoff with fake editors and Vim, signals, resize,
-input/poll gating, terminal restoration and child reaping. Cross-builds do not
-substitute for macOS/Windows terminal runtime verification.
+`check` runs formatting, lint and type checks through Vite+ (`vp check`); `npm run check:fix`
+fixes formatting and lint issues. `npm test` runs Vitest (`vp test`). Configuration lives in
+[`vite.config.ts`](vite.config.ts). Run both checks and tests before opening a PR.
 
 ## Build
 
-Build for your machine:
-
 ```sh
-bun run --cwd apps/gyst build --target host
-bun run --cwd apps/gyst start --help
+npm run build
+node apps/gyst/dist/cli.mjs --help
 ```
 
-Build all configured release targets and inspect the publish plan without publishing:
+`build` bundles the CLI with `vp pack` into `apps/gyst/dist/` (the private `@gyst/core`
+workspace is bundled; npm dependencies stay external), renders the packaged skills into
+`apps/gyst/.crust/root/skills/`, and stages the publishable package in `apps/gyst/stage/`.
+Pack and install that staged directory to try the release artifact outside the checkout:
 
 ```sh
-bun install --frozen-lockfile --os='*' --cpu='*'
-bun run --cwd apps/gyst build
-bun run --cwd apps/gyst release -- --dry-run
+npm pack ./apps/gyst/stage --pack-destination /tmp/gyst-pack
+npm install -g --prefix /tmp/gyst-prefix /tmp/gyst-pack/gyst-cli-*.tgz
+/tmp/gyst-prefix/bin/gyst --help
 ```
-
-Output is in `apps/gyst/.crust/`. Targets and build settings live in
-[`apps/gyst/package.json`](apps/gyst/package.json).
 
 ## Releases
 
 For changes to the CLI, add a changeset and commit the generated file:
 
 ```sh
-bun run changeset
+npm run changeset
 ```
 
 Merging the change opens or updates the release PR. Merging that PR publishes the
-platform packages and CLI, creates the Git tag and GitHub Release, and attaches
-binaries, skills, and the license. Do not bump versions or create release tags by hand.
+staged `@gyst/cli` npm package, creates the Git tag and GitHub Release, and attaches
+the skills archive and the license. Do not bump versions or create release tags by hand.
 
-For prereleases, use `bun run changeset pre enter <tag>`; publication uses that npm
+For prereleases, use `npm run changeset -- pre enter <tag>`; publication uses that npm
 dist-tag. The [release workflow](.github/workflows/release.yml) owns the automation.
 
 ### Maintainer setup (once)
 
 - Enable **Allow GitHub Actions to create and approve pull requests** in repository settings.
-- Configure npm trusted publishing on `@gyst/cli` and all six platform packages:
-  repository `chenxin-yan/gyst`, workflow `release.yml`, no environment restriction,
-  with direct publishing allowed. New packages need an initial manual publish before
-  npm allows this setup.
+- Configure npm trusted publishing on `@gyst/cli`: repository `chenxin-yan/gyst`,
+  workflow `release.yml`, no environment restriction, with direct publishing allowed.

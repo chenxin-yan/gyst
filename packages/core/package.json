@@ -6,10 +6,6 @@
   "exports": {
     ".": "./src/index.ts"
   },
-  "scripts": {
-    "check:types": "tsc --noEmit",
-    "test": "bun test"
-  },
   "dependencies": {
     "@pierre/diffs": "1.4.3",
     "effect": "4.0.0-rc.117"

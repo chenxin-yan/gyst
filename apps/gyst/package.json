@@ -1,8 +1,7 @@
 {
-  "$schema": "./node_modules/@crustjs/crust/schema/package.json",
   "name": "@gyst/cli",
   "version": "0.1.2",
-  "description": "Keyboard-centric agent/human co-review TUI",
+  "description": "Keyboard-centric agent/human co-review",
   "license": "MIT",
   "type": "module",
   "repository": {
@@ -15,46 +14,27 @@
   "publishConfig": {
     "access": "public"
   },
-  "crust": {
-    "runtime": "bun",
-    "targets": [
-      "bun-linux-x64",
-      "bun-linux-arm64",
-      "bun-darwin-x64",
-      "bun-darwin-arm64",
-      "bun-windows-x64",
-      "bun-windows-arm64"
-    ],
-    "bunPlugins": [
-      "@opentui/solid/bun-plugin"
-    ]
+  "engines": {
+    "node": ">=24.11.0 <25"
   },
   "bin": {
-    "gyst": "src/index.tsx"
+    "gyst": "dist/cli.mjs"
   },
+  "files": [
+    "dist/",
+    ".crust/root/skills/"
+  ],
   "scripts": {
-    "dev": "bun run src/index.tsx",
-    "prebuild": "cp ../../LICENSE ../../README.md .",
-    "build": "crust build",
-    "start": "bun .crust/root/bin/gyst.js",
-    "release": "crust publish",
-    "check:types": "tsc --noEmit",
-    "test": "bun test"
-  },
-  "devDependencies": {
-    "@crustjs/crust": "0.4.1"
+    "build": "vp pack && node scripts/stage-package.mjs"
   },
   "dependencies": {
     "@crustjs/core": "0.4.1",
     "@crustjs/effect": "0.1.3",
     "@crustjs/extensions": "0.4.1",
     "@crustjs/skills": "0.4.1",
-    "@crustjs/tui": "0.0.2",
-    "@effect/platform-bun": "4.0.0-rc.117",
-    "@gyst/core": "workspace:*",
-    "@opentui/core": "0.5.12",
-    "@opentui/solid": "0.5.12",
-    "effect": "4.0.0-rc.117",
-    "solid-js": "1.9.15"
+    "@effect/platform-node": "4.0.0-rc.117",
+    "@effect/platform-node-shared": "4.0.0-rc.117",
+    "@gyst/core": "*",
+    "effect": "4.0.0-rc.117"
   }
 }
