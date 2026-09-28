@@ -15,16 +15,16 @@ const readJson = async (url) => JSON.parse(await readFile(url, "utf8"));
 const manifest = await readJson(new URL("package.json", appDir));
 const core = await readJson(new URL("packages/core/package.json", repoDir));
 
-// crust's runtime reads skills from `<installed package>/.crust/root/skills`.
-// Name, description and extras mirror `coReviewSkill` in src/cli/extensions/co-review-skill.ts.
-const { app } = await import(new URL("dist/app.mjs", appDir).href);
+// crust's runtime reads skills from `<installed package>/.crust/root/skills`. The skill options'
+// extras are package-relative, so resolve them against this package rather than the cwd.
+const { app, coReviewSkillOptions } = await import(new URL("dist/app.mjs", appDir).href);
 await writeSkills({
   app,
   outDir: fileURLToPath(skillsDir),
   version: manifest.version,
-  name: "gyst-cli",
-  description: "Use for uncertain gyst command syntax or after a bad_args error.",
-  extras: ["gyst", "gyst-ask", "gyst-refresh"].map((name) => new URL(`skills/${name}`, appDir)),
+  name: coReviewSkillOptions.name,
+  description: coReviewSkillOptions.description,
+  extras: coReviewSkillOptions.extras.map((extra) => new URL(extra, appDir)),
 });
 
 const dependencies = { ...manifest.dependencies };

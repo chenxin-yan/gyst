@@ -7,6 +7,21 @@ export default defineConfig({
     sortPackageJson: false,
     ignorePatterns: [".github/workflows/pullfrog.yml"],
   },
+  test: {
+    // Only the installed project builds, packs and globally installs the CLI (once per run), so
+    // `vp test --project unit` never builds.
+    projects: [
+      { extends: true, test: { name: "unit", include: ["{apps,packages}/*/src/**/*.test.ts"] } },
+      {
+        extends: true,
+        test: {
+          name: "installed",
+          include: ["apps/gyst/tests/**/*.test.ts"],
+          globalSetup: ["apps/gyst/tests/e2e/global-setup.ts"],
+        },
+      },
+    ],
+  },
   lint: {
     options: {
       typeAware: true,

@@ -27,12 +27,16 @@ describe("installed gyst CLI", () => {
     expect(dist).toContain("app.mjs");
   });
 
-  it("prints help for the root and session commands without the hidden daemon", async () => {
+  it("prints help for bare gyst, the root and session commands without the hidden daemon", async () => {
     const { root, env, gyst } = await sandbox();
     const help = succeeded(await gyst(root, ["--help"])).stdout;
     expect(help).toContain("Commands:");
     expect(help).toContain("Agent skills");
     expect(help).not.toContain("daemon");
+    // The terminal viewer is gone; bare `gyst` is the root help.
+    const bare = succeeded(await gyst(root, []));
+    expect(bare.stdout).toBe(help);
+    expect(bare.stderr).toBe("");
     expect(succeeded(await gyst(root, ["session", "--help"])).stdout).toContain("gyst session");
     expect(succeeded(await gyst(root, ["session", "create", "--help"])).stdout).toContain(
       "gyst session create",

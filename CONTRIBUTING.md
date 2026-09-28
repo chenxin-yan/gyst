@@ -12,7 +12,9 @@ npm test
 ```
 
 `check` runs formatting, lint and type checks through Vite+ (`vp check`); `npm run check:fix`
-fixes formatting and lint issues. `npm test` runs Vitest (`vp test`). Configuration lives in
+fixes formatting and lint issues. `npm test` runs Vitest (`vp test`): the `unit` project, and
+the `installed` project, which first builds, packs and globally installs the CLI into a
+temporary prefix. `npm test -- --project unit` skips that build. Configuration lives in
 [`vite.config.ts`](vite.config.ts). Run both checks and tests before opening a PR.
 
 ## Build
@@ -28,6 +30,7 @@ workspace is bundled; npm dependencies stay external), renders the packaged skil
 Pack and install that staged directory to try the release artifact outside the checkout:
 
 ```sh
+mkdir -p /tmp/gyst-pack
 npm pack ./apps/gyst/stage --pack-destination /tmp/gyst-pack
 npm install -g --prefix /tmp/gyst-prefix /tmp/gyst-pack/gyst-cli-*.tgz
 /tmp/gyst-prefix/bin/gyst --help
