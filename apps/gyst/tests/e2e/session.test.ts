@@ -1,5 +1,11 @@
-import { SourceCheckPayloadSchema, StatusPayloadSchema } from "@gyst/core";
-import { Schema } from "effect";
+import {
+  applyHumanAction,
+  SessionSchema,
+  SourceCheckPayloadSchema,
+  StatusPayloadSchema,
+  statusOf,
+} from "@gyst/core";
+import { Result, Schema } from "effect";
 import { execFileSync, spawn } from "node:child_process";
 import { existsSync } from "node:fs";
 import { chmod, mkdir, mkdtemp, readFile, readdir, writeFile } from "node:fs/promises";
@@ -25,6 +31,7 @@ import {
 
 // The installed daemon reports its package version.
 const daemonVersion = packageJson.version;
+const decodeSession = Schema.decodeUnknownSync(Schema.fromJsonString(SessionSchema));
 
 type Sandbox = Awaited<ReturnType<typeof sandbox>>;
 
@@ -346,18 +353,22 @@ describe("gyst session CLI seam", () => {
     await writeFile(join(first, "tracked.txt"), "first changed\n");
     await writeFile(join(replacement, "tracked.txt"), "replacement changed\n");
     succeeded(await gyst(first, ["session", "create"]));
-    const pid = await daemonPid(data);
 
+    // Independent processes: the replacement may reach the first daemon or, after its idle exit, a
+    // new one. Either way a daemon must keep serving it. server.test.ts pins the overlapping order.
     const [closed, created] = await Promise.all([
       gyst(first, ["session", "close"]),
       gyst(replacement, ["session", "create"]),
     ]);
     succeeded(closed);
     succeeded(created);
-    // Nothing signals "did not shut down": give the 20 ms idle debounce time to act wrongly.
+    // Wait past the 20 ms idle debounce so a wrongful idle exit is likely to show; this cannot
+    // prove its absence.
     await sleep(100);
+    const pid = await daemonPid(data);
     expect(isAlive(pid)).toBe(true);
     succeeded(await gyst(replacement, ["session", "status"]));
+    // Served by that daemon, not a respawn from persistence.
     expect(await daemonPid(data)).toBe(pid);
     succeeded(await gyst(replacement, ["session", "close"]));
   }, 20_000);
@@ -741,7 +752,7 @@ describe("gyst session CLI seam", () => {
     await writeFile(join(cwd, "tracked.txt"), "changed\n");
     const initial = json(await gyst(cwd, ["session", "create"], undefined, ownData));
     const hunkId = initial.inbox[0].id;
-    const status = json(
+    const published = json(
       await gyst(
         cwd,
         ["session", "apply"],
@@ -762,10 +773,23 @@ describe("gyst session CLI seam", () => {
         ownData,
       ),
     );
-    const savedPath = join(ownData, `${status.session.id}.json`);
-    const saved = await readFile(savedPath, "utf8");
+    const savedPath = join(ownData, `${published.session.id}.json`);
     await killDaemon(ownData, "SIGTERM");
     expect(existsSync(join(ownData, "daemon.pid"))).toBe(false);
+    // No command records human work any more: accept the group with the pure reducer and save it
+    // as the store does, so the upgrade must carry a non-default verdict and accept history.
+    const session = decodeSession(await readFile(savedPath, "utf8"));
+    const reviewed = Result.getOrThrow(
+      applyHumanAction(
+        session,
+        { type: "verdict.toggle", itemId: "group", sessionId: session.id, revision: 1 },
+        new Date().toISOString(),
+      ),
+    );
+    const status = statusOf(reviewed);
+    expect(status.groups[0]!.accepted).toBe(true);
+    const saved = `${JSON.stringify(reviewed)}\n`;
+    await writeFile(savedPath, saved);
     const fake = await fakeDaemon(ownData, (message) => {
       if (message.command !== "daemon.restart")
         return { ok: true, value: { version: "0.0.0", instanceId: "old" } };

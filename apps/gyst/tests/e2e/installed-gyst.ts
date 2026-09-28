@@ -155,9 +155,41 @@ export async function killDaemon(dataDir: string, signal: NodeJS.Signals = "SIGK
   return pid;
 }
 
+/** Sends a signal; false if the process already exited, e.g. by its own idle shutdown. */
+function signal(pid: number, name: NodeJS.Signals): boolean {
+  try {
+    process.kill(pid, name);
+    return true;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ESRCH") return false;
+    throw error;
+  }
+}
+
+/**
+ * Stops the daemon a data dir names, if it is still running from the private install; a stale
+ * `daemon.pid` may name a reused pid. SIGKILLs one that ignores SIGTERM, then reports it.
+ */
+async function stopDaemon(dataDir: string): Promise<void> {
+  const pid = await daemonPid(dataDir);
+  if (Number.isNaN(pid) || !isAlive(pid)) return;
+  const args = commandLine(pid);
+  if (!args.includes(installed.prefix) || !args.endsWith(" daemon run")) return;
+  if (!signal(pid, "SIGTERM")) return;
+  const exited = await waitFor(() => !isAlive(pid), `daemon ${pid} to exit`).then(
+    () => true,
+    () => false,
+  );
+  if (exited) return;
+  signal(pid, "SIGKILL");
+  await waitFor(() => !isAlive(pid), `daemon ${pid} to exit after SIGKILL`);
+  throw new Error(`daemon ${pid} ignored SIGTERM during cleanup`);
+}
+
 /**
  * A private root with its own HOME and default data dir; `gyst` runs the installed bin there.
- * After the test, daemons named by any data dir it used are stopped and the root is removed.
+ * After the test, daemons named by any data dir it used are stopped and the root is removed; every
+ * step runs even if an earlier one failed, and all failures are reported.
  */
 export async function sandbox() {
   const root = await realpath(await mkdtemp(join(tmpdir(), "gyst-e2e-")));
@@ -167,18 +199,12 @@ export async function sandbox() {
   const env = isolatedEnv(home, { GYST_DATA_DIR: data });
   const dataDirs = new Set([data]);
   onTestFinished(async () => {
-    const stuck: number[] = [];
-    for (const dataDir of dataDirs) {
-      const pid = await daemonPid(dataDir);
-      if (Number.isNaN(pid) || !isAlive(pid)) continue;
-      process.kill(pid, "SIGTERM");
-      await waitFor(() => !isAlive(pid), `daemon ${pid} to exit`).catch(() => {
-        stuck.push(pid);
-        process.kill(pid, "SIGKILL");
-      });
-    }
-    await rm(root, { recursive: true, force: true });
-    if (stuck.length > 0) throw new Error(`daemons ignored SIGTERM during cleanup: ${stuck}`);
+    const failures: unknown[] = [];
+    for (const dataDir of dataDirs)
+      await stopDaemon(dataDir).catch((error) => failures.push(error));
+    await rm(root, { recursive: true, force: true }).catch((error) => failures.push(error));
+    if (failures.length > 0)
+      throw new AggregateError(failures, `sandbox cleanup failed: ${failures.join("; ")}`);
   });
   return {
     root,
