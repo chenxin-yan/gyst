@@ -2,6 +2,31 @@ import { Schema } from "effect";
 import { ErrorPayloadSchema } from "./errors.ts";
 import { HunkSchema, ScopeSchema, SessionSummarySchema } from "./session.ts";
 
+// `@gyst/core/wire` is the browser-safe entry: every contract a bridge or browser needs, without the
+// Node-only snapshot parsing and hashing the root `@gyst/core` export pulls in.
+export {
+  BadArgs,
+  DaemonError,
+  DaemonUnreachable,
+  ErrorCodeSchema,
+  type ErrorPayload,
+  ErrorPayloadSchema,
+  InternalError,
+  NoSession,
+  StaleRevision,
+  ValidationFailed,
+} from "./errors.ts";
+export {
+  type Hunk,
+  HunkSchema,
+  type Scope,
+  ScopeSchema,
+  type SessionSummary,
+  SessionSummarySchema,
+  type StatusPayload,
+  StatusPayloadSchema,
+} from "./session.ts";
+
 export const DiffPayloadSchema = Schema.Struct({
   sessionId: Schema.String,
   revision: Schema.Number,

@@ -874,11 +874,49 @@ describe("Sessions.delete", () => {
           message: "request id reused with a different payload",
         });
         expect((yield* Effect.flip(remove(persisted.id, "a-new-request")))._tag).toBe("no_session");
+        // Another session remains, so a replay must not arm the idle shutdown.
+        yield* Effect.flip(
+          Effect.timeout(
+            Sessions.use((s) => s.idle),
+            "30 millis",
+          ),
+        );
       }),
     );
     expect([...files.keys()]).toEqual([other.id]);
     expect(deleteReceipts).toEqual([{ requestId: "retry-me", sessionId: persisted.id }]);
     expect((await failure(remove(other.id, "")))._tag).toBe("bad_args");
+  });
+
+  it("arms idle when a replay after restart finds no sessions, until an open arrives", async () => {
+    const deleted = await run(remove(persisted.id, "last"));
+    // A fresh daemon starts empty but must not be idle before its first request.
+    await run(
+      Effect.gen(function* () {
+        const sessions = yield* Sessions;
+        yield* Effect.flip(Effect.timeout(sessions.idle, "30 millis"));
+        expect(yield* remove(persisted.id, "last")).toEqual(deleted);
+        yield* Effect.timeout(sessions.idle, "1 second");
+        expect(yield* sessions.isEmpty).toBe(true);
+      }),
+    );
+    // Racing an open, the replay answers the same and the opened session keeps the daemon busy.
+    await run(
+      Effect.gen(function* () {
+        const sessions = yield* Sessions;
+        const [replayed, opened] = yield* Effect.all([remove(persisted.id, "last"), openScope()], {
+          concurrency: "unbounded",
+        });
+        expect(replayed).toEqual(deleted);
+        expect(yield* sessions.isEmpty).toBe(false);
+        yield* Effect.flip(Effect.timeout(sessions.idle, "30 millis"));
+        expect(yield* remove(persisted.id, "last")).toEqual(deleted);
+        yield* Effect.flip(Effect.timeout(sessions.idle, "30 millis"));
+        yield* remove(opened.session.id, "opened");
+        yield* Effect.timeout(sessions.idle, "1 second");
+      }),
+    );
+    expect(deleteReceipts).toHaveLength(2);
   });
 
   it("keeps the session and every receipt when the receipt cannot be written", async () => {

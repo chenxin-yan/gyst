@@ -392,6 +392,17 @@ describe("gyst session CLI seam", () => {
       `daemon ${respawned} to exit after the last delete`,
     );
     expect((await readdir(data)).sort()).toEqual(["corrupt.json", "delete-receipts"]);
+
+    // A lost acknowledgement retried after that exit starts a daemon that answers from the receipt
+    // and, holding no sessions, shuts down again.
+    expect(json(await gyst(cwd, ["session", "delete", ...pinned, "--request-id", "last"]))).toEqual(
+      { deleted: true, sessionId: status.session.id },
+    );
+    await waitFor(
+      () => installedDaemons().length === 0 && !existsSync(join(data, "daemon.pid")),
+      "the replaying daemon to exit with no sessions left",
+    );
+    expect((await readdir(data)).sort()).toEqual(["corrupt.json", "delete-receipts"]);
   }, 20_000);
 
   it("keeps failed persistence from exposing an opened or hiding a deleted session", async () => {
@@ -439,6 +450,10 @@ describe("gyst session CLI seam", () => {
     await killDaemon(data);
     // A lost acknowledgement retried against a fresh daemon: same answer, nothing else touched.
     expect(json(await remove(doomed.id, "delete-doomed"))).toEqual(deleted);
+    // The kept session holds the replaying daemon open past the idle debounce.
+    const replaying = await daemonPid(data);
+    await sleep(100);
+    expect(isAlive(replaying)).toBe(true);
     expect(failed(await remove(kept.id, "delete-doomed"))).toMatchObject({
       code: "validation_failed",
       message: "request id reused with a different payload",
@@ -453,6 +468,7 @@ describe("gyst session CLI seam", () => {
     const reopened = json(await gyst(cwd, ["session", "open"]));
     expect(reopened.created).toBe(true);
     expect(reopened.session.id).not.toBe(doomed.id);
+    expect(await daemonPid(data)).toBe(replaying);
     for (const { id } of [kept, reopened.session]) succeeded(await remove(id, `cleanup-${id}`));
   }, 20_000);
 

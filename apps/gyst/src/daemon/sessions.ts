@@ -284,6 +284,8 @@ export class Sessions extends Context.Service<
               message: "request id reused with a different payload",
               detail: { requestId, sessionId: receipt.sessionId },
             });
+          // A daemon started only to answer this retry has nothing left to serve.
+          if (sessions.size === 0) yield* idle.open;
           return { deleted: true, sessionId: receipt.sessionId } satisfies DeletePayload;
         }
         const session = yield* selected(request);
