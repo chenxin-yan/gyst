@@ -4,7 +4,6 @@ export const ErrorCodeSchema = Schema.Literals([
   "stale_revision",
   "validation_failed",
   "no_session",
-  "session_exists",
   "daemon_unreachable",
   "bad_args",
   "internal_error",
@@ -21,10 +20,6 @@ export class ValidationFailed extends Schema.TaggedError<ValidationFailed>()(
   errorFields,
 ) {}
 export class NoSession extends Schema.TaggedError<NoSession>()("no_session", errorFields) {}
-export class SessionExists extends Schema.TaggedError<SessionExists>()(
-  "session_exists",
-  errorFields,
-) {}
 export class DaemonUnreachable extends Schema.TaggedError<DaemonUnreachable>()(
   "daemon_unreachable",
   errorFields,
@@ -40,7 +35,6 @@ export const DaemonError = Schema.Union([
   StaleRevision,
   ValidationFailed,
   NoSession,
-  SessionExists,
   DaemonUnreachable,
   BadArgs,
   InternalError,

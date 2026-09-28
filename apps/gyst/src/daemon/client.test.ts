@@ -84,6 +84,7 @@ const request = (input: Request) =>
           dataDir,
           socketPath,
           pidPath: join(dataDir, "daemon.pid"),
+          deleteReceiptsPath: join(dataDir, "delete-receipts"),
           sessionFile: (id) => join(dataDir, `${id}.json`),
         }),
       ),
@@ -112,7 +113,7 @@ describe("DaemonClient", () => {
       ),
     );
     dials.hungUp.add(0);
-    expect(await request({ command: "status", cwd: "/repo" })).toMatchObject({
+    expect(await request({ command: "status", session: "s1" })).toMatchObject({
       _tag: "no_session",
     });
     expect(commands).toEqual(["daemon.info", "status"]);
@@ -127,7 +128,7 @@ describe("DaemonClient", () => {
       ),
     );
     lostHandshakes = 1;
-    expect(await request({ command: "status", cwd: "/repo" })).toMatchObject({
+    expect(await request({ command: "status", session: "s1" })).toMatchObject({
       _tag: "no_session",
     });
     expect(commands).toEqual(["daemon.info", "daemon.info", "status"]);
@@ -141,7 +142,7 @@ describe("DaemonClient", () => {
       if (hungUp) dials.hungUp.add(1);
       // Reading the whole frame admits the command: the reply is lost, the mutation may have run.
       await fakeDaemon((socket) => socket.destroy());
-      const error = await request({ command: "apply", cwd: "/repo", batch: "{}" });
+      const error = await request({ command: "apply", session: "s1", batch: "{}" });
       expect(error).toMatchObject({
         _tag: "daemon_unreachable",
         message: expect.stringContaining("after sending the command"),

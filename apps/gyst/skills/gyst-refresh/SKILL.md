@@ -9,13 +9,12 @@ Load the `gyst` skill's planning, authoring and publication rules as reference; 
 
 ## 1. Choose the snapshot
 
-Read `gyst session status`; record the source, revision, groups and acceptance. Pin subsequent commands with `--session <id>`. If no session exists, direct the user to `gyst` and stop. Ask before changing scope.
+Take the session id from the conversation, or from `gyst session list` for this repository and the scope under discussion; ask if several match. Read `gyst session status --session <id>`; record the scope, revision, groups and acceptance. Pass `--session <id>` to every subsequent command. If no session exists, direct the user to `gyst` and stop. Ask before changing scope.
 
-| User request                                                              | Action                                                                                                                     |
-| ------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------- |
-| “Include my latest edits” or `/gyst-refresh`                              | For Git, run `gyst session refresh --session <id>`; replay the recorded scope, fetching refs first if needed.              |
-| “I pressed r; update the groups” or “Split this group without refreshing” | Use the current snapshot.                                                                                                  |
-| Refresh a stdin snapshot                                                  | Obtain a same-scope replacement patch; pipe to `gyst session refresh --session <id> --stdin`. Ask and stop if unavailable. |
+| User request                                                              | Action                                                                                                   |
+| ------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------- |
+| “Include my latest edits” or `/gyst-refresh`                              | Run `gyst session refresh --session <id>`; it recaptures the recorded scope. Fetch refs first if needed. |
+| “I pressed r; update the groups” or “Split this group without refreshing” | Use the current snapshot.                                                                                |
 
 A source-change notice alone calls for informing the user and asking whether to refresh.
 

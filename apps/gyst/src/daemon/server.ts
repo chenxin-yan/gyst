@@ -133,8 +133,10 @@ export class DaemonServer extends Context.Service<
 
       const dispatch = (request: Request): Effect.Effect<unknown, DaemonError> => {
         switch (request.command) {
-          case "create":
-            return sessions.create(request);
+          case "open":
+            return sessions.open(request);
+          case "list":
+            return sessions.list;
           case "status":
             return sessions.status(request);
           case "check":
@@ -145,8 +147,8 @@ export class DaemonServer extends Context.Service<
             return sessions.apply(request);
           case "refresh":
             return sessions.refresh(request);
-          case "close":
-            return sessions.close(request);
+          case "delete":
+            return sessions.delete(request);
         }
       };
       // Accepted connections that have not replied yet; idle shutdown must not interrupt them.
@@ -236,7 +238,7 @@ export class DaemonServer extends Context.Service<
         Effect.catchTag("SocketError", () => Effect.void),
       );
 
-      // Debounce: a create racing the final close keeps the daemon alive. `isEmpty` queues behind
+      // Debounce: an open racing the final delete keeps the daemon alive. `isEmpty` queues behind
       // in-flight commands, so a connection accepted meanwhile has counted itself by the time
       // `active` is read; that order matters.
       const untilIdle = sessions.idle.pipe(

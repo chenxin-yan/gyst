@@ -1,6 +1,6 @@
 import { Schema } from "effect";
 import { ErrorPayloadSchema } from "./errors.ts";
-import { HunkSchema } from "./session.ts";
+import { HunkSchema, ScopeSchema, SessionSummarySchema } from "./session.ts";
 
 export const DiffPayloadSchema = Schema.Struct({
   sessionId: Schema.String,
@@ -12,47 +12,70 @@ export type DiffPayload = typeof DiffPayloadSchema.Type;
 export const SourceCheckPayloadSchema = Schema.Struct({
   sessionId: Schema.String,
   revision: Schema.Number,
-  state: Schema.Literals(["unchanged", "changed", "stdin", "unavailable"]),
+  state: Schema.Literals(["unchanged", "changed", "unavailable"]),
   checkedAt: Schema.String,
   message: Schema.optional(Schema.String),
 });
 export type SourceCheckPayload = typeof SourceCheckPayloadSchema.Type;
 
-export const ClosePayloadSchema = Schema.Struct({
-  closed: Schema.Literal(true),
+export const OpenPayloadSchema = Schema.Struct({
+  session: SessionSummarySchema,
+  /** False when the saved session was returned as it was: reuse never refreshes it. */
+  created: Schema.Boolean,
+  /** The token-free command a human runs to view this session; open itself launches nothing. */
+  launch: Schema.Struct({ argv: Schema.Array(Schema.String) }),
+});
+export type OpenPayload = typeof OpenPayloadSchema.Type;
+
+export const ListPayloadSchema = Schema.Struct({ sessions: Schema.Array(SessionSummarySchema) });
+export type ListPayload = typeof ListPayloadSchema.Type;
+
+/** Also the recorded answer to every retry of the same delete request. */
+export const DeletePayloadSchema = Schema.Struct({
+  deleted: Schema.Literal(true),
   sessionId: Schema.String,
 });
-export type ClosePayload = typeof ClosePayloadSchema.Type;
+export type DeletePayload = typeof DeletePayloadSchema.Type;
 
-// `cwd` is the caller's directory, bound by the entry point; `session` selects an exact id, else
-// the session of the repository containing `cwd`.
-const selection = { cwd: Schema.String, session: Schema.optional(Schema.String) };
-/** A supplied unified diff with repository-root-relative paths, replacing Git acquisition. */
-const patch = Schema.optional(Schema.String);
+/** An exact saved-session id; no operation falls back to the caller's directory. */
+const exact = { session: Schema.String };
 
-/** One validated operation per session command; CLI flags and argv never cross the socket. */
-export const RequestSchema = Schema.Union([
-  Schema.Struct({
-    command: Schema.Literal("create"),
-    cwd: Schema.String,
-    /** Git revisions; when `pathspecs` is present Git sees `<revisions> -- <pathspecs>`. */
-    revisions: Schema.Array(Schema.String),
-    pathspecs: Schema.optional(Schema.Array(Schema.String)),
-    patch,
-  }),
-  Schema.Struct({ command: Schema.Literal("status"), ...selection }),
-  Schema.Struct({ command: Schema.Literal("check"), ...selection }),
+/**
+ * The operations a browser may request: exact saved-session ids and read filters only. Checkout
+ * paths, Git input, executables and caller roles are not expressible, so a bridge decodes browser
+ * input with this schema and forwards it unchanged.
+ */
+export const BrowserRequestSchema = Schema.Union([
+  Schema.Struct({ command: Schema.Literal("list") }),
+  Schema.Struct({ command: Schema.Literal("open"), ...exact }),
+  Schema.Struct({ command: Schema.Literal("status"), ...exact }),
+  Schema.Struct({ command: Schema.Literal("check"), ...exact }),
   Schema.Struct({
     command: Schema.Literal("diff"),
-    ...selection,
+    ...exact,
     hunk: Schema.optional(Schema.String),
     group: Schema.optional(Schema.String),
     file: Schema.optional(Schema.String),
   }),
+  /**
+   * `requestId` is chosen by the caller before sending and reused for every retry of this delete,
+   * so a lost reply cannot turn into a second operation.
+   */
+  Schema.Struct({ command: Schema.Literal("delete"), ...exact, requestId: Schema.String }),
+]);
+export type BrowserRequest = typeof BrowserRequestSchema.Type;
+
+/** One validated operation per session command; CLI flags and argv never cross the socket. */
+export const RequestSchema = Schema.Union([
+  /**
+   * Trusted local entry points only. `cwd` is the caller's directory, bound by the entry point, and
+   * selects the repository; the recorded scope then creates or reuses that repository's session.
+   */
+  Schema.Struct({ command: Schema.Literal("open"), cwd: Schema.String, scope: ScopeSchema }),
+  ...BrowserRequestSchema.members,
   /** `batch` is the JSON apply envelope text; the use case validates it against `ApplyEnvelopeSchema`. */
-  Schema.Struct({ command: Schema.Literal("apply"), ...selection, batch: Schema.String }),
-  Schema.Struct({ command: Schema.Literal("refresh"), ...selection, patch }),
-  Schema.Struct({ command: Schema.Literal("close"), ...selection }),
+  Schema.Struct({ command: Schema.Literal("apply"), ...exact, batch: Schema.String }),
+  Schema.Struct({ command: Schema.Literal("refresh"), ...exact }),
 ]);
 export type Request = typeof RequestSchema.Type;
 

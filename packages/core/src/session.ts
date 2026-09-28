@@ -18,27 +18,29 @@ export const GroupSchema = Schema.Struct({
 });
 export type Group = typeof GroupSchema.Type;
 
-export const SourceSchema = Schema.Union([
-  Schema.Struct({
-    kind: Schema.Literal("git"),
-    args: Schema.Array(Schema.String),
-    patchHash: Schema.String,
-    // `cwd` makes relative pathspecs in `args` replayable.
-    cwd: Schema.String,
-    // A bare snapshot re-resolves HEAD and re-lists untracked files on refresh.
-    includeUntracked: Schema.optional(Schema.Boolean),
-  }),
-  Schema.Struct({ kind: Schema.Literal("stdin") }),
+/**
+ * What a session reviews, recorded as the caller wrote it. With the repository root it is the
+ * session's identity: a moved ref or an equal resolved diff never makes it another session.
+ */
+export const ScopeSchema = Schema.Union([
+  /** HEAD (or the empty tree) against the working tree, including untracked files. */
+  Schema.Struct({ kind: Schema.Literal("uncommitted") }),
+  /** A Git range such as `main...feature`; its endpoints resolve again at each capture. */
+  Schema.Struct({ kind: Schema.Literal("range"), range: Schema.String }),
 ]);
-export type Source = typeof SourceSchema.Type;
+export type Scope = typeof ScopeSchema.Type;
 
 const sessionSummaryFields = {
   id: Schema.String,
   repoRoot: Schema.String,
-  source: SourceSchema,
+  scope: ScopeSchema,
+  /** Identifies the captured snapshot: the SHA-256 of its unified diff. Refresh replaces it. */
+  snapshotId: Schema.String,
   createdAt: Schema.String,
   updatedAt: Schema.String,
 };
+export const SessionSummarySchema = Schema.Struct(sessionSummaryFields);
+export type SessionSummary = typeof SessionSummarySchema.Type;
 const cursorSchema = Schema.Struct({
   itemId: Schema.NullOr(Schema.String),
   pane: Schema.Literals(["queue", "diff"]),
@@ -56,7 +58,7 @@ const cursorSchema = Schema.Struct({
 const HunkSummarySchema = Schema.Struct({ id: Schema.String, file: Schema.String });
 // Wire notes carry text; receipts carry indices into `receiptNoteTexts`.
 const statusPayloadFields = <Text extends Schema.Top>(text: Text) => ({
-  session: Schema.Struct(sessionSummaryFields),
+  session: SessionSummarySchema,
   revision: Schema.Number,
   seq: Schema.Number,
   cursor: cursorSchema,

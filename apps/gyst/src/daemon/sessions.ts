@@ -2,18 +2,21 @@ import {
   applyBatch,
   ApplyEnvelopeSchema,
   BadArgs,
-  type ClosePayload,
+  type DeletePayload,
   type DiffPayload,
+  type ListPayload,
   NoSession,
+  type OpenPayload,
   parseSnapshot,
   refreshSession,
   type Request,
+  type Scope,
   type Session,
-  SessionExists,
   StaleRevision,
   type SourceCheckPayload,
   type StatusPayload,
   statusOf,
+  summaryOf,
   ValidationFailed,
 } from "@gyst/core";
 import {
@@ -29,11 +32,20 @@ import {
 } from "effect";
 import { createHash } from "node:crypto";
 import { Git } from "./git.ts";
-import { SessionStore } from "./store.ts";
+import { type DeleteReceipt, SessionStore } from "./store.ts";
 
-const patchHash = (patch: string) => createHash("sha256").update(patch).digest("hex");
+const snapshotIdOf = (patch: string) => createHash("sha256").update(patch).digest("hex");
 type SourceCheck = Omit<SourceCheckPayload, "sessionId" | "revision">;
 type Input<C extends Request["command"]> = Extract<Request, { readonly command: C }>;
+
+const sameScope = (a: Scope, b: Scope) =>
+  a.kind === "range" ? b.kind === "range" && a.range === b.range : a.kind === b.kind;
+
+const opened = (session: Session, created: boolean): OpenPayload => ({
+  session: summaryOf(session),
+  created,
+  launch: { argv: ["gyst", "--session", session.id] },
+});
 
 const decodeEnvelope = Schema.decodeUnknownEffect(Schema.fromJsonString(ApplyEnvelopeSchema), {
   onExcessProperty: "error",
@@ -42,30 +54,41 @@ const decodeEnvelope = Schema.decodeUnknownEffect(Schema.fromJsonString(ApplyEnv
 export class Sessions extends Context.Service<
   Sessions,
   {
-    create(request: Input<"create">): Effect.Effect<StatusPayload, BadArgs | SessionExists>;
-    status(request: Input<"status">): Effect.Effect<StatusPayload, BadArgs | NoSession>;
-    check(request: Input<"check">): Effect.Effect<SourceCheckPayload, BadArgs | NoSession>;
+    /**
+     * Returns the saved session for this repository and recorded scope as it is, else captures and
+     * persists a new one. Opens are serialized, so concurrent opens of one scope return one session.
+     */
+    open(request: Input<"open">): Effect.Effect<OpenPayload, BadArgs | NoSession>;
+    readonly list: Effect.Effect<ListPayload>;
+    status(request: Input<"status">): Effect.Effect<StatusPayload, NoSession>;
+    check(request: Input<"check">): Effect.Effect<SourceCheckPayload, NoSession>;
     diff(
       request: Input<"diff">,
     ): Effect.Effect<DiffPayload, BadArgs | NoSession | ValidationFailed>;
     /** One schema-validated `request.batch`: all ops or none, replays answered by receipt. */
     apply(
       request: Input<"apply">,
-    ): Effect.Effect<StatusPayload, BadArgs | NoSession | StaleRevision | ValidationFailed>;
-    /** Re-reads the recorded source (or `request.patch`); unchanged hunks keep their group and verdict. */
+    ): Effect.Effect<StatusPayload, NoSession | StaleRevision | ValidationFailed>;
+    /** Re-captures the recorded scope; unchanged hunks keep their group and verdict. */
     refresh(
       request: Input<"refresh">,
     ): Effect.Effect<StatusPayload, BadArgs | NoSession | ValidationFailed>;
-    close(request: Input<"close">): Effect.Effect<ClosePayload, BadArgs | NoSession>;
+    /**
+     * Removes one saved session. A retry with the same `requestId` and session returns the recorded
+     * result, even after a restart; the same `requestId` for another session fails.
+     */
+    delete(
+      request: Input<"delete">,
+    ): Effect.Effect<DeletePayload, BadArgs | NoSession | ValidationFailed>;
     /**
      * Replaces the in-memory sessions with the persisted ones. The daemon calls it once it owns
      * the socket: a contender that loaded earlier would otherwise serve a map a rival has since
      * changed on disk.
      */
     readonly load: Effect.Effect<void, PlatformError.PlatformError>;
-    /** Resolves once a close has removed the last session; a later create arms it again. */
+    /** Resolves once a delete has removed the last session; a later open arms it again. */
     readonly idle: Effect.Effect<void>;
-    /** Waits for in-flight mutations, so a create racing the idle check is counted. */
+    /** Waits for in-flight mutations, so an open racing the idle check is counted. */
     readonly isEmpty: Effect.Effect<boolean>;
   }
 >()("gyst/daemon/Sessions") {
@@ -76,47 +99,29 @@ export class Sessions extends Context.Service<
       const store = yield* SessionStore;
       const { randomUUIDv4 } = yield* Crypto.Crypto;
       const sessions = new Map<string, Session>();
+      const deleteReceipts = new Map<string, DeleteReceipt>();
       const sourceChecks = new Map<string, Effect.Effect<SourceCheck>>();
       // Server handlers run concurrently; one permit keeps state changes from interleaving.
       const lock = yield* Semaphore.make(1);
       const idle = yield* Latch.make(false);
 
       const selected = Effect.fn("Sessions.selected")(function* (request: {
-        readonly cwd: string;
-        readonly session?: string | undefined;
+        readonly session: string;
       }) {
-        const id = request.session;
-        if (id) {
-          const session = sessions.get(id);
-          if (!session) return yield* new NoSession({ message: `no session with id ${id}` });
-          return session;
-        }
-        const root = yield* git.repoRoot(request.cwd);
-        const session = [...sessions.values()].find((candidate) => candidate.repoRoot === root);
-        if (!session) return yield* new NoSession({ message: `no session for repository ${root}` });
+        const session = sessions.get(request.session);
+        if (!session)
+          return yield* new NoSession({ message: `no session with id ${request.session}` });
         return session;
       });
 
-      const create = Effect.fn("Sessions.create")(function* (request: Input<"create">) {
+      const open = Effect.fn("Sessions.open")(function* (request: Input<"open">) {
+        if (!("cwd" in request)) return opened(yield* selected(request), false);
         const root = yield* git.repoRoot(request.cwd);
-        if ([...sessions.values()].some((session) => session.repoRoot === root))
-          return yield* new SessionExists({ message: `a session already exists for ${root}` });
-        const { revisions, pathspecs } = request;
-        const stdin = request.patch !== undefined;
-        if (stdin && (revisions.length || pathspecs))
-          return yield* new BadArgs({ message: "--stdin cannot be combined with git arguments" });
-        // Only revisions and pathspecs are replayable; git options change the output format. A
-        // revision may not be `--` either: that would move the pathspec separator.
-        const option =
-          revisions.find((arg) => arg.startsWith("-")) ??
-          pathspecs?.find((arg) => arg.startsWith("-") && arg !== "--");
-        if (option)
-          return yield* new BadArgs({ message: `git options are not accepted: ${option}` });
-        const args = pathspecs ? [...revisions, "--", ...pathspecs] : revisions;
-        const includeUntracked = !stdin && args.length === 0;
-        const patch = stdin
-          ? request.patch
-          : yield* git.patch(root, request.cwd, args, includeUntracked);
+        const saved = [...sessions.values()].find(
+          (session) => session.repoRoot === root && sameScope(session.scope, request.scope),
+        );
+        if (saved) return opened(saved, false);
+        const patch = yield* git.capture(root, request.scope);
         const hunks = yield* Effect.fromResult(parseSnapshot(patch));
         const now = DateTime.formatIso(yield* DateTime.now);
         // Like persistence, an id source that cannot produce randomness is an operational defect.
@@ -124,15 +129,8 @@ export class Sessions extends Context.Service<
         const session: Session = {
           id,
           repoRoot: root,
-          source: stdin
-            ? { kind: "stdin" }
-            : {
-                kind: "git",
-                patchHash: patchHash(patch),
-                args: args.length ? args : ["HEAD"],
-                cwd: request.cwd,
-                ...(includeUntracked ? { includeUntracked } : {}),
-              },
+          scope: request.scope,
+          snapshotId: snapshotIdOf(patch),
           createdAt: now,
           updatedAt: now,
           revision: 0,
@@ -149,44 +147,39 @@ export class Sessions extends Context.Service<
         yield* store.save(session).pipe(Effect.orDie);
         sessions.set(session.id, session);
         yield* idle.close;
-        return statusOf(session);
+        return opened(session, true);
       }, Semaphore.withPermit(lock));
+
+      const list = Effect.sync(() => ({
+        sessions: [...sessions.values()]
+          .map(summaryOf)
+          .sort((a, b) => a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id)),
+      })).pipe(Semaphore.withPermit(lock), Effect.withSpan("Sessions.list"));
 
       const status = Effect.fn("Sessions.status")(function* (request: Input<"status">) {
         return statusOf(yield* selected(request));
       }, Semaphore.withPermit(lock));
-
-      const sourcePatch = (session: Pick<Session, "source" | "repoRoot">) => {
-        const source = session.source;
-        if (source.kind !== "git")
-          return Effect.fail(new BadArgs({ message: "stdin has no replayable source" }));
-        const bare = source.includeUntracked ?? false;
-        return git.patch(session.repoRoot, source.cwd, bare ? [] : source.args, bare);
-      };
 
       const check = Effect.fn("Sessions.check")(function* (request: Input<"check">) {
         const target = yield* Effect.gen(function* () {
           const session = yield* selected(request);
           let cached = sourceChecks.get(session.id);
           if (!cached) {
-            const { source, repoRoot } = session;
+            const { scope, repoRoot, snapshotId } = session;
             cached = yield* Effect.cachedWithTTL(
               Effect.gen(function* () {
-                const result =
-                  source.kind === "stdin"
-                    ? { state: "stdin" as const }
-                    : yield* sourcePatch({ source, repoRoot }).pipe(
-                        Effect.timeout("2 seconds"),
-                        Effect.map((patch) => ({
-                          state:
-                            patchHash(patch) === source.patchHash
-                              ? ("unchanged" as const)
-                              : ("changed" as const),
-                        })),
-                        Effect.catch((error) =>
-                          Effect.succeed({ state: "unavailable" as const, message: error.message }),
-                        ),
-                      );
+                const result = yield* git.capture(repoRoot, scope).pipe(
+                  Effect.timeout("2 seconds"),
+                  Effect.map((patch) => ({
+                    state:
+                      snapshotIdOf(patch) === snapshotId
+                        ? ("unchanged" as const)
+                        : ("changed" as const),
+                  })),
+                  Effect.catch((error) =>
+                    Effect.succeed({ state: "unavailable" as const, message: error.message }),
+                  ),
+                );
                 return { ...result, checkedAt: DateTime.formatIso(yield* DateTime.now) };
               }),
               "5 seconds",
@@ -232,10 +225,18 @@ export class Sessions extends Context.Service<
       }, Semaphore.withPermit(lock));
 
       const load = Effect.gen(function* () {
+        const receipts = yield* store.loadDeleteReceipts;
         const persisted = yield* store.loadAll;
         sessions.clear();
+        deleteReceipts.clear();
         sourceChecks.clear();
-        for (const session of persisted) sessions.set(session.id, session);
+        for (const receipt of receipts) deleteReceipts.set(receipt.requestId, receipt);
+        const deleted = new Set(receipts.map(({ sessionId }) => sessionId));
+        for (const session of persisted) {
+          // A receipt is the commit point: finish a removal that failed or was cut off after it.
+          if (deleted.has(session.id)) yield* store.remove(session.id).pipe(Effect.ignore);
+          else sessions.set(session.id, session);
+        }
       }).pipe(Semaphore.withPermit(lock), Effect.withSpan("Sessions.load"));
 
       const apply = Effect.fn("Sessions.apply")(function* (request: Input<"apply">) {
@@ -260,20 +261,9 @@ export class Sessions extends Context.Service<
 
       const refresh = Effect.fn("Sessions.refresh")(function* (request: Input<"refresh">) {
         const session = yield* selected(request);
-        let patch: string;
-        if (session.source.kind === "stdin") {
-          if (request.patch === undefined)
-            return yield* new BadArgs({ message: "stdin sessions must be refreshed with --stdin" });
-          patch = request.patch;
-        } else {
-          if (request.patch !== undefined)
-            return yield* new BadArgs({ message: "git sessions refresh their recorded arguments" });
-          patch = yield* sourcePatch(session);
-        }
+        const patch = yield* git.capture(session.repoRoot, session.scope);
         const refreshed = refreshSession(
-          session.source.kind === "git"
-            ? { ...session, source: { ...session.source, patchHash: patchHash(patch) } }
-            : session,
+          { ...session, snapshotId: snapshotIdOf(patch) },
           yield* Effect.fromResult(parseSnapshot(patch)),
           DateTime.formatIso(yield* DateTime.now),
         );
@@ -283,26 +273,50 @@ export class Sessions extends Context.Service<
         return statusOf(refreshed);
       }, Semaphore.withPermit(lock));
 
-      const close = Effect.fn("Sessions.close")(function* (request: Input<"close">) {
+      const remove = Effect.fn("Sessions.delete")(function* (request: Input<"delete">) {
+        const { requestId } = request;
+        if (!requestId) return yield* new BadArgs({ message: "delete needs a request id" });
+        // Receipts answer first: after the deletion the session's absence is not a new request.
+        const receipt = deleteReceipts.get(requestId);
+        if (receipt) {
+          if (receipt.sessionId !== request.session)
+            return yield* new ValidationFailed({
+              message: "request id reused with a different payload",
+              detail: { requestId, sessionId: receipt.sessionId },
+            });
+          return { deleted: true, sessionId: receipt.sessionId } satisfies DeletePayload;
+        }
         const session = yield* selected(request);
-        yield* store.remove(session.id).pipe(Effect.orDie);
-        sessions.delete(session.id);
-        sourceChecks.delete(session.id);
+        const committed = { requestId, sessionId: session.id };
+        // The durable receipt commits the deletion before memory changes; a failed write leaves the
+        // session and every receipt as they were.
+        yield* Effect.uninterruptible(
+          store.saveDeleteReceipts([...deleteReceipts.values(), committed]).pipe(
+            Effect.orDie,
+            Effect.andThen(
+              Effect.sync(() => {
+                deleteReceipts.set(requestId, committed);
+                sessions.delete(session.id);
+                sourceChecks.delete(session.id);
+              }),
+            ),
+          ),
+        );
+        // Only cleanup remains: the next load removes a file this could not.
+        yield* store.remove(session.id).pipe(Effect.ignore);
         if (sessions.size === 0) yield* idle.open;
-        return {
-          closed: true,
-          sessionId: session.id,
-        } satisfies ClosePayload;
+        return { deleted: true, sessionId: session.id } satisfies DeletePayload;
       }, Semaphore.withPermit(lock));
 
       return Sessions.of({
-        create,
+        open,
+        list,
         status,
         check,
         diff,
         apply,
         refresh,
-        close,
+        delete: remove,
         load,
         idle: idle.await,
         isEmpty: Semaphore.withPermit(

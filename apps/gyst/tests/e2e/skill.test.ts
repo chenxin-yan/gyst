@@ -71,8 +71,8 @@ describe("installed gyst skills", () => {
       "allow_implicit_invocation: true",
     );
     expect(
-      await readFile(join(skills, "gyst-cli", "commands", "session", "create.md"), "utf8"),
-    ).toContain("git options are rejected");
+      await readFile(join(skills, "gyst-cli", "commands", "session", "open.md"), "utf8"),
+    ).toContain("A Git range such as main...feature");
   }, 20_000);
 
   it("repairs version-stale links explicitly and before ordinary commands", async () => {

@@ -37,8 +37,8 @@ describe("installed gyst CLI", () => {
     expect(bare.stdout).toBe(help);
     expect(bare.stderr).toBe("");
     expect(succeeded(await gyst(root, ["session", "--help"])).stdout).toContain("gyst session");
-    expect(succeeded(await gyst(root, ["session", "create", "--help"])).stdout).toContain(
-      "gyst session create",
+    expect(succeeded(await gyst(root, ["session", "open", "--help"])).stdout).toContain(
+      "gyst session open",
     );
     // Help never touches the data dir, so no daemon was started.
     expect(existsSync(env.GYST_DATA_DIR!)).toBe(false);

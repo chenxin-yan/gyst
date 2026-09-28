@@ -20,7 +20,6 @@ export {
   ErrorPayloadSchema,
   InternalError,
   NoSession,
-  SessionExists,
   StaleRevision,
   ValidationFailed,
 } from "./errors.ts";
@@ -33,8 +32,10 @@ export {
   HunkSchema,
   type Session,
   SessionSchema,
-  type Source,
-  SourceSchema,
+  type Scope,
+  ScopeSchema,
+  type SessionSummary,
+  SessionSummarySchema,
   type StatusPayload,
   StatusPayloadSchema,
 } from "./session.ts";
@@ -46,12 +47,18 @@ export {
   NotesSchema,
 } from "./metadata.ts";
 export { parseSnapshot } from "./snapshot.ts";
-export { statusOf } from "./status.ts";
+export { statusOf, summaryOf } from "./status.ts";
 export {
-  type ClosePayload,
-  ClosePayloadSchema,
+  type BrowserRequest,
+  BrowserRequestSchema,
+  type DeletePayload,
+  DeletePayloadSchema,
   type DiffPayload,
   DiffPayloadSchema,
+  type ListPayload,
+  ListPayloadSchema,
+  type OpenPayload,
+  OpenPayloadSchema,
   type Reply,
   ReplySchema,
   type Request,

@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it } from "vite-plus/test";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as NodeSocket from "@effect/platform-node/NodeSocket";
-import { type Reply, ReplySchema, type Request, type Session } from "@gyst/core";
+import { BadArgs, type Reply, ReplySchema, type Request, type Session } from "@gyst/core";
 import {
   Crypto,
   Deferred,
@@ -32,7 +32,7 @@ const patch = `diff --git a/a.txt b/a.txt
 -one
 +two
 `;
-/** A `status` from here holds the `Sessions` permit until the test releases it. */
+/** An `open` from here holds the `Sessions` permit until the test releases it, then fails. */
 const slowRoot = "/slow";
 
 let dataDir: string;
@@ -46,15 +46,17 @@ const git = Layer.succeed(Git, {
     cwd === slowRoot
       ? Deferred.succeed(statusHeld, undefined).pipe(
           Effect.andThen(Deferred.await(statusRelease)),
-          Effect.as(cwd),
+          Effect.andThen(Effect.fail(new BadArgs({ message: "not a repository" }))),
         )
       : Effect.succeed(cwd),
-  patch: () => Effect.succeed(patch),
+  capture: () => Effect.succeed(patch),
 });
 const store = Layer.succeed(SessionStore, {
   loadAll: Effect.sync(() => [...files.values()]),
   save: (session) => Effect.sync(() => void files.set(session.id, session)),
   remove: (id) => Effect.sync(() => void files.delete(id)),
+  loadDeleteReceipts: Effect.succeed([]),
+  saveDeleteReceipts: () => Effect.void,
 });
 const crypto = Layer.succeed(
   Crypto.Crypto,
@@ -67,6 +69,7 @@ const paths = Layer.sync(Paths, () => ({
   dataDir,
   socketPath,
   pidPath: join(dataDir, "daemon.pid"),
+  deleteReceiptsPath: join(dataDir, "delete-receipts"),
   sessionFile: (id: string) => join(dataDir, `${id}.json`),
 }));
 const serverLayerOver = (platform: Layer.Layer<Layer.Success<typeof NodeServices.layer>>) =>
@@ -84,14 +87,18 @@ const exchange = Effect.fn("exchange")(function* (message: unknown) {
   yield* writeLine(socket, JSON.stringify(message));
   return decodeReply(yield* readLine(pull));
 }, Effect.scoped);
-const send = Effect.fn("send")(function* (command: "create" | "status" | "close", cwd: string) {
+const send = Effect.fn("send")(function* (request: Request) {
   const hello = yield* exchange({ command: "daemon.info" });
   if (!hello.ok) return hello;
   const info = Schema.decodeUnknownSync(DaemonInfoSchema)(hello.value);
-  const request: Request =
-    command === "create" ? { command, cwd, revisions: [] } : { command, cwd };
   return yield* exchange({ ...info, request });
 });
+const open = (cwd: string) => send({ command: "open", cwd, scope: { kind: "uncommitted" } });
+const openedId = (reply: Reply) => {
+  if (!reply.ok) throw new Error(`open failed: ${reply.error.message}`);
+  return (reply.value as { session: { id: string } }).session.id;
+};
+const remove = (session: string) => send({ command: "delete", session, requestId: session });
 const ok = (reply: Reply) => reply.ok;
 
 beforeAll(async () => {
@@ -101,33 +108,32 @@ beforeAll(async () => {
 afterAll(() => rm(dataDir, { recursive: true, force: true }));
 
 describe("DaemonServer", () => {
-  it("keeps a create queued behind the idle check alive during final-session shutdown", async () => {
+  it("keeps an open queued behind the idle check alive during final-session shutdown", async () => {
     await Effect.runPromise(
       Effect.gen(function* () {
         statusHeld = yield* Deferred.make<void>();
         statusRelease = yield* Deferred.make<void>();
         const server = yield* DaemonServer;
         const running = yield* Effect.forkChild(server.run);
-        yield* Effect.retry(send("status", "/none"), {
+        yield* Effect.retry(send({ command: "list" }), {
           schedule: Schedule.spaced("10 millis"),
           times: 100,
         });
 
-        expect(ok(yield* send("create", "/first"))).toBe(true);
-        expect(ok(yield* send("close", "/first"))).toBe(true);
-        // The final close opened the idle latch; a slow status now holds the permit, so the idle
-        // check queues behind it after its debounce, and the replacement create queues behind that.
-        const status = yield* Effect.forkChild(send("status", slowRoot));
+        expect(ok(yield* remove(openedId(yield* open("/first"))))).toBe(true);
+        // The final delete opened the idle latch; a slow open now holds the permit, so the idle
+        // check queues behind it after its debounce, and the replacement open queues behind that.
+        const slow = yield* Effect.forkChild(open(slowRoot));
         yield* Deferred.await(statusHeld);
         yield* Effect.sleep("100 millis");
-        const create = yield* Effect.forkChild(send("create", "/replacement"));
+        const replacement = yield* Effect.forkChild(open("/replacement"));
         yield* Effect.sleep("50 millis");
         yield* Deferred.succeed(statusRelease, undefined);
 
-        expect(ok(yield* Fiber.join(status))).toBe(false);
-        expect(ok(yield* Fiber.join(create))).toBe(true);
-        expect(ok(yield* send("status", "/replacement"))).toBe(true);
-        expect(ok(yield* send("close", "/replacement"))).toBe(true);
+        expect(ok(yield* Fiber.join(slow))).toBe(false);
+        const id = openedId(yield* Fiber.join(replacement));
+        expect(ok(yield* send({ command: "status", session: id }))).toBe(true);
+        expect(ok(yield* remove(id))).toBe(true);
         yield* Fiber.join(running);
       }).pipe(Effect.provide(serverLayer)),
     );
@@ -164,7 +170,7 @@ describe("DaemonServer", () => {
             yield* exchange({
               ...info,
               instanceId: "another-daemon",
-              request: { command: "create", cwd: "/wrong", revisions: [] },
+              request: { command: "open", cwd: "/wrong", scope: { kind: "uncommitted" } },
             }),
           ),
         ).toBe(false);
@@ -175,11 +181,11 @@ describe("DaemonServer", () => {
         expect(yield* exchange(restart)).toEqual({ ok: true, value: { restarting: false } });
         expect(yield* fs.readFileString(changed)).toBe("{}");
         yield* fs.remove(changed);
-        const status = yield* Effect.forkChild(send("status", slowRoot));
+        const slow = yield* Effect.forkChild(open(slowRoot));
         yield* Deferred.await(statusHeld);
         expect(yield* exchange(restart)).toEqual({ ok: true, value: { restarting: false } });
         yield* Deferred.succeed(statusRelease, undefined);
-        yield* Fiber.join(status);
+        yield* Fiber.join(slow);
         expect(yield* exchange(restart)).toEqual({ ok: true, value: { restarting: true } });
         yield* Fiber.join(running);
       }).pipe(
@@ -191,7 +197,7 @@ describe("DaemonServer", () => {
     expect((await readdir(dataDir)).filter((name) => name.startsWith("daemon.sock"))).toEqual([]);
   }, 10_000);
 
-  it("rejects argv, another command's fields and missing intent before any use case runs", async () => {
+  it("rejects argv, removed operations, directory selection and missing intent before any use case runs", async () => {
     await Effect.runPromise(
       Effect.gen(function* () {
         const server = yield* DaemonServer;
@@ -202,13 +208,16 @@ describe("DaemonServer", () => {
         if (!hello.ok) throw new Error("handshake failed");
         const info = Schema.decodeUnknownSync(DaemonInfoSchema)(hello.value);
         for (const request of [
-          { command: "create", cwd: "/argv", args: ["--stdin"], stdin: patch },
-          { command: "create", cwd: "/argv", revisions: [], args: ["--", "HEAD"] },
-          { command: "status", cwd: "/argv", args: ["--session", "x"] },
-          { command: "status", cwd: "/argv", patch },
-          { command: "apply", cwd: "/argv", batch: "{}", file: "a.txt" },
-          { command: "refresh", cwd: "/argv", hunk: "h1" },
-          { command: "apply", cwd: "/argv" },
+          { command: "create", cwd: "/argv", revisions: [], patch },
+          { command: "close", session: "x" },
+          { command: "open", cwd: "/argv", scope: { kind: "uncommitted" }, args: ["--stat"] },
+          { command: "open", cwd: "/argv", scope: { kind: "range", range: "a..b", pathspecs: [] } },
+          { command: "status", cwd: "/argv" },
+          { command: "status", session: "x", args: ["--session", "x"] },
+          { command: "apply", session: "x", batch: "{}", file: "a.txt" },
+          { command: "refresh", session: "x", patch },
+          { command: "delete", session: "x" },
+          { command: "apply", session: "x" },
         ]) {
           const reply = yield* exchange({ ...info, request });
           expect(reply.ok ? reply : reply.error).toMatchObject({

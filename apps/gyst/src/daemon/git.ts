@@ -1,22 +1,21 @@
-import { BadArgs } from "@gyst/core";
+import { BadArgs, type Scope } from "@gyst/core";
 import { Context, Effect, FileSystem, Layer, Stream } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 
-// Presentation config (color.ui, diff.external, diff.relative) must not reach the parser: parsed
-// filenames become editor targets, so they must stay root-relative even when run from a subdirectory.
-const patchFlags = ["--no-color", "--no-ext-diff", "--no-relative"];
+// Presentation config (color.ui, diff.relative) must not reach the parser: parsed filenames stay
+// root-relative. Configured external diff and textconv programs never run on reviewed content.
+const patchFlags = ["--no-color", "--no-ext-diff", "--no-textconv", "--no-relative"];
+
+/** `base..head` or `base...head`, either side defaulting to HEAD as in Git. */
+const rangePattern = /^(?<base>[^\s]*?)(?<dots>\.\.\.?)(?<head>[^\s.][^\s]*|)$/u;
 
 export class Git extends Context.Service<
   Git,
   {
+    /** The real path of the repository containing a trusted caller's directory. */
     repoRoot(cwd: string): Effect.Effect<string, BadArgs>;
-    /** Empty `args` diff against HEAD, or the empty tree in a repository without commits. */
-    patch(
-      root: string,
-      cwd: string,
-      args: ReadonlyArray<string>,
-      includeUntracked: boolean,
-    ): Effect.Effect<string, BadArgs>;
+    /** The whole recorded scope as one unified diff, with endpoints resolved at this capture. */
+    capture(root: string, scope: Scope): Effect.Effect<string, BadArgs>;
   }
 >()("gyst/daemon/Git") {
   static readonly layer = Layer.effect(
@@ -62,29 +61,55 @@ export class Git extends Context.Service<
         );
       });
 
-      const defaultArgs = Effect.fn("Git.defaultArgs")(function* (root: string) {
-        const head = yield* run(root, "rev-parse", "--verify", "HEAD");
-        if (head.exitCode === 0) return ["HEAD"];
-        const emptyTree = yield* run(root, "hash-object", "-t", "tree", "/dev/null");
-        if (emptyTree.exitCode !== 0)
-          return yield* new BadArgs({ message: "could not derive the empty git tree" });
-        return [emptyTree.stdout.trim()];
+      // `--end-of-options` keeps a caller's revision from ever being read as an option.
+      const commit = Effect.fn("Git.commit")(function* (root: string, revision: string) {
+        const resolved = yield* run(
+          root,
+          "rev-parse",
+          "--verify",
+          "--quiet",
+          "--end-of-options",
+          `${revision}^{commit}`,
+        );
+        if (resolved.exitCode !== 0)
+          return yield* new BadArgs({ message: `unknown revision in range: ${revision}` });
+        return resolved.stdout.trim();
       });
 
-      const patch = Effect.fn("Git.patch")(function* (
-        root: string,
-        cwd: string,
-        args: ReadonlyArray<string>,
-        includeUntracked: boolean,
-      ) {
-        const bare = args.length === 0;
-        const diffArgs = bare ? yield* defaultArgs(root) : args;
-        // A bare snapshot covers the whole repository; explicit pathspecs resolve from the caller.
-        const diff = yield* run(bare ? root : cwd, "diff", ...patchFlags, ...diffArgs);
-        if (diff.exitCode !== 0)
-          return yield* new BadArgs({ message: diff.stderr.trim() || "git diff failed" });
-        let text = diff.stdout;
-        if (!includeUntracked) return text;
+      const diff = Effect.fn("Git.diff")(function* (root: string, ...commits: string[]) {
+        const result = yield* run(root, "diff", ...patchFlags, ...commits, "--");
+        if (result.exitCode !== 0)
+          return yield* new BadArgs({ message: result.stderr.trim() || "git diff failed" });
+        return result.stdout;
+      });
+
+      const range = Effect.fn("Git.range")(function* (root: string, recorded: string) {
+        const parsed = rangePattern.exec(recorded)?.groups;
+        if (!parsed || parsed.base!.startsWith("-") || parsed.head!.startsWith("-"))
+          return yield* new BadArgs({
+            message: "expected a Git range such as main...feature or main..feature",
+            detail: recorded,
+          });
+        const base = yield* commit(root, parsed.base || "HEAD");
+        const head = yield* commit(root, parsed.head || "HEAD");
+        if (parsed.dots === "..") return yield* diff(root, base, head);
+        // A three-dot range diffs from the merge base, as `git diff A...B` does.
+        const mergeBase = yield* run(root, "merge-base", base, head);
+        if (mergeBase.exitCode !== 0)
+          return yield* new BadArgs({ message: `range has no merge base: ${recorded}` });
+        return yield* diff(root, mergeBase.stdout.trim(), head);
+      });
+
+      const uncommitted = Effect.fn("Git.uncommitted")(function* (root: string) {
+        const head = yield* run(root, "rev-parse", "--verify", "--quiet", "HEAD^{commit}");
+        let base = head.stdout.trim();
+        if (head.exitCode !== 0) {
+          const emptyTree = yield* run(root, "hash-object", "-t", "tree", "/dev/null");
+          if (emptyTree.exitCode !== 0)
+            return yield* new BadArgs({ message: "could not derive the empty git tree" });
+          base = emptyTree.stdout.trim();
+        }
+        let text = yield* diff(root, base);
         const listed = yield* run(root, "ls-files", "--others", "--exclude-standard", "-z");
         if (listed.exitCode !== 0)
           return yield* new BadArgs({ message: "could not list untracked files" });
@@ -105,7 +130,10 @@ export class Git extends Context.Service<
         return text;
       });
 
-      return Git.of({ repoRoot, patch });
+      const capture = (root: string, scope: Scope) =>
+        scope.kind === "range" ? range(root, scope.range) : uncommitted(root);
+
+      return Git.of({ repoRoot, capture });
     }),
   );
 }

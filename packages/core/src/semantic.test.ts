@@ -17,7 +17,8 @@ const initial = () =>
   Schema.decodeUnknownSync(SessionSchema)({
     id: "session",
     repoRoot: "/repo",
-    source: { kind: "stdin" },
+    scope: { kind: "uncommitted" },
+    snapshotId: "snapshot",
     createdAt: "now",
     updatedAt: "now",
     revision: 0,
