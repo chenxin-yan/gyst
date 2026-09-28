@@ -1,4 +1,5 @@
-import { BunSocket, BunSocketServer } from "@effect/platform-bun";
+import * as NodeSocket from "@effect/platform-node/NodeSocket";
+import * as NodeSocketServer from "@effect/platform-node/NodeSocketServer";
 import {
   BadArgs,
   DaemonError,
@@ -22,6 +23,7 @@ import {
 } from "effect";
 import * as Socket from "effect/unstable/socket/Socket";
 import type * as SocketServer from "effect/unstable/socket/SocketServer";
+import { compare } from "semver";
 import { Paths } from "./paths.ts";
 import { DaemonMessageSchema, daemonVersion } from "./protocol.ts";
 import { Sessions } from "./sessions.ts";
@@ -64,7 +66,7 @@ export class DaemonServer extends Context.Service<
       const pid = String(process.pid);
 
       // Any other connect failure (EACCES, ...) is unknown territory: propagate, never reclaim.
-      const daemonAnswers = BunSocket.makeNet({ path: paths.socketPath }).pipe(
+      const daemonAnswers = NodeSocket.makeNet({ path: paths.socketPath }).pipe(
         Effect.flatMap((socket) => socket.reader),
         Effect.as(true),
         Effect.scoped,
@@ -83,7 +85,7 @@ export class DaemonServer extends Context.Service<
       const acquireSocket = Effect.gen(function* () {
         const privatePath = `${paths.socketPath}.${pid}`;
         yield* fs.remove(privatePath, { force: true });
-        const server = yield* BunSocketServer.make({ path: privatePath });
+        const server = yield* NodeSocketServer.make({ path: privatePath });
         const ino = (yield* fs.stat(privatePath)).ino;
         const publishedIno = fs.stat(paths.socketPath).pipe(
           Effect.map((info) => info.ino),
@@ -145,8 +147,6 @@ export class DaemonServer extends Context.Service<
             return sessions.refresh(request);
           case "close":
             return sessions.close(request);
-          case "tui.action":
-            return sessions.tuiAction(request);
         }
       };
       // Accepted connections that have not replied yet; idle shutdown must not interrupt them.
@@ -177,7 +177,7 @@ export class DaemonServer extends Context.Service<
                 if ("command" in message) {
                   if (
                     message.instanceId !== instanceId ||
-                    Bun.semver.order(message.version, daemonVersion) <= 0
+                    compare(message.version, daemonVersion) <= 0
                   )
                     return { restarting: false };
                   // Admission and draining change together; no request can slip between them.

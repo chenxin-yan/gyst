@@ -35,6 +35,7 @@
     "@effect/platform-node": "4.0.0-rc.117",
     "@effect/platform-node-shared": "4.0.0-rc.117",
     "@gyst/core": "*",
-    "effect": "4.0.0-rc.117"
+    "effect": "4.0.0-rc.117",
+    "semver": "7.8.5"
   }
 }

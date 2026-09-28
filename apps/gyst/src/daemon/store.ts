@@ -1,5 +1,6 @@
 import { type Session, SessionSchema } from "@gyst/core";
 import { Array, Context, Effect, FileSystem, Layer, type PlatformError, Schema } from "effect";
+import { createHash } from "node:crypto";
 import { Paths } from "./paths.ts";
 
 const decodeSessionFile = Schema.decodeUnknownEffect(Schema.fromJsonString(SessionSchema), {
@@ -11,7 +12,7 @@ export const inspectSavedSessions = Effect.gen(function* () {
   const fs = yield* FileSystem.FileSystem;
   const paths = yield* Paths;
   const names = (yield* fs.readDirectory(paths.dataDir)).filter((name) => name.endsWith(".json"));
-  const hash = new Bun.CryptoHasher("sha256");
+  const hash = createHash("sha256");
   const incompatible: string[] = [];
   for (const name of names.sort()) {
     const content = yield* fs.readFile(paths.sessionFile(name.slice(0, -5)));

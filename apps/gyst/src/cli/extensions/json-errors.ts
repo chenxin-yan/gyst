@@ -4,11 +4,10 @@ import { Schema } from "effect";
 
 const encodeError = Schema.encodeSync(ErrorPayloadSchema);
 
-/** crust's verdicts on the invocation and the TUI's TTY check; any other non-domain error is a defect. */
-const isInvalidInvocation = (cause: unknown): cause is Error =>
-  (cause instanceof CrustError &&
-    (cause.is("PARSE") || cause.is("VALIDATION") || cause.is("COMMAND_NOT_FOUND"))) ||
-  (cause instanceof Error && cause.name === "NonInteractiveError");
+/** crust's verdicts on the invocation; any other non-domain error is a defect. */
+const isInvalidInvocation = (cause: unknown): cause is CrustError =>
+  cause instanceof CrustError &&
+  (cause.is("PARSE") || cause.is("VALIDATION") || cause.is("COMMAND_NOT_FOUND"));
 
 /** Every failure leaves on stderr as one JSON `{code, message, detail?}` line so agents can parse it. */
 export const jsonErrors = defineExtension(defineExtensionId("gyst-json-errors"), {

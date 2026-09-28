@@ -1,6 +1,6 @@
 import { defineCommand } from "@crustjs/core";
 import { handler, layer } from "@crustjs/effect";
-import { BunServices } from "@effect/platform-bun";
+import * as NodeServices from "@effect/platform-node/NodeServices";
 import { Layer } from "effect";
 import { Git } from "../../daemon/git.ts";
 import { Paths } from "../../daemon/paths.ts";
@@ -15,7 +15,7 @@ const daemonServer = layer(
       Sessions.layer.pipe(Layer.provide(Layer.mergeAll(Git.layer, SessionStore.layer))),
     ),
     Layer.provide(Paths.layer),
-    Layer.provide(BunServices.layer),
+    Layer.provide(NodeServices.layer),
   ),
 );
 

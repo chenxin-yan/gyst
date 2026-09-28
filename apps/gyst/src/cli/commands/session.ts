@@ -1,6 +1,6 @@
 import { defineArg, defineCommand } from "@crustjs/core";
 import { handler, layer } from "@crustjs/effect";
-import { BunServices } from "@effect/platform-bun";
+import * as NodeServices from "@effect/platform-node/NodeServices";
 import type { Request } from "@gyst/core";
 import { Effect, Layer, Stdio, Stream } from "effect";
 import { DaemonClient } from "../../daemon/client.ts";
@@ -8,7 +8,7 @@ import { Paths } from "../../daemon/paths.ts";
 
 const daemonClient = layer(
   "daemonClient",
-  DaemonClient.layer.pipe(Layer.provide(Paths.layer), Layer.provideMerge(BunServices.layer)),
+  DaemonClient.layer.pipe(Layer.provide(Paths.layer), Layer.provideMerge(NodeServices.layer)),
 );
 
 const sessionFlag = {

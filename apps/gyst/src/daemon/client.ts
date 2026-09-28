@@ -1,4 +1,4 @@
-import { BunSocket } from "@effect/platform-bun";
+import * as NodeSocket from "@effect/platform-node/NodeSocket";
 import {
   type DaemonError,
   DaemonUnreachable,
@@ -12,6 +12,7 @@ import {
 import { Context, Effect, FileSystem, Layer, Schedule, Schema } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 import * as Socket from "effect/unstable/socket/Socket";
+import { compare } from "semver";
 import { Paths } from "./paths.ts";
 import {
   DaemonInfoSchema,
@@ -43,17 +44,22 @@ export class DaemonClient extends Context.Service<
 
       // The reader dials, so it is acquired before anything is written.
       const exchange = Effect.fn("DaemonClient.exchange")(function* (line: string) {
-        const socket = yield* BunSocket.makeNet({ path: paths.socketPath });
+        const socket = yield* NodeSocket.makeNet({ path: paths.socketPath });
         const pull = yield* Socket.readerBytes(socket);
         yield* writeLine(socket, line);
         return yield* readLine(pull);
       }, Effect.scoped);
 
       const spawnDaemon = Effect.gen(function* () {
-        // Compiled binaries embed the entrypoint; under `bun src/index.tsx` it must be passed.
-        const entry = Bun.main.startsWith("/$bunfs/") ? [] : [Bun.main];
+        // The running entry (Node resolves it to an absolute path) serves `daemon run` too.
+        const entry = process.argv[1];
+        if (entry === undefined)
+          return yield* new DaemonUnreachable({
+            message: "could not start daemon",
+            detail: "no entry script to relaunch",
+          });
         const handle = yield* spawner.spawn(
-          ChildProcess.make(process.execPath, [...entry, "daemon", "run"], {
+          ChildProcess.make(process.execPath, [entry, "daemon", "run"], {
             detached: true,
             stdin: "ignore",
             stdout: "ignore",
@@ -63,9 +69,10 @@ export class DaemonClient extends Context.Service<
         yield* handle.unref;
       }).pipe(
         Effect.scoped,
-        Effect.mapError(
-          (error) =>
+        Effect.catchTag("PlatformError", (error) =>
+          Effect.fail(
             new DaemonUnreachable({ message: "could not start daemon", detail: error.message }),
+          ),
         ),
       );
 
@@ -129,7 +136,7 @@ export class DaemonClient extends Context.Service<
           ),
         );
         if (info.version === daemonVersion) return info;
-        if (Bun.semver.order(info.version, daemonVersion) >= 0)
+        if (compare(info.version, daemonVersion) >= 0)
           return yield* Effect.fail(
             compatibilityError(
               `The running daemon (${info.version}) is newer than this CLI (${daemonVersion}). Update this CLI; automatic downgrade is refused.`,

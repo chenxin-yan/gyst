@@ -1,6 +1,5 @@
 import { Schema } from "effect";
 import { ErrorPayloadSchema } from "./errors.ts";
-import { HumanActionSchema } from "./human-action.ts";
 import { HunkSchema } from "./session.ts";
 
 export const DiffPayloadSchema = Schema.Struct({
@@ -54,11 +53,6 @@ export const RequestSchema = Schema.Union([
   Schema.Struct({ command: Schema.Literal("apply"), ...selection, batch: Schema.String }),
   Schema.Struct({ command: Schema.Literal("refresh"), ...selection, patch }),
   Schema.Struct({ command: Schema.Literal("close"), ...selection }),
-  Schema.Struct({
-    command: Schema.Literal("tui.action"),
-    cwd: Schema.String,
-    action: HumanActionSchema,
-  }),
 ]);
 export type Request = typeof RequestSchema.Type;
 
