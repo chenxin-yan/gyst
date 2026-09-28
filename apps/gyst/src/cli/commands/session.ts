@@ -17,18 +17,12 @@ const sessionFlag = {
   description: "Select an exact session id",
 } as const;
 
-const option = (name: string, value: string | undefined): string[] =>
-  value === undefined ? [] : [`--${name}`, value];
-
 const call = Effect.fn("session.call")(function* (
-  command: Request["command"],
-  args: string[],
+  request: Request,
   stdout: (line: string) => void,
-  stdin?: string,
 ) {
   const client = yield* DaemonClient;
-  const value = yield* client.request({ command, cwd: process.cwd(), args, stdin });
-  stdout(JSON.stringify(value));
+  stdout(JSON.stringify(yield* client.request(request)));
 });
 
 const readStdin = Effect.flatMap(Stdio.Stdio, (stdio) =>
@@ -52,12 +46,19 @@ const create = defineCommand("create", { description: "Create a session" }, (com
     )
     .action(
       handler(function* ({ args, flags, rawArgs, stdout }) {
-        const stdin = flags.stdin ? yield* readStdin : undefined;
+        const patch = flags.stdin ? yield* readStdin : undefined;
+        // Operands on either side of crust's `--` form one list; its own `--` starts the pathspecs.
+        const operands = [...args.gitArgs, ...rawArgs];
+        const separator = operands.indexOf("--");
         yield* call(
-          "create",
-          [...(flags.stdin ? ["--stdin"] : []), "--", ...args.gitArgs, ...rawArgs],
+          {
+            command: "create",
+            cwd: process.cwd(),
+            revisions: separator === -1 ? operands : operands.slice(0, separator),
+            pathspecs: separator === -1 ? undefined : operands.slice(separator + 1),
+            patch,
+          },
           stdout,
-          stdin,
         );
       }),
     ),
@@ -67,7 +68,9 @@ const status = defineCommand("status", { description: "Read session status" }, (
     .use(daemonClient)
     .flags(sessionFlag)
     .action(
-      handler(({ flags, stdout }) => call("status", option("session", flags.session), stdout)),
+      handler(({ flags, stdout }) =>
+        call({ command: "status", cwd: process.cwd(), session: flags.session }, stdout),
+      ),
     ),
 );
 const check = defineCommand(
@@ -78,7 +81,9 @@ const check = defineCommand(
       .use(daemonClient)
       .flags(sessionFlag)
       .action(
-        handler(({ flags, stdout }) => call("check", option("session", flags.session), stdout)),
+        handler(({ flags, stdout }) =>
+          call({ command: "check", cwd: process.cwd(), session: flags.session }, stdout),
+        ),
       ),
 );
 const diff = defineCommand("diff", { description: "Read snapshot hunks" }, (command) =>
@@ -93,13 +98,14 @@ const diff = defineCommand("diff", { description: "Read snapshot hunks" }, (comm
     .action(
       handler(({ flags, stdout }) =>
         call(
-          "diff",
-          [
-            ...option("session", flags.session),
-            ...option("hunk", flags.hunk),
-            ...option("group", flags.group),
-            ...option("file", flags.file),
-          ],
+          {
+            command: "diff",
+            cwd: process.cwd(),
+            session: flags.session,
+            hunk: flags.hunk,
+            group: flags.group,
+            file: flags.file,
+          },
           stdout,
         ),
       ),
@@ -114,7 +120,11 @@ const apply = defineCommand(
       .flags(sessionFlag)
       .action(
         handler(function* ({ flags, stdout }) {
-          yield* call("apply", option("session", flags.session), stdout, yield* readStdin);
+          const batch = yield* readStdin;
+          yield* call(
+            { command: "apply", cwd: process.cwd(), session: flags.session, batch },
+            stdout,
+          );
         }),
       ),
 );
@@ -131,12 +141,10 @@ const refresh = defineCommand(
       })
       .action(
         handler(function* ({ flags, stdout }) {
-          const stdin = flags.stdin ? yield* readStdin : undefined;
+          const patch = flags.stdin ? yield* readStdin : undefined;
           yield* call(
-            "refresh",
-            [...option("session", flags.session), ...(flags.stdin ? ["--stdin"] : [])],
+            { command: "refresh", cwd: process.cwd(), session: flags.session, patch },
             stdout,
-            stdin,
           );
         }),
       ),
@@ -146,7 +154,9 @@ const close = defineCommand("close", { description: "Close a session" }, (comman
     .use(daemonClient)
     .flags(sessionFlag)
     .action(
-      handler(({ flags, stdout }) => call("close", option("session", flags.session), stdout)),
+      handler(({ flags, stdout }) =>
+        call({ command: "close", cwd: process.cwd(), session: flags.session }, stdout),
+      ),
     ),
 );
 

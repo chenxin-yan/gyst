@@ -1,12 +1,6 @@
 import { beforeEach, describe, expect, it } from "bun:test";
 import { BunServices } from "@effect/platform-bun";
-import {
-  type ApplyEnvelope,
-  BadArgs,
-  type HumanAction,
-  type Request,
-  type Session,
-} from "@gyst/core";
+import { type ApplyEnvelope, BadArgs, type HumanAction, type Session } from "@gyst/core";
 import { Crypto, Effect, Exit, Fiber, Layer, PlatformError, Stream } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 import { Git } from "./git.ts";
@@ -89,12 +83,6 @@ const run = <A, E>(effect: Effect.Effect<A, E, Sessions>) =>
     Effect.provide(Sessions.use((s) => s.load).pipe(Effect.andThen(effect)), sessionsLayer),
   );
 const failure = <A, E>(effect: Effect.Effect<A, E, Sessions>) => run(Effect.flip(effect));
-const request = (
-  command: Request["command"],
-  args: string[] = [],
-  cwd = root,
-  stdin?: string,
-): Request => ({ command, cwd, args, ...(stdin === undefined ? {} : { stdin }) });
 
 const persisted: Session = {
   id: "persisted",
@@ -165,34 +153,33 @@ describe("Sessions.check", () => {
     await run(
       Sessions.use((sessions) =>
         Effect.gen(function* () {
-          const created = yield* sessions.create(
-            request("create", ["--", "HEAD", "--", "a.txt"], `${root}/nested`),
-          );
-          yield* sessions.apply(
-            request(
-              "apply",
-              [],
-              root,
-              JSON.stringify({
-                revision: 0,
-                idempotencyKey: "prepare",
-                ops: [
-                  {
-                    type: "group.create",
-                    id: "step",
-                    title: "Change both paths",
-                    notes: [
-                      { hunkId: created.inbox[0]!.id, text: "Review both changes together." },
-                    ],
-                    memberHunkIds: created.inbox.map(({ id }) => id),
-                  },
-                  { type: "queue.set", itemIds: ["step"] },
-                ],
-              }),
-            ),
-          );
+          const created = yield* sessions.create({
+            command: "create",
+            cwd: `${root}/nested`,
+            revisions: ["HEAD"],
+            pathspecs: ["a.txt"],
+          });
+          yield* sessions.apply({
+            command: "apply",
+            cwd: root,
+            batch: JSON.stringify({
+              revision: 0,
+              idempotencyKey: "prepare",
+              ops: [
+                {
+                  type: "group.create",
+                  id: "step",
+                  title: "Change both paths",
+                  notes: [{ hunkId: created.inbox[0]!.id, text: "Review both changes together." }],
+                  memberHunkIds: created.inbox.map(({ id }) => id),
+                },
+                { type: "queue.set", itemIds: ["step"] },
+              ],
+            }),
+          });
           const reviewed = yield* sessions.tuiAction({
-            ...request("tui.action"),
+            command: "tui.action",
+            cwd: root,
             action: {
               type: "verdict.toggle",
               sessionId: created.session.id,
@@ -203,7 +190,10 @@ describe("Sessions.check", () => {
           const before = JSON.stringify([...files]);
           gitPatch = patch.replace("+two", "+changed");
           const checks = yield* Effect.all(
-            [sessions.check(request("check")), sessions.check(request("check"))],
+            [
+              sessions.check({ command: "check", cwd: root }),
+              sessions.check({ command: "check", cwd: root }),
+            ],
             { concurrency: "unbounded" },
           );
           expect(checks[0]).toMatchObject({
@@ -220,9 +210,9 @@ describe("Sessions.check", () => {
             includeUntracked: false,
           });
           expect(JSON.stringify([...files])).toBe(before);
-          expect(yield* sessions.status(request("status"))).toEqual(reviewed);
-          yield* sessions.refresh(request("refresh"));
-          expect(yield* sessions.check(request("check"))).toMatchObject({
+          expect(yield* sessions.status({ command: "status", cwd: root })).toEqual(reviewed);
+          yield* sessions.refresh({ command: "refresh", cwd: root });
+          expect(yield* sessions.check({ command: "check", cwd: root })).toMatchObject({
             revision: 3,
             state: "unchanged",
           });
@@ -272,7 +262,7 @@ describe("Sessions.check", () => {
       await run(
         Sessions.use((sessions) =>
           Effect.gen(function* () {
-            const created = yield* sessions.create(request("create"));
+            const created = yield* sessions.create({ command: "create", cwd: root, revisions: [] });
             patchEffect = Git.use((g) =>
               g.patch(process.cwd(), process.cwd(), ["HEAD"], false),
             ).pipe(
@@ -281,19 +271,25 @@ describe("Sessions.check", () => {
               ),
             );
             const started = performance.now();
-            const checking = yield* Effect.forkChild(sessions.check(request("check")));
+            const checking = yield* Effect.forkChild(
+              sessions.check({ command: "check", cwd: root }),
+            );
             const pid = yield* Effect.promise(() => ready.promise);
             expect(
-              yield* sessions.status(request("status")).pipe(Effect.timeout("1 second")),
+              yield* sessions
+                .status({ command: "status", cwd: root })
+                .pipe(Effect.timeout("1 second")),
             ).toEqual(created);
             expect(yield* Fiber.join(checking)).toMatchObject({ state: "unavailable" });
             // Two seconds for patch execution plus bounded termination, not the child's six-second exit.
             expect(performance.now() - started).toBeLessThan(4000);
             expect(() => process.kill(pid, 0)).toThrow("ESRCH");
-            expect(yield* sessions.status(request("status"))).toEqual(created);
+            expect(yield* sessions.status({ command: "status", cwd: root })).toEqual(created);
             patchEffect = undefined;
-            yield* sessions.refresh(request("refresh"));
-            expect(yield* sessions.check(request("check"))).toMatchObject({ state: "unchanged" });
+            yield* sessions.refresh({ command: "refresh", cwd: root });
+            expect(yield* sessions.check({ command: "check", cwd: root })).toMatchObject({
+              state: "unchanged",
+            });
           }),
         ),
       );
@@ -305,14 +301,20 @@ describe("Sessions.check", () => {
     await run(
       Sessions.use((sessions) =>
         Effect.gen(function* () {
-          yield* sessions.create(request("create"));
+          yield* sessions.create({ command: "create", cwd: root, revisions: [] });
           gitPatch = patch + "\n";
-          expect(yield* sessions.check(request("check"))).toMatchObject({ state: "changed" });
+          expect(yield* sessions.check({ command: "check", cwd: root })).toMatchObject({
+            state: "changed",
+          });
           gitPatch = patch;
-          expect(yield* sessions.check(request("check"))).toMatchObject({ state: "changed" });
+          expect(yield* sessions.check({ command: "check", cwd: root })).toMatchObject({
+            state: "changed",
+          });
           expect(patchCalls).toHaveLength(2);
           yield* Effect.sleep("5100 millis");
-          expect(yield* sessions.check(request("check"))).toMatchObject({ state: "unchanged" });
+          expect(yield* sessions.check({ command: "check", cwd: root })).toMatchObject({
+            state: "unchanged",
+          });
           expect(patchCalls).toHaveLength(3);
         }),
       ),
@@ -324,13 +326,15 @@ describe("Sessions.check", () => {
       Sessions.use((sessions) =>
         Effect.gen(function* () {
           expect(
-            yield* sessions.check(request("check", ["--session", persisted.id])),
+            yield* sessions.check({ command: "check", cwd: root, session: persisted.id }),
           ).toMatchObject({ state: "stdin" });
           expect(patchCalls).toHaveLength(0);
-          yield* sessions.create(request("create"));
+          yield* sessions.create({ command: "create", cwd: root, revisions: [] });
           const before = JSON.stringify([...files]);
           patchEffect = Effect.fail(new BadArgs({ message: "recorded ref is unavailable" }));
-          expect(yield* sessions.check(request("check"))).toMatchObject({ state: "unavailable" });
+          expect(yield* sessions.check({ command: "check", cwd: root })).toMatchObject({
+            state: "unavailable",
+          });
           expect(patchCalls[1]).toEqual({ root, cwd: root, args: [], includeUntracked: true });
           expect(JSON.stringify([...files])).toBe(before);
         }),
@@ -342,7 +346,7 @@ describe("Sessions.check", () => {
 describe("Sessions.create", () => {
   it("creates the bare scope from git with untracked files and persists it", async () => {
     const status = await run(
-      Sessions.use((s) => s.create(request("create", ["--"], `${root}/sub`))),
+      Sessions.use((s) => s.create({ command: "create", cwd: `${root}/sub`, revisions: [] })),
     );
     expect(status.inbox.map((hunk) => hunk.file)).toEqual(["a.txt", "b.txt"]);
     expect(status.session.source).toEqual({
@@ -363,7 +367,14 @@ describe("Sessions.create", () => {
 
   it("replays explicit revisions and pathspecs from the caller's directory", async () => {
     const status = await run(
-      Sessions.use((s) => s.create(request("create", ["--", "HEAD~1", "HEAD", "--", "a.txt"]))),
+      Sessions.use((s) =>
+        s.create({
+          command: "create",
+          cwd: root,
+          revisions: ["HEAD~1", "HEAD"],
+          pathspecs: ["a.txt"],
+        }),
+      ),
     );
     expect(status.session.source).toEqual({
       kind: "git",
@@ -376,7 +387,7 @@ describe("Sessions.create", () => {
 
   it("reads a unified diff from stdin without touching git", async () => {
     const status = await run(
-      Sessions.use((s) => s.create(request("create", ["--stdin", "--"], root, patch))),
+      Sessions.use((s) => s.create({ command: "create", cwd: root, revisions: [], patch })),
     );
     expect(status.session.source).toEqual({ kind: "stdin" });
     expect(status.inbox).toHaveLength(2);
@@ -385,22 +396,44 @@ describe("Sessions.create", () => {
 
   it("rejects git options, stdin mixed with arguments, and non-patch stdin", async () => {
     const option = await failure(
-      Sessions.use((s) => s.create(request("create", ["--", "--stat"]))),
+      Sessions.use((s) => s.create({ command: "create", cwd: root, revisions: ["--stat"] })),
     );
     expect(option._tag).toBe("bad_args");
     expect(option.message).toContain("--stat");
-    const mixed = await failure(
-      Sessions.use((s) => s.create(request("create", ["--stdin", "--", "HEAD"], root, patch))),
-    );
-    expect(mixed._tag).toBe("bad_args");
+    for (const [revisions, pathspecs, rejected] of [
+      [["HEAD"], ["a.txt", "-p"], "-p"],
+      // A revision `--` would move the pathspec separator Git sees.
+      [["--", "HEAD"], ["a.txt"], "--"],
+    ] as const) {
+      const error = await failure(
+        Sessions.use((s) => s.create({ command: "create", cwd: root, revisions, pathspecs })),
+      );
+      expect(error).toMatchObject({
+        _tag: "bad_args",
+        message: `git options are not accepted: ${rejected}`,
+      });
+    }
+    for (const mixedArgs of [{ revisions: ["HEAD"] }, { revisions: [], pathspecs: [] }]) {
+      const mixed = await failure(
+        Sessions.use((s) => s.create({ command: "create", cwd: root, ...mixedArgs, patch })),
+      );
+      expect(mixed).toMatchObject({
+        _tag: "bad_args",
+        message: "--stdin cannot be combined with git arguments",
+      });
+    }
     const text = await failure(
-      Sessions.use((s) => s.create(request("create", ["--stdin", "--"], root, "just text\n"))),
+      Sessions.use((s) =>
+        s.create({ command: "create", cwd: root, revisions: [], patch: "just text\n" }),
+      ),
     );
     expect(text._tag).toBe("bad_args");
     expect(text.message).toBe("invalid unified diff");
     const truncated = "--- a/a.txt\n+++ b/a.txt\n@@ -1 +1 @@\n-old\n";
     const malformed = await failure(
-      Sessions.use((s) => s.create(request("create", ["--stdin", "--"], root, truncated))),
+      Sessions.use((s) =>
+        s.create({ command: "create", cwd: root, revisions: [], patch: truncated }),
+      ),
     );
     expect(malformed._tag).toBe("bad_args");
     expect(malformed.detail).toBe("parsePatchContent: hunk line count mismatch");
@@ -409,7 +442,7 @@ describe("Sessions.create", () => {
 
   it("refuses a second session for the same repository", async () => {
     const error = await failure(
-      Sessions.use((s) => s.create(request("create", ["--"], otherRoot))),
+      Sessions.use((s) => s.create({ command: "create", cwd: otherRoot, revisions: [] })),
     );
     expect(error._tag).toBe("session_exists");
   });
@@ -419,9 +452,11 @@ describe("Sessions.create", () => {
     await run(
       Effect.gen(function* () {
         const sessions = yield* Sessions;
-        const exit = yield* Effect.exit(sessions.create(request("create", ["--"])));
+        const exit = yield* Effect.exit(
+          sessions.create({ command: "create", cwd: root, revisions: [] }),
+        );
         expect(Exit.isFailure(exit)).toBe(true);
-        const status = yield* Effect.flip(sessions.status(request("status")));
+        const status = yield* Effect.flip(sessions.status({ command: "status", cwd: root }));
         expect(status._tag).toBe("no_session");
         expect([...files.keys()]).toEqual([persisted.id]);
       }),
@@ -436,12 +471,12 @@ describe("Sessions reads", () => {
       groups: [{ ...persisted.groups[0]!, hunkIds: ["h3", "h1"] }],
     });
     const value = await run(
-      Sessions.use((s) => s.diff(request("diff", ["--group", "g1"], otherRoot))),
+      Sessions.use((s) => s.diff({ command: "diff", cwd: otherRoot, group: "g1" })),
     );
     expect(value.hunks.map(({ id }) => id)).toEqual(["h3", "h1"]);
   });
   it("selects by repository or by exact --session id", async () => {
-    const byRepo = await run(Sessions.use((s) => s.status(request("status", [], otherRoot))));
+    const byRepo = await run(Sessions.use((s) => s.status({ command: "status", cwd: otherRoot })));
     expect(byRepo.session.id).toBe("persisted");
     expect(byRepo.groups[0]?.count).toBe(1);
     expect(byRepo.groups[0]?.accepted).toBe(true);
@@ -455,68 +490,42 @@ describe("Sessions reads", () => {
     });
     expect(byRepo.inbox).toEqual([{ id: "h3", file: "y.txt" }]);
     const byId = await run(
-      Sessions.use((s) => s.status(request("status", ["--session", "persisted"], "/elsewhere"))),
+      Sessions.use((s) => s.status({ command: "status", cwd: "/elsewhere", session: "persisted" })),
     );
     expect(byId.session.id).toBe("persisted");
-    const missing = await failure(Sessions.use((s) => s.status(request("status"))));
+    const missing = await failure(Sessions.use((s) => s.status({ command: "status", cwd: root })));
     expect(missing._tag).toBe("no_session");
     const unknown = await failure(
-      Sessions.use((s) => s.status(request("status", ["--session", "nope"]))),
+      Sessions.use((s) => s.status({ command: "status", cwd: root, session: "nope" })),
     );
     expect(unknown._tag).toBe("no_session");
   });
 
   it("filters diffs by hunk, group, or file and rejects bad selectors", async () => {
-    const diff = (args: string[]) =>
-      Sessions.use((s) => s.diff(request("diff", ["--session", "persisted", ...args])));
-    expect((await run(diff([]))).hunks.map((hunk) => hunk.id)).toEqual(["h1", "h2", "h3"]);
-    expect((await run(diff(["--hunk", "h2"]))).hunks.map((hunk) => hunk.id)).toEqual(["h2"]);
-    expect((await run(diff(["--group", "g1"]))).hunks.map((hunk) => hunk.id)).toEqual(["h1"]);
-    const byFile = await run(diff(["--file", "y.txt"]));
+    const diff = (selector: { hunk?: string; group?: string; file?: string }) =>
+      Sessions.use((s) =>
+        s.diff({ command: "diff", cwd: root, session: "persisted", ...selector }),
+      );
+    expect((await run(diff({}))).hunks.map((hunk) => hunk.id)).toEqual(["h1", "h2", "h3"]);
+    expect((await run(diff({ hunk: "h2" }))).hunks.map((hunk) => hunk.id)).toEqual(["h2"]);
+    expect((await run(diff({ group: "g1" }))).hunks.map((hunk) => hunk.id)).toEqual(["h1"]);
+    const byFile = await run(diff({ file: "y.txt" }));
     expect(byFile.hunks.map((hunk) => hunk.id)).toEqual(["h2", "h3"]);
     expect(byFile.revision).toBe(3);
-    expect((await failure(diff(["--hunk", "h1", "--file", "x.txt"])))._tag).toBe("bad_args");
-    expect((await failure(diff(["--group", "missing"])))._tag).toBe("validation_failed");
-    expect((await failure(diff(["--hunk", "missing"])))._tag).toBe("validation_failed");
-    expect((await failure(diff(["--bogus"])))._tag).toBe("bad_args");
-  });
-
-  it("rejects options another command owns and leaves the session untouched", async () => {
-    const apply = await failure(
-      Sessions.use((s) =>
-        s.apply(
-          request(
-            "apply",
-            ["--file", "x.txt"],
-            otherRoot,
-            JSON.stringify({ revision: 3, idempotencyKey: "flagged", ops: [] }),
-          ),
-        ),
-      ),
-    );
-    expect(apply._tag).toBe("bad_args");
-    const status = await failure(Sessions.use((s) => s.status(request("status", ["--stdin"]))));
-    expect(status._tag).toBe("bad_args");
-    const refresh = await failure(
-      Sessions.use((s) => s.refresh(request("refresh", ["--hunk", "h1"], otherRoot))),
-    );
-    expect(refresh._tag).toBe("bad_args");
-    expect(files.get("persisted")).toEqual(persisted);
-    expect(patchCalls).toEqual([]);
+    expect((await failure(diff({ hunk: "h1", file: "x.txt" })))._tag).toBe("bad_args");
+    expect((await failure(diff({ group: "missing" })))._tag).toBe("validation_failed");
+    expect((await failure(diff({ hunk: "missing" })))._tag).toBe("validation_failed");
   });
 });
 
 describe("Sessions.apply", () => {
   const apply = (envelope: unknown, cwd = otherRoot) =>
     Sessions.use((s) =>
-      s.apply(
-        request(
-          "apply",
-          [],
-          cwd,
-          typeof envelope === "string" ? envelope : JSON.stringify(envelope),
-        ),
-      ),
+      s.apply({
+        command: "apply",
+        cwd: cwd,
+        batch: typeof envelope === "string" ? envelope : JSON.stringify(envelope),
+      }),
     );
   const envelope: ApplyEnvelope = {
     revision: 3,
@@ -600,7 +609,9 @@ describe("Sessions.apply", () => {
     expect(malformed._tag).toBe("validation_failed");
     expect(malformed.message).toBe("invalid apply envelope");
     expect(malformed.detail).toEqual([{ opIndex: -1, message: expect.any(String) }]);
-    const missing = await failure(Sessions.use((s) => s.apply(request("apply", [], otherRoot))));
+    const missing = await failure(
+      Sessions.use((s) => s.apply({ command: "apply", cwd: otherRoot, batch: "" })),
+    );
     expect(missing._tag).toBe("validation_failed");
     expect(files.get("persisted")).toEqual(persisted);
   });
@@ -642,11 +653,13 @@ describe("Sessions.apply", () => {
         const first = yield* apply(firstBatch);
         expect(first).toMatchObject({ ready: false, inbox: [{ id: "h3" }] });
         yield* s.tuiAction({
-          ...request("tui.action", [], otherRoot),
+          command: "tui.action",
+          cwd: otherRoot,
           action: { type: "cursor.move", itemId: "g2" },
         });
         const verdict = yield* s.tuiAction({
-          ...request("tui.action", [], otherRoot),
+          command: "tui.action",
+          cwd: otherRoot,
           action: { type: "verdict.toggle", itemId: "g2", sessionId: "persisted", revision: 4 },
         });
         const obsolete = yield* Effect.flip(apply({ ...envelope, revision: 4 }));
@@ -666,7 +679,9 @@ describe("Sessions.apply", () => {
           ],
         });
         expect(yield* apply(firstBatch)).toEqual(first);
-        expect((yield* s.status(request("status", [], otherRoot))).revision).toBe(second.revision);
+        expect((yield* s.status({ command: "status", cwd: otherRoot })).revision).toBe(
+          second.revision,
+        );
         expect(files.get("persisted")?.revision).toBe(second.revision);
       }),
     );
@@ -717,38 +732,39 @@ diff --git a/c.txt b/c.txt
     await run(
       Effect.gen(function* () {
         const sessions = yield* Sessions;
-        const created = yield* sessions.create(request("create", ["--"], `${root}/sub`));
+        const created = yield* sessions.create({
+          command: "create",
+          cwd: `${root}/sub`,
+          revisions: [],
+        });
         const [a, b] = created.inbox.map((hunk) => hunk.id);
-        yield* sessions.apply(
-          request(
-            "apply",
-            [],
-            root,
-            JSON.stringify({
-              revision: 0,
-              idempotencyKey: "fold",
-              ops: [
-                {
-                  type: "group.create",
-                  id: "g",
-                  title: "same",
-                  notes: [{ hunkId: a, text: "intent and behavior" }],
-                  memberHunkIds: [a],
-                },
-                {
-                  type: "group.create",
-                  id: "changed",
-                  memberHunkIds: [b],
-                  title: "stale note",
-                  notes: [{ hunkId: b, text: "stale note" }],
-                },
-                { type: "queue.set", itemIds: ["g", "changed"] },
-              ],
-            }),
-          ),
-        );
+        yield* sessions.apply({
+          command: "apply",
+          cwd: root,
+          batch: JSON.stringify({
+            revision: 0,
+            idempotencyKey: "fold",
+            ops: [
+              {
+                type: "group.create",
+                id: "g",
+                title: "same",
+                notes: [{ hunkId: a, text: "intent and behavior" }],
+                memberHunkIds: [a],
+              },
+              {
+                type: "group.create",
+                id: "changed",
+                memberHunkIds: [b],
+                title: "stale note",
+                notes: [{ hunkId: b, text: "stale note" }],
+              },
+              { type: "queue.set", itemIds: ["g", "changed"] },
+            ],
+          }),
+        });
         gitPatch = changed;
-        const refreshed = yield* sessions.refresh(request("refresh", [], root));
+        const refreshed = yield* sessions.refresh({ command: "refresh", cwd: root });
         expect(patchCalls[1]).toEqual({
           root,
           cwd: `${root}/sub`,
@@ -772,8 +788,8 @@ diff --git a/c.txt b/c.txt
     await run(
       Effect.gen(function* () {
         const sessions = yield* Sessions;
-        yield* sessions.create(request("create", ["--", "HEAD~1", "HEAD"]));
-        const refreshed = yield* sessions.refresh(request("refresh", [], `${root}/sub`));
+        yield* sessions.create({ command: "create", cwd: root, revisions: ["HEAD~1", "HEAD"] });
+        const refreshed = yield* sessions.refresh({ command: "refresh", cwd: `${root}/sub` });
         expect(refreshed.revision).toBe(1);
         expect(patchCalls[1]).toEqual({
           root,
@@ -782,7 +798,7 @@ diff --git a/c.txt b/c.txt
           includeUntracked: false,
         });
         const piped = yield* Effect.flip(
-          sessions.refresh(request("refresh", ["--stdin"], root, patch)),
+          sessions.refresh({ command: "refresh", cwd: root, patch }),
         );
         expect(piped._tag).toBe("bad_args");
         expect(piped.message).toBe("git sessions refresh their recorded arguments");
@@ -792,16 +808,16 @@ diff --git a/c.txt b/c.txt
 
   it("refreshes stdin sessions only from a new --stdin patch", async () => {
     const withoutPipe = await failure(
-      Sessions.use((s) => s.refresh(request("refresh", [], otherRoot))),
+      Sessions.use((s) => s.refresh({ command: "refresh", cwd: otherRoot })),
     );
     expect(withoutPipe._tag).toBe("bad_args");
     expect(withoutPipe.message).toBe("stdin sessions must be refreshed with --stdin");
     const notAPatch = await failure(
-      Sessions.use((s) => s.refresh(request("refresh", ["--stdin"], otherRoot, "text\n"))),
+      Sessions.use((s) => s.refresh({ command: "refresh", cwd: otherRoot, patch: "text\n" })),
     );
     expect(notAPatch._tag).toBe("bad_args");
     const refreshed = await run(
-      Sessions.use((s) => s.refresh(request("refresh", ["--stdin"], otherRoot, patch))),
+      Sessions.use((s) => s.refresh({ command: "refresh", cwd: otherRoot, patch })),
     );
     expect(refreshed.revision).toBe(4);
     expect(refreshed.groups).toEqual([]);
@@ -819,9 +835,9 @@ describe("Sessions.load", () => {
         files.delete(persisted.id);
         files.set("fresh", { ...persisted, id: "fresh", repoRoot: root });
         yield* sessions.load;
-        const stale = yield* Effect.flip(sessions.status(request("status", [], otherRoot)));
+        const stale = yield* Effect.flip(sessions.status({ command: "status", cwd: otherRoot }));
         expect(stale._tag).toBe("no_session");
-        expect((yield* sessions.status(request("status"))).session.id).toBe("fresh");
+        expect((yield* sessions.status({ command: "status", cwd: root })).session.id).toBe("fresh");
       }),
     );
   });
@@ -829,10 +845,8 @@ describe("Sessions.load", () => {
 
 describe("Sessions.tuiAction", () => {
   const frame = (revision: number) => ({ sessionId: "persisted", revision });
-  const act = (action: HumanAction | undefined, args: string[] = []) =>
-    Sessions.use((s) =>
-      s.tuiAction({ command: "tui.action", cwd: otherRoot, args, ...(action ? { action } : {}) }),
-    );
+  const act = (action: HumanAction) =>
+    Sessions.use((s) => s.tuiAction({ command: "tui.action", cwd: otherRoot, action }));
 
   it("moves and focuses the cursor on seq only, persisting each step", async () => {
     await run(
@@ -868,7 +882,7 @@ describe("Sessions.tuiAction", () => {
           _tag: "validation_failed",
           message: "review queue is not set",
         });
-        expect((yield* sessions.status(request("status", [], otherRoot))).seq).toBe(4);
+        expect((yield* sessions.status({ command: "status", cwd: otherRoot })).seq).toBe(4);
       }),
     );
   });
@@ -878,31 +892,32 @@ describe("Sessions.tuiAction", () => {
       await run(
         Effect.gen(function* () {
           const sessions = yield* Sessions;
-          const created = yield* sessions.create(request("create", ["HEAD"]));
+          const created = yield* sessions.create({
+            command: "create",
+            cwd: root,
+            revisions: ["HEAD"],
+          });
           const ids = created.inbox.map(({ id }) => id);
-          yield* sessions.apply(
-            request(
-              "apply",
-              [],
-              root,
-              JSON.stringify({
-                revision: created.revision,
-                idempotencyKey: "prepare",
-                ops: [
-                  {
-                    type: "group.create",
-                    id: "group",
-                    memberHunkIds: ids,
-                    title: "change",
-                    notes: [],
-                  },
-                  { type: "queue.set", itemIds: ["group"] },
-                ],
-              }),
-            ),
-          );
+          yield* sessions.apply({
+            command: "apply",
+            cwd: root,
+            batch: JSON.stringify({
+              revision: created.revision,
+              idempotencyKey: "prepare",
+              ops: [
+                {
+                  type: "group.create",
+                  id: "group",
+                  memberHunkIds: ids,
+                  title: "change",
+                  notes: [],
+                },
+                { type: "queue.set", itemIds: ["group"] },
+              ],
+            }),
+          });
           const focus = (action: HumanAction) =>
-            sessions.tuiAction({ ...request("tui.action"), action });
+            sessions.tuiAction({ command: "tui.action", cwd: root, action });
           const seen = yield* focus({
             type: "cursor.focus",
             itemId: "group",
@@ -920,7 +935,7 @@ describe("Sessions.tuiAction", () => {
           } as const;
           const newer =
             change === "refresh"
-              ? yield* sessions.refresh(request("refresh"))
+              ? yield* sessions.refresh({ command: "refresh", cwd: root })
               : yield* focus({
                   type: "cursor.focus",
                   itemId: "group",
@@ -956,10 +971,7 @@ describe("Sessions.tuiAction", () => {
         expect(undoneAgain.cursor.itemId).toBe("g2");
         const exhausted = yield* Effect.flip(act({ type: "verdict.undo", ...frame(5) }));
         expect(exhausted._tag).toBe("validation_failed");
-        const accepted = yield* act({ type: "verdict.toggle", itemId: "g1", ...frame(5) }, [
-          "--session",
-          "persisted",
-        ]);
+        const accepted = yield* act({ type: "verdict.toggle", itemId: "g1", ...frame(5) });
         expect(accepted.groups[0]?.accepted).toBe(true);
         expect(accepted).toMatchObject({ revision: 6, seq: 4 });
         expect(files.get("persisted")).toMatchObject({ revision: 6, acceptHistory: ["g1"] });
@@ -967,14 +979,7 @@ describe("Sessions.tuiAction", () => {
           act({ type: "verdict.toggle", itemId: "h3", ...frame(6) }),
         );
         expect(inbox._tag).toBe("validation_failed");
-        const missing = yield* Effect.flip(act(undefined));
-        expect(missing._tag).toBe("validation_failed");
-        expect(missing.message).toBe("invalid TUI action");
-        const bogus = yield* Effect.flip(
-          act({ type: "verdict.undo", ...frame(6) }, ["--hunk", "h1"]),
-        );
-        expect(bogus._tag).toBe("bad_args");
-        expect((yield* sessions.status(request("status", [], otherRoot))).revision).toBe(6);
+        expect((yield* sessions.status({ command: "status", cwd: otherRoot })).revision).toBe(6);
       }),
     );
   });
@@ -998,7 +1003,7 @@ describe("Sessions.tuiAction", () => {
         );
         expect(failed._tag).toBe("Failure");
         expect(files.get(persisted.id)).toEqual(initial);
-        expect((yield* sessions.status(request("status", [], otherRoot))).cursor).toEqual(
+        expect((yield* sessions.status({ command: "status", cwd: otherRoot })).cursor).toEqual(
           initial.cursor,
         );
         saveFails = false;
@@ -1029,7 +1034,7 @@ describe("Sessions.tuiAction", () => {
           act({ type: "verdict.undo", sessionId: "persisted", revision: 2 }),
         );
         expect(staleUndo._tag).toBe("stale_revision");
-        const status = yield* sessions.status(request("status", [], otherRoot));
+        const status = yield* sessions.status({ command: "status", cwd: otherRoot });
         expect(status).toMatchObject({ revision: 3, seq: 1 });
         expect(status.groups[0]?.accepted).toBe(true);
       }),
@@ -1042,14 +1047,14 @@ describe("Sessions.close", () => {
     await run(
       Effect.gen(function* () {
         const sessions = yield* Sessions;
-        const created = yield* sessions.create(request("create", ["--"]));
+        const created = yield* sessions.create({ command: "create", cwd: root, revisions: [] });
         yield* Effect.flip(Effect.timeout(sessions.idle, "10 millis"));
-        const closed = yield* sessions.close(request("close"));
+        const closed = yield* sessions.close({ command: "close", cwd: root });
         expect(closed).toEqual({ closed: true, sessionId: created.session.id });
         expect(files.has(created.session.id)).toBe(false);
         expect(yield* sessions.isEmpty).toBe(false);
         yield* Effect.flip(Effect.timeout(sessions.idle, "10 millis"));
-        yield* sessions.close(request("close", [], otherRoot));
+        yield* sessions.close({ command: "close", cwd: otherRoot });
         expect(yield* sessions.isEmpty).toBe(true);
         yield* sessions.idle;
         expect(files.size).toBe(0);

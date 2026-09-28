@@ -52,10 +52,10 @@ export function daemonTuiClient(
       ),
     );
   return {
-    check: () => send({ command: "check", cwd, args: [] }, SourceCheckPayloadSchema),
-    status: () => send({ command: "status", cwd, args: [] }, StatusPayloadSchema),
-    diff: () => send({ command: "diff", cwd, args: [] }, DiffPayloadSchema),
-    action: (action) => send({ command: "tui.action", cwd, args: [], action }, StatusPayloadSchema),
-    refresh: () => send({ command: "refresh", cwd, args: [] }, StatusPayloadSchema),
+    check: () => send({ command: "check", cwd }, SourceCheckPayloadSchema),
+    status: () => send({ command: "status", cwd }, StatusPayloadSchema),
+    diff: () => send({ command: "diff", cwd }, DiffPayloadSchema),
+    action: (action) => send({ command: "tui.action", cwd, action }, StatusPayloadSchema),
+    refresh: () => send({ command: "refresh", cwd }, StatusPayloadSchema),
   };
 }

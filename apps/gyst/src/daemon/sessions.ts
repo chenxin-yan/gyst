@@ -29,52 +29,39 @@ import {
   Semaphore,
 } from "effect";
 import { createHash } from "node:crypto";
-import { parseArgs, type ParseArgsConfig } from "node:util";
 import { Git } from "./git.ts";
 import { SessionStore } from "./store.ts";
 
 const patchHash = (patch: string) => createHash("sha256").update(patch).digest("hex");
 type SourceCheck = Omit<SourceCheckPayload, "sessionId" | "revision">;
-
-const requestArgs = <T extends ParseArgsConfig>(config: T) =>
-  Effect.try({
-    try: () => parseArgs(config),
-    catch: (error) =>
-      new BadArgs({ message: error instanceof Error ? error.message : String(error) }),
-  });
+type Input<C extends Request["command"]> = Extract<Request, { readonly command: C }>;
 
 const decodeEnvelope = Schema.decodeUnknownEffect(Schema.fromJsonString(ApplyEnvelopeSchema), {
   onExcessProperty: "error",
 });
 
-// Options each session command accepts; anything else is `bad_args`.
-const sessionOptions = { session: { type: "string" } } as const;
-const selectorOptions = {
-  ...sessionOptions,
-  hunk: { type: "string" },
-  group: { type: "string" },
-  file: { type: "string" },
-} as const;
-const stdinOptions = { ...sessionOptions, stdin: { type: "boolean" } } as const;
-
 export class Sessions extends Context.Service<
   Sessions,
   {
-    create(request: Request): Effect.Effect<StatusPayload, BadArgs | SessionExists>;
-    status(request: Request): Effect.Effect<StatusPayload, BadArgs | NoSession>;
-    check(request: Request): Effect.Effect<SourceCheckPayload, BadArgs | NoSession>;
-    diff(request: Request): Effect.Effect<DiffPayload, BadArgs | NoSession | ValidationFailed>;
-    /** One schema-validated batch from `request.stdin`: all ops or none, replays answered by receipt. */
+    create(request: Input<"create">): Effect.Effect<StatusPayload, BadArgs | SessionExists>;
+    status(request: Input<"status">): Effect.Effect<StatusPayload, BadArgs | NoSession>;
+    check(request: Input<"check">): Effect.Effect<SourceCheckPayload, BadArgs | NoSession>;
+    diff(
+      request: Input<"diff">,
+    ): Effect.Effect<DiffPayload, BadArgs | NoSession | ValidationFailed>;
+    /** One schema-validated `request.batch`: all ops or none, replays answered by receipt. */
     apply(
-      request: Request,
+      request: Input<"apply">,
     ): Effect.Effect<StatusPayload, BadArgs | NoSession | StaleRevision | ValidationFailed>;
-    /** Re-reads the recorded source (or `--stdin`); unchanged hunks keep their group and verdict. */
-    refresh(request: Request): Effect.Effect<StatusPayload, BadArgs | NoSession | ValidationFailed>;
+    /** Re-reads the recorded source (or `request.patch`); unchanged hunks keep their group and verdict. */
+    refresh(
+      request: Input<"refresh">,
+    ): Effect.Effect<StatusPayload, BadArgs | NoSession | ValidationFailed>;
     /** One human review step from `request.action`; the daemon owns the reducer so every TUI sees the same state. */
     tuiAction(
-      request: Request,
+      request: Input<"tui.action">,
     ): Effect.Effect<StatusPayload, BadArgs | NoSession | StaleRevision | ValidationFailed>;
-    close(request: Request): Effect.Effect<ClosePayload, BadArgs | NoSession>;
+    close(request: Input<"close">): Effect.Effect<ClosePayload, BadArgs | NoSession>;
     /**
      * Replaces the in-memory sessions with the persisted ones. The daemon calls it once it owns
      * the socket: a contender that loaded earlier would otherwise serve a map a rival has since
@@ -99,48 +86,42 @@ export class Sessions extends Context.Service<
       const lock = yield* Semaphore.make(1);
       const idle = yield* Latch.make(false);
 
-      // A plain generic (not `Effect.fn`) so `values` keeps the keys of the command's own table;
-      // parseArgs's result type stays deferred inside, hence the local `session` view.
-      const selected = <O extends typeof sessionOptions>(
-        cwd: string,
-        args: ReadonlyArray<string>,
-        options: O,
-      ) =>
-        Effect.gen(function* () {
-          const { values } = yield* requestArgs({ args, options, strict: true });
-          const { session: id } = values as { session?: string };
-          if (id) {
-            const session = sessions.get(id);
-            if (!session) return yield* new NoSession({ message: `no session with id ${id}` });
-            return { values, session };
-          }
-          const root = yield* git.repoRoot(cwd);
-          const session = [...sessions.values()].find((candidate) => candidate.repoRoot === root);
-          if (!session)
-            return yield* new NoSession({ message: `no session for repository ${root}` });
-          return { values, session };
-        }).pipe(Effect.withSpan("Sessions.selected"));
-
-      const create = Effect.fn("Sessions.create")(function* (request: Request) {
+      const selected = Effect.fn("Sessions.selected")(function* (request: {
+        readonly cwd: string;
+        readonly session?: string | undefined;
+      }) {
+        const id = request.session;
+        if (id) {
+          const session = sessions.get(id);
+          if (!session) return yield* new NoSession({ message: `no session with id ${id}` });
+          return session;
+        }
         const root = yield* git.repoRoot(request.cwd);
-        const { values, positionals } = yield* requestArgs({
-          args: request.args,
-          options: { stdin: { type: "boolean" } },
-          allowPositionals: true,
-          strict: true,
-        });
+        const session = [...sessions.values()].find((candidate) => candidate.repoRoot === root);
+        if (!session) return yield* new NoSession({ message: `no session for repository ${root}` });
+        return session;
+      });
+
+      const create = Effect.fn("Sessions.create")(function* (request: Input<"create">) {
+        const root = yield* git.repoRoot(request.cwd);
         if ([...sessions.values()].some((session) => session.repoRoot === root))
           return yield* new SessionExists({ message: `a session already exists for ${root}` });
-        if (values.stdin && positionals.length)
+        const { revisions, pathspecs } = request;
+        const stdin = request.patch !== undefined;
+        if (stdin && (revisions.length || pathspecs))
           return yield* new BadArgs({ message: "--stdin cannot be combined with git arguments" });
-        // Only revisions and pathspecs are replayable; git options change the output format.
-        const option = positionals.find((arg) => arg.startsWith("-") && arg !== "--");
+        // Only revisions and pathspecs are replayable; git options change the output format. A
+        // revision may not be `--` either: that would move the pathspec separator.
+        const option =
+          revisions.find((arg) => arg.startsWith("-")) ??
+          pathspecs?.find((arg) => arg.startsWith("-") && arg !== "--");
         if (option)
           return yield* new BadArgs({ message: `git options are not accepted: ${option}` });
-        const includeUntracked = !values.stdin && positionals.length === 0;
-        const patch = values.stdin
-          ? (request.stdin ?? "")
-          : yield* git.patch(root, request.cwd, positionals, includeUntracked);
+        const args = pathspecs ? [...revisions, "--", ...pathspecs] : revisions;
+        const includeUntracked = !stdin && args.length === 0;
+        const patch = stdin
+          ? request.patch
+          : yield* git.patch(root, request.cwd, args, includeUntracked);
         const hunks = yield* Effect.fromResult(parseSnapshot(patch));
         const now = DateTime.formatIso(yield* DateTime.now);
         // Like persistence, an id source that cannot produce randomness is an operational defect.
@@ -148,12 +129,12 @@ export class Sessions extends Context.Service<
         const session: Session = {
           id,
           repoRoot: root,
-          source: values.stdin
+          source: stdin
             ? { kind: "stdin" }
             : {
                 kind: "git",
                 patchHash: patchHash(patch),
-                args: positionals.length ? positionals : ["HEAD"],
+                args: args.length ? args : ["HEAD"],
                 cwd: request.cwd,
                 ...(includeUntracked ? { includeUntracked } : {}),
               },
@@ -176,9 +157,8 @@ export class Sessions extends Context.Service<
         return statusOf(session);
       }, Semaphore.withPermit(lock));
 
-      const status = Effect.fn("Sessions.status")(function* (request: Request) {
-        const { session } = yield* selected(request.cwd, request.args, sessionOptions);
-        return statusOf(session);
+      const status = Effect.fn("Sessions.status")(function* (request: Input<"status">) {
+        return statusOf(yield* selected(request));
       }, Semaphore.withPermit(lock));
 
       const sourcePatch = (session: Pick<Session, "source" | "repoRoot">) => {
@@ -189,9 +169,9 @@ export class Sessions extends Context.Service<
         return git.patch(session.repoRoot, source.cwd, bare ? [] : source.args, bare);
       };
 
-      const check = Effect.fn("Sessions.check")(function* (request: Request) {
+      const check = Effect.fn("Sessions.check")(function* (request: Input<"check">) {
         const target = yield* Effect.gen(function* () {
-          const { session } = yield* selected(request.cwd, request.args, sessionOptions);
+          const session = yield* selected(request);
           let cached = sourceChecks.get(session.id);
           if (!cached) {
             const { source, repoRoot } = session;
@@ -229,24 +209,24 @@ export class Sessions extends Context.Service<
         };
       });
 
-      const diff = Effect.fn("Sessions.diff")(function* (request: Request) {
-        const { values, session } = yield* selected(request.cwd, request.args, selectorOptions);
-        const selectors = [values.hunk, values.group, values.file].filter(Boolean);
+      const diff = Effect.fn("Sessions.diff")(function* (request: Input<"diff">) {
+        const session = yield* selected(request);
+        const selectors = [request.hunk, request.group, request.file].filter(Boolean);
         if (selectors.length > 1)
           return yield* new BadArgs({ message: "choose only one diff selector" });
         let hunks = [...session.hunks];
-        if (values.hunk) hunks = hunks.filter((hunk) => hunk.id === values.hunk);
-        if (values.group) {
-          const group = session.groups.find((candidate) => candidate.id === values.group);
+        if (request.hunk) hunks = hunks.filter((hunk) => hunk.id === request.hunk);
+        if (request.group) {
+          const group = session.groups.find((candidate) => candidate.id === request.group);
           if (!group)
             return yield* new ValidationFailed({
               message: "group selector does not exist",
-              detail: { groupId: values.group },
+              detail: { groupId: request.group },
             });
           const byId = new Map(hunks.map((hunk) => [hunk.id, hunk]));
           hunks = group.hunkIds.flatMap((id) => byId.get(id) ?? []);
         }
-        if (values.file) hunks = hunks.filter((hunk) => hunk.file === values.file);
+        if (request.file) hunks = hunks.filter((hunk) => hunk.file === request.file);
         if (selectors.length && hunks.length === 0)
           return yield* new ValidationFailed({ message: "diff selector matched nothing" });
         return {
@@ -263,9 +243,9 @@ export class Sessions extends Context.Service<
         for (const session of persisted) sessions.set(session.id, session);
       }).pipe(Semaphore.withPermit(lock), Effect.withSpan("Sessions.load"));
 
-      const apply = Effect.fn("Sessions.apply")(function* (request: Request) {
-        const { session } = yield* selected(request.cwd, request.args, sessionOptions);
-        const envelope = yield* decodeEnvelope(request.stdin ?? "").pipe(
+      const apply = Effect.fn("Sessions.apply")(function* (request: Input<"apply">) {
+        const session = yield* selected(request);
+        const envelope = yield* decodeEnvelope(request.batch).pipe(
           Effect.mapError(
             (error) =>
               new ValidationFailed({
@@ -283,15 +263,15 @@ export class Sessions extends Context.Service<
         return outcome.status;
       }, Semaphore.withPermit(lock));
 
-      const refresh = Effect.fn("Sessions.refresh")(function* (request: Request) {
-        const { values, session } = yield* selected(request.cwd, request.args, stdinOptions);
+      const refresh = Effect.fn("Sessions.refresh")(function* (request: Input<"refresh">) {
+        const session = yield* selected(request);
         let patch: string;
         if (session.source.kind === "stdin") {
-          if (!values.stdin)
+          if (request.patch === undefined)
             return yield* new BadArgs({ message: "stdin sessions must be refreshed with --stdin" });
-          patch = request.stdin ?? "";
+          patch = request.patch;
         } else {
-          if (values.stdin)
+          if (request.patch !== undefined)
             return yield* new BadArgs({ message: "git sessions refresh their recorded arguments" });
           patch = yield* sourcePatch(session);
         }
@@ -308,13 +288,8 @@ export class Sessions extends Context.Service<
         return statusOf(refreshed);
       }, Semaphore.withPermit(lock));
 
-      const tuiAction = Effect.fn("Sessions.tuiAction")(function* (request: Request) {
-        const { session } = yield* selected(request.cwd, request.args, sessionOptions);
-        if (!request.action)
-          return yield* new ValidationFailed({
-            message: "invalid TUI action",
-            detail: "tui.action requires an action",
-          });
+      const tuiAction = Effect.fn("Sessions.tuiAction")(function* (request: Input<"tui.action">) {
+        const session = yield* selected(request);
         // A verdict is a ruling on the frame the human saw; checked under the permit so no mutation slips between.
         if (
           (request.action.type === "verdict.toggle" || request.action.type === "verdict.undo") &&
@@ -337,8 +312,8 @@ export class Sessions extends Context.Service<
         return statusOf(updated);
       }, Semaphore.withPermit(lock));
 
-      const close = Effect.fn("Sessions.close")(function* (request: Request) {
-        const { session } = yield* selected(request.cwd, request.args, sessionOptions);
+      const close = Effect.fn("Sessions.close")(function* (request: Input<"close">) {
+        const session = yield* selected(request);
         yield* store.remove(session.id).pipe(Effect.orDie);
         sessions.delete(session.id);
         sourceChecks.delete(session.id);

@@ -150,6 +150,73 @@ describe("gyst session CLI seam", () => {
     await gyst(cwd, ["session", "close"]);
   }, 20_000);
 
+  it("maps create operands and selectors from the command line without changing their replies", async () => {
+    const cwd = await repo("operands");
+    await writeFile(join(cwd, "tracked.txt"), "two\n");
+    await writeFile(join(cwd, "other.txt"), "new\n");
+    git(cwd, "add", "other.txt");
+    const source = async (args: string[]) => {
+      const created = await gyst(cwd, ["session", "create", ...args]);
+      expect(created.exitCode).toBe(0);
+      const { session } = JSON.parse(created.stdout);
+      await gyst(cwd, ["session", "close", "--session", session.id]);
+      return session.source.args;
+    };
+    expect(await source(["HEAD"])).toEqual(["HEAD"]);
+    expect(await source(["--", "HEAD", "--", "tracked.txt"])).toEqual([
+      "HEAD",
+      "--",
+      "tracked.txt",
+    ]);
+    expect(await source(["HEAD", "--", "tracked.txt"])).toEqual(["HEAD", "tracked.txt"]);
+    expect(await source(["--", "HEAD", "--", "a", "--", "tracked.txt"])).toEqual([
+      "HEAD",
+      "--",
+      "a",
+      "--",
+      "tracked.txt",
+    ]);
+
+    const failure = async (args: string[], stdin?: string) => {
+      const result = await gyst(cwd, ["session", ...args], stdin);
+      expect(result.exitCode).toBe(1);
+      return JSON.parse(result.stderr);
+    };
+    expect(await failure(["create", "--", "HEAD", "--stat"])).toEqual({
+      code: "bad_args",
+      message: "git options are not accepted: --stat",
+    });
+    expect(await failure(["create", "--", "HEAD", "--", "-p"])).toEqual({
+      code: "bad_args",
+      message: "git options are not accepted: -p",
+    });
+    expect(await failure(["create", "--stdin", "HEAD"], "")).toEqual({
+      code: "bad_args",
+      message: "--stdin cannot be combined with git arguments",
+    });
+    expect(await failure(["status", "--stdin"])).toMatchObject({ code: "bad_args" });
+
+    const created = JSON.parse((await gyst(cwd, ["session", "create"])).stdout);
+    const hunks = async (args: string[]) => {
+      const result = await gyst(cwd, ["session", "diff", ...args]);
+      expect(result.exitCode).toBe(0);
+      return JSON.parse(result.stdout).hunks.map(({ file }: { file: string }) => file);
+    };
+    expect(await hunks([])).toEqual(["other.txt", "tracked.txt"]);
+    expect(await hunks(["--session", created.session.id, "--file", "other.txt"])).toEqual([
+      "other.txt",
+    ]);
+    expect(await failure(["diff", "--hunk", "x", "--file", "other.txt"])).toEqual({
+      code: "bad_args",
+      message: "choose only one diff selector",
+    });
+    expect(await failure(["status", "--session", "missing"])).toEqual({
+      code: "no_session",
+      message: "no session with id missing",
+    });
+    await gyst(cwd, ["session", "close"]);
+  }, 20_000);
+
   it("serializes concurrent startup and create for one repository", async () => {
     const cwd = await repo("concurrent-create");
     await writeFile(join(cwd, "tracked.txt"), "changed\n");
@@ -289,7 +356,7 @@ describe("gyst session CLI seam", () => {
 `;
     const hello = JSON.parse(await socketRequest(data, { command: "daemon.info" }));
     const request = new TextEncoder().encode(
-      `${JSON.stringify({ ...hello.value, request: { command: "create", cwd, args: ["--stdin"], stdin: patch } })}\n`,
+      `${JSON.stringify({ ...hello.value, request: { command: "create", cwd, revisions: [], patch } })}\n`,
     );
     const marker = new TextEncoder().encode("é");
     const markerStart = request.findIndex(
@@ -809,7 +876,6 @@ describe("gyst session CLI seam", () => {
           request: {
             command: "tui.action",
             cwd,
-            args: [],
             action: {
               type: "verdict.toggle",
               sessionId: initial.session.id,

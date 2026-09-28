@@ -129,10 +129,26 @@ export class DaemonServer extends Context.Service<
         Effect.when(fs.remove(paths.pidPath, { force: true }), ownsPidFile).pipe(Effect.ignore),
       );
 
-      const handlers: Record<
-        Request["command"],
-        (request: Request) => Effect.Effect<unknown, DaemonError>
-      > = { ...sessions, "tui.action": (request) => sessions.tuiAction(request) };
+      const dispatch = (request: Request): Effect.Effect<unknown, DaemonError> => {
+        switch (request.command) {
+          case "create":
+            return sessions.create(request);
+          case "status":
+            return sessions.status(request);
+          case "check":
+            return sessions.check(request);
+          case "diff":
+            return sessions.diff(request);
+          case "apply":
+            return sessions.apply(request);
+          case "refresh":
+            return sessions.refresh(request);
+          case "close":
+            return sessions.close(request);
+          case "tui.action":
+            return sessions.tuiAction(request);
+        }
+      };
       // Accepted connections that have not replied yet; idle shutdown must not interrupt them.
       const active = yield* Ref.make(0);
       const restart = yield* Latch.make(false);
@@ -204,7 +220,7 @@ export class DaemonServer extends Context.Service<
                         "daemon identity changed or upgrade is in progress; no review command was executed",
                     }),
                   );
-                return yield* handlers[message.request.command](message.request);
+                return yield* dispatch(message.request);
               }),
             ),
             Effect.map((value) => ({ ok: true as const, value })),
