@@ -1,4 +1,4 @@
-import { describe, expect, it } from "bun:test";
+import { describe, expect, it } from "vite-plus/test";
 import { Result } from "effect";
 import { refreshSession } from "./refresh.ts";
 import type { Hunk, Session } from "./session.ts";

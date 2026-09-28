@@ -1,4 +1,4 @@
-import { describe, expect, it } from "bun:test";
+import { describe, expect, it } from "vite-plus/test";
 import { Result, Schema } from "effect";
 import { applyHumanAction, HumanActionSchema, type HumanAction } from "./human-action.ts";
 import type { Hunk, Session } from "./session.ts";
@@ -96,6 +96,9 @@ describe("applyHumanAction", () => {
       { type: "cursor.focus", itemId: "g1", pane: "queue" },
       { type: "cursor.focus", hunkId: "h1" },
       { type: "cursor.focus", itemId: "g1", pane: "diff" },
+      { type: "cursor.move" },
+      // A verdict must name the frame the human saw.
+      { type: "verdict.toggle", itemId: "g1" },
     ])
       expect(Result.isFailure(decode(action))).toBe(true);
   });

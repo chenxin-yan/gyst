@@ -1,5 +1,6 @@
-import { afterAll, beforeAll, describe, expect, it } from "bun:test";
-import { BunServices, BunSocket } from "@effect/platform-bun";
+import { afterAll, beforeAll, describe, expect, it } from "vite-plus/test";
+import * as NodeServices from "@effect/platform-node/NodeServices";
+import * as NodeSocket from "@effect/platform-node/NodeSocket";
 import { type Reply, ReplySchema, type Request, type Session } from "@gyst/core";
 import {
   Crypto,
@@ -68,17 +69,17 @@ const paths = Layer.sync(Paths, () => ({
   pidPath: join(dataDir, "daemon.pid"),
   sessionFile: (id: string) => join(dataDir, `${id}.json`),
 }));
-const serverLayerOver = (platform: Layer.Layer<Layer.Success<typeof BunServices.layer>>) =>
+const serverLayerOver = (platform: Layer.Layer<Layer.Success<typeof NodeServices.layer>>) =>
   DaemonServer.layer.pipe(
     Layer.provide(Sessions.layer.pipe(Layer.provide(Layer.mergeAll(git, store, crypto)))),
     Layer.provide(paths),
     Layer.provide(platform),
   );
-const serverLayer = serverLayerOver(BunServices.layer);
+const serverLayer = serverLayerOver(NodeServices.layer);
 
 const decodeReply = Schema.decodeUnknownSync(Schema.fromJsonString(ReplySchema));
 const exchange = Effect.fn("exchange")(function* (message: unknown) {
-  const socket = yield* BunSocket.makeNet({ path: socketPath });
+  const socket = yield* NodeSocket.makeNet({ path: socketPath });
   const pull = yield* Socket.readerBytes(socket);
   yield* writeLine(socket, JSON.stringify(message));
   return decodeReply(yield* readLine(pull));
@@ -184,7 +185,7 @@ describe("DaemonServer", () => {
       }).pipe(
         Effect.provide(serverLayer),
         Effect.provide(paths),
-        Effect.provide(BunServices.layer),
+        Effect.provide(NodeServices.layer),
       ),
     );
     expect((await readdir(dataDir)).filter((name) => name.startsWith("daemon.sock"))).toEqual([]);
@@ -208,7 +209,6 @@ describe("DaemonServer", () => {
           { command: "apply", cwd: "/argv", batch: "{}", file: "a.txt" },
           { command: "refresh", cwd: "/argv", hunk: "h1" },
           { command: "apply", cwd: "/argv" },
-          { command: "tui.action", cwd: "/argv" },
         ]) {
           const reply = yield* exchange({ ...info, request });
           expect(reply.ok ? reply : reply.error).toMatchObject({
@@ -250,7 +250,7 @@ describe("DaemonServer", () => {
     );
     const exit = await Effect.runPromiseExit(
       DaemonServer.use((server) => server.run).pipe(
-        Effect.provide(serverLayerOver(Layer.provideMerge(brokenRemove, BunServices.layer))),
+        Effect.provide(serverLayerOver(Layer.provideMerge(brokenRemove, NodeServices.layer))),
       ),
     );
     expect(exit._tag).toBe("Failure");

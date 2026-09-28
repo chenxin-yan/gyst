@@ -1,7 +1,13 @@
-import { beforeEach, describe, expect, it } from "bun:test";
-import { BunServices } from "@effect/platform-bun";
-import { type ApplyEnvelope, BadArgs, type HumanAction, type Session } from "@gyst/core";
-import { Crypto, Effect, Exit, Fiber, Layer, PlatformError, Stream } from "effect";
+import { beforeEach, describe, expect, it } from "vite-plus/test";
+import * as NodeServices from "@effect/platform-node/NodeServices";
+import {
+  type ApplyEnvelope,
+  applyHumanAction,
+  BadArgs,
+  type HumanAction,
+  type Session,
+} from "@gyst/core";
+import { Crypto, Effect, Exit, Fiber, Layer, PlatformError, Result, Stream } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 import { Git } from "./git.ts";
 import { Sessions } from "./sessions.ts";
@@ -83,6 +89,14 @@ const run = <A, E>(effect: Effect.Effect<A, E, Sessions>) =>
     Effect.provide(Sessions.use((s) => s.load).pipe(Effect.andThen(effect)), sessionsLayer),
   );
 const failure = <A, E>(effect: Effect.Effect<A, E, Sessions>) => run(Effect.flip(effect));
+// No daemon operation carries human work any more, so tests persist it with the pure reducer and
+// reload, as a restarted daemon would read it.
+const recordHumanAction = (sessionId: string, action: HumanAction) =>
+  Effect.gen(function* () {
+    const saved = files.get(sessionId)!;
+    files.set(sessionId, Result.getOrThrow(applyHumanAction(saved, action, saved.updatedAt)));
+    yield* Sessions.use((s) => s.load);
+  });
 
 const persisted: Session = {
   id: "persisted",
@@ -177,16 +191,14 @@ describe("Sessions.check", () => {
               ],
             }),
           });
-          const reviewed = yield* sessions.tuiAction({
-            command: "tui.action",
-            cwd: root,
-            action: {
-              type: "verdict.toggle",
-              sessionId: created.session.id,
-              revision: 1,
-              itemId: "step",
-            },
+          yield* recordHumanAction(created.session.id, {
+            type: "verdict.toggle",
+            sessionId: created.session.id,
+            revision: 1,
+            itemId: "step",
           });
+          const reviewed = yield* sessions.status({ command: "status", cwd: root });
+          expect(reviewed).toMatchObject({ revision: 2, groups: [{ id: "step", accepted: true }] });
           const before = JSON.stringify([...files]);
           gitPatch = patch.replace("+two", "+changed");
           const checks = yield* Effect.all(
@@ -258,7 +270,7 @@ describe("Sessions.check", () => {
               );
           });
         }),
-      ).pipe(Layer.provide(BunServices.layer));
+      ).pipe(Layer.provide(NodeServices.layer));
       await run(
         Sessions.use((sessions) =>
           Effect.gen(function* () {
@@ -267,7 +279,7 @@ describe("Sessions.check", () => {
               g.patch(process.cwd(), process.cwd(), ["HEAD"], false),
             ).pipe(
               Effect.provide(
-                Git.layer.pipe(Layer.provide(Layer.merge(BunServices.layer, spawner))),
+                Git.layer.pipe(Layer.provide(Layer.merge(NodeServices.layer, spawner))),
               ),
             );
             const started = performance.now();
@@ -652,16 +664,14 @@ describe("Sessions.apply", () => {
         };
         const first = yield* apply(firstBatch);
         expect(first).toMatchObject({ ready: false, inbox: [{ id: "h3" }] });
-        yield* s.tuiAction({
-          command: "tui.action",
-          cwd: otherRoot,
-          action: { type: "cursor.move", itemId: "g2" },
+        yield* recordHumanAction("persisted", { type: "cursor.move", itemId: "g2" });
+        yield* recordHumanAction("persisted", {
+          type: "verdict.toggle",
+          itemId: "g2",
+          sessionId: "persisted",
+          revision: 4,
         });
-        const verdict = yield* s.tuiAction({
-          command: "tui.action",
-          cwd: otherRoot,
-          action: { type: "verdict.toggle", itemId: "g2", sessionId: "persisted", revision: 4 },
-        });
+        const verdict = yield* s.status({ command: "status", cwd: otherRoot });
         const obsolete = yield* Effect.flip(apply({ ...envelope, revision: 4 }));
         expect(obsolete._tag).toBe("stale_revision");
         const second = yield* apply({
@@ -838,205 +848,6 @@ describe("Sessions.load", () => {
         const stale = yield* Effect.flip(sessions.status({ command: "status", cwd: otherRoot }));
         expect(stale._tag).toBe("no_session");
         expect((yield* sessions.status({ command: "status", cwd: root })).session.id).toBe("fresh");
-      }),
-    );
-  });
-});
-
-describe("Sessions.tuiAction", () => {
-  const frame = (revision: number) => ({ sessionId: "persisted", revision });
-  const act = (action: HumanAction) =>
-    Sessions.use((s) => s.tuiAction({ command: "tui.action", cwd: otherRoot, action }));
-
-  it("moves and focuses the cursor on seq only, persisting each step", async () => {
-    await run(
-      Effect.gen(function* () {
-        const sessions = yield* Sessions;
-        const moved = yield* act({ type: "cursor.move", itemId: "g1" });
-        expect(moved.cursor).toEqual({ itemId: "g1", pane: "queue", hunkId: "h1" });
-        expect(moved).toMatchObject({ revision: 3, seq: 2 });
-        expect(files.get("persisted")?.cursor).toEqual({
-          itemId: "g1",
-          pane: "queue",
-          hunkId: "h1",
-        });
-        const focused = yield* act({
-          type: "cursor.focus",
-          itemId: "g1",
-          pane: "diff",
-          hunkId: "h1",
-        });
-        expect(focused.cursor).toEqual({ itemId: "g1", pane: "diff", hunkId: "h1" });
-        expect(focused).toMatchObject({ revision: 3, seq: 3 });
-        yield* act({ type: "cursor.move", itemId: "h3" });
-        const onHunk = yield* Effect.flip(
-          act({ type: "cursor.focus", itemId: "h3", pane: "diff", hunkId: "h1" }),
-        );
-        expect(onHunk._tag).toBe("validation_failed");
-        expect(onHunk.message).toBe("TUI action does not apply to the current session");
-        // The fixture's queue is not finalized, so verdicts wait for the pre-pass.
-        const early = yield* Effect.flip(
-          act({ type: "verdict.toggle", itemId: "g1", ...frame(3) }),
-        );
-        expect(early).toMatchObject({
-          _tag: "validation_failed",
-          message: "review queue is not set",
-        });
-        expect((yield* sessions.status({ command: "status", cwd: otherRoot })).seq).toBe(4);
-      }),
-    );
-  });
-
-  for (const change of ["remote focus", "refresh"] as const) {
-    it(`no-ops stale viewport focus after ${change} without persisting it`, async () => {
-      await run(
-        Effect.gen(function* () {
-          const sessions = yield* Sessions;
-          const created = yield* sessions.create({
-            command: "create",
-            cwd: root,
-            revisions: ["HEAD"],
-          });
-          const ids = created.inbox.map(({ id }) => id);
-          yield* sessions.apply({
-            command: "apply",
-            cwd: root,
-            batch: JSON.stringify({
-              revision: created.revision,
-              idempotencyKey: "prepare",
-              ops: [
-                {
-                  type: "group.create",
-                  id: "group",
-                  memberHunkIds: ids,
-                  title: "change",
-                  notes: [],
-                },
-                { type: "queue.set", itemIds: ["group"] },
-              ],
-            }),
-          });
-          const focus = (action: HumanAction) =>
-            sessions.tuiAction({ command: "tui.action", cwd: root, action });
-          const seen = yield* focus({
-            type: "cursor.focus",
-            itemId: "group",
-            pane: "diff",
-            hunkId: ids[0]!,
-          });
-          const pending = {
-            type: "cursor.follow",
-            itemId: "group",
-            pane: "diff",
-            hunkId: ids[1]!,
-            sessionId: seen.session.id,
-            revision: seen.revision,
-            seq: seen.seq,
-          } as const;
-          const newer =
-            change === "refresh"
-              ? yield* sessions.refresh({ command: "refresh", cwd: root })
-              : yield* focus({
-                  type: "cursor.focus",
-                  itemId: "group",
-                  pane: "queue",
-                  hunkId: ids[0]!,
-                });
-          expect(newer.groups[0]?.hunkIds).toEqual(ids);
-          const saved = files.get(seen.session.id);
-          saveFails = true;
-          expect(yield* focus(pending)).toEqual(newer);
-          expect(files.get(seen.session.id)).toBe(saved);
-          saveFails = false;
-          const applied = yield* focus({ ...pending, revision: newer.revision, seq: newer.seq });
-          expect(applied.cursor).toEqual({ itemId: "group", pane: "diff", hunkId: ids[1] });
-          expect(applied.seq).toBe(newer.seq + 1);
-          expect(files.get(seen.session.id)?.cursor).toEqual(applied.cursor);
-        }),
-      );
-    });
-  }
-
-  it("toggles verdicts on the revision and undoes them in accept order", async () => {
-    files.set(persisted.id, { ...persisted, queueSet: true });
-    await run(
-      Effect.gen(function* () {
-        const sessions = yield* Sessions;
-        const undone = yield* act({ type: "verdict.undo", ...frame(3) });
-        expect(undone.groups[0]).toMatchObject({ id: "g1", accepted: false });
-        expect(undone.cursor).toEqual({ itemId: "g1", pane: "queue", hunkId: "h1" });
-        expect(undone).toMatchObject({ revision: 4, seq: 2 });
-        const undoneAgain = yield* act({ type: "verdict.undo", ...frame(4) });
-        expect(undoneAgain.groups[1]).toMatchObject({ id: "g2", accepted: false });
-        expect(undoneAgain.cursor.itemId).toBe("g2");
-        const exhausted = yield* Effect.flip(act({ type: "verdict.undo", ...frame(5) }));
-        expect(exhausted._tag).toBe("validation_failed");
-        const accepted = yield* act({ type: "verdict.toggle", itemId: "g1", ...frame(5) });
-        expect(accepted.groups[0]?.accepted).toBe(true);
-        expect(accepted).toMatchObject({ revision: 6, seq: 4 });
-        expect(files.get("persisted")).toMatchObject({ revision: 6, acceptHistory: ["g1"] });
-        const inbox = yield* Effect.flip(
-          act({ type: "verdict.toggle", itemId: "h3", ...frame(6) }),
-        );
-        expect(inbox._tag).toBe("validation_failed");
-        expect((yield* sessions.status({ command: "status", cwd: otherRoot })).revision).toBe(6);
-      }),
-    );
-  });
-
-  it("persists verdict and navigation together, and leaves both unchanged on save failure", async () => {
-    const initial: Session = {
-      ...persisted,
-      queueSet: true,
-      queue: ["g1", "g2"],
-      acceptHistory: [],
-      cursor: { itemId: "g1", pane: "diff", hunkId: "h1" },
-      groups: persisted.groups.map((group) => ({ ...group, accepted: false })),
-    };
-    files.set(persisted.id, initial);
-    await run(
-      Effect.gen(function* () {
-        const sessions = yield* Sessions;
-        saveFails = true;
-        const failed = yield* Effect.exit(
-          act({ type: "verdict.toggle", itemId: "g1", ...frame(3) }),
-        );
-        expect(failed._tag).toBe("Failure");
-        expect(files.get(persisted.id)).toEqual(initial);
-        expect((yield* sessions.status({ command: "status", cwd: otherRoot })).cursor).toEqual(
-          initial.cursor,
-        );
-        saveFails = false;
-        const accepted = yield* act({ type: "verdict.toggle", itemId: "g1", ...frame(3) });
-        expect(accepted.cursor).toEqual({ itemId: "g2", pane: "diff", hunkId: "h2" });
-        expect(files.get(persisted.id)?.cursor).toEqual(accepted.cursor);
-        expect(files.get(persisted.id)?.groups[0]?.accepted).toBe(true);
-      }),
-    );
-  });
-
-  it("rejects a verdict on a frame the human did not see", async () => {
-    files.set(persisted.id, { ...persisted, queueSet: true });
-    await run(
-      Effect.gen(function* () {
-        const sessions = yield* Sessions;
-        for (const seen of [
-          { sessionId: "persisted", revision: 2 },
-          { sessionId: "replaced", revision: 3 },
-        ]) {
-          const stale = yield* Effect.flip(act({ type: "verdict.toggle", itemId: "g1", ...seen }));
-          expect(stale).toMatchObject({
-            _tag: "stale_revision",
-            detail: { sessionId: "persisted", revision: 3, seen },
-          });
-        }
-        const staleUndo = yield* Effect.flip(
-          act({ type: "verdict.undo", sessionId: "persisted", revision: 2 }),
-        );
-        expect(staleUndo._tag).toBe("stale_revision");
-        const status = yield* sessions.status({ command: "status", cwd: otherRoot });
-        expect(status).toMatchObject({ revision: 3, seq: 1 });
-        expect(status.groups[0]?.accepted).toBe(true);
       }),
     );
   });

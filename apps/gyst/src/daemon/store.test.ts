@@ -1,5 +1,5 @@
-import { afterAll, beforeAll, describe, expect, it } from "bun:test";
-import { BunServices } from "@effect/platform-bun";
+import { afterAll, beforeAll, describe, expect, it } from "vite-plus/test";
+import * as NodeServices from "@effect/platform-node/NodeServices";
 import { type Session, statusOf } from "@gyst/core";
 import { ConfigProvider, Effect, Layer } from "effect";
 import { chmod, mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
@@ -34,7 +34,7 @@ const run = <A, E>(effect: Effect.Effect<A, E, SessionStore>) =>
       effect,
       SessionStore.layer.pipe(
         Layer.provide(Paths.layer),
-        Layer.provide(BunServices.layer),
+        Layer.provide(NodeServices.layer),
         Layer.provide(ConfigProvider.layer(ConfigProvider.fromUnknown({ GYST_DATA_DIR: dataDir }))),
       ),
     ),

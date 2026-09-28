@@ -1,4 +1,4 @@
-import { describe, expect, it } from "bun:test";
+import { describe, expect, it } from "vite-plus/test";
 import { Schema } from "effect";
 import { BadArgs, ErrorPayloadSchema, NoSession } from "./errors.ts";
 import { ReplySchema, RequestSchema } from "./wire.ts";
@@ -29,33 +29,8 @@ describe("daemon wire envelopes", () => {
       { command: "create", cwd: "/repo", args: ["--", "HEAD"] },
       { command: "create", cwd: "/repo", revisions: "HEAD" },
       { command: "apply", cwd: "/repo", stdin: "{}" },
-      { command: "tui.action", cwd: "/repo" },
     ])
       expect(() => decodeRequest(invalid)).toThrow();
-  });
-
-  it("accepts typed human actions", () => {
-    const request = {
-      command: "tui.action",
-      cwd: "/repo",
-      action: { type: "cursor.focus", itemId: "g1", pane: "queue", hunkId: "h1" },
-    } as const;
-    expect(decodeRequest(request)).toEqual(request);
-    expect(() =>
-      decodeRequest({
-        command: "tui.action",
-        cwd: "/repo",
-        action: { type: "cursor.move" },
-      }),
-    ).toThrow();
-    // A verdict must name the frame the human saw.
-    expect(() =>
-      decodeRequest({
-        command: "tui.action",
-        cwd: "/repo",
-        action: { type: "verdict.toggle", itemId: "g1" },
-      }),
-    ).toThrow();
   });
 
   it("accepts both reply variants", () => {

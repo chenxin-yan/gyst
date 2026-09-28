@@ -1,7 +1,6 @@
-import { describe, expect, it } from "bun:test";
+import { describe, expect, it } from "vite-plus/test";
 import { Crust } from "@crustjs/core";
 import { handler } from "@crustjs/effect";
-import { NonInteractiveError } from "@crustjs/tui";
 import { NoSession } from "@gyst/core";
 import { Effect } from "effect";
 import { jsonErrors } from "./json-errors.ts";
@@ -43,17 +42,6 @@ describe("jsonErrors", () => {
     });
   });
 
-  it("reports the TUI's TTY refusal as bad_args", async () => {
-    const { exitCode, stderr } = await run(() => {
-      throw new NonInteractiveError("TUI requires an interactive terminal (TTY).");
-    });
-    expect(exitCode).toBe(1);
-    expect(JSON.parse(stderr[0]!)).toEqual({
-      code: "bad_args",
-      message: "TUI requires an interactive terminal (TTY).",
-    });
-  });
-
   it("reports a defect as internal_error rather than blaming the caller", async () => {
     const { exitCode, stderr } = await run(
       handler(() => Effect.die(new TypeError("broken invariant"))),
@@ -64,7 +52,7 @@ describe("jsonErrors", () => {
 
   it("exits 130 silently when the action is cancelled", async () => {
     const { exitCode, stderr } = await run(() => {
-      throw Object.assign(new Error("TUI cancelled"), { name: "AbortError" });
+      throw Object.assign(new Error("cancelled"), { name: "AbortError" });
     });
     expect(exitCode).toBe(130);
     expect(stderr).toEqual([]);
