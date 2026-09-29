@@ -1,7 +1,16 @@
 import { afterAll, beforeAll, describe, expect, it } from "vite-plus/test";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { type SnapshotManifest, snapshotIdOf } from "@gyst/core";
-import { ConfigProvider, Effect, Fiber, FileSystem, Layer, Stream } from "effect";
+import {
+  ConfigProvider,
+  Effect,
+  Fiber,
+  FileSystem,
+  Layer,
+  PlatformError,
+  Sink,
+  Stream,
+} from "effect";
 import { createHash } from "node:crypto";
 import { chmod, mkdtemp, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -14,18 +23,37 @@ const contentDir = () => join(dataDir, "content");
 const sha256 = (bytes: Uint8Array | string) => createHash("sha256").update(bytes).digest("hex");
 const encoder = new TextEncoder();
 
-const run = <A, E>(effect: Effect.Effect<A, E, CapturedContent | FileSystem.FileSystem>) =>
-  Effect.runPromise(
-    Effect.provide(
-      effect,
-      CapturedContent.layer.pipe(
-        Layer.provideMerge(NodeServices.layer),
-        Layer.provide(Paths.layer),
-        Layer.provide(NodeServices.layer),
-        Layer.provide(ConfigProvider.layer(ConfigProvider.fromUnknown({ GYST_DATA_DIR: dataDir }))),
+// Creating a staged file fails as it would on EMFILE/ENOSPC, without exhausting host resources.
+const failingFileCreation = Layer.effect(
+  FileSystem.FileSystem,
+  Effect.map(FileSystem.FileSystem, (fs) => {
+    const injected = PlatformError.systemError({
+      _tag: "Unknown",
+      module: "FileSystem",
+      method: "open",
+      description: "injected file creation failure",
+    });
+    return { ...fs, sink: () => Sink.fail(injected), writeFile: () => Effect.fail(injected) };
+  }),
+).pipe(Layer.provide(NodeServices.layer));
+
+const runWith =
+  (fileSystem: Layer.Layer<FileSystem.FileSystem>) =>
+  <A, E>(effect: Effect.Effect<A, E, CapturedContent | FileSystem.FileSystem>) =>
+    Effect.runPromise(
+      Effect.provide(
+        effect,
+        CapturedContent.layer.pipe(
+          Layer.provideMerge(fileSystem),
+          Layer.provide(Paths.layer),
+          Layer.provide(NodeServices.layer),
+          Layer.provide(
+            ConfigProvider.layer(ConfigProvider.fromUnknown({ GYST_DATA_DIR: dataDir })),
+          ),
+        ),
       ),
-    ),
-  );
+    );
+const run = runWith(NodeServices.layer);
 const put = (...chunks: Uint8Array[]) =>
   run(CapturedContent.use((content) => content.putBlob(Stream.fromIterable(chunks))));
 const read = (blob: string, range: { offset: number; length: number }) =>
@@ -141,13 +169,54 @@ describe("CapturedContent blobs", () => {
         const fiber = yield* Effect.forkChild(
           content.putBlob(Stream.concat(Stream.make(unicode), Stream.never)),
         );
-        // The first chunk is on disk in staging while the stream waits.
-        while ((yield* Effect.promise(staged)).length === 0) yield* Effect.sleep("5 millis");
+        // Wait until the first chunk is fully written to the private staged file while the sink
+        // still holds it open awaiting more input. This interrupts between writes, not mid-syscall.
+        let stagedFile: string | undefined;
+        for (let attempt = 0; attempt < 400 && stagedFile === undefined; attempt++) {
+          const [directory] = yield* Effect.promise(staged);
+          const [name] =
+            directory === undefined
+              ? []
+              : yield* Effect.promise(() => readdir(join(contentDir(), "staging", directory)));
+          const file =
+            name === undefined ? undefined : join(contentDir(), "staging", directory!, name);
+          if (file && (yield* Effect.promise(() => stat(file))).size === unicode.byteLength)
+            stagedFile = file;
+          else yield* Effect.sleep("5 millis");
+        }
+        expect(stagedFile).toBeDefined();
+        expect(yield* Effect.promise(() => readFile(stagedFile!))).toEqual(Buffer.from(unicode));
+        const modes = yield* Effect.promise(() =>
+          Promise.all([stat(join(stagedFile!, "..")), stat(stagedFile!)]),
+        );
+        expect(modes.map(({ mode }) => mode & 0o777)).toEqual([0o700, 0o600]);
         yield* Fiber.interrupt(fiber);
       }),
     );
     expect(await staged()).toEqual([]);
     expect(await blobs()).toEqual(before);
+    expect(await read(committed.blob, { offset: 0, length: committed.size })).toEqual(unicode);
+  });
+
+  it("removes its staging directory when creating the staged file fails", async () => {
+    const committed = await put(unicode);
+    const manifest = manifestWith([
+      { path: "a.ts", old: { kind: "absent" }, new: { kind: "text", ...committed } },
+    ]);
+    const before = await Promise.all([blobs(), readdir(join(contentDir(), "snapshots"))]);
+    const failing = runWith(failingFileCreation);
+    const errors = [
+      await failing(
+        Effect.flip(CapturedContent.use((content) => content.putBlob(Stream.make(unicode)))),
+      ),
+      await failing(Effect.flip(CapturedContent.use((content) => content.putManifest(manifest)))),
+    ];
+    expect(errors.map((error) => error.message)).toEqual([
+      expect.stringMatching(/injected file creation failure/),
+      expect.stringMatching(/injected file creation failure/),
+    ]);
+    expect(await staged()).toEqual([]);
+    expect(await Promise.all([blobs(), readdir(join(contentDir(), "snapshots"))])).toEqual(before);
     expect(await read(committed.blob, { offset: 0, length: committed.size })).toEqual(unicode);
   });
 

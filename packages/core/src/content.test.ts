@@ -7,8 +7,8 @@ import {
   LogicalPathSchema,
   type SnapshotManifest,
   SnapshotManifestSchema,
-  snapshotIdOf,
 } from "./content.ts";
+import { snapshotIdOf } from "./hash.ts";
 
 const blob = (char: string) => char.repeat(64);
 const decode = Schema.decodeUnknownResult(SnapshotManifestSchema);

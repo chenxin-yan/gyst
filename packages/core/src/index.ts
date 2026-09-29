@@ -27,8 +27,8 @@ export {
   type SnapshotManifest,
   SnapshotIdSchema,
   SnapshotManifestSchema,
-  snapshotIdOf,
 } from "./content.ts";
+export { snapshotIdOf } from "./hash.ts";
 export {
   BadArgs,
   DaemonError,

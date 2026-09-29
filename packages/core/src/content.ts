@@ -1,5 +1,4 @@
 import { Schema } from "effect";
-import { createHash } from "node:crypto";
 import { HunkSchema, ScopeSchema } from "./session.ts";
 
 const sha256Pattern = /^[0-9a-f]{64}$/;
@@ -114,6 +113,3 @@ const sortKeys = (_key: string, value: unknown) =>
 /** The exact stored bytes of a manifest: sorted-key JSON of its encoded form. */
 export const canonicalManifestJson = (manifest: SnapshotManifest): string =>
   JSON.stringify(Schema.encodeSync(SnapshotManifestSchema)(manifest), sortKeys);
-
-export const snapshotIdOf = (manifest: SnapshotManifest): string =>
-  createHash("sha256").update(canonicalManifestJson(manifest)).digest("hex");

@@ -100,10 +100,15 @@ export class CapturedContent extends Context.Service<
           });
       });
 
-      // The scope removes this write's temporary directory on success, failure or interruption.
+      // Each write owns a scoped 0700 directory whose removal is registered before the private
+      // file inside it is created, so success, failure (including failing to create that file) or
+      // interruption leaves no staging. Not `makeTempFileScoped`: in Effect 4.0.0-rc.117 it creates
+      // the directory, then the file, and registers cleanup only after both succeed, so a failed
+      // file creation (EMFILE, ENOSPC, inode exhaustion) leaks the directory.
       const stage = fs
-        .makeTempFileScoped({ directory: staging })
-        .pipe(Effect.tap((file) => fs.chmod(file, 0o600)));
+        .makeTempDirectoryScoped({ directory: staging })
+        .pipe(Effect.map((directory) => path.join(directory, "object")));
+      const privateFile = { flag: "wx", mode: 0o600 } as const;
 
       const putBlob = <E>(bytes: Stream.Stream<Uint8Array, E>) =>
         Effect.gen(function* () {
@@ -117,7 +122,7 @@ export class CapturedContent extends Context.Service<
                 size += chunk.byteLength;
               }),
             ),
-            Stream.run(fs.sink(staged)),
+            Stream.run(fs.sink(staged, privateFile)),
           );
           const blob = hash.digest("hex");
           yield* commit(staged, blobFile(blob), size);
@@ -164,7 +169,7 @@ export class CapturedContent extends Context.Service<
         const content = new TextEncoder().encode(canonicalManifestJson(valid));
         const id = snapshotIdOf(valid);
         const staged = yield* stage;
-        yield* fs.writeFile(staged, content);
+        yield* fs.writeFile(staged, content, privateFile);
         yield* commit(staged, manifestFile(id), content.byteLength);
         return id;
       }, Effect.scoped);
