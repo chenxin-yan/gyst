@@ -193,7 +193,8 @@ describe("serveViewer", () => {
         expect(a.match !== null && b.match !== null).toBe(true);
         expect(a.sessionPath).toBe(`/session/${idA}`);
         expect(b.sessionPath).toBe(`/session/${idB}`);
-        expect(a.printed[0]).toContain("Press Ctrl-C to stop the viewer.");
+        // Printed text holds the bootstrap secret: assert booleans, never render it.
+        expect(a.printed[0]!.endsWith("\nPress Ctrl-C to stop the viewer.")).toBe(true);
         // Loopback IPv4 only.
         expect(yield* Effect.promise(() => refused(a.port, "::1"))).toBe(true);
 
@@ -266,7 +267,9 @@ describe("serveViewer", () => {
         };
 
         const opened = yield* startViewer(open, "true");
-        expect(opened.printed[0]).toMatch(/^Opened session \S+ in your browser\. Press Ctrl-C/);
+        expect(/^Opened session \S+ in your browser\. Press Ctrl-C/.test(opened.printed[0]!)).toBe(
+          true,
+        );
         expect(opened.printed.join("").includes("#")).toBe(false);
         yield* Fiber.interrupt(opened.fiber);
 

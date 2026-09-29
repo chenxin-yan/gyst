@@ -144,14 +144,19 @@ export const browserApp = (launch: Launch, assets: WebAssets) =>
 
     const host = single("host");
     if (!isLaunchHost(launch, host) || names.some(isForwarding)) return status(403);
-    if (!request.url.startsWith("/")) return status(400);
-    const path = new URL(request.url, "http://gyst.invalid").pathname;
+    // The raw target is checked, not a URL-normalized one: normalization would silently resolve
+    // dot segments and backslashes. Only origin-form paths without them are routed.
+    const path = request.url.split("?", 1)[0]!;
+    if (!path.startsWith("/") || path.startsWith("//") || /\\|%2f|%5c/i.test(path))
+      return status(400);
     let decoded: string;
     try {
       decoded = decodeURIComponent(path);
     } catch {
       return status(400);
     }
+    if (decoded.split("/").some((segment) => segment === "." || segment === ".."))
+      return status(400);
 
     if (path === webPaths.bootstrap || path === webPaths.operation) {
       if (request.method !== "POST") return status(405, { allow: "POST" });

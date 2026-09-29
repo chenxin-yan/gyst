@@ -160,11 +160,9 @@ describe("browserApp static routes", () => {
     for (const target of [
       "/assets/missing.js",
       "/assets/link.txt",
-      "/assets/..%2f..%2fsecret.txt",
-      "/assets/%2e%2e%5csecret.txt",
       "/api",
       "/api/nope",
-      "/api%2Foperation",
+      "/%61pi/operation",
       "/bootstrap/x",
     ]) {
       const response = await get(target);
@@ -174,19 +172,31 @@ describe("browserApp static routes", () => {
     expect((await get("/%E0%A4%A")).status).toBe(400);
   });
 
-  it("never reads outside the packaged files, whatever the path encoding", async () => {
+  it("rejects raw targets with dot segments, encoded or back slashes, or no single leading slash", async () => {
     const { get } = await serve();
     for (const target of [
       "/../secret.txt",
       "/assets/../../secret.txt",
+      "/assets/../missing.js",
+      "/./index.html",
       "/%2e%2e/%2e%2e/secret.txt",
+      "/session/%2E",
       "/..%2fsecret.txt",
+      "/assets/..%2f..%2fsecret.txt",
+      "/api%2Foperation",
+      "/assets/%2e%2e%5csecret.txt",
+      "/assets\\app.js",
       "//secret.txt",
+      "//[",
     ]) {
       const response = await get(target);
+      expect([target, response.status, response.body]).toEqual([target, 400, ""]);
       expect(response.body.includes(secret)).toBe(false);
-      expect([200, 404]).toContain(response.status);
     }
+    // Only the path is checked: a query may carry anything, and deep routes stay client routes.
+    for (const target of ["/session/abc?next=/../x%2f", "/session/a.b/c..d"])
+      expect([target, (await get(target)).body]).toEqual([target, indexHtml]);
+    expect((await get("/assets/app.js?v=1")).body).toBe("console.log(1)");
   });
 
   it("rejects methods outside each route's contract", async () => {
@@ -269,8 +279,14 @@ describe("browserApp bootstrap", () => {
     const first = await bootstrap();
     expect(first.status).toBe(204);
     const cookie = first.header("set-cookie")!;
-    expect(cookie === `gyst_auth=${launch.cookie}; Path=/; HttpOnly; SameSite=Strict`).toBe(true);
-    expect(cookie).not.toMatch(/domain|secure|max-age|expires/i);
+    const [pair = "", ...attributes] = cookie.split(";");
+    expect(pair === `gyst_auth=${launch.cookie}`).toBe(true);
+    // Attributes only: the value is a credential and must never reach an assertion message.
+    expect(attributes.map((attribute) => attribute.trim())).toEqual([
+      "Path=/",
+      "HttpOnly",
+      "SameSite=Strict",
+    ]);
     expect(first.header("cache-control")).toBe("no-store");
     // Replay (another tab, a retried exchange) yields the same cookie rather than rotating it.
     expect((await bootstrap()).header("set-cookie") === cookie).toBe(true);
@@ -307,6 +323,17 @@ describe("browserApp bootstrap", () => {
       headers: [["host", host], origin],
     });
     expect([basic.status, twice.status, none.status]).toEqual([401, 401, 401]);
+  });
+
+  it("checks cookie attributes, not a value that happens to contain attribute words", async () => {
+    // A nonsecret fixture value; random base64url values can contain these words too.
+    const launch = { ...makeLaunch(t0), cookie: "Domain-Secure-Expires-Max-Age" };
+    const { bootstrap } = await serve(launch);
+    const [pair = "", ...attributes] = (await bootstrap()).header("set-cookie")!.split(";");
+    expect(pair).toBe("gyst_auth=Domain-Secure-Expires-Max-Age");
+    expect(attributes.some((attribute) => /domain|secure|max-age|expires/i.test(attribute))).toBe(
+      false,
+    );
   });
 
   it("expires ten minutes after launch however often it was exchanged, while the cookie lasts", async () => {
