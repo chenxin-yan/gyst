@@ -414,6 +414,8 @@ export class Git extends Context.Service<
       // Git is the diff engine over private copies of the committed bytes, never the live paths.
       // Outside any repository (the ceiling stops discovery) with no attributes file, no project
       // or global attribute can select a filter, textconv or binary treatment for these copies.
+      // `--text`: both sides are already eligible text, so `core.bigFileThreshold` must not turn
+      // them binary.
       const hunksOf = Effect.fn("Git.hunksOf")(
         function* (path: string, old: ContentSide, current: ContentSide) {
           const copy = (side: ContentSide) =>
@@ -430,6 +432,7 @@ export class Git extends Context.Service<
               "diff.suppressBlankEmpty=false",
               "diff",
               "--no-index",
+              "--text",
               "--no-color",
               "--no-ext-diff",
               "--no-textconv",

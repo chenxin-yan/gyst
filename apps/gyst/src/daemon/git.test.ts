@@ -620,6 +620,29 @@ describe("Git.capture", () => {
     }
   });
 
+  it("diffs captured text as text above a configured core.bigFileThreshold", async () => {
+    const cwd = await repo("big-file-threshold");
+    await writeFile(join(cwd, ".gitattributes"), "*.txt diff\n");
+    git(cwd, "add", ".");
+    git(cwd, "commit", "-qm", "attributes");
+    // Sides of different sizes: Git 2.55 left an equal-sized pair as text despite the threshold.
+    await writeFile(join(cwd, "tracked.txt"), "one\nmore\n");
+    const config = join(root, "big-file-threshold.gitconfig");
+    await writeFile(config, "[core]\n\tbigFileThreshold = 1\n");
+    const inherited = process.env.GIT_CONFIG_GLOBAL;
+    process.env.GIT_CONFIG_GLOBAL = config;
+    try {
+      expect(git(cwd, "diff", "--no-color", "HEAD")).toContain("@@ -1 +1,2 @@\n one\n+more\n");
+      const manifest = await capture(cwd);
+      expect(manifest.hunks.map(({ file, patch }) => [file, patch])).toEqual([
+        ["tracked.txt", "@@ -1 +1,2 @@\n one\n+more"],
+      ]);
+    } finally {
+      if (inherited === undefined) delete process.env.GIT_CONFIG_GLOBAL;
+      else process.env.GIT_CONFIG_GLOBAL = inherited;
+    }
+  });
+
   it("rejects ranges that are not ranges, name unknown revisions, or look like options", async () => {
     const cwd = await repo("range-input");
     const written = join(root, "range-output");
