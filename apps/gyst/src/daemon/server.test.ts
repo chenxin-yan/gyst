@@ -15,6 +15,7 @@ import {
 } from "effect";
 import * as Socket from "effect/socket/Socket";
 import { mkdtemp, readdir, rm } from "node:fs/promises";
+import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { manifestOf, publishingContent } from "./capture-doubles.ts";
@@ -309,6 +310,56 @@ describe("DaemonServer", () => {
       ),
     );
   }, 10_000);
+
+  it("lets a client skip interim lines it does not understand and still decode the reply", async () => {
+    const fakeSocket = join(dataDir, "interim.sock");
+    const peer = createServer((socket) => {
+      let buffered = "";
+      socket.setEncoding("utf8").on("data", (chunk: string) => {
+        buffered += chunk;
+        if (!buffered.includes("\n")) return;
+        const message = JSON.parse(buffered.slice(0, buffered.indexOf("\n")));
+        const lines =
+          message.command === "daemon.info"
+            ? [{ ok: true, value: { version: daemonVersion, instanceId: "interim" } }]
+            : [
+                { future: "a line kind this client predates" },
+                { progress: { phase: "a later phase", done: 1 } },
+                { progress: { phase: "capture", done: 1, total: 2, bytes: 3 } },
+                { ok: true, value: { sessions: [] } },
+              ];
+        socket.end(lines.map((line) => `${JSON.stringify(line)}\n`).join(""));
+      });
+    });
+    await new Promise<void>((resolve) => peer.listen(fakeSocket, resolve));
+    try {
+      const heard: unknown[] = [];
+      const reply = await Effect.runPromise(
+        DaemonClient.use((client) =>
+          client.request({ command: "list" }, (event) => Effect.sync(() => void heard.push(event))),
+        ).pipe(
+          Effect.provide(
+            DaemonClient.layer.pipe(
+              Layer.provide(
+                Layer.succeed(Paths, {
+                  dataDir,
+                  socketPath: fakeSocket,
+                  pidPath: join(dataDir, "interim.pid"),
+                  deleteReceiptsPath: join(dataDir, "interim-receipts"),
+                  sessionFile: (id: string) => join(dataDir, `interim-${id}.json`),
+                }),
+              ),
+              Layer.provide(NodeServices.layer),
+            ),
+          ),
+        ),
+      );
+      expect(reply).toEqual({ sessions: [] });
+      expect(heard).toEqual([{ phase: "capture", done: 1, total: 2, bytes: 3 }]);
+    } finally {
+      await new Promise((resolve) => peer.close(resolve));
+    }
+  });
 
   it("releases the published socket when startup fails after the link", async () => {
     // A failing unlink of the private name must not leave `daemon.sock` behind: the release for the

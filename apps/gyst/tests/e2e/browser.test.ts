@@ -395,7 +395,7 @@ describe("installed gyst in a sandboxed browser", () => {
     expect(await numbers("No newline at end of file")).toEqual(["", ""]);
   }, 30_000);
 
-  it("lists captured files and renders captured code as escaped numbered text; an unavailable side shows its reason", async () => {
+  it("lists captured files and renders captured code, unchanged supporting files included, as escaped numbered text; an unavailable side shows its reason", async () => {
     const page = await newPage();
     await page.goto(`${one.origin}${one.path}`);
     const pane = page.getByRole("main");
@@ -407,14 +407,36 @@ describe("installed gyst in a sandboxed browser", () => {
     await capturedRow("app.ts").getByRole("button", { name: "View old" }).click();
     const oldApp = pane.getByRole("region", { name: "app.ts, old side" });
     await oldApp.getByText(hostile).waitFor();
-    expect(await oldApp.getByRole("row").count()).toBe(3);
+    // Each line is a row of its line number and code cells.
+    expect(
+      await oldApp.getByRole("row").locator("[role=cell]:not(:last-child)").allTextContents(),
+    ).toEqual(["1", "2", "3"]);
     expect(await pane.locator("img").count()).toBe(0);
     expect(await page.evaluate(() => "injected" in window)).toBe(false);
+    // The uncommitted scope's supporting file comes from the snapshot, not only its changed files.
+    await capturedRow("feature.ts").getByRole("button", { name: "View new" }).click();
+    await pane
+      .getByRole("region", { name: "feature.ts, new side" })
+      .getByText("range-only")
+      .waitFor();
+    expect(await capturedRow("logo.bin").innerText()).toMatch(/new: unavailable \(binary\)/);
     await capturedRow("logo.bin").getByRole("button", { name: "View new" }).click();
     await pane
       .getByRole("region", { name: "logo.bin, new side" })
       .getByText("Not captured: binary content is not captured.")
       .waitFor();
+    for (const [path, side] of [
+      ["app.ts", "old"],
+      ["feature.ts", "new"],
+      ["logo.bin", "new"],
+    ] as const) {
+      await capturedRow(path)
+        .getByRole("button", { name: `Hide ${side}` })
+        .click();
+      await pane.getByRole("region", { name: `${path}, ${side} side` }).waitFor({
+        state: "detached",
+      });
+    }
   }, 30_000);
 
   it("keeps the session across client navigation, cookie reload and a new tab; shows not-found views", async () => {

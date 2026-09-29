@@ -86,6 +86,17 @@ Snapshots stay fixed when files change. Refresh explicitly with
 `unchanged`, `changed`, or `unavailable` without modifying review progress. Checks are
 periodic and cached, not a real-time guarantee.
 
+A snapshot keeps the exact text of every eligible project file, unchanged ones included, so
+reviews keep working after the checkout changes or is removed. `gyst session files --session
+<id> --snapshot <snapshot>` lists the snapshot's files a page at a time, with each side's
+availability (absent, or unavailable as binary, non-UTF-8, a symlink or a submodule). `gyst
+session code --session <id> --snapshot <snapshot> --file <path> --side old|new` returns up to
+64 KiB of that side's exact text per page, from `--start-line` (optionally to `--end-line`) or
+from the previous page's `next.offset` via `--offset`; a line longer than a page continues on
+the next one. Reads never consult the checkout and name the session's current snapshot, from
+`open`, `status` or `diff`; after a refresh an older one fails with `stale_revision`. On a
+terminal, capturing (`gyst`, `open`, `refresh`) shows its progress on stderr.
+
 Use `/gyst-refresh` in your agent's chat to refresh the existing review and revise
 its affected groups and explanations while preserving unrelated review progress.
 Refresh retains notes and verdicts only for wholly surviving groups; losing any
