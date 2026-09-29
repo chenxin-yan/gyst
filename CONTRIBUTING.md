@@ -34,11 +34,13 @@ pnpm build
 node apps/gyst/.crust/root/bin/gyst.js --help
 ```
 
-`build` runs [`crust build`](https://crustjs.com/docs/guide/build-and-distribution) for a Node
+`build` builds the browser viewer with `vp build src/web-ui` into `apps/gyst/dist/web-ui/`,
+then runs [`crust build`](https://crustjs.com/docs/guide/build-and-distribution) for a Node
 runtime package. Crust bundles the CLI and its dependencies, invokes the skills extension's
-build hook, and stages the package in `apps/gyst/.crust/root/`. Vite+ caches the build and copies
-the repository README/LICENSE before it. `publishConfig.directory` points pnpm and Changesets
-at Crust's output; no custom publisher or skill-generation script is needed.
+build hook, copies `dist/web-ui/` through `crust.include`, and stages the package in
+`apps/gyst/.crust/root/`. Vite+ caches the build and copies the repository README/LICENSE before
+it. `publishConfig.directory` points pnpm and Changesets at Crust's output; no custom publisher or
+skill-generation script is needed.
 
 Pack and install it to try the release artifact outside the checkout:
 
@@ -47,6 +49,28 @@ pnpm --dir apps/gyst pack --pack-destination /tmp/gyst-pack
 npm install -g --prefix /tmp/gyst-prefix /tmp/gyst-pack/gyst-cli-*.tgz
 /tmp/gyst-prefix/bin/gyst --help
 ```
+
+## Browser viewer
+
+The viewer in [`apps/gyst/src/web-ui/`](apps/gyst/src/web-ui/) is a client-rendered React app
+with a standalone TanStack Router route tree, built by Vite+'s native JSX transform (no React
+plugin, Fast Refresh, SSR or hydration). It imports browser-safe contracts only from
+`@gyst/core/wire` and the shared HTTP paths from `apps/gyst/src/web/contract.ts`. React and the
+router are devDependencies bundled into `dist/web-ui/`, so the published package does not
+depend on them. The launcher serves the installed `dist/web-ui/`; there is no separate dev
+server backed by a daemon.
+
+After `pnpm build`, check the built viewer in a real sandboxed Chromium against a mocked
+launcher (this is a component check, not an installed-product test):
+
+```sh
+CHROMIUM_PATH=/path/to/chromium node apps/gyst/scripts/check-web-ui.mjs
+```
+
+It uses `playwright-core` with your Chromium executable, keeps Chromium's sandbox on, and writes
+`gyst-web-ui-{desktop,narrow}.png` screenshots to the temporary directory.
+
+To try the viewer over SSH, see the README's [Over SSH](README.md#over-ssh) section.
 
 ## Releases
 

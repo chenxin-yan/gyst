@@ -33,9 +33,45 @@ npm install -g @gyst/cli
    The agent plans coverage and order first, then publishes complete groups
    progressively into the session.
 
-This version ships the headless session CLI, background daemon and agent skills. The
-terminal review viewer has been removed and no replacement viewer is included yet, so
-review progress (verdicts and focus) cannot be recorded from this version.
+This version ships the headless session CLI, background daemon, agent skills and a
+browser viewer that shows each saved session's captured diff. The terminal review viewer
+has been removed; the browser viewer does not show agent guidance or record review
+progress (verdicts and focus) yet.
+
+## Review in the browser
+
+```sh
+gyst                   # uncommitted changes, including untracked files
+gyst main...feature    # a Git range
+gyst --session <id>    # a saved session
+```
+
+`gyst` opens the saved session for that scope (creating it only if there is none), starts a
+private viewer on this machine and opens it in your browser. When it cannot open a browser, it
+prints a private link instead; open that link yourself. It stays in the foreground: stop it
+with Ctrl-C when you are done. Closing the browser or stopping `gyst` keeps every saved session.
+
+The link is for you only. Do not paste it into an agent chat or share it. Its secret part
+expires 10 minutes after launch; once opened, that browser stays signed in (reloads, new tabs)
+until `gyst` stops. If the viewer says it is no longer signed in, run `gyst` again and open the
+new link. The viewer's home page lists saved sessions; deleting one there asks for confirmation
+and removes only that session.
+
+The viewer runs on a new `*.localhost` host name for each launch and has been tested with
+Chromium on Linux.
+
+### Over SSH
+
+Run `gyst` on the remote machine and forward its port from your computer:
+
+```sh
+ssh -N -o ExitOnForwardFailure=yes -L 127.0.0.1:LOCAL:127.0.0.1:REMOTE user@remote
+```
+
+`REMOTE` is the port in the printed link and `LOCAL` is any free port on your computer. Open
+the printed link in your local browser with its port replaced by `LOCAL`, keeping the host name
+and the rest of the link unchanged. The viewer only listens on the remote machine's loopback
+address; there is no LAN or reverse-proxy mode.
 
 ## Sessions
 

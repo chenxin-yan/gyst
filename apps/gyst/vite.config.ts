@@ -1,5 +1,15 @@
 import { defineConfig } from "vite-plus";
 
+// TODO: drop the explicit inputs once Vite+ tracks Bun's file reads on Linux
+// (https://github.com/voidzero-dev/vite-task/issues/777); Crust bundles with Bun.
+const coreInputs = [
+  "../../packages/core/src/**",
+  "../../packages/core/package.json",
+  "../../packages/core/tsconfig.json",
+  "../../tsconfig.json",
+  "../../pnpm-lock.yaml",
+];
+
 export default defineConfig({
   run: {
     tasks: {
@@ -10,21 +20,30 @@ export default defineConfig({
           output: ["README.md", "LICENSE"],
         },
       },
+      "web-ui": {
+        command: "vp build src/web-ui",
+        cache: {
+          input: [
+            { auto: true },
+            "src/web-ui/**",
+            "src/web/contract.ts",
+            ...coreInputs,
+            "!dist/**",
+          ],
+          output: ["dist/web-ui/**"],
+        },
+      },
       "build:task": {
         command: "crust build",
-        dependsOn: ["package-docs"],
-        // TODO: drop the explicit inputs once Vite+ tracks Bun's file reads on Linux
-        // (https://github.com/voidzero-dev/vite-task/issues/777); Crust bundles with Bun.
+        // crust.include copies the viewer, so it must be built first.
+        dependsOn: ["package-docs", "web-ui"],
         cache: {
           input: [
             { auto: true },
             "src/**",
             "tsconfig.json",
-            "../../packages/core/src/**",
-            "../../packages/core/package.json",
-            "../../packages/core/tsconfig.json",
-            "../../tsconfig.json",
-            "../../pnpm-lock.yaml",
+            "dist/web-ui/**",
+            ...coreInputs,
             "!.crust/**",
           ],
           output: [".crust/**"],
