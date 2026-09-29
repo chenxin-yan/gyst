@@ -8,7 +8,7 @@ import {
 import { Result, Schema } from "effect";
 import { execFileSync, spawn } from "node:child_process";
 import { existsSync } from "node:fs";
-import { chmod, mkdir, mkdtemp, readFile, readdir, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { connect, createServer, type Socket } from "node:net";
 import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
@@ -528,9 +528,14 @@ describe("gyst session CLI seam", () => {
       });
       socket.on("data", (bytes) => {
         response += decoder.decode(bytes, { stream: true });
-        if (response.includes("\n")) {
+        // Capture progress lines come first; the reply is the line with `ok`.
+        const line = response
+          .split("\n")
+          .slice(0, -1)
+          .find((candidate) => "ok" in JSON.parse(candidate));
+        if (line !== undefined) {
           socket.destroy();
-          resolve(response);
+          resolve(line);
         }
       });
     });
@@ -843,6 +848,134 @@ describe("gyst session CLI seam", () => {
     );
     expect(updated.groups[0].accepted).toBe(false);
     succeeded(await gyst(cwd, ["session", "delete", ...pinned, "--request-id", "cleanup"]));
+  }, 20_000);
+
+  it("lists and reads captured code by snapshot after the checkout is deleted", async () => {
+    const box = await sandbox();
+    const { gyst } = box;
+    const cwd = await repo(box, "captured");
+    await writeFile(join(cwd, "helper.ts"), "export const helper = 1;\n");
+    git(box, cwd, "add", ".");
+    git(box, cwd, "commit", "-qm", "helper");
+    await writeFile(join(cwd, "tracked.txt"), "one\r\ntwo\nthree");
+    await writeFile(join(cwd, "image.bin"), new Uint8Array([0x89, 0x50, 0, 1]));
+    const opened = await gyst(cwd, ["session", "open"]);
+    // Not a terminal: no progress on stderr, and stdout is the one JSON reply.
+    expect(opened.stderr).toBe("");
+    const { session } = json(opened);
+    await rm(cwd, { recursive: true, force: true });
+
+    const elsewhere = box.root;
+    const ids = ["--session", session.id, "--snapshot", session.snapshotId];
+    const listed = json(await gyst(elsewhere, ["session", "files", ...ids]));
+    expect(listed).toMatchObject({
+      sessionId: session.id,
+      snapshotId: session.snapshotId,
+      total: 3,
+    });
+    expect(listed.next).toBeNull();
+    expect(listed.files).toEqual([
+      expect.objectContaining({
+        path: "helper.ts",
+        old: expect.objectContaining({ kind: "text" }),
+      }),
+      {
+        path: "image.bin",
+        old: { kind: "absent" },
+        new: { kind: "unavailable", reason: "binary" },
+      },
+      expect.objectContaining({ path: "tracked.txt" }),
+    ]);
+    const code = (...args: string[]) => gyst(elsewhere, ["session", "code", ...ids, ...args]);
+    expect(json(await code("--file", "tracked.txt", "--side", "new")).content).toEqual({
+      kind: "text",
+      size: 14,
+      start: { line: 1, offset: 0 },
+      text: "one\r\ntwo\nthree",
+      next: null,
+    });
+    expect(
+      json(
+        await code(
+          "--file",
+          "tracked.txt",
+          "--side",
+          "new",
+          "--start-line",
+          "2",
+          "--end-line",
+          "2",
+        ),
+      ).content,
+    ).toMatchObject({ start: { line: 2, offset: 5 }, text: "two\n", next: null });
+    expect(json(await code("--file", "tracked.txt", "--side", "old")).content.text).toBe("one\n");
+    expect(json(await code("--file", "helper.ts", "--side", "new")).content.text).toBe(
+      "export const helper = 1;\n",
+    );
+    expect(json(await code("--file", "image.bin", "--side", "new")).content).toEqual({
+      kind: "unavailable",
+      reason: "binary",
+    });
+    expect(failed(await code("--file", "tracked.txt", "--side", "live")).code).toBe("bad_args");
+    expect(failed(await code("--file", "../outside", "--side", "new")).code).toBe("bad_args");
+    expect(
+      failed(await code("--file", "tracked.txt", "--side", "new", "--start-line", "4")),
+    ).toMatchObject({
+      code: "bad_args",
+      detail: { startLine: 4, lines: 3 },
+    });
+    expect(failed(await code("--file", "missing.txt", "--side", "new")).code).toBe(
+      "validation_failed",
+    );
+    const other = "0".repeat(64);
+    expect(
+      failed(
+        await gyst(elsewhere, [
+          "session",
+          "code",
+          "--session",
+          session.id,
+          "--snapshot",
+          other,
+          "--file",
+          "tracked.txt",
+          "--side",
+          "new",
+        ]),
+      ),
+    ).toMatchObject({ code: "stale_revision", detail: { snapshotId: session.snapshotId } });
+    // The diff names the snapshot its hunks and these reads came from.
+    expect(
+      json(await gyst(elsewhere, ["session", "diff", "--session", session.id])).snapshotId,
+    ).toBe(session.snapshotId);
+    succeeded(
+      await gyst(elsewhere, ["session", "delete", "--session", session.id, "--request-id", "done"]),
+    );
+  }, 20_000);
+
+  it("reports a failed captured-content write and leaves no session or staging", async () => {
+    const box = await sandbox();
+    const { data, gyst } = box;
+    const cwd = await repo(box, "content-failure");
+    await writeFile(join(cwd, "tracked.txt"), "changed\n");
+    // Start the daemon, which creates the content store, then deny committing new content.
+    expect(json(await gyst(cwd, ["session", "list"]))).toEqual({ sessions: [] });
+    const blobs = join(data, "content", "blobs");
+    await chmod(blobs, 0o500);
+    const refused = await gyst(cwd, ["session", "open"]);
+    await chmod(blobs, 0o700);
+    expect(failed(refused)).toMatchObject({
+      code: "internal_error",
+      message: "could not store captured content",
+      detail: expect.stringContaining("PermissionDenied"),
+    });
+    expect(json(await gyst(cwd, ["session", "list"]))).toEqual({ sessions: [] });
+    expect(await readdir(join(data, "content", "staging"))).toEqual([]);
+    expect(await readdir(join(data, "content", "snapshots"))).toEqual([]);
+    const { session } = json(await gyst(cwd, ["session", "open"]));
+    succeeded(
+      await gyst(cwd, ["session", "delete", "--session", session.id, "--request-id", "done"]),
+    );
   }, 20_000);
 
   it("skips undecodable saved sessions without reserving their scope or modifying their files", async () => {
