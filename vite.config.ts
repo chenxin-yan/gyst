@@ -4,8 +4,9 @@ export default defineConfig({
   run: {
     tasks: {
       check: "vp check",
-      // Tests spawn daemons and read Git and temporary state that input tracking cannot see.
+      // Installed tests spawn daemons and read Git and temporary state that input tracking cannot see.
       test: { command: "vp test", cache: false },
+      "test:source": "vp test --project source",
     },
   },
   fmt: {
@@ -15,9 +16,9 @@ export default defineConfig({
     ignorePatterns: [".github/workflows/pullfrog.yml"],
   },
   test: {
-    // Unit-only runs must not build or install the CLI.
+    // Source-only runs must not build or install the CLI.
     projects: [
-      { extends: true, test: { name: "unit", include: ["{apps,packages}/*/src/**/*.test.ts"] } },
+      { extends: true, test: { name: "source", include: ["{apps,packages}/*/src/**/*.test.ts"] } },
       {
         extends: true,
         test: {

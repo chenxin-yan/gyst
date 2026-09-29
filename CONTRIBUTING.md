@@ -21,10 +21,10 @@ pnpm exec vp run test
 Commands are [Vite+ tasks](https://viteplus.dev/guide/run) defined in
 [`vite.config.ts`](vite.config.ts) and [`apps/gyst/vite.config.ts`](apps/gyst/vite.config.ts);
 with a global `vp`, drop the `pnpm exec`. `check` runs formatting, lint and type checks
-(`vp check --fix` fixes formatting and lint issues) and is cached. `test` runs Vitest: the `unit`
-project, and the `installed` project, which builds the CLI, packs it and installs it globally
-with npm into a temporary prefix. `pnpm exec vp test --project unit` skips that. Run both checks
-and tests before opening a PR.
+(`vp check --fix` fixes formatting and lint issues) and is cached. `test` runs Vitest: the `source`
+project (unit and integration tests beside the code), and the `installed` project, which builds
+the CLI, packs it and installs it globally with npm into a temporary prefix. `pnpm exec vp run
+test:source` skips that and is cached. Run both checks and tests before opening a PR.
 
 ## Build
 
