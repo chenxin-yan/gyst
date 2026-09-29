@@ -43,6 +43,8 @@ vi.mock("@effect/platform-node/NodeSocket", async (importOriginal) => {
 let socketPath: string;
 let dataDir: string;
 let commands: string[];
+/** Handshakes the daemon hangs up on after reading them, instead of replying. */
+let lostHandshakes = 0;
 
 /** Answers the handshake as this version; `review` handles every review command's socket. */
 async function fakeDaemon(review: (socket: Socket) => void) {
@@ -54,7 +56,8 @@ async function fakeDaemon(review: (socket: Socket) => void) {
       if (end === -1) return;
       const message = JSON.parse(buffered.slice(0, end));
       commands.push(message.command ?? message.request.command);
-      if (message.command === "daemon.info")
+      if (message.command === "daemon.info" && lostHandshakes-- > 0) socket.destroy();
+      else if (message.command === "daemon.info")
         socket.end(
           `${JSON.stringify({ ok: true, value: { version: daemonVersion, instanceId: "same" } })}\n`,
         );
@@ -96,6 +99,7 @@ afterEach(async () => {
   await closeFakeDaemon();
   dials.count = 0;
   dials.hungUp.clear();
+  lostHandshakes = 0;
 });
 
 describe("DaemonClient", () => {
@@ -112,6 +116,21 @@ describe("DaemonClient", () => {
       _tag: "no_session",
     });
     expect(commands).toEqual(["daemon.info", "status"]);
+  });
+
+  it("redials a handshake whose reply was lost because the daemon hung up after reading it", async () => {
+    socketPath = join(dataDir, "handshake-read.sock");
+    commands = [];
+    await fakeDaemon((socket) =>
+      socket.end(
+        `${JSON.stringify({ ok: false, error: { code: "no_session", message: "none" } })}\n`,
+      ),
+    );
+    lostHandshakes = 1;
+    expect(await request({ command: "status", cwd: "/repo" })).toMatchObject({
+      _tag: "no_session",
+    });
+    expect(commands).toEqual(["daemon.info", "daemon.info", "status"]);
   });
 
   it("sends a review command once, whether the daemon drops it before or after reading it", async () => {
