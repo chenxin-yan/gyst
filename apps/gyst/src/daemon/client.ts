@@ -35,17 +35,20 @@ const decodeProgress = Schema.decodeUnknownOption(ProgressLineSchema, {
   onExcessProperty: "error",
 });
 
-/** An interim line's value: a JSON object without the reply's `ok` field. */
-const interim = (line: string): unknown => {
+/** A line's JSON value, or `undefined` for a line that is not JSON. */
+const jsonOf = (line: string): { readonly value: unknown } | undefined => {
   try {
-    const value: unknown = JSON.parse(line);
-    return typeof value === "object" && value !== null && !Array.isArray(value) && !("ok" in value)
-      ? value
-      : undefined;
+    return { value: JSON.parse(line) };
   } catch {
     return undefined;
   }
 };
+/** The reply is a JSON object with `ok`; every other line shape is interim. */
+const isReplyLine = (line: { readonly value: unknown } | undefined) =>
+  typeof line?.value === "object" &&
+  line.value !== null &&
+  !Array.isArray(line.value) &&
+  "ok" in line.value;
 
 // Five seconds: a cold source-mode start on a loaded machine takes well over one.
 const startupPolls = Schedule.max([Schedule.spaced("20 millis"), Schedule.recurs(250)]);
@@ -79,19 +82,22 @@ export class DaemonClient extends Context.Service<
       const fs = yield* FileSystem.FileSystem;
       const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
 
-      // The reader dials, so it is acquired before anything is written.
+      // The reader dials, so it is acquired before anything is written. Without `onInterim` the
+      // first line is the reply (control messages); with it, lines are read until one is a reply,
+      // and every JSON value before it goes to `onInterim` (other lines are skipped).
       const exchange = Effect.fn("DaemonClient.exchange")(function* (
         line: string,
-        onInterim: (value: unknown) => Effect.Effect<void> = () => Effect.void,
+        onInterim?: (value: unknown) => Effect.Effect<void>,
       ) {
         const socket = yield* NodeSocket.makeNet({ path: paths.socketPath });
         const next = lineReader(yield* Socket.readerBytes(socket));
         yield* writeLine(socket, line);
         while (true) {
           const received = yield* next;
-          const value = interim(received);
-          if (value === undefined) return received;
-          yield* onInterim(value);
+          if (!onInterim) return received;
+          const json = jsonOf(received);
+          if (isReplyLine(json)) return received;
+          if (json) yield* onInterim(json.value);
         }
       }, Effect.scoped);
 

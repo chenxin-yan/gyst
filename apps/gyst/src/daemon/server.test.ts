@@ -324,11 +324,15 @@ describe("DaemonServer", () => {
             ? [{ ok: true, value: { version: daemonVersion, instanceId: "interim" } }]
             : [
                 { future: "a line kind this client predates" },
+                null,
+                "a future string line",
+                ["an", "array"],
                 { progress: { phase: "a later phase", done: 1 } },
                 { progress: { phase: "capture", done: 1, total: 2, bytes: 3 } },
                 { ok: true, value: { sessions: [] } },
               ];
-        socket.end(lines.map((line) => `${JSON.stringify(line)}\n`).join(""));
+        const framed = lines.map((line) => `${JSON.stringify(line)}\n`).join("");
+        socket.end(message.command === "daemon.info" ? framed : `not json {\n${framed}`);
       });
     });
     await new Promise<void>((resolve) => peer.listen(fakeSocket, resolve));
