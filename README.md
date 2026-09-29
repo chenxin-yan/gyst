@@ -53,12 +53,13 @@ with Ctrl-C when you are done. Closing the browser or stopping `gyst` keeps ever
 
 The link is for you only. Do not paste it into an agent chat or share it. Its secret part
 expires 10 minutes after launch; once opened, that browser stays signed in (reloads, new tabs)
-until `gyst` stops. If the viewer says it is no longer signed in, run `gyst` again and open the
+until `gyst` stops. If the viewer says this browser is not signed in, run `gyst` again and open the
 new link. The viewer's home page lists saved sessions; deleting one there asks for confirmation
 and removes only that session.
 
 The viewer runs on a new `*.localhost` host name for each launch and has been tested with
-Chromium on Linux.
+Chromium on Linux, directly and through a local-port SSH forward to the same machine; other
+browsers, platforms and a separate remote machine are untested.
 
 ### Over SSH
 

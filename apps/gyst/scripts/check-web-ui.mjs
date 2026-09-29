@@ -109,7 +109,7 @@ const answer = (request) => {
   }
 };
 
-const server = createServer(async (req, res) => {
+const handle = async (req, res) => {
   const path = new URL(req.url, "http://x").pathname;
   if (req.method === "POST" && path === "/bootstrap") {
     calls.bootstrap.push({ authorization: req.headers.authorization, origin: req.headers.origin });
@@ -145,7 +145,8 @@ const server = createServer(async (req, res) => {
   } catch {
     res.writeHead(404).end();
   }
-});
+};
+const server = createServer((req, res) => void handle(req, res));
 
 const shots = tmpdir();
 const runtime = await mkdtemp(join(shots, "gyst-web-ui-check-"));
@@ -418,32 +419,37 @@ try {
     },
   );
 
-  await regression("401 guidance separates an expired link from an ended launch", async () => {
-    const before = result.consoleErrors.length;
-    const expiredLink = watch(await (await browser.newContext()).newPage());
-    await expiredLink.goto(`${base}/#wrong-secret`);
-    const expired = expiredLink.getByRole("alert");
-    await expired.waitFor();
-    const expiredText = await expired.innerText();
-    assert.match(expiredText, /link/i);
-    assert.match(expiredText, /expired/);
-    assert.match(expiredText, /10 minutes/);
-    assert.match(expiredText, /Run gyst \(or gyst --session <id>\)/);
-    assert.equal(new URL(expiredLink.url()).hash, "");
+  // The launcher is live here, so a 401 without a link must not claim that it stopped.
+  await regression(
+    "401 guidance separates an expired link from a browser not signed in",
+    async () => {
+      const before = result.consoleErrors.length;
+      const expiredLink = watch(await (await browser.newContext()).newPage());
+      await expiredLink.goto(`${base}/#wrong-secret`);
+      const expired = expiredLink.getByRole("alert");
+      await expired.waitFor();
+      const expiredText = await expired.innerText();
+      assert.match(expiredText, /link/i);
+      assert.match(expiredText, /expired/);
+      assert.match(expiredText, /10 minutes/);
+      assert.match(expiredText, /Run gyst \(or gyst --session <id>\)/);
+      assert.equal(new URL(expiredLink.url()).hash, "");
 
-    const noLink = watch(await (await browser.newContext()).newPage());
-    await noLink.goto(`${base}/`);
-    const ended = noLink.getByRole("alert");
-    await ended.waitFor();
-    const endedText = await ended.innerText();
-    assert.doesNotMatch(endedText, /expire/);
-    assert.match(endedText, /until (its|that) gyst stops/);
-    assert.match(endedText, /Run gyst \(or gyst --session <id>\)/);
-    for (const text of [expiredText, endedText])
-      for (const value of ["wrong-secret", secret, cookie]) assert.ok(!text.includes(value));
-    // An expected 401 is explained on the page, not logged as a defect.
-    assert.ok(onlyResourceErrors(result.consoleErrors.slice(before)));
-  });
+      const noLink = watch(await (await browser.newContext()).newPage());
+      await noLink.goto(`${base}/`);
+      const ended = noLink.getByRole("alert");
+      await ended.waitFor();
+      const endedText = await ended.innerText();
+      assert.match(endedText, /This browser is not signed in to this gyst launch\./);
+      assert.doesNotMatch(endedText, /expire|has stopped|ended/);
+      assert.match(endedText, /until (its|that) gyst stops/);
+      assert.match(endedText, /Run gyst \(or gyst --session <id>\)/);
+      for (const text of [expiredText, endedText])
+        for (const value of ["wrong-secret", secret, cookie]) assert.ok(!text.includes(value));
+      // An expected 401 is explained on the page, not logged as a defect.
+      assert.ok(onlyResourceErrors(result.consoleErrors.slice(before)));
+    },
+  );
 
   assert.deepEqual(failures, []);
 

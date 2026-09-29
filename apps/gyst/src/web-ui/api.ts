@@ -135,7 +135,7 @@ function failureOf(status: number): TransportError {
         "unauthorized",
         linkRefused
           ? "This link's sign-in has expired or belongs to another gyst launch."
-          : "This browser is not signed in to a running gyst: the launch it signed in to has stopped.",
+          : "This browser is not signed in to this gyst launch.",
       );
     case 403:
       return new TransportError(

@@ -70,6 +70,18 @@ CHROMIUM_PATH=/path/to/chromium node apps/gyst/scripts/check-web-ui.mjs
 It uses `playwright-core` with your Chromium executable, keeps Chromium's sandbox on, and writes
 `gyst-web-ui-{desktop,narrow}.png` screenshots to the temporary directory.
 
+The installed-product check builds, packs and privately installs the package, then drives real
+foreground `gyst` launches, their daemon and a private key-authenticated SSH local forward on
+127.0.0.1 from a real sandboxed Chromium. It needs git and OpenSSH (`sshd`, `ssh`, `ssh-keygen`
+in `SSH_BIN_DIR`, default `/run/current-system/sw/bin`), creates its scratch directory under
+`$HOME` (sshd's `StrictModes` rejects a world-writable `/tmp` ancestor), and removes it after:
+
+```sh
+CHROMIUM_PATH=/path/to/chromium node apps/gyst/scripts/check-installed-browser.mjs
+```
+
+Neither browser check runs in CI; `pnpm test` covers the installed CLI without a browser.
+
 To try the viewer over SSH, see the README's [Over SSH](README.md#over-ssh) section.
 
 ## Releases
