@@ -21,13 +21,21 @@ import {
   RestartReplySchema,
 } from "./protocol.ts";
 import { inspectSavedSessions } from "./store.ts";
-import { daemonAbsent, frameUnsent, readLine, writeLine } from "./wire.ts";
+import { daemonAbsent, readLine, writeLine } from "./wire.ts";
 
 const encodeMessage = Schema.encodeSync(Schema.fromJsonString(DaemonMessageSchema));
 const decodeReply = Schema.decodeUnknownEffect(Schema.fromJsonString(ReplySchema));
 
 // Five seconds: a cold source-mode start on a loaded machine takes well over one.
 const startupPolls = Schedule.max([Schedule.spaced("20 millis"), Schedule.recurs(250)]);
+
+/**
+ * A write error does not prove the daemon never read the frame; resending a handshake is safe by
+ * protocol instead: `daemon.info` is read-only, and the daemon admits `daemon.restart` only for its
+ * own instance, a newer version and unchanged saved reviews, then drains, so a repeat is refused.
+ */
+const handshakeWriteFailed = (error: { readonly _tag: string }) =>
+  Socket.isSocketError(error) && error.reason._tag === "SocketWriteError";
 
 export class DaemonClient extends Context.Service<
   DaemonClient,
@@ -90,7 +98,7 @@ export class DaemonClient extends Context.Service<
       const connect = (line: string) =>
         controlExchange(line).pipe(
           // An old daemon exiting after an accepted restart can hang up before the frame is written.
-          Effect.retry({ while: frameUnsent, schedule: startupPolls }),
+          Effect.retry({ while: handshakeWriteFailed, schedule: startupPolls }),
           Effect.catchIf(daemonAbsent, () =>
             spawnDaemon.pipe(
               Effect.andThen(

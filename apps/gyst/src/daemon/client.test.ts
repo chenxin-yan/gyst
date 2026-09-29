@@ -1,8 +1,8 @@
-import { afterEach, beforeAll, describe, expect, it, vi } from "vite-plus/test";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vite-plus/test";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import type { Request } from "@gyst/core";
 import { Effect, Layer } from "effect";
-import { mkdtemp } from "node:fs/promises";
+import { mkdtemp, rm } from "node:fs/promises";
 import { createServer, type Server, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -65,6 +65,12 @@ async function fakeDaemon(review: (socket: Socket) => void) {
   dials.server = server;
 }
 
+async function closeFakeDaemon() {
+  const server = dials.server;
+  dials.server = undefined;
+  if (server) await new Promise((resolve) => server.close(resolve));
+}
+
 const request = (input: Request) =>
   Effect.runPromise(
     DaemonClient.use((client) => client.request(input)).pipe(
@@ -85,8 +91,9 @@ const request = (input: Request) =>
 beforeAll(async () => {
   dataDir = await mkdtemp(join(tmpdir(), "gyst-client-"));
 });
+afterAll(() => rm(dataDir, { recursive: true, force: true }));
 afterEach(async () => {
-  await new Promise((resolve) => dials.server?.close(resolve));
+  await closeFakeDaemon();
   dials.count = 0;
   dials.hungUp.clear();
 });
@@ -122,7 +129,7 @@ describe("DaemonClient", () => {
       });
       expect(commands).toEqual(hungUp ? ["daemon.info"] : ["daemon.info", "apply"]);
       expect(dials.count).toBe(2);
-      await new Promise((resolve) => dials.server?.close(resolve));
+      await closeFakeDaemon();
     }
   });
 });
