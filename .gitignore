@@ -1,7 +1,7 @@
 node_modules/
 dist/
 .crust/
-/apps/gyst/stage/
+/apps/gyst/README.md
 *.tsbuildinfo
 .env
 .env.*
@@ -14,3 +14,4 @@ logs/
 *.tgz
 .pi-subagents/
 .agent-sources/
+.vitest/

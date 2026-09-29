@@ -2,34 +2,13 @@
   "name": "gyst",
   "private": true,
   "type": "module",
-  "workspaces": [
-    "apps/*",
-    "packages/*"
-  ],
-  "engines": {
-    "node": ">=24.11.0 <25"
-  },
-  "scripts": {
-    "build": "vp run @gyst/cli#build",
-    "check": "vp check",
-    "check:fix": "vp check --fix",
-    "test": "vp test",
-    "changeset": "changeset",
-    "release:version": "changeset version && npm install --package-lock-only",
-    "release:publish": "node scripts/publish.mjs"
-  },
   "devDependencies": {
     "@changesets/changelog-github": "^1.0.1",
     "@changesets/cli": "^3.0.3",
     "@types/node": "~24.11.2",
     "@types/semver": "7.8.0",
     "typescript": "^7.0.2",
-    "vite": "npm:@voidzero-dev/vite-plus-core@1.0.0-rc.1",
-    "vite-plus": "1.0.0-rc.1"
-  },
-  "overrides": {
-    "vite": "npm:@voidzero-dev/vite-plus-core@1.0.0-rc.1",
-    "vitest": "5.0.1"
-  },
-  "packageManager": "npm@11.19.0"
+    "vite": "catalog:",
+    "vite-plus": "catalog:"
+  }
 }

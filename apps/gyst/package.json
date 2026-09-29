@@ -15,27 +15,28 @@
     "access": "public"
   },
   "engines": {
-    "node": ">=24.11.0 <25"
+    "node": ">=24"
   },
   "bin": {
-    "gyst": "dist/cli.mjs"
+    "gyst": "dist/index.mjs"
   },
   "files": [
     "dist/",
     ".crust/root/skills/"
   ],
-  "scripts": {
-    "build": "vp pack && node scripts/stage-package.mjs"
-  },
   "dependencies": {
-    "@crustjs/core": "0.4.1",
-    "@crustjs/effect": "0.1.3",
-    "@crustjs/extensions": "0.4.1",
-    "@crustjs/skills": "0.4.1",
-    "@effect/platform-node": "4.0.0-rc.117",
-    "@effect/platform-node-shared": "4.0.0-rc.117",
-    "@gyst/core": "*",
-    "effect": "4.0.0-rc.117",
+    "@crustjs/core": "0.5.0",
+    "@crustjs/effect": "0.2.0",
+    "@crustjs/extensions": "0.5.0",
+    "@crustjs/skills": "0.5.0",
+    "@effect/platform-node": "catalog:",
+    "@effect/platform-node-shared": "catalog:",
+    "@pierre/diffs": "catalog:",
+    "effect": "catalog:",
     "semver": "7.8.5"
+  },
+  "devDependencies": {
+    "@gyst/core": "workspace:*",
+    "vitest": "catalog:"
   }
 }

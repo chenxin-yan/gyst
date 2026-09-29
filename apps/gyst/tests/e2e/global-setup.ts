@@ -1,5 +1,6 @@
-// Builds the real package once per run, packs its staged directory and installs the tarball globally
-// into a private prefix outside the checkout, so every process test runs the installed `gyst`.
+// Builds the real package once per run (a cache hit when unchanged), packs it as pnpm publishes it
+// and installs the tarball globally with npm into a private prefix outside the checkout, as a user
+// would, so every process test runs the installed `gyst`.
 import { spawn } from "node:child_process";
 import { mkdtemp, realpath, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -23,18 +24,18 @@ declare module "vitest" {
 }
 
 const repoRoot = fileURLToPath(new URL("../../../../", import.meta.url));
-const stageDir = join(repoRoot, "apps", "gyst", "stage");
+const packageDir = join(repoRoot, "apps", "gyst");
 
-// The npm shipped beside the Node running the tests, so the package is built and installed by the
-// runtime under test rather than whatever else is on PATH.
-const npmEnv = {
+// The npm shipped beside the Node running the tests, so the package is installed by the runtime
+// under test rather than whatever else is on PATH.
+const env = {
   ...process.env,
   PATH: `${dirname(process.execPath)}${delimiter}${process.env.PATH ?? ""}`,
 };
 
-function npm(cwd: string, args: string[]): Promise<string> {
+function exec(command: string, cwd: string, args: string[]): Promise<string> {
   return new Promise((resolve, reject) => {
-    const child = spawn("npm", args, { cwd, env: npmEnv, stdio: ["ignore", "pipe", "pipe"] });
+    const child = spawn(command, args, { cwd, env, stdio: ["ignore", "pipe", "pipe"] });
     let stdout = "";
     let stderr = "";
     child.stdout.setEncoding("utf8").on("data", (chunk: string) => (stdout += chunk));
@@ -45,7 +46,7 @@ function npm(cwd: string, args: string[]): Promise<string> {
         ? resolve(stdout)
         : reject(
             new Error(
-              `npm ${args.join(" ")} (cwd ${cwd}) exited ${code ?? signal}\n--- stdout\n${stdout}\n--- stderr\n${stderr}`,
+              `${command} ${args.join(" ")} (cwd ${cwd}) exited ${code ?? signal}\n--- stdout\n${stdout}\n--- stderr\n${stderr}`,
             ),
           ),
     );
@@ -56,18 +57,18 @@ export default async function setup(project: TestProject) {
   const root = await realpath(await mkdtemp(join(tmpdir(), "gyst-installed-")));
   const prefix = join(root, "prefix");
   try {
-    await npm(repoRoot, ["run", "build"]);
-    const [packed] = JSON.parse(
-      await npm(root, ["pack", stageDir, "--pack-destination", root, "--json"]),
-    ) as [{ filename: string }];
-    await npm(root, [
+    await exec(join(repoRoot, "node_modules", ".bin", "vp"), repoRoot, ["run", "@gyst/cli#build"]);
+    const packed = JSON.parse(
+      await exec("pnpm", packageDir, ["pack", "--pack-destination", root, "--json"]),
+    ) as { filename: string };
+    await exec("npm", root, [
       "install",
       "--global",
       "--prefix",
       prefix,
       "--no-audit",
       "--no-fund",
-      join(root, packed.filename),
+      packed.filename,
     ]);
   } catch (error) {
     // Keep the scratch directory for diagnosis; it is named in the failure.

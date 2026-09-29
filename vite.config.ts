@@ -1,6 +1,14 @@
 import { defineConfig } from "vite-plus";
 
 export default defineConfig({
+  // Canonical commands: `vp run check`, `vp run test`, `vp run @gyst/cli#build`.
+  run: {
+    tasks: {
+      check: "vp check",
+      // Tests spawn daemons and read Git and temporary state that input tracking cannot see.
+      test: { command: "vp test", cache: false },
+    },
+  },
   fmt: {
     useTabs: false,
     tabWidth: 2,
@@ -8,8 +16,8 @@ export default defineConfig({
     ignorePatterns: [".github/workflows/pullfrog.yml"],
   },
   test: {
-    // Only the installed project builds, packs and globally installs the CLI (once per run), so
-    // `vp test --project unit` never builds.
+    // Only the installed project builds (through the cached task), packs and globally installs the
+    // CLI once per run, so `vp test --project unit` never builds.
     projects: [
       { extends: true, test: { name: "unit", include: ["{apps,packages}/*/src/**/*.test.ts"] } },
       {

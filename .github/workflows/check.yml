@@ -14,20 +14,12 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-    strategy:
-      matrix:
-        # Minimum and current supported Node 24 runtimes.
-        node-version: ["24.11.0", "24"]
     steps:
       - uses: actions/checkout@v7
         with:
           persist-credentials: false
-      - uses: actions/setup-node@v7
-        with:
-          node-version: ${{ matrix.node-version }}
-          cache: npm
-      - run: npm ci
-      - run: npm run check
-      - run: npm test
-      - run: npm run build
-      - run: npm pack ./apps/gyst/stage --dry-run
+      # Node and pnpm versions come from mise.toml.
+      - uses: jdx/mise-action@v4
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm exec vp run check
+      - run: pnpm exec vp run test

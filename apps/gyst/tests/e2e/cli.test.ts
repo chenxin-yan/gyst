@@ -14,7 +14,7 @@ describe("installed gyst CLI", () => {
     expect(relative(repoRoot, installed.packageDir).startsWith("..")).toBe(true);
     const manifest = JSON.parse(await readFile(join(installed.packageDir, "package.json"), "utf8"));
     expect(manifest.version).toBe(packageJson.version);
-    expect(manifest.bin).toEqual({ gyst: "dist/cli.mjs" });
+    expect(manifest.bin).toEqual({ gyst: "dist/index.mjs" });
     expect(Object.keys(manifest.dependencies)).not.toContain("@gyst/core");
     expect(manifest.scripts).toBeUndefined();
     expect(existsSync(join(installed.prefix, "lib", "node_modules", "@gyst", "core"))).toBe(false);
@@ -22,9 +22,7 @@ describe("installed gyst CLI", () => {
     expect(
       (await readdir(installed.packageDir)).filter((name) => name !== "node_modules").sort(),
     ).toEqual([".crust", "LICENSE", "README.md", "dist", "package.json"]);
-    const dist = await readdir(join(installed.packageDir, "dist"));
-    expect(dist).toContain("cli.mjs");
-    expect(dist).toContain("app.mjs");
+    expect(await readdir(join(installed.packageDir, "dist"))).toEqual(["index.mjs"]);
   });
 
   it("prints help for bare gyst, the root and session commands without the hidden daemon", async () => {

@@ -7,7 +7,7 @@
     ".": "./src/index.ts"
   },
   "dependencies": {
-    "@pierre/diffs": "1.4.3",
-    "effect": "4.0.0-rc.117"
+    "@pierre/diffs": "catalog:",
+    "effect": "catalog:"
   }
 }
