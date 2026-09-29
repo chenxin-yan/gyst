@@ -14,10 +14,15 @@
 // launch's readiness wait time out while that launcher and its daemon run. Both must exit 1 with
 // every owned process stopped (`result.cleanup`) and nothing left matching this run's paths.
 // `extra-401` adds one unlisted 401 on a deliberate page, which the exact accounting must reject.
+// Test-harness faults, not product evidence: `ssh-missing` / `ssh-noexec` start the SSH client from
+// a missing / non-executable file once sshd, launchers, daemon and Chromium run; `response-error` /
+// `response-cut` fail or cut the client side of a real installed bridge asset response mid-body;
+// `replay-hang` leaves the replayed delete unanswered in the browser; `pgrep-fault` makes the
+// leftover-process probe itself fail. Each must exit 1 for that reason after full cleanup.
 import assert from "node:assert/strict";
 import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { readFileSync } from "node:fs";
+import { readFileSync, statSync } from "node:fs";
 import { mkdir, mkdtemp, readdir, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { request as httpRequest } from "node:http";
 import { createServer as tcpServer } from "node:net";
@@ -58,11 +63,24 @@ const within = (promise, ms, label) => {
   ]).finally(() => clearTimeout(timer));
 };
 
-/** Spawns and registers a child; `exited` resolves to its exit code or signal. */
+/**
+ * Spawns and registers a child. `exited` resolves to its exit code or signal, or to
+ * `spawn failed: <code>` when it never started (no pid), so readiness waits reject and cleanup
+ * skips it. Any later child or stdio stream error is kept in `errors` and reported by cleanup.
+ */
 function own(label, file, args, options) {
   const child = spawn(file, args, options);
-  const exited = new Promise((resolve) => child.once("close", (code, sig) => resolve(code ?? sig)));
-  const entry = { label, child, exited };
+  const errors = [];
+  const exited = new Promise((resolve) => {
+    child.once("close", (code, sig) => resolve(code ?? sig));
+    child.on("error", (error) => {
+      if (child.pid === undefined) resolve(`spawn failed: ${error.code ?? error.message}`);
+      else errors.push(error.message);
+    });
+  });
+  for (const stream of [child.stdin, child.stdout, child.stderr])
+    stream?.on("error", (error) => errors.push(`stdio: ${error.message}`));
+  const entry = { label, child, exited, errors };
   owned.push(entry);
   return entry;
 }
@@ -80,6 +98,7 @@ function signal(pid, name) {
 
 /** SIGTERM, then SIGKILL after `grace`; throws if SIGKILL was needed or did not work either. */
 async function stopOwned({ label, child, exited }, grace = 5_000) {
+  if (child.pid === undefined) return within(exited, 2_000, `${label} spawn failure`);
   if (child.exitCode !== null || child.signalCode !== null) return exited;
   signal(child.pid, "SIGTERM");
   const code = await within(exited, grace, `${label} to exit on SIGTERM`).catch(() => undefined);
@@ -118,7 +137,10 @@ const daemonPid = () => readFile(join(data, "daemon.pid"), "utf8").then(Number, 
 /** A live `daemon run` process launched from this run's private install. */
 function isOwnedDaemon(pid) {
   if (Number.isNaN(pid) || !installed || !isAlive(pid)) return false;
-  const args = spawnSync("ps", ["-ww", "-o", "args=", "-p", String(pid)], { encoding: "utf8" });
+  const args = spawnSync("ps", ["-ww", "-o", "args=", "-p", String(pid)], {
+    encoding: "utf8",
+    timeout: 10_000,
+  });
   return args.stdout.includes(installed.prefix) && args.stdout.trim().endsWith(" daemon run");
 }
 
@@ -216,17 +238,43 @@ async function launch(cwd, ...args) {
   };
 }
 
-/** A raw request to a launch's listener with explicit headers, as a hostile client could send. */
-const raw = (port, { method = "GET", path = "/", headers = {}, body } = {}) =>
-  new Promise((resolve, reject) => {
+/**
+ * A raw request to a launch's listener with explicit headers, as a hostile client could send.
+ * Settles once: the complete response, or a request/response error, a response closed before its
+ * end, or the 10 s deadline (which destroys the request).
+ */
+const raw = (port, { method = "GET", path = "/", headers = {}, body, fault } = {}) =>
+  new Promise((settle, fail) => {
+    const timer = setTimeout(
+      () => req.destroy(new Error(`${method} ${path} timed out after 10000 ms`)),
+      10_000,
+    );
+    const resolve = (value) => {
+      clearTimeout(timer);
+      settle(value);
+    };
+    const reject = (error) => {
+      clearTimeout(timer);
+      fail(error);
+    };
     const req = httpRequest(
       { host: "127.0.0.1", port, method, path, headers, setHost: false },
       (res) => {
+        // Harness fault on the first body chunk: a stream error, or the connection cut mid-body.
+        if (fault)
+          res.once("data", () =>
+            fault === "response-error"
+              ? res.destroy(new Error("injected response stream error"))
+              : res.socket.destroy(),
+          );
         res.resume();
+        res.once("error", reject);
         res.once("end", () => resolve({ status: res.statusCode, headers: res.headers }));
+        res.once("close", () => {
+          if (!res.complete) reject(new Error(`${method} ${path}: response closed before its end`));
+        });
       },
     );
-    req.setTimeout(10_000, () => req.destroy(new Error(`${method} ${path} timed out`)));
     req.once("error", reject);
     req.end(body);
   });
@@ -402,7 +450,10 @@ try {
         held.push(command);
         await within(released, 20_000, "the held diff to be released").catch(() => {});
       }
-      await route.continue();
+      // A page closed by an earlier failure makes continue reject; record it, never drop it.
+      await route
+        .continue()
+        .catch((error) => result.unexpected.push(`held diff continue: ${redact(error.message)}`));
     },
   );
   const diffReply = loading.waitForResponse((r) => r.request().postDataJSON()?.command === "diff");
@@ -419,7 +470,7 @@ try {
   const diffResponse = await diffReply;
   await loading.locator(".pane").getByText("uncommitted-edit").waitFor();
   assert.equal(diffResponse.status(), 200);
-  assert.equal((await diffResponse.json()).ok, true);
+  assert.equal((await within(diffResponse.json(), 10_000, "the diff reply body")).ok, true);
   assert.equal(await loading.getByRole("status").count(), 0);
   await loading.unrouteAll();
   check(
@@ -475,7 +526,10 @@ try {
 
   // Hostile requests straight to the real bridge.
   const host = `${one.hostname}:${one.port}`;
-  const post = (path, headers, body) => raw(one.port, { method: "POST", path, headers, body });
+  // Each case is a thunk, issued only when the loop reaches it, so no request can fail unobserved.
+  const post = (path, headers, body) => () =>
+    raw(one.port, { method: "POST", path, headers, body });
+  const at = (options) => () => raw(one.port, options);
   const op = JSON.stringify({ command: "list" });
   const good = { host, origin: `http://${host}`, cookie: `gyst_auth=${cookie.value}` };
   const cases = [
@@ -501,12 +555,12 @@ try {
       post("/api/operation", { ...good, host: `${two.hostname}:${one.port}` }, op),
       403,
     ],
-    ["loopback host", raw(one.port, { headers: { host: `127.0.0.1:${one.port}` } }), 403],
-    ["hostless port", raw(one.port, { headers: { host: one.hostname } }), 403],
-    ["port 0", raw(one.port, { headers: { host: `${one.hostname}:0` } }), 403],
-    ["userinfo authority", raw(one.port, { headers: { host: `u@${host}` } }), 403],
-    ["forwarded", raw(one.port, { headers: { host, forwarded: "host=evil" } }), 403],
-    ["x-forwarded-host", raw(one.port, { headers: { host, "x-forwarded-host": "evil" } }), 403],
+    ["loopback host", at({ headers: { host: `127.0.0.1:${one.port}` } }), 403],
+    ["hostless port", at({ headers: { host: one.hostname } }), 403],
+    ["port 0", at({ headers: { host: `${one.hostname}:0` } }), 403],
+    ["userinfo authority", at({ headers: { host: `u@${host}` } }), 403],
+    ["forwarded", at({ headers: { host, forwarded: "host=evil" } }), 403],
+    ["x-forwarded-host", at({ headers: { host, "x-forwarded-host": "evil" } }), 403],
     ["cross origin", post("/api/operation", { ...good, origin: "http://evil.localhost" }, op), 403],
     [
       "origin other port",
@@ -515,19 +569,29 @@ try {
     ],
     ["null origin", post("/api/operation", { ...good, origin: "null" }, op), 403],
     ["no origin", post("/api/operation", { host, cookie: good.cookie }, op), 403],
-    ["GET operation", raw(one.port, { path: "/api/operation", headers: good }), 405],
-    ["PUT shell", raw(one.port, { method: "PUT", headers: good }), 405],
-    ["reserved api route", raw(one.port, { path: "/api/other", headers: good }), 404],
-    ["reserved bootstrap subpath", raw(one.port, { path: "/bootstrap/x", headers: good }), 404],
-    ["dot-dot traversal", raw(one.port, { path: "/assets/../index.html", headers: good }), 400],
-    ["encoded traversal", raw(one.port, { path: "/%2e%2e/etc/passwd", headers: good }), 400],
-    ["encoded slash", raw(one.port, { path: "/assets%2findex.html", headers: good }), 400],
-    ["backslash", raw(one.port, { path: "/assets\\index.html", headers: good }), 400],
+    ["GET operation", at({ path: "/api/operation", headers: good }), 405],
+    ["PUT shell", at({ method: "PUT", headers: good }), 405],
+    ["reserved api route", at({ path: "/api/other", headers: good }), 404],
+    ["reserved bootstrap subpath", at({ path: "/bootstrap/x", headers: good }), 404],
+    ["dot-dot traversal", at({ path: "/assets/../index.html", headers: good }), 400],
+    ["encoded traversal", at({ path: "/%2e%2e/etc/passwd", headers: good }), 400],
+    ["encoded slash", at({ path: "/assets%2findex.html", headers: good }), 400],
+    ["backslash", at({ path: "/assets\\index.html", headers: good }), 400],
     ["non-browser op", post("/api/operation", good, JSON.stringify({ command: "shutdown" })), 400],
     ["excess field", post("/api/operation", good, JSON.stringify({ command: "list", x: 1 })), 400],
   ];
-  for (const [name, pending, expected] of cases)
-    assert.equal((await pending).status, expected, `bridge: ${name}`);
+  for (const [name, issue, expected] of cases)
+    assert.equal((await issue()).status, expected, `bridge: ${name}`);
+  if (inject === "response-error" || inject === "response-cut") {
+    // The largest packaged asset spans many reads, so the fault lands before the response ends.
+    const dir = join(installed.packageDir, "dist", "web-ui", "assets");
+    const [[size, name]] = (await readdir(dir))
+      .map((file) => [statSync(join(dir, file)).size, file])
+      .sort((a, b) => b[0] - a[0]);
+    result.faultAssetBytes = size;
+    await raw(one.port, { path: `/assets/${name}`, headers: { host }, fault: inject });
+    throw new Error(`${inject} did not fail the interrupted response`);
+  }
   result.rejections = cases.length - 1;
   check(
     `real bridge answered ${cases.length} hostile/control requests with the exact expected status`,
@@ -562,20 +626,35 @@ try {
   assert.match(payload.requestId, /^[0-9a-f]{32}$/);
   const deleted = { ok: true, value: { deleted: true, sessionId: two.id } };
   assert.equal(response.status(), 200);
-  assert.deepEqual(await response.json(), deleted);
+  assert.deepEqual(await within(response.json(), 10_000, "the delete reply body"), deleted);
   await rangeRow.waitFor({ state: "detached" });
   assert.equal(deletes.length, 1);
   result.deleteRequestId = payload.requestId;
 
+  // The page aborts its own fetch and body read after 10 s; `within` also bounds the evaluate
+  // itself (Playwright's default timeout does not), and observes it if it settles later.
   const send = (body) =>
-    page2.evaluate(async (text) => {
-      const r = await fetch("/api/operation", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: text,
-      });
-      return { status: r.status, reply: await r.json() };
-    }, body);
+    within(
+      page2.evaluate(async (text) => {
+        const r = await fetch("/api/operation", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: text,
+          signal: AbortSignal.timeout(10_000),
+        });
+        return { status: r.status, reply: await r.json() };
+      }, body),
+      15_000,
+      "the replayed delete",
+    ).catch((error) => {
+      throw new Error(`replayed delete failed: ${redact(error.message)}`);
+    });
+  // Harness fault: a route handler that never continues leaves the replay unanswered.
+  if (inject === "replay-hang")
+    await page2.route(
+      (url) => url.pathname === "/api/operation",
+      () => {},
+    );
   assert.deepEqual(await send(response.request().postData()), { status: 200, reply: deleted });
   // A new intent for the same, now absent, session is a domain error, also carried by a 200.
   const other = await send(
@@ -638,17 +717,11 @@ try {
   const ssh = join(root, "s");
   await mkdir(ssh, { mode: 0o700 });
   for (const name of ["host", "client"])
-    execFileSync(join(sshBin, "ssh-keygen"), [
-      "-q",
-      "-t",
-      "ed25519",
-      "-N",
-      "",
-      "-C",
-      "g86",
-      "-f",
-      join(ssh, name),
-    ]);
+    execFileSync(
+      join(sshBin, "ssh-keygen"),
+      ["-q", "-t", "ed25519", "-N", "", "-C", "g86", "-f", join(ssh, name)],
+      { timeout: 15_000 },
+    );
   await writeFile(join(ssh, "auth"), await readFile(join(ssh, "client.pub")), { mode: 0o600 });
   const sshPort = await freePort();
   let forward;
@@ -670,9 +743,22 @@ try {
     `Host g86\n  HostName 127.0.0.1\n  Port ${sshPort}\n  User ${user}\n  IdentityFile ${ssh}/client\n  IdentitiesOnly yes\n  IdentityAgent none\n  UserKnownHostsFile ${ssh}/known\n  GlobalKnownHostsFile /dev/null\n  StrictHostKeyChecking yes\n  UpdateHostKeys no\n  BatchMode yes\n  PasswordAuthentication no\n  KbdInteractiveAuthentication no\n  ExitOnForwardFailure yes\n  ConnectTimeout 5\n  ControlMaster no\n  ControlPath none\n  LocalForward 127.0.0.1:${forward} 127.0.0.1:${four.port}\n`,
     { mode: 0o600 },
   );
-  execFileSync(join(sshBin, "sshd"), ["-t", "-f", join(ssh, "sshd_config")]);
+  execFileSync(join(sshBin, "sshd"), ["-t", "-f", join(ssh, "sshd_config")], {
+    timeout: 15_000,
+  });
+  // Harness fault: the SSH client file is missing or not executable (mode 0600).
+  const noexec = join(ssh, "ssh-noexec");
+  if (inject === "ssh-noexec") await writeFile(noexec, "#!/bin/sh\n", { mode: 0o600 });
+  const sshFile = (name) =>
+    name !== "ssh"
+      ? join(sshBin, name)
+      : inject === "ssh-missing"
+        ? join(ssh, "ssh-missing")
+        : inject === "ssh-noexec"
+          ? noexec
+          : join(sshBin, name);
   const started = (name, args, ready) => {
-    const { child, exited } = own(name, join(sshBin, name), args, {
+    const { child, exited } = own(name, sshFile(name), args, {
       stdio: ["ignore", "ignore", "pipe"],
     });
     let log = "";
@@ -741,18 +827,28 @@ try {
   const cleanup = { children: [] };
   await attempt("browser close", () => browser && within(browser.close(), 15_000, "browser close"));
   for (const entry of owned.toReversed())
-    await attempt(entry.label, async () =>
+    await attempt(entry.label, async () => {
       cleanup.children.push({
         label: entry.label,
         pid: entry.child.pid,
         exit: await stopOwned(entry),
-      }),
-    );
+      });
+      if (entry.errors.length > 0) throw new Error(entry.errors.join("; "));
+    });
   await attempt("daemon", async () => (cleanup.daemon = await stopDaemon()));
   const patterns = [root, installed?.prefix].filter(Boolean);
   await attempt("leftover processes", () => {
     const escaped = patterns.map((p) => p.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|");
-    const found = spawnSync("pgrep", ["-f", escaped], { encoding: "utf8" });
+    // Harness fault: an unbalanced parenthesis makes pgrep itself fail (status 2).
+    const pattern = inject === "pgrep-fault" ? `${escaped}(` : escaped;
+    const found = spawnSync("pgrep", ["-f", pattern], { encoding: "utf8", timeout: 10_000 });
+    // Only 0 (matches) and 1 (none) are answers; anything else leaves leftovers unknown.
+    if (found.error || found.signal || ![0, 1].includes(found.status)) {
+      cleanup.leftoverPids = "unknown";
+      throw new Error(
+        `pgrep failed (${found.error?.message ?? found.signal ?? `status ${found.status}`}): ${found.stderr?.trim()}`,
+      );
+    }
     cleanup.leftoverPids = found.stdout.trim().split("\n").filter(Boolean).map(Number);
     if (cleanup.leftoverPids.length > 0) throw new Error(`still running: ${cleanup.leftoverPids}`);
   });

@@ -85,7 +85,11 @@ CHROMIUM_PATH=/path/to/chromium node apps/gyst/scripts/check-installed-browser.m
 `CHECK_INJECT=fail-after-ssh` or `CHECK_INJECT=launch-timeout` makes it fail on purpose, to
 confirm that it still stops every process it started; it then exits 1 with an empty
 `cleanup.failures` and `cleanup.leftoverPids`. `CHECK_INJECT=extra-401` adds one unexpected 401 and
-must fail the check's exact accounting of HTTP errors.
+must fail the check's exact accounting of HTTP errors. The test-harness faults `ssh-missing`,
+`ssh-noexec`, `response-error`, `response-cut`, `replay-hang` and `pgrep-fault` (a failed SSH
+client start, a failed or cut bridge response, an unanswered replay and a failed leftover probe)
+must each exit 1 for that reason with every started process stopped; they are not product
+evidence.
 
 Neither browser check runs in CI; `pnpm test` covers the installed CLI without a browser.
 
