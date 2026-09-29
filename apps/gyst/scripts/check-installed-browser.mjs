@@ -8,9 +8,15 @@
 // Needs git, and OpenSSH's sshd/ssh/ssh-keygen (SSH_BIN_DIR, default /run/current-system/sw/bin).
 // The private root lives under $HOME (mode 0700), since sshd StrictModes rejects a /tmp ancestor.
 // Launch URLs, bootstrap secrets and cookies stay in memory; failures are redacted before printing.
+//
+// CHECK_INJECT exercises this script's own cleanup against the real product: `fail-after-ssh`
+// throws once launcher, daemon, sshd, ssh and Chromium all run; `launch-timeout` makes the first
+// launch's readiness wait time out while that launcher and its daemon run. Both must exit 1 with
+// every owned process stopped (`result.cleanup`) and nothing left matching this run's paths.
 import assert from "node:assert/strict";
 import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { request as httpRequest } from "node:http";
 import { createServer as tcpServer } from "node:net";
@@ -30,12 +36,98 @@ const redact = (text) => {
   for (const value of secrets) out = out.replaceAll(value, "[redacted]");
   return out;
 };
+const inject = process.env.CHECK_INJECT;
 const result = { node: process.version, checks: [], expectedConsoleErrors: 0, unexpected: [] };
+if (inject) result.inject = inject;
 const check = (name) => result.checks.push(name);
+/** Every process this run spawned, each with its exit promise registered at spawn time. */
 const owned = [];
 let browser;
 let installed;
 let teardown;
+
+/** Rejects with `label` if `promise` has not settled within `ms`. */
+const within = (promise, ms, label) => {
+  let timer;
+  return Promise.race([
+    promise,
+    new Promise((_, reject) => {
+      timer = setTimeout(() => reject(new Error(`timed out after ${ms} ms: ${label}`)), ms);
+    }),
+  ]).finally(() => clearTimeout(timer));
+};
+
+/** Spawns and registers a child; `exited` resolves to its exit code or signal. */
+function own(label, file, args, options) {
+  const child = spawn(file, args, options);
+  const exited = new Promise((resolve) => child.once("close", (code, sig) => resolve(code ?? sig)));
+  const entry = { label, child, exited };
+  owned.push(entry);
+  return entry;
+}
+
+/** Sends a signal; false if the process is already gone. */
+function signal(pid, name) {
+  try {
+    process.kill(pid, name);
+    return true;
+  } catch (error) {
+    if (error.code === "ESRCH") return false;
+    throw error;
+  }
+}
+
+/** SIGTERM, then SIGKILL after `grace`; throws if SIGKILL was needed or did not work either. */
+async function stopOwned({ label, child, exited }, grace = 5_000) {
+  if (child.exitCode !== null || child.signalCode !== null) return exited;
+  signal(child.pid, "SIGTERM");
+  const code = await within(exited, grace, `${label} to exit on SIGTERM`).catch(() => undefined);
+  if (code !== undefined) return code;
+  signal(child.pid, "SIGKILL");
+  await within(exited, 2_000, `${label} to exit on SIGKILL`);
+  throw new Error(`${label} (pid ${child.pid}) ignored SIGTERM during cleanup`);
+}
+
+/** False once the process is gone or a zombie; Linux reads /proc for that. */
+function isAlive(pid) {
+  if (!signal(pid, 0)) return false;
+  try {
+    return !/^\d+ \(.*\) Z /.test(readFileSync(`/proc/${pid}/stat`, "utf8"));
+  } catch {
+    return false;
+  }
+}
+
+/** Bounded wait for a condition with no event to await, like installed-gyst.ts's `waitFor`. */
+async function waitFor(condition, ms, label) {
+  const deadline = performance.now() + ms;
+  while (!condition()) {
+    if (performance.now() > deadline) throw new Error(`timed out after ${ms} ms: ${label}`);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+}
+
+/**
+ * Stops the daemon this run's data dir names, only if its command line is this private install's
+ * `daemon run` (a stale pid file may name a reused pid). The daemon is not our child, so its exit
+ * is observed through /proc; SIGKILL after 5 s is reported as a failure.
+ */
+async function stopDaemon() {
+  const pid = await readFile(join(data, "daemon.pid"), "utf8").then(Number, () => NaN);
+  if (Number.isNaN(pid) || !installed || !isAlive(pid)) return { pid, stopped: "not running" };
+  const args = spawnSync("ps", ["-ww", "-o", "args=", "-p", String(pid)], { encoding: "utf8" });
+  if (!args.stdout.includes(installed.prefix) || !args.stdout.trim().endsWith(" daemon run"))
+    return { pid, stopped: "not ours" };
+  if (!signal(pid, "SIGTERM")) return { pid, stopped: "exited" };
+  const exited = await waitFor(() => !isAlive(pid), 5_000, `daemon ${pid} to exit`).then(
+    () => true,
+    () => false,
+  );
+  if (exited) return { pid, stopped: "SIGTERM" };
+  signal(pid, "SIGKILL");
+  await waitFor(() => !isAlive(pid), 2_000, `daemon ${pid} to exit after SIGKILL`);
+  throw new Error(`daemon ${pid} ignored SIGTERM during cleanup`);
+}
 
 const root = await realpath(await mkdtemp(join(homedir(), ".g86-")));
 const home = join(root, "h");
@@ -54,25 +146,32 @@ delete env.SSH_AUTH_SOCK;
 delete env.DISPLAY;
 delete env.WAYLAND_DISPLAY;
 
-const git = (cwd, ...args) => execFileSync("git", args, { cwd, env, encoding: "utf8" });
+const git = (cwd, ...args) =>
+  execFileSync("git", args, { cwd, env, encoding: "utf8", timeout: 15_000 });
 const gyst = (cwd, ...args) =>
   JSON.parse(execFileSync(installed.bin, args, { cwd, env, encoding: "utf8", timeout: 15_000 }));
 
 /** One foreground launch; resolves once it printed its URL. Stops via SIGINT like Ctrl-C. */
 async function launch(cwd, ...args) {
-  const child = spawn(installed.bin, args, { cwd, env, stdio: ["ignore", "pipe", "pipe"] });
-  owned.push(child);
-  const exited = new Promise((resolve) => child.once("close", (code, sig) => resolve(code ?? sig)));
+  const entry = own(`gyst ${args.join(" ")}`.trim(), installed.bin, args, {
+    cwd,
+    env,
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  const { child, exited } = entry;
   let out = "";
   let err = "";
   child.stderr.setEncoding("utf8").on("data", (chunk) => (err += chunk));
-  await new Promise((resolve, reject) => {
+  // The injected timeout waits for a marker gyst never prints, with the launcher and daemon up.
+  const marker = inject === "launch-timeout" ? "never printed" : "Press Ctrl-C";
+  const ready = new Promise((resolve, reject) => {
     child.stdout.setEncoding("utf8").on("data", (chunk) => {
       out += chunk;
-      if (out.includes("Press Ctrl-C")) resolve();
+      if (out.includes(marker)) resolve();
     });
-    child.once("close", () => reject(new Error(`gyst exited early: ${err}`)));
+    void exited.then((code) => reject(new Error(`gyst exited ${code} early: ${err}`)));
   });
+  await within(ready, inject === "launch-timeout" ? 5_000 : 20_000, `${entry.label} to be ready`);
   const url = out.split("\n").find((line) => line.startsWith("http://"));
   const match = url?.match(
     /^http:\/\/(g-[0-9a-f]{32}\.localhost):(\d+)(\/session\/[^#]+)#([\w-]{43})$/,
@@ -87,9 +186,10 @@ async function launch(cwd, ...args) {
     id: decodeURIComponent(path.slice("/session/".length)),
     origin: `http://${hostname}:${port}`,
     url,
-    stop: async () => {
-      child.kill("SIGINT");
-      return exited;
+    /** Ctrl-C: SIGINT and the launcher's exit code, bounded. */
+    stop: () => {
+      signal(child.pid, "SIGINT");
+      return within(exited, 10_000, `${entry.label} to exit on SIGINT`);
     },
   };
 }
@@ -104,16 +204,19 @@ const raw = (port, { method = "GET", path = "/", headers = {}, body } = {}) =>
         res.once("end", () => resolve({ status: res.statusCode, headers: res.headers }));
       },
     );
+    req.setTimeout(10_000, () => req.destroy(new Error(`${method} ${path} timed out`)));
     req.once("error", reject);
     req.end(body);
   });
 
 const freePort = () =>
-  new Promise((resolve) => {
-    const server = tcpServer().listen(0, "127.0.0.1", () => {
-      const { port } = server.address();
-      server.close(() => resolve(port));
-    });
+  new Promise((resolve, reject) => {
+    const server = tcpServer()
+      .once("error", reject)
+      .listen(0, "127.0.0.1", () => {
+        const { port } = server.address();
+        server.close(() => resolve(port));
+      });
   });
 
 function watch(page) {
@@ -322,57 +425,67 @@ try {
     `real bridge answered ${cases.length} hostile/control requests with the exact expected status`,
   );
 
-  // Deletion through the UI; same-intent replay by request id; other saved scope preserved.
+  // Deletion through the real UI, captured with Playwright's Request API (the payload holds no
+  // credential); the same intent is replayed from the page and must get the same decoded reply.
   await go(page2, `${two.origin}/`);
+  const deletes = [];
+  const isOperation = (r) =>
+    r.method() === "POST" && new URL(r.url()).pathname === "/api/operation";
+  page2.on(
+    "request",
+    (r) => isOperation(r) && r.postDataJSON()?.command === "delete" && deletes.push(r),
+  );
   const rangeRow = page2.locator(".session-row", { hasText: "main...feature" });
   await rangeRow.getByRole("button", { name: "Delete…" }).click();
   await rangeRow.getByRole("button", { name: "Cancel" }).click();
+  await rangeRow.getByRole("button", { name: "Delete…" }).waitFor();
+  assert.equal(deletes.length, 0);
   assert.equal(gyst(repo, "session", "list").sessions.length, 2);
-  const requestId = randomBytes(16).toString("hex");
-  const del = JSON.stringify({ command: "delete", session: two.id, requestId });
-  const good2 = {
-    host: `${two.hostname}:${two.port}`,
-    origin: two.origin,
-    cookie: `gyst_auth=${cookie2.value}`,
-  };
-  const first = await new Promise((resolve) => {
-    const req = httpRequest(
-      {
-        host: "127.0.0.1",
-        port: two.port,
+  await rangeRow.getByRole("button", { name: "Delete…" }).click();
+  const [response] = await Promise.all([
+    page2.waitForResponse(
+      (r) => isOperation(r.request()) && r.request().postDataJSON()?.command === "delete",
+    ),
+    rangeRow.getByRole("button", { name: "Delete session" }).click(),
+  ]);
+  const payload = response.request().postDataJSON();
+  assert.deepEqual(Object.keys(payload).sort(), ["command", "requestId", "session"]);
+  assert.equal(payload.session, two.id);
+  assert.match(payload.requestId, /^[0-9a-f]{32}$/);
+  const deleted = { ok: true, value: { deleted: true, sessionId: two.id } };
+  assert.equal(response.status(), 200);
+  assert.deepEqual(await response.json(), deleted);
+  await rangeRow.waitFor({ state: "detached" });
+  assert.equal(deletes.length, 1);
+  result.deleteRequestId = payload.requestId;
+
+  const send = (body) =>
+    page2.evaluate(async (text) => {
+      const r = await fetch("/api/operation", {
         method: "POST",
-        path: "/api/operation",
-        headers: good2,
-        setHost: false,
-      },
-      (res) => {
-        let body = "";
-        res
-          .setEncoding("utf8")
-          .on("data", (c) => (body += c))
-          .on("end", () => resolve(JSON.parse(body)));
-      },
-    );
-    req.end(del);
-  });
-  assert.equal(first.ok, true);
-  const replay = await raw(two.port, {
-    method: "POST",
-    path: "/api/operation",
-    headers: good2,
-    body: del,
-  });
-  assert.equal(replay.status, 200);
-  const left = gyst(repo, "session", "list").sessions;
+        headers: { "content-type": "application/json" },
+        body: text,
+      });
+      return { status: r.status, reply: await r.json() };
+    }, body);
+  assert.deepEqual(await send(response.request().postData()), { status: 200, reply: deleted });
+  // A new intent for the same, now absent, session is a domain error, also carried by a 200.
+  const other = await send(
+    JSON.stringify({ ...payload, requestId: randomBytes(16).toString("hex") }),
+  );
+  assert.equal(other.status, 200);
+  assert.equal(other.reply.ok, false);
+  assert.equal(other.reply.error.code, "no_session");
   assert.deepEqual(
-    left.map((s) => s.id),
+    gyst(repo, "session", "list").sessions.map((s) => s.id),
     [one.id],
   );
   await page2.reload();
   await page2.getByRole("heading", { name: "Saved sessions" }).waitFor();
   assert.equal(await page2.locator(".session-row").count(), 1);
+  assert.equal(await page2.getByText(two.id).count(), 0);
   check(
-    "cancel sends nothing; delete + same-request-id replay succeed; the other scope is preserved",
+    "UI cancel sends nothing; UI delete sends one exact {command,session,requestId} and gets {ok,deleted,sessionId}; same-request replay gets that reply again, a new intent gets no_session; deleted id gone from CLI and UI, other scope kept",
   );
 
   // Ctrl-C both foreground launches: CLI and saved state stay usable, daemon keeps running.
@@ -387,7 +500,8 @@ try {
   check("SIGINT stops each viewer with 130; daemon alive; saved sessions intact and CLI usable");
 
   // Scope reuse after refs move and a daemon restart; exact-id reopen through a new launcher.
-  process.kill(daemon, "SIGTERM");
+  assert.equal((await stopDaemon()).stopped, "SIGTERM");
+  assert.equal(isAlive(daemon), false);
   git(repo, "commit", "-qam", "move feature");
   const three = await launch(repo);
   assert.equal(three.id, one.id);
@@ -438,17 +552,20 @@ try {
     { mode: 0o600 },
   );
   execFileSync(join(sshBin, "sshd"), ["-t", "-f", join(ssh, "sshd_config")]);
-  const started = (name, args, ready) =>
-    new Promise((resolve, reject) => {
-      const child = spawn(join(sshBin, name), args, { stdio: ["ignore", "ignore", "pipe"] });
-      owned.push(child);
-      let log = "";
+  const started = (name, args, ready) => {
+    const { child, exited } = own(name, join(sshBin, name), args, {
+      stdio: ["ignore", "ignore", "pipe"],
+    });
+    let log = "";
+    const up = new Promise((resolve, reject) => {
       child.stderr.setEncoding("utf8").on("data", (chunk) => {
         log += chunk;
         if (log.includes(ready)) resolve(() => log);
       });
-      child.once("close", (code) => reject(new Error(`${name} exited ${code}`)));
+      void exited.then((code) => reject(new Error(`${name} exited ${code}`)));
     });
+    return within(up, 15_000, `${name} to be ready`);
+  };
   const sshdLog = await started(
     "sshd",
     ["-D", "-e", "-f", join(ssh, "sshd_config")],
@@ -459,6 +576,7 @@ try {
     ["-v", "-F", join(ssh, "ssh_config"), "-N", "g86"],
     "Local forwarding listening on 127.0.0.1",
   );
+  if (inject === "fail-after-ssh") throw new Error("injected failure with every process running");
   const tunneled = watch(await (await browser.newContext()).newPage());
   const bootstrap4 = four.url.split("#")[1];
   await go(tunneled, `http://${four.hostname}:${forward}${four.path}#${bootstrap4}`);
@@ -485,17 +603,36 @@ try {
   result.failure = redact(error.stack ?? error);
   process.exitCode = 1;
 } finally {
-  await browser?.close();
-  for (const child of owned.toReversed())
-    if (child.exitCode === null && child.signalCode === null) child.kill("SIGTERM");
-  const pid = await readFile(join(data, "daemon.pid"), "utf8").then(Number, () => NaN);
-  if (!Number.isNaN(pid) && installed) {
-    const args = spawnSync("ps", ["-ww", "-o", "args=", "-p", String(pid)], {
-      encoding: "utf8",
-    }).stdout;
-    if (args.includes(installed.prefix)) process.kill(pid, "SIGTERM");
-  }
-  await teardown?.();
-  await rm(root, { recursive: true, force: true });
+  // Every step runs even if an earlier one failed; genuine failures are reported together.
+  const failures = [];
+  const attempt = (label, run) =>
+    Promise.resolve()
+      .then(run)
+      .catch((error) => failures.push(`${label}: ${redact(error.message ?? error)}`));
+  const cleanup = { children: [] };
+  await attempt("browser close", () => browser && within(browser.close(), 15_000, "browser close"));
+  for (const entry of owned.toReversed())
+    await attempt(entry.label, async () =>
+      cleanup.children.push({
+        label: entry.label,
+        pid: entry.child.pid,
+        exit: await stopOwned(entry),
+      }),
+    );
+  await attempt("daemon", async () => (cleanup.daemon = await stopDaemon()));
+  const patterns = [root, installed?.prefix].filter(Boolean);
+  await attempt("leftover processes", () => {
+    const escaped = patterns.map((p) => p.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|");
+    const found = spawnSync("pgrep", ["-f", escaped], { encoding: "utf8" });
+    cleanup.leftoverPids = found.stdout.trim().split("\n").filter(Boolean).map(Number);
+    if (cleanup.leftoverPids.length > 0) throw new Error(`still running: ${cleanup.leftoverPids}`);
+  });
+  await attempt("install teardown", () => teardown?.());
+  await attempt("private root removal", () => rm(root, { recursive: true, force: true }));
+  cleanup.root = root;
+  cleanup.prefix = installed?.prefix;
+  cleanup.failures = failures;
+  result.cleanup = cleanup;
+  if (failures.length > 0) process.exitCode = 1;
   console.log(redact(JSON.stringify(result, null, 2)));
 }

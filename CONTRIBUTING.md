@@ -80,6 +80,10 @@ in `SSH_BIN_DIR`, default `/run/current-system/sw/bin`), creates its scratch dir
 CHROMIUM_PATH=/path/to/chromium node apps/gyst/scripts/check-installed-browser.mjs
 ```
 
+`CHECK_INJECT=fail-after-ssh` or `CHECK_INJECT=launch-timeout` makes it fail on purpose, to
+confirm that it still stops every process it started; it then exits 1 with an empty
+`cleanup.failures` and `cleanup.leftoverPids`.
+
 Neither browser check runs in CI; `pnpm test` covers the installed CLI without a browser.
 
 To try the viewer over SSH, see the README's [Over SSH](README.md#over-ssh) section.
