@@ -21,7 +21,7 @@ import {
   RestartReplySchema,
 } from "./protocol.ts";
 import { inspectSavedSessions } from "./store.ts";
-import { daemonAbsent, readLine, writeLine } from "./wire.ts";
+import { daemonAbsent, frameUnsent, readLine, writeLine } from "./wire.ts";
 
 const encodeMessage = Schema.encodeSync(Schema.fromJsonString(DaemonMessageSchema));
 const decodeReply = Schema.decodeUnknownEffect(Schema.fromJsonString(ReplySchema));
@@ -89,6 +89,8 @@ export class DaemonClient extends Context.Service<
         );
       const connect = (line: string) =>
         controlExchange(line).pipe(
+          // An old daemon exiting after an accepted restart can hang up before the frame is written.
+          Effect.retry({ while: frameUnsent, schedule: startupPolls }),
           Effect.catchIf(daemonAbsent, () =>
             spawnDaemon.pipe(
               Effect.andThen(

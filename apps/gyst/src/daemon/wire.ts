@@ -9,6 +9,13 @@ export const daemonAbsent = (error: { readonly _tag: string }) =>
   Predicate.hasProperty(error.reason.cause, "code") &&
   (error.reason.cause.code === "ENOENT" || error.reason.cause.code === "ECONNREFUSED");
 
+/**
+ * The frame's write failed, so its final newline never reached the peer and it cannot have acted on
+ * it. Only `writeLine` raises this reason; a failure after the write (a lost reply) is not one.
+ */
+export const frameUnsent = (error: { readonly _tag: string }) =>
+  Socket.isSocketError(error) && error.reason._tag === "SocketWriteError";
+
 /** One newline-terminated frame per connection; bytes decode in stream mode so a split UTF-8 sequence survives. */
 export const readLine = Effect.fn("wire.readLine")(function* (
   pull: Effect.Effect<NonEmptyReadonlyArray<Uint8Array>, Socket.SocketError>,
