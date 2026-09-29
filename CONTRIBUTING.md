@@ -14,22 +14,23 @@ Crust's build tool embeds Bun, so no separate Bun installation is needed.
 
 ```sh
 pnpm install
-pnpm exec vp run check
-pnpm exec vp run test
+pnpm check
+pnpm test
 ```
 
-Commands are [Vite+ tasks](https://viteplus.dev/guide/run) defined in
-[`vite.config.ts`](vite.config.ts) and [`apps/gyst/vite.config.ts`](apps/gyst/vite.config.ts);
-with a global `vp`, drop the `pnpm exec`. `check` runs formatting, lint and type checks
-(`vp check --fix` fixes formatting and lint issues) and is cached. `test` runs Vitest: the `source`
-project (unit and integration tests beside the code), and the `installed` project, which builds
-the CLI, packs it and installs it globally with npm into a temporary prefix. `pnpm exec vp run
-test:source` skips that and is cached. Run both checks and tests before opening a PR.
+Commands are `package.json` scripts. Scripts worth caching call a `<name>:task`
+[Vite+ task](https://viteplus.dev/guide/run) in [`vite.config.ts`](vite.config.ts) or
+[`apps/gyst/vite.config.ts`](apps/gyst/vite.config.ts). `check` runs formatting, lint and type
+checks (`pnpm exec vp check --fix` fixes formatting and lint issues) and is cached. `test` runs
+Vitest: the `source` project (unit and integration tests beside the code), and the `installed`
+project, which builds the CLI, packs it and installs it globally with npm into a temporary
+prefix. `pnpm test:source` skips that and is cached. Run both checks and tests before opening a
+PR.
 
 ## Build
 
 ```sh
-pnpm exec vp run @gyst/cli#build
+pnpm build
 node apps/gyst/.crust/root/bin/gyst.js --help
 ```
 

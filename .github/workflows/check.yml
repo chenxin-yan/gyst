@@ -20,5 +20,5 @@ jobs:
           persist-credentials: false
       - uses: jdx/mise-action@v4
       - run: pnpm install --frozen-lockfile
-      - run: pnpm exec vp run check
-      - run: pnpm exec vp run test
+      - run: pnpm check
+      - run: pnpm test

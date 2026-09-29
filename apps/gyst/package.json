@@ -20,6 +20,9 @@
   "bin": {
     "gyst": "src/index.ts"
   },
+  "scripts": {
+    "build": "vp run build:task"
+  },
   "crust": {
     "runtime": "node",
     "artifact": "package"

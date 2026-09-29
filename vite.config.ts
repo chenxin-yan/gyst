@@ -3,10 +3,11 @@ import { defineConfig } from "vite-plus";
 export default defineConfig({
   run: {
     tasks: {
-      check: "vp check",
-      // Installed tests spawn daemons and read Git and temporary state that input tracking cannot see.
-      test: { command: "vp test", cache: false },
-      "test:source": "vp test --project source",
+      // Scripts in package.json are the entry points; these back the ones worth caching. `test` has
+      // no task: installed tests spawn daemons and read Git and temporary state that input tracking
+      // cannot see.
+      "check:task": "vp check",
+      "test:source:task": "vp test --project source",
     },
   },
   fmt: {

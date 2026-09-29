@@ -55,7 +55,7 @@ export default async function setup(project: TestProject) {
   const root = await realpath(await mkdtemp(join(tmpdir(), "gyst-installed-")));
   const prefix = join(root, "prefix");
   try {
-    await exec(join(repoRoot, "node_modules", ".bin", "vp"), repoRoot, ["run", "@gyst/cli#build"]);
+    await exec("pnpm", packageDir, ["build"]);
     const packed = JSON.parse(
       await exec("pnpm", packageDir, ["pack", "--pack-destination", root, "--json"]),
     ) as { filename: string };

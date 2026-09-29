@@ -70,7 +70,7 @@ jobs:
       # chenxin-yan/gyst + release.yml.
       - uses: jdx/mise-action@v4
       - run: pnpm install --frozen-lockfile
-      - run: pnpm exec vp run @gyst/cli#build
+      - run: pnpm build
       - name: Publish @gyst/cli, then tag and release
         id: publish
         uses: changesets/action/publish@v2

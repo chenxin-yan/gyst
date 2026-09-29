@@ -2,6 +2,12 @@
   "name": "gyst",
   "private": true,
   "type": "module",
+  "scripts": {
+    "build": "pnpm -r build",
+    "check": "vp run check:task",
+    "test": "vp test",
+    "test:source": "vp run test:source:task"
+  },
   "devEngines": {
     "runtime": {
       "name": "node",

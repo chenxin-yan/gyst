@@ -10,7 +10,7 @@ export default defineConfig({
           output: ["README.md", "LICENSE"],
         },
       },
-      build: {
+      "build:task": {
         command: "crust build",
         dependsOn: ["package-docs"],
         // TODO: drop the explicit inputs once Vite+ tracks Bun's file reads on Linux
