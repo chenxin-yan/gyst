@@ -13,7 +13,8 @@ export default defineConfig({
       build: {
         command: "crust build",
         dependsOn: ["package-docs"],
-        // Crust's embedded bundler reads source files outside Vite+'s automatic tracking.
+        // TODO: drop the explicit inputs once Vite+ tracks Bun's file reads on Linux
+        // (https://github.com/voidzero-dev/vite-task/issues/777); Crust bundles with Bun.
         cache: {
           input: [
             { auto: true },
