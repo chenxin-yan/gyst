@@ -1,5 +1,6 @@
 import {
   BadArgs,
+  type CaptureProgress,
   type ContentSide,
   InternalError,
   LogicalPathSchema,
@@ -9,7 +10,17 @@ import {
   type Scope,
   type SnapshotManifest,
 } from "@gyst/core";
-import { Context, Data, Effect, FileSystem, Layer, PlatformError, Schema, Stream } from "effect";
+import {
+  Clock,
+  Context,
+  Data,
+  Effect,
+  FileSystem,
+  Layer,
+  PlatformError,
+  Schema,
+  Stream,
+} from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import { dirname } from "node:path";
 import { CapturedContent } from "./content.ts";
@@ -147,8 +158,14 @@ export class Git extends Context.Service<
      * The whole recorded scope as an unpublished manifest: endpoints resolved once, every eligible
      * old/new project file's exact bytes committed to `CapturedContent`, and text hunks diffed from
      * those committed bytes. Refuses (retryably) when the working tree changes during capture.
+     * `onProgress` hears real counts (see `CaptureProgressSchema`): each phase's first and last,
+     * and at most one every 100 ms between.
      */
-    capture(root: string, scope: Scope): Effect.Effect<SnapshotManifest, BadArgs | InternalError>;
+    capture(
+      root: string,
+      scope: Scope,
+      onProgress?: (progress: CaptureProgress) => Effect.Effect<void>,
+    ): Effect.Effect<SnapshotManifest, BadArgs | InternalError>;
   }
 >()("gyst/daemon/Git") {
   static readonly layer = Layer.effect(
@@ -319,9 +336,13 @@ export class Git extends Context.Service<
         return { paths, submodules };
       });
 
-      const stored = (bytes: Stream.Stream<Uint8Array, BadArgs>) =>
+      /** `read.bytes` counts the text bytes each capture read into content. */
+      const stored = (bytes: Stream.Stream<Uint8Array, BadArgs>, read: { bytes: number }) =>
         content.putBlob(eligibleText(bytes)).pipe(
-          Effect.map(({ blob, size }): ContentSide => ({ kind: "text", blob, size })),
+          Effect.map(({ blob, size }): ContentSide => {
+            read.bytes += size;
+            return { kind: "text", blob, size };
+          }),
           Effect.catchTag("Ineligible", ({ reason }) =>
             Effect.succeed<ContentSide>({ kind: "unavailable", reason }),
           ),
@@ -366,7 +387,7 @@ export class Git extends Context.Service<
           ),
         );
 
-      const treeSide = (root: string, objects: Map<string, ContentSide>) =>
+      const treeSide = (root: string, objects: Map<string, ContentSide>, read: { bytes: number }) =>
         Effect.fn("Git.treeSide")(function* (entry: TreeEntry | undefined) {
           if (entry === undefined) return { side: { kind: "absent" } } satisfies CapturedSide;
           if (entry.mode === "160000")
@@ -375,7 +396,7 @@ export class Git extends Context.Service<
             return { side: { kind: "unavailable", reason: "symlink" } } satisfies CapturedSide;
           let side = objects.get(entry.oid);
           if (side === undefined) {
-            side = yield* stored(objectBytes(root, entry.oid));
+            side = yield* stored(objectBytes(root, entry.oid), read);
             objects.set(entry.oid, side);
           }
           return {
@@ -440,21 +461,41 @@ export class Git extends Context.Service<
         ),
       );
 
-      const capture = Effect.fn("Git.capture")(function* (root: string, scope: Scope) {
+      const capture = Effect.fn("Git.capture")(function* (
+        root: string,
+        scope: Scope,
+        onProgress: (progress: CaptureProgress) => Effect.Effect<void> = () => Effect.void,
+      ) {
         const objects = new Map<string, ContentSide>();
-        const fromTree = treeSide(root, objects);
+        const read = { bytes: 0 };
+        const fromTree = treeSide(root, objects, read);
+        let reported = Number.NEGATIVE_INFINITY;
+        const report = Effect.fnUntraced(function* (
+          phase: CaptureProgress["phase"],
+          done: number,
+          total: number,
+        ) {
+          const now = yield* Clock.currentTimeMillis;
+          if (done !== 0 && done !== total && now - reported < 100) return;
+          reported = now;
+          yield* onProgress({ phase, done, total, bytes: read.bytes });
+        });
         const sides: Array<{ path: string; old: CapturedSide; new: CapturedSide }> = [];
         let provenance: Provenance;
         if (scope.kind === "range") {
           provenance = yield* range(root, scope.range);
           const oldTree = yield* tree(root, provenance.mergeBase ?? provenance.base);
           const newTree = yield* tree(root, provenance.head);
-          for (const path of [...new Set([...oldTree.keys(), ...newTree.keys()])].sort())
+          const paths = [...new Set([...oldTree.keys(), ...newTree.keys()])].sort();
+          yield* report("capture", 0, paths.length);
+          for (const path of paths) {
             sides.push({
               path,
               old: yield* fromTree(oldTree.get(path)),
               new: yield* fromTree(newTree.get(path)),
             });
+            yield* report("capture", sides.length, paths.length);
+          }
         } else {
           const baseline = yield* head(root);
           provenance = { kind: "uncommitted", head: baseline };
@@ -469,7 +510,10 @@ export class Git extends Context.Service<
               if (inventory.submodules.has(path.slice(0, slash))) return true;
             return false;
           };
-          for (const path of paths) {
+          yield* report("capture", 0, paths.length);
+          for (const [index, path] of paths.entries()) {
+            // Before this path's work: every `continue` below still counts it.
+            if (index > 0) yield* report("capture", index, paths.length);
             const old = yield* fromTree(oldTree.get(path));
             if (inventory.submodules.has(path)) {
               sides.push({
@@ -489,7 +533,7 @@ export class Git extends Context.Service<
             const current: CapturedSide =
               entry.kind === "file"
                 ? {
-                    side: yield* stored(Worktree.read(root, path, entry)),
+                    side: yield* stored(Worktree.read(root, path, entry), read),
                     mode: entry.executable ? "100755" : "100644",
                   }
                 : entry.kind === "symlink"
@@ -498,6 +542,7 @@ export class Git extends Context.Service<
             if (old.side.kind !== "absent" || current.side.kind !== "absent")
               sides.push({ path, old, new: current });
           }
+          if (paths.length > 0) yield* report("capture", paths.length, paths.length);
           // Best-effort: the inputs this capture saw are still there, unchanged. Not an atomic
           // filesystem snapshot; an edit that restores identical metadata can go unnoticed.
           if ((yield* head(root)) !== baseline) return yield* Worktree.changedDuringCapture("HEAD");
@@ -544,7 +589,7 @@ export class Git extends Context.Service<
         ]);
 
         const files: ManifestFile[] = [];
-        const hunks = [];
+        const diffed: Array<{ path: string; old: ContentSide; new: ContentSide }> = [];
         for (const { path, old, new: current } of sides) {
           const source = renamedFrom.get(path);
           const oldMode = source?.mode ?? old.mode;
@@ -567,7 +612,13 @@ export class Git extends Context.Service<
             current.side.kind === "text" &&
             old.side.blob === current.side.blob;
           if (textual && !same && !renamed.has(path))
-            hunks.push(...(yield* hunksOf(path, old.side, current.side)));
+            diffed.push({ path, old: old.side, new: current.side });
+        }
+        const hunks = [];
+        yield* report("diff", 0, diffed.length);
+        for (const [index, { path, old, new: current }] of diffed.entries()) {
+          hunks.push(...(yield* hunksOf(path, old, current)));
+          yield* report("diff", index + 1, diffed.length);
         }
         return { scope, provenance, files, hunks } satisfies SnapshotManifest;
       });

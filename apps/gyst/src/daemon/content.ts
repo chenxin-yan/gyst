@@ -5,6 +5,7 @@ import {
   ByteRangeSchema,
   canonicalManifestJson,
   InternalError,
+  pageBytes,
   type SnapshotManifest,
   SnapshotIdSchema,
   SnapshotManifestSchema,
@@ -42,6 +43,127 @@ const decodeStoredManifest = Schema.decodeUnknownEffect(
     onExcessProperty: "error",
   },
 );
+
+const lf = 10;
+const insideCharacter = (byte: number | undefined) => byte !== undefined && (byte & 0xc0) === 0x80;
+
+/**
+ * One `code` page of a text blob of `size` bytes (see `CodePayloadSchema`), scanned from the start
+ * so its line numbers are counted, never trusted. Holds at most one page plus one chunk and stops
+ * reading once the page and the requested bounds are settled. Out-of-bounds lines, an offset past
+ * the end or inside a UTF-8 character fail as `BadArgs`.
+ * ponytail: rescans from byte 0 for every page; keep a per-blob line index if huge files page slowly.
+ */
+export const codePage = Effect.fnUntraced(function* <E>(
+  bytes: Stream.Stream<Uint8Array, E>,
+  size: number,
+  request: {
+    readonly startLine?: number | undefined;
+    readonly offset?: number | undefined;
+    readonly endLine?: number | undefined;
+  },
+) {
+  const { startLine = 1, endLine } = request;
+  if (request.offset !== undefined && request.offset > size)
+    return yield* new BadArgs({
+      message: "offset is past the end of the captured content",
+      detail: { offset: request.offset, size },
+    });
+  // Absolute byte offsets. `lfs` counts every LF before `position`.
+  let start = request.offset ?? (startLine === 1 ? 0 : undefined);
+  let linesBefore = start === 0 ? 0 : undefined;
+  let endLineStart = endLine === 1 ? 0 : undefined;
+  let endLineEnd: number | undefined;
+  let lastLineEnd: number | undefined;
+  let position = 0;
+  let lfs = 0;
+  let lastByte: number | undefined;
+  const kept: Uint8Array[] = [];
+  let keptEnd = start ?? 0;
+
+  const push = (chunk: Uint8Array) => {
+    const base = position;
+    for (let index = chunk.indexOf(lf); index !== -1; index = chunk.indexOf(lf, index + 1)) {
+      const at = base + index;
+      if (start !== undefined && linesBefore === undefined && at >= start) linesBefore = lfs;
+      lfs++;
+      if (start === undefined && lfs === startLine - 1) {
+        start = keptEnd = at + 1;
+        linesBefore = lfs;
+      }
+      if (lfs === (endLine ?? 0) - 1) endLineStart = at + 1;
+      if (lfs === endLine) endLineEnd = at + 1;
+      if (start !== undefined && at >= start && at < start + pageBytes) lastLineEnd = at + 1;
+    }
+    position = base + chunk.byteLength;
+    lastByte = chunk.at(-1) ?? lastByte;
+    if (start !== undefined && linesBefore === undefined && position >= start) linesBefore = lfs;
+    if (start !== undefined) {
+      // One byte past the page shows whether a split there would cut a character.
+      const from = Math.max(start, base);
+      const to = Math.min(position, start + pageBytes + 1);
+      if (to > from) {
+        kept.push(chunk.slice(from - base, to - base));
+        keptEnd = to;
+      }
+    }
+    const pageSettled =
+      start !== undefined &&
+      linesBefore !== undefined &&
+      (keptEnd >= start + pageBytes + 1 || (endLineEnd !== undefined && keptEnd >= endLineEnd));
+    return !(pageSettled && (endLine === undefined || endLineStart !== undefined));
+  };
+  yield* Stream.runForEachWhile(bytes, (chunk) => Effect.sync(() => push(chunk)));
+
+  // Reaching here without a start means the whole content was scanned.
+  if (start === undefined || (request.offset === undefined && start >= size))
+    return yield* new BadArgs({
+      message: "startLine is past the last line of the captured content",
+      detail: { startLine, lines: lfs + (lastByte === undefined || lastByte === lf ? 0 : 1) },
+    });
+  const page = new Uint8Array(keptEnd - start);
+  let filled = 0;
+  for (const chunk of kept) {
+    page.set(chunk, filled);
+    filled += chunk.byteLength;
+  }
+  if (insideCharacter(page[0]))
+    return yield* new BadArgs({
+      message: "offset is inside a UTF-8 character",
+      detail: { offset: start },
+    });
+  const line = linesBefore! + 1;
+  if (endLine !== undefined && endLine < line)
+    return yield* new BadArgs({
+      message: "endLine is before the page start",
+      detail: { endLine, line },
+    });
+  if (endLine !== undefined && (endLineStart === undefined || endLineStart >= size))
+    return yield* new BadArgs({
+      message: "endLine is past the last line of the captured content",
+      detail: { endLine },
+    });
+
+  const rangeEnd = endLineEnd ?? size;
+  let end = rangeEnd;
+  if (rangeEnd - start > pageBytes) {
+    end = lastLineEnd ?? start + pageBytes;
+    while (insideCharacter(page[end - start])) end--;
+  }
+  const body = page.subarray(0, end - start);
+  const text = yield* Effect.try({
+    // `ignoreBOM` keeps a leading U+FEFF: it is captured content, not decoding metadata.
+    try: () => new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(body),
+    catch: () => new InternalError({ message: "captured content is not valid UTF-8 text" }),
+  });
+  let pageLfs = 0;
+  for (let index = body.indexOf(lf); index !== -1; index = body.indexOf(lf, index + 1)) pageLfs++;
+  return {
+    start: { line, offset: start },
+    text,
+    next: end < rangeEnd ? { line: line + pageLfs, offset: end } : null,
+  };
+});
 
 const missingAs =
   (message: string, detail: string) =>

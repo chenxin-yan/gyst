@@ -9,20 +9,34 @@ export const daemonAbsent = (error: { readonly _tag: string }) =>
   Predicate.hasProperty(error.reason.cause, "code") &&
   (error.reason.cause.code === "ENOENT" || error.reason.cause.code === "ECONNREFUSED");
 
-/** One newline-terminated frame per connection; bytes decode in stream mode so a split UTF-8 sequence survives. */
-export const readLine = Effect.fn("wire.readLine")(function* (
+/**
+ * Successive newline-terminated frames of one connection; bytes decode in stream mode so a split
+ * UTF-8 sequence survives, and bytes after one frame are kept for the next.
+ */
+export const lineReader = (
   pull: Effect.Effect<NonEmptyReadonlyArray<Uint8Array>, Socket.SocketError>,
-) {
+) => {
   const decoder = new TextDecoder();
   let pending = "";
-  while (true) {
-    for (const chunk of yield* pull) {
-      pending += decoder.decode(chunk, { stream: true });
-      const newline = pending.indexOf("\n");
-      if (newline >= 0) return pending.slice(0, newline);
+  return Effect.gen(function* () {
+    let searched = 0;
+    while (true) {
+      const newline = pending.indexOf("\n", searched);
+      if (newline >= 0) {
+        const line = pending.slice(0, newline);
+        pending = pending.slice(newline + 1);
+        return line;
+      }
+      searched = pending.length;
+      for (const chunk of yield* pull) pending += decoder.decode(chunk, { stream: true });
     }
-  }
-});
+  }).pipe(Effect.withSpan("wire.lineReader"));
+};
+
+/** The first frame of a connection that carries one request. */
+export const readLine = (
+  pull: Effect.Effect<NonEmptyReadonlyArray<Uint8Array>, Socket.SocketError>,
+) => lineReader(pull);
 
 export const writeLine = Effect.fn("wire.writeLine")(function* (
   socket: Socket.Socket,

@@ -1,9 +1,11 @@
 import { webPaths } from "@gyst/core/web";
 import {
   type BrowserRequest,
+  CodePayloadSchema,
   DaemonError,
   DeletePayloadSchema,
   DiffPayloadSchema,
+  FilesPayloadSchema,
   ListPayloadSchema,
   OpenPayloadSchema,
   type Reply,
@@ -83,6 +85,8 @@ const payloadSchemas = {
   status: StatusPayloadSchema,
   check: SourceCheckPayloadSchema,
   diff: DiffPayloadSchema,
+  files: FilesPayloadSchema,
+  code: CodePayloadSchema,
   delete: DeletePayloadSchema,
 } satisfies Record<BrowserRequest["command"], Schema.Top>;
 export type Payload<Command extends BrowserRequest["command"]> =

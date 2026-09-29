@@ -1,9 +1,12 @@
 import * as NodeSocket from "@effect/platform-node/NodeSocket";
 import {
+  type CaptureProgress,
+  CodePayloadSchema,
   type DaemonError,
   DaemonUnreachable,
   DeletePayloadSchema,
   DiffPayloadSchema,
+  FilesPayloadSchema,
   ListPayloadSchema,
   OpenPayloadSchema,
   StatusPayloadSchema,
@@ -11,7 +14,7 @@ import {
   ReplySchema,
   type Request,
 } from "@gyst/core";
-import { Context, Effect, FileSystem, Layer, Schedule, Schema } from "effect";
+import { Context, Effect, FileSystem, Layer, Option, Schedule, Schema } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import * as Socket from "effect/socket/Socket";
 import { compare } from "semver";
@@ -20,13 +23,29 @@ import {
   DaemonInfoSchema,
   DaemonMessageSchema,
   daemonVersion,
+  ProgressLineSchema,
   RestartReplySchema,
 } from "./protocol.ts";
 import { inspectSavedSessions } from "./store.ts";
-import { daemonAbsent, readLine, writeLine } from "./wire.ts";
+import { daemonAbsent, lineReader, writeLine } from "./wire.ts";
 
 const encodeMessage = Schema.encodeSync(Schema.fromJsonString(DaemonMessageSchema));
 const decodeReply = Schema.decodeUnknownEffect(Schema.fromJsonString(ReplySchema));
+const decodeProgress = Schema.decodeUnknownOption(ProgressLineSchema, {
+  onExcessProperty: "error",
+});
+
+/** An interim line's value: a JSON object without the reply's `ok` field. */
+const interim = (line: string): unknown => {
+  try {
+    const value: unknown = JSON.parse(line);
+    return typeof value === "object" && value !== null && !Array.isArray(value) && !("ok" in value)
+      ? value
+      : undefined;
+  } catch {
+    return undefined;
+  }
+};
 
 // Five seconds: a cold source-mode start on a loaded machine takes well over one.
 const startupPolls = Schedule.max([Schedule.spaced("20 millis"), Schedule.recurs(250)]);
@@ -43,7 +62,14 @@ const handshakeHungUp = (error: { readonly _tag: string }) =>
 export class DaemonClient extends Context.Service<
   DaemonClient,
   {
-    request(request: Request): Effect.Effect<unknown, DaemonError>;
+    /**
+     * `onProgress` hears the capture progress an `open` or `refresh` reports before its reply.
+     * Interim lines it does not understand are skipped; only the reply line decides the result.
+     */
+    request(
+      request: Request,
+      onProgress?: (progress: CaptureProgress) => Effect.Effect<void>,
+    ): Effect.Effect<unknown, DaemonError>;
   }
 >()("gyst/daemon/DaemonClient") {
   static readonly layer = Layer.effect(
@@ -54,11 +80,19 @@ export class DaemonClient extends Context.Service<
       const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
 
       // The reader dials, so it is acquired before anything is written.
-      const exchange = Effect.fn("DaemonClient.exchange")(function* (line: string) {
+      const exchange = Effect.fn("DaemonClient.exchange")(function* (
+        line: string,
+        onInterim: (value: unknown) => Effect.Effect<void> = () => Effect.void,
+      ) {
         const socket = yield* NodeSocket.makeNet({ path: paths.socketPath });
-        const pull = yield* Socket.readerBytes(socket);
+        const next = lineReader(yield* Socket.readerBytes(socket));
         yield* writeLine(socket, line);
-        return yield* readLine(pull);
+        while (true) {
+          const received = yield* next;
+          const value = interim(received);
+          if (value === undefined) return received;
+          yield* onInterim(value);
+        }
       }, Effect.scoped);
 
       const spawnDaemon = Effect.gen(function* () {
@@ -196,7 +230,10 @@ export class DaemonClient extends Context.Service<
         Effect.catchTag("SchemaError", (error) => Effect.fail(compatibilityError(error.message))),
       );
 
-      const request = Effect.fn("DaemonClient.request")(function* (input: Request) {
+      const request = Effect.fn("DaemonClient.request")(function* (
+        input: Request,
+        onProgress?: (progress: CaptureProgress) => Effect.Effect<void>,
+      ) {
         const info = yield* negotiate;
         // Never retry a review command after sending it: a lost reply may hide a committed mutation.
         const replyLine = yield* exchange(
@@ -205,6 +242,11 @@ export class DaemonClient extends Context.Service<
             instanceId: info.instanceId,
             request: input,
           }),
+          (value) =>
+            Option.match(onProgress ? decodeProgress(value) : Option.none(), {
+              onNone: () => Effect.void,
+              onSome: ({ progress }) => onProgress!(progress),
+            }),
         ).pipe(
           Effect.catchTag("SocketError", (error) =>
             Effect.fail(
@@ -229,6 +271,8 @@ export class DaemonClient extends Context.Service<
           status: StatusPayloadSchema,
           check: SourceCheckPayloadSchema,
           diff: DiffPayloadSchema,
+          files: FilesPayloadSchema,
+          code: CodePayloadSchema,
           apply: StatusPayloadSchema,
           refresh: StatusPayloadSchema,
           delete: DeletePayloadSchema,

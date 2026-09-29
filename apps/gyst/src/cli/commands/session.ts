@@ -1,8 +1,8 @@
 import { defineArg, defineCommand } from "@crustjs/core";
 import { handler, layer } from "@crustjs/effect";
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import { BadArgs, type Request } from "@gyst/core";
-import { Effect, Layer, Stdio, Stream } from "effect";
+import { BadArgs, type CaptureProgress, type Request, RequestSchema } from "@gyst/core";
+import { Effect, Layer, Schema, Stdio, Stream } from "effect";
 import { DaemonClient } from "../../daemon/client.ts";
 import { Paths } from "../../daemon/paths.ts";
 
@@ -18,12 +18,67 @@ const sessionFlag = {
   description: "The exact session id returned by `gyst session open`",
 } as const;
 
+const snapshotFlag = {
+  name: "snapshot",
+  type: "string",
+  required: true,
+  description: "The session's current snapshot id, from `open`, `status` or `diff`",
+} as const;
+
+const units = ["B", "KiB", "MiB", "GiB", "TiB"];
+const byteSize = (bytes: number) => {
+  let unit = 0;
+  while (bytes >= 1024 && unit < units.length - 1) {
+    bytes /= 1024;
+    unit++;
+  }
+  return `${unit === 0 ? bytes : bytes.toFixed(1)} ${units[unit]}`;
+};
+
+/**
+ * Capture progress rewritten in place on a terminal `stream` (stderr), cleared once the request
+ * settles; undefined when `stream` is not a terminal, so agents and pipes see nothing.
+ */
+export const terminalProgress = (stream: {
+  readonly isTTY?: boolean | undefined;
+  write(text: string): unknown;
+}) => {
+  if (!stream.isTTY) return undefined;
+  let shown = false;
+  return {
+    report: (progress: CaptureProgress) =>
+      Effect.sync(() => {
+        shown = true;
+        const work = progress.phase === "capture" ? "Capturing files" : "Diffing changed files";
+        stream.write(
+          `\r\x1b[Kgyst: ${work} ${progress.done}/${progress.total} (${byteSize(progress.bytes)} captured)`,
+        );
+      }),
+    clear: Effect.sync(() => {
+      if (shown) stream.write("\r\x1b[K");
+      shown = false;
+    }),
+  };
+};
+export type TerminalProgress = NonNullable<ReturnType<typeof terminalProgress>>;
+
+// Flags are checked here against the one shared request schema, so a bad value is a clear
+// `bad_args` rather than a request the daemon rejects as malformed.
+const decodeRequest = Schema.decodeUnknownEffect(RequestSchema, { onExcessProperty: "error" });
+
 const call = Effect.fn("session.call")(function* (
-  request: Request,
+  input: Request,
   stdout: (line: string) => void,
+  progress?: TerminalProgress,
 ) {
+  const request = yield* decodeRequest(input).pipe(
+    Effect.mapError((error) => new BadArgs({ message: "invalid flags", detail: error.message })),
+  );
   const client = yield* DaemonClient;
-  stdout(JSON.stringify(yield* client.request(request)));
+  const reply = yield* client
+    .request(request, progress?.report)
+    .pipe(Effect.ensuring(progress?.clear ?? Effect.void));
+  stdout(JSON.stringify(reply));
 });
 
 const readStdin = Effect.flatMap(Stdio.Stdio, (stdio) =>
@@ -69,6 +124,7 @@ const open = defineCommand(
                   : { kind: "range", range: args.range },
             },
             stdout,
+            terminalProgress(process.stderr),
           );
         }),
       ),
@@ -119,6 +175,68 @@ const diff = defineCommand("diff", { description: "Read snapshot hunks" }, (comm
       ),
     ),
 );
+const files = defineCommand(
+  "files",
+  { description: "List one page of the current snapshot's captured files and their sides" },
+  (command) =>
+    command
+      .use(daemonClient)
+      .flags(sessionFlag, snapshotFlag, {
+        name: "after",
+        type: "string",
+        description: "Continue after this path: the previous page's `next`",
+      })
+      .action(
+        handler(({ flags, stdout }) =>
+          call(
+            {
+              command: "files",
+              session: flags.session,
+              snapshotId: flags.snapshot,
+              after: flags.after,
+            },
+            stdout,
+          ),
+        ),
+      ),
+);
+const code = defineCommand(
+  "code",
+  { description: "Read one page of a captured file's exact text from the current snapshot" },
+  (command) =>
+    command
+      .use(daemonClient)
+      .flags(
+        sessionFlag,
+        snapshotFlag,
+        { name: "file", type: "string", required: true, description: "A path from `files`" },
+        { name: "side", type: "string", required: true, description: "`old` or `new`" },
+        { name: "start-line", type: "number", description: "First line (1-based); default 1" },
+        {
+          name: "offset",
+          type: "number",
+          description: "Continue at a previous page's `next.offset` instead of a start line",
+        },
+        { name: "end-line", type: "number", description: "Last line to read (inclusive)" },
+      )
+      .action(
+        handler(({ flags, stdout }) =>
+          call(
+            {
+              command: "code",
+              session: flags.session,
+              snapshotId: flags.snapshot,
+              file: flags.file,
+              side: flags.side as "old" | "new",
+              startLine: flags["start-line"],
+              offset: flags.offset,
+              endLine: flags["end-line"],
+            },
+            stdout,
+          ),
+        ),
+      ),
+);
 const apply = defineCommand(
   "apply",
   { description: "Apply one agent mutation batch from stdin" },
@@ -142,7 +260,11 @@ const refresh = defineCommand(
       .flags(sessionFlag)
       .action(
         handler(({ flags, stdout }) =>
-          call({ command: "refresh", session: flags.session }, stdout),
+          call(
+            { command: "refresh", session: flags.session },
+            stdout,
+            terminalProgress(process.stderr),
+          ),
         ),
       ),
 );
@@ -180,6 +302,8 @@ export const session = defineCommand(
       .add(status)
       .add(check)
       .add(diff)
+      .add(files)
+      .add(code)
       .add(apply)
       .add(refresh)
       .add(remove),

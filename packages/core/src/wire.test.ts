@@ -8,6 +8,7 @@ import { BrowserRequestSchema, ReplySchema, RequestSchema } from "./wire.ts";
 
 const strict = { onExcessProperty: "error" } as const;
 const decodeRequest = Schema.decodeUnknownSync(RequestSchema, strict);
+const snapshotId = "a".repeat(64);
 const decodeBrowserRequest = Schema.decodeUnknownSync(BrowserRequestSchema, strict);
 const decodeReply = Schema.decodeUnknownSync(ReplySchema);
 const encodeError = Schema.encodeSync(ErrorPayloadSchema);
@@ -51,6 +52,18 @@ describe("daemon wire envelopes", () => {
       { command: "open", session: "s1" },
       { command: "status", session: "s1" },
       { command: "delete", session: "s1", requestId: "r1" },
+      { command: "files", session: "s1", snapshotId, after: "src/a.ts" },
+      { command: "code", session: "s1", snapshotId, file: "src/a.ts", side: "new" },
+      {
+        command: "code",
+        session: "s1",
+        snapshotId,
+        file: "a",
+        side: "old",
+        startLine: 2,
+        endLine: 2,
+      },
+      { command: "code", session: "s1", snapshotId, file: "a", side: "old", offset: 0, endLine: 9 },
     ])
       expect(decodeBrowserRequest(valid)).toEqual(valid);
     for (const invalid of [
@@ -61,6 +74,38 @@ describe("daemon wire envelopes", () => {
       { command: "diff", session: "s1", executable: "/bin/sh" },
       { command: "apply", session: "s1", batch: "{}" },
       { command: "refresh", session: "s1" },
+      // Snapshot reads name a logical path in an exact snapshot, never a host path or blob.
+      { command: "code", session: "s1", file: "a", side: "new" },
+      { command: "code", session: "s1", snapshotId: "HEAD", file: "a", side: "new" },
+      { command: "code", session: "s1", snapshotId, file: "/etc/passwd", side: "new" },
+      { command: "code", session: "s1", snapshotId, file: "../outside", side: "new" },
+      { command: "code", session: "s1", snapshotId, file: "a", side: "working-tree" },
+      { command: "code", session: "s1", snapshotId, file: "a", side: "new", blob: snapshotId },
+      { command: "code", session: "s1", snapshotId, file: "a", side: "new", cwd: "/repo" },
+      { command: "files", session: "s1", snapshotId, after: "a/../../b" },
+      { command: "files", session: "s1", snapshotId, path: "/repo" },
+      // Positions are whole 1-based lines or a byte offset, in order, never both.
+      { command: "code", session: "s1", snapshotId, file: "a", side: "new", startLine: 0 },
+      { command: "code", session: "s1", snapshotId, file: "a", side: "new", startLine: 1.5 },
+      { command: "code", session: "s1", snapshotId, file: "a", side: "new", offset: -1 },
+      {
+        command: "code",
+        session: "s1",
+        snapshotId,
+        file: "a",
+        side: "new",
+        startLine: 3,
+        endLine: 2,
+      },
+      {
+        command: "code",
+        session: "s1",
+        snapshotId,
+        file: "a",
+        side: "new",
+        startLine: 1,
+        offset: 0,
+      },
     ])
       expect(() => decodeBrowserRequest(invalid)).toThrow();
   });
@@ -72,6 +117,10 @@ describe("daemon wire envelopes", () => {
       "ListPayloadSchema",
       "StatusPayloadSchema",
       "DiffPayloadSchema",
+      "FilesPayloadSchema",
+      "CodePayloadSchema",
+      "CaptureProgressSchema",
+      "pageBytes",
       "SourceCheckPayloadSchema",
       "DeletePayloadSchema",
       "ReplySchema",
@@ -145,6 +194,7 @@ describe("daemon wire envelopes", () => {
     };
     visit(new URL(manifest.exports["./wire"], packageDir));
     expect([...seen].map((href) => href.slice(packageDir.href.length)).sort()).toEqual([
+      "src/content.ts",
       "src/errors.ts",
       "src/metadata.ts",
       "src/session.ts",
