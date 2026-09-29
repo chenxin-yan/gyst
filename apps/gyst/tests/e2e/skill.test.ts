@@ -9,7 +9,7 @@ import { installed, run, sandbox, succeeded } from "./installed-gyst.ts";
 
 const authoredDir = fileURLToPath(new URL("../../skills/", import.meta.url));
 // crust resolves packaged skills from the installed package, not the checkout.
-const skills = join(installed.packageDir, ".crust", "root", "skills");
+const skills = join(installed.packageDir, "skills");
 
 async function expectLink(path: string, name = "gyst") {
   expect(resolve(dirname(path), await readlink(path))).toBe(join(skills, name));

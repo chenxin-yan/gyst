@@ -1,4 +1,3 @@
-// Process helpers for tests of the globally installed package prepared by global-setup.ts.
 import { spawn, spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, realpath, rm } from "node:fs/promises";
@@ -83,22 +82,18 @@ const parse = (text: string, result: Result): unknown => {
   }
 };
 
-/** Asserts a zero exit, reporting the full invocation otherwise. */
 export function succeeded(result: Result): Result {
   if (result.exitCode !== 0) throw new Error(`expected success: ${describeResult(result)}`);
   return result;
 }
 
-/** The JSON reply of a successful command. */
 export const json = (result: Result): any => parse(succeeded(result).stdout, result);
 
-/** The JSON error line of a command that exited 1. */
 export function failed(result: Result): any {
   if (result.exitCode !== 1) throw new Error(`expected exit 1: ${describeResult(result)}`);
   return parse(result.stderr, result);
 }
 
-/** Polls a definitive condition, failing with its description instead of retrying indefinitely. */
 export async function waitFor(
   condition: () => boolean | Promise<boolean>,
   description: string,
@@ -131,7 +126,6 @@ export function isAlive(pid: number): boolean {
 export const daemonPid = (dataDir: string) =>
   readFile(join(dataDir, "daemon.pid"), "utf8").then(Number, () => Number.NaN);
 
-/** The command line the OS reports for a process, for asserting what a daemon was launched from. */
 export const commandLine = (pid: number) =>
   spawnSync("ps", ["-ww", "-o", "args=", "-p", String(pid)], { encoding: "utf8" }).stdout.trim();
 
@@ -186,11 +180,7 @@ async function stopDaemon(dataDir: string): Promise<void> {
   throw new Error(`daemon ${pid} ignored SIGTERM during cleanup`);
 }
 
-/**
- * A private root with its own HOME and default data dir; `gyst` runs the installed bin there.
- * After the test, daemons named by any data dir it used are stopped and the root is removed; every
- * step runs even if an earlier one failed, and all failures are reported.
- */
+// Cleanup must attempt every resource even if stopping one daemon fails.
 export async function sandbox() {
   const root = await realpath(await mkdtemp(join(tmpdir(), "gyst-e2e-")));
   const home = join(root, "home");

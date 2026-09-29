@@ -71,8 +71,6 @@ jobs:
       - uses: jdx/mise-action@v4
       - run: pnpm install --frozen-lockfile
       - run: pnpm exec vp run @gyst/cli#build
-      # Without a script the action runs `changeset publish`, which skips versions already on the
-      # registry, then pushes the tags and creates the GitHub release.
       - name: Publish @gyst/cli, then tag and release
         id: publish
         uses: changesets/action/publish@v2

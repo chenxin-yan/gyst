@@ -2,6 +2,18 @@
   "name": "gyst",
   "private": true,
   "type": "module",
+  "devEngines": {
+    "runtime": {
+      "name": "node",
+      "version": "24.21.0",
+      "onFail": "ignore"
+    },
+    "packageManager": {
+      "name": "pnpm",
+      "version": "12.6.0",
+      "onFail": "ignore"
+    }
+  },
   "devDependencies": {
     "@changesets/changelog-github": "^1.0.1",
     "@changesets/cli": "^3.0.3",

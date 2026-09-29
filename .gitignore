@@ -2,6 +2,7 @@ node_modules/
 dist/
 .crust/
 /apps/gyst/README.md
+/apps/gyst/LICENSE
 *.tsbuildinfo
 .env
 .env.*

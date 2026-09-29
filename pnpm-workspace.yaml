@@ -3,9 +3,7 @@ packages:
   - packages/*
 
 catalog:
-  # Shared by @gyst/core and @gyst/cli, which bundles core and ships these as its own
-  # dependencies. Effect prereleases break between rcs, so the family moves together; @gyst/cli
-  # pins platform-node-shared directly because platform-node's `^` range admits newer rcs.
+  # Keep Effect packages aligned: platform-node's ^ range admits incompatible newer RCs.
   "@effect/platform-node": 4.0.0-rc.118
   "@effect/platform-node-shared": 4.0.0-rc.118
   "@pierre/diffs": 1.4.3

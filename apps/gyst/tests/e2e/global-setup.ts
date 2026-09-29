@@ -1,6 +1,4 @@
-// Builds the real package once per run (a cache hit when unchanged), packs it as pnpm publishes it
-// and installs the tarball globally with npm into a private prefix outside the checkout, as a user
-// would, so every process test runs the installed `gyst`.
+// Test the published package through an npm consumer install outside the checkout.
 import { spawn } from "node:child_process";
 import { mkdtemp, realpath, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";

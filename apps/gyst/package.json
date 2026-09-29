@@ -12,18 +12,19 @@
   "homepage": "https://github.com/chenxin-yan/gyst#readme",
   "bugs": "https://github.com/chenxin-yan/gyst/issues",
   "publishConfig": {
-    "access": "public"
+    "access": "public",
+    "directory": ".crust/root"
   },
   "engines": {
     "node": ">=24"
   },
   "bin": {
-    "gyst": "dist/index.mjs"
+    "gyst": "src/index.ts"
   },
-  "files": [
-    "dist/",
-    ".crust/root/skills/"
-  ],
+  "crust": {
+    "runtime": "node",
+    "artifact": "package"
+  },
   "dependencies": {
     "@crustjs/core": "0.5.0",
     "@crustjs/effect": "0.2.0",
@@ -31,12 +32,12 @@
     "@crustjs/skills": "0.5.0",
     "@effect/platform-node": "catalog:",
     "@effect/platform-node-shared": "catalog:",
-    "@pierre/diffs": "catalog:",
+    "@gyst/core": "workspace:*",
     "effect": "catalog:",
     "semver": "7.8.5"
   },
   "devDependencies": {
-    "@gyst/core": "workspace:*",
+    "@crustjs/crust": "0.5.0",
     "vitest": "catalog:"
   }
 }

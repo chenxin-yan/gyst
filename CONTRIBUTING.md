@@ -1,7 +1,14 @@
 # Contributing
 
-Run commands from the repository root. [mise](https://mise.jdx.dev) installs the Node.js and
-pnpm versions pinned in [`mise.toml`](mise.toml) (`mise install`). Bun is not used.
+Run commands from the repository root. Node.js and pnpm are pinned once in
+[`package.json`](package.json)'s `devEngines`. [`mise.toml`](mise.toml) enables mise's
+[idiomatic version files](https://mise.jdx.dev/lang/node.html#package-json), so `mise install`
+and GitHub Actions' `mise-action` read the same pins. Use `mise ls --current` to inspect them.
+
+`onFail: "ignore"` leaves tool installation to mise rather than
+[pnpm's runtime/package-manager management](https://pnpm.io/package_json#devenginesruntime).
+Activate mise in your shell or prefix commands with `mise exec --`. Gyst runs on Node;
+Crust's build tool embeds Bun, so no separate Bun installation is needed.
 
 ## Develop
 
@@ -23,13 +30,16 @@ and tests before opening a PR.
 
 ```sh
 pnpm exec vp run @gyst/cli#build
-node apps/gyst/dist/index.mjs --help
+node apps/gyst/.crust/root/bin/gyst.js --help
 ```
 
-`build` bundles the CLI with `vp pack` into `apps/gyst/dist/` (the private `@gyst/core`
-workspace is bundled; npm dependencies stay external), then renders the packaged skills into
-`apps/gyst/.crust/root/skills/` and copies the README beside them. Unchanged inputs replay from
-the task cache. Pack and install it to try the release artifact outside the checkout:
+`build` runs [`crust build`](https://crustjs.com/docs/guide/build-and-distribution) for a Node
+runtime package. Crust bundles the CLI and its dependencies, invokes the skills extension's
+build hook, and stages the package in `apps/gyst/.crust/root/`. Vite+ caches the build and copies
+the repository README/LICENSE before it. `publishConfig.directory` points pnpm and Changesets
+at Crust's output; no custom publisher or skill-generation script is needed.
+
+Pack and install it to try the release artifact outside the checkout:
 
 ```sh
 pnpm --dir apps/gyst pack --pack-destination /tmp/gyst-pack

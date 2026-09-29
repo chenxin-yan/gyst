@@ -1,14 +1,33 @@
 import { defineConfig } from "vite-plus";
 
-// `vp pack` defaults: bundles src/index.ts and the devDependency @gyst/core into dist/index.mjs,
-// keeping `dependencies` external so the installed CLI shares one Effect instance with crust.
 export default defineConfig({
   run: {
     tasks: {
+      "package-docs": {
+        command: "cp ../../README.md ../../LICENSE .",
+        cache: {
+          input: ["../../README.md", "../../LICENSE"],
+          output: ["README.md", "LICENSE"],
+        },
+      },
       build: {
-        command: "vp pack && node scripts/package-assets.ts",
-        // Skill rendering reads its previous output before replacing it.
-        cache: { input: [{ auto: true }, "!.crust/**", "!README.md"] },
+        command: "crust build",
+        dependsOn: ["package-docs"],
+        // Crust's embedded bundler reads source files outside Vite+'s automatic tracking.
+        cache: {
+          input: [
+            { auto: true },
+            "src/**",
+            "tsconfig.json",
+            "../../packages/core/src/**",
+            "../../packages/core/package.json",
+            "../../packages/core/tsconfig.json",
+            "../../tsconfig.json",
+            "../../pnpm-lock.yaml",
+            "!.crust/**",
+          ],
+          output: [".crust/**"],
+        },
       },
     },
   },
