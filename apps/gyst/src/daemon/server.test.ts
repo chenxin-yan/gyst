@@ -24,7 +24,8 @@ import { DaemonInfoSchema, daemonVersion } from "./protocol.ts";
 import { DaemonServer } from "./server.ts";
 import { Sessions } from "./sessions.ts";
 import { inspectSavedSessions, SessionStore } from "./store.ts";
-import { readLine, writeLine } from "./wire.ts";
+import { DaemonClient } from "./client.ts";
+import { lineReader, writeLine } from "./wire.ts";
 
 const patch = `diff --git a/a.txt b/a.txt
 --- a/a.txt
@@ -50,7 +51,12 @@ const git = Layer.succeed(Git, {
           Effect.andThen(Effect.fail(new BadArgs({ message: "not a repository" }))),
         )
       : Effect.succeed(cwd),
-  capture: (_root, scope) => Effect.succeed(manifestOf(patch, scope)),
+  // Two interim reports, then the manifest: the server must frame them before the reply.
+  capture: (_root, scope, onProgress = () => Effect.void) =>
+    onProgress({ phase: "capture", done: 0, total: 1, bytes: 0 }).pipe(
+      Effect.andThen(onProgress({ phase: "diff", done: 1, total: 1, bytes: 4 })),
+      Effect.as(manifestOf(patch, scope)),
+    ),
 });
 const store = Layer.succeed(SessionStore, {
   loadAll: Effect.sync(() => [...files.values()]),
@@ -86,9 +92,12 @@ const serverLayer = serverLayerOver(NodeServices.layer);
 const decodeReply = Schema.decodeUnknownSync(Schema.fromJsonString(ReplySchema));
 const exchange = Effect.fn("exchange")(function* (message: unknown) {
   const socket = yield* NodeSocket.makeNet({ path: socketPath });
-  const pull = yield* Socket.readerBytes(socket);
+  const next = lineReader(yield* Socket.readerBytes(socket));
   yield* writeLine(socket, JSON.stringify(message));
-  return decodeReply(yield* readLine(pull));
+  // Interim progress lines come first; the reply is the line with `ok`.
+  let line = yield* next;
+  while (!("ok" in JSON.parse(line))) line = yield* next;
+  return decodeReply(line);
 }, Effect.scoped);
 const send = Effect.fn("send")(function* (request: Request) {
   const hello = yield* exchange({ command: "daemon.info" });
@@ -231,6 +240,73 @@ describe("DaemonServer", () => {
         expect(files.size).toBe(0);
         yield* Fiber.interrupt(running);
       }).pipe(Effect.provide(serverLayer)),
+    );
+  }, 10_000);
+
+  it("writes capture progress lines before the reply, which clients with or without a handler decode", async () => {
+    const progress = [
+      { phase: "capture", done: 0, total: 1, bytes: 0 },
+      { phase: "diff", done: 1, total: 1, bytes: 4 },
+    ];
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        const server = yield* DaemonServer;
+        const running = yield* Effect.forkChild(server.run);
+        const hello = yield* exchange({ command: "daemon.info" }).pipe(
+          Effect.retry({ schedule: Schedule.spaced("10 millis"), times: 100 }),
+        );
+        if (!hello.ok) throw new Error("handshake failed");
+        const info = Schema.decodeUnknownSync(DaemonInfoSchema)(hello.value);
+
+        // On the wire: one JSON line per report, in order, then the one Reply line.
+        const lines = yield* Effect.scoped(
+          Effect.gen(function* () {
+            const socket = yield* NodeSocket.makeNet({ path: socketPath });
+            const next = lineReader(yield* Socket.readerBytes(socket));
+            yield* writeLine(
+              socket,
+              JSON.stringify({
+                ...info,
+                request: { command: "open", cwd: "/progress-raw", scope: { kind: "uncommitted" } },
+              }),
+            );
+            return [yield* next, yield* next, yield* next];
+          }),
+        );
+        expect(lines.slice(0, 2).map((line) => JSON.parse(line))).toEqual(
+          progress.map((event) => ({ progress: event })),
+        );
+        expect(decodeReply(lines[2]!).ok).toBe(true);
+
+        const client = yield* DaemonClient;
+        const heard: unknown[] = [];
+        const opened = (yield* client.request(
+          { command: "open", cwd: "/progress-client", scope: { kind: "uncommitted" } },
+          (event) => Effect.sync(() => void heard.push(event)),
+        )) as { session: { id: string } };
+        expect(heard).toEqual(progress);
+        // Without a handler the interim lines are skipped and the reply still decodes.
+        const refreshed = (yield* client.request({
+          command: "refresh",
+          session: opened.session.id,
+        })) as { session: { id: string } };
+        expect(refreshed.session.id).toBe(opened.session.id);
+        // A reuse captures nothing, so it reports nothing.
+        heard.length = 0;
+        yield* client.request(
+          { command: "open", cwd: "/progress-client", scope: { kind: "uncommitted" } },
+          (event) => Effect.sync(() => void heard.push(event)),
+        );
+        expect(heard).toEqual([]);
+        yield* Fiber.interrupt(running);
+      }).pipe(
+        Effect.provide(
+          Layer.merge(
+            serverLayer,
+            DaemonClient.layer.pipe(Layer.provide(paths), Layer.provide(NodeServices.layer)),
+          ),
+        ),
+      ),
     );
   }, 10_000);
 

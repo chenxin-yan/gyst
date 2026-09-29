@@ -1,6 +1,11 @@
 import { afterAll, beforeAll, describe, expect, it } from "vite-plus/test";
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import { type ContentSide, type SnapshotManifest, snapshotIdOf } from "@gyst/core";
+import {
+  type CaptureProgress,
+  type ContentSide,
+  type SnapshotManifest,
+  snapshotIdOf,
+} from "@gyst/core";
 import { ConfigProvider, Effect, Layer, PlatformError, Stream } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import { execFileSync } from "node:child_process";
@@ -729,6 +734,49 @@ describe("Git.capture", () => {
       ),
     );
     expect(new TextDecoder().decode(bytes)).toBe("two\n");
+  });
+
+  it("reports real, monotonic progress for uncommitted and range captures", async () => {
+    const cwd = await repo("progress");
+    await writeFile(join(cwd, "helper.txt"), "helper\n");
+    git(cwd, "add", ".");
+    git(cwd, "commit", "-qm", "helper");
+    git(cwd, "branch", "-M", "main");
+    await writeFile(join(cwd, "tracked.txt"), "changed\n");
+    await writeFile(join(cwd, "untracked.txt"), "new\n");
+    const heard = (scope: SnapshotManifest["scope"]) =>
+      run(
+        Effect.gen(function* () {
+          const progress: CaptureProgress[] = [];
+          const manifest = yield* Git.use((g) =>
+            g.capture(cwd, scope, (event) => Effect.sync(() => void progress.push(event))),
+          );
+          return { manifest, progress };
+        }),
+      );
+    const { manifest, progress } = await heard({ kind: "uncommitted" });
+    const captured = progress.filter(({ phase }) => phase === "capture");
+    const diffed = progress.filter(({ phase }) => phase === "diff");
+    // Every event is a real count: capture then diff, each from 0 to its own total.
+    expect(progress).toEqual([...captured, ...diffed]);
+    expect(captured[0]).toEqual({ phase: "capture", done: 0, total: 3, bytes: 0 });
+    // Bytes actually read: helper.txt from HEAD and from the working tree, both sides of
+    // tracked.txt and untracked.txt.
+    const bytes = ["helper\n", "helper\n", "one\n", "changed\n", "new\n"].join("").length;
+    expect(captured.at(-1)).toEqual({ phase: "capture", done: 3, total: 3, bytes });
+    // Between each phase's first and last event, at most one per 100 ms.
+    expect([diffed[0], diffed.at(-1)]).toEqual([
+      { phase: "diff", done: 0, total: 2, bytes },
+      { phase: "diff", done: 2, total: 2, bytes },
+    ]);
+    expect(new Set(manifest.hunks.map((hunk) => hunk.file)).size).toBe(2);
+    for (const [index, event] of progress.entries())
+      if (index > 0 && progress[index - 1]!.phase === event.phase)
+        expect(event.done).toBeGreaterThanOrEqual(progress[index - 1]!.done);
+
+    const range = await heard({ kind: "range", range: "main~1..main" });
+    expect(range.progress.at(0)).toMatchObject({ phase: "capture", done: 0, total: 2 });
+    expect(range.progress.at(-1)).toMatchObject({ phase: "diff", done: 1, total: 1 });
   });
 
   it("reports a failed content write as an actionable error and leaves no staging", async () => {

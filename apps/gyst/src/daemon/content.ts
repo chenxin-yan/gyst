@@ -116,7 +116,7 @@ export const codePage = Effect.fnUntraced(function* <E>(
   yield* Stream.runForEachWhile(bytes, (chunk) => Effect.sync(() => push(chunk)));
 
   // Reaching here without a start means the whole content was scanned.
-  if (start === undefined || (request.offset === undefined && start >= size))
+  if (start === undefined || (request.startLine !== undefined && start >= size))
     return yield* new BadArgs({
       message: "startLine is past the last line of the captured content",
       detail: { startLine, lines: lfs + (lastByte === undefined || lastByte === lf ? 0 : 1) },
