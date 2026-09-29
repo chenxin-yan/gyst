@@ -2,6 +2,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vite-plus/test";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { type ContentSide, type SnapshotManifest, snapshotIdOf } from "@gyst/core";
 import { ConfigProvider, Effect, Layer, PlatformError, Stream } from "effect";
+import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
@@ -20,7 +21,7 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CapturedContent } from "./content.ts";
-import { Git } from "./git.ts";
+import { Git, nulFraming } from "./git.ts";
 import { Paths } from "./paths.ts";
 
 let root: string;
@@ -49,6 +50,7 @@ type ContentService = (typeof CapturedContent)["Service"];
 const run = <A, E>(
   effect: Effect.Effect<A, E, Git | CapturedContent>,
   wrap: (real: ContentService) => ContentService = (real) => real,
+  spawner: Layer.Layer<ChildProcessSpawner.ChildProcessSpawner> = NodeServices.layer,
 ) =>
   Effect.runPromise(
     Effect.provide(
@@ -59,6 +61,7 @@ const run = <A, E>(
             Layer.provide(CapturedContent.layer),
           ),
         ),
+        Layer.provide(spawner),
         Layer.provide(Paths.layer),
         Layer.provide(NodeServices.layer),
         Layer.provide(ConfigProvider.layer(ConfigProvider.fromUnknown({ GYST_DATA_DIR: dataDir }))),
@@ -246,35 +249,181 @@ describe("Git.capture", () => {
       reason: "unsupported-encoding",
     });
     expect(hunkFiles(manifest)).toEqual(["tracked.txt"]);
+    // Uncaptured bytes carry no identity: a binary edit leaves the manifest as it was, which is
+    // why a source check cannot call such a snapshot unchanged.
+    await writeFile(join(cwd, "image.bin"), Buffer.from([1, 0, 4]));
+    expect(snapshotIdOf(await capture(cwd))).toBe(snapshotIdOf(manifest));
     const stored = await blobs();
     for (const bytes of [nul, latin1, Buffer.from([1, 0, 2])])
       expect(stored).not.toContain(sha256(bytes));
     expect(await staging()).toEqual([]);
   });
 
-  it("records mode changes without reviewing them and captures a rename as a delete and an add", async () => {
+  it("records mode changes and byte-identical renames as unreviewed metadata, keeping text edits", async () => {
     const cwd = await repo("metadata");
     await writeFile(join(cwd, "script.sh"), "echo one\n");
     await writeFile(join(cwd, "old-name.txt"), "moved\n");
+    await writeFile(join(cwd, "edited-old.txt"), "before\n");
     git(cwd, "add", ".");
     git(cwd, "commit", "-qm", "metadata");
     await chmod(join(cwd, "tracked.txt"), 0o755);
     await writeFile(join(cwd, "script.sh"), "echo two\n");
     await chmod(join(cwd, "script.sh"), 0o755);
     git(cwd, "mv", "old-name.txt", "new-name.txt");
+    // A rename with an edit is a genuine text change: it stays a reviewed delete and add.
+    git(cwd, "mv", "edited-old.txt", "edited-new.txt");
+    await writeFile(join(cwd, "edited-new.txt"), "after\n");
+    for (const manifest of [
+      await capture(cwd),
+      await (async () => {
+        git(cwd, "add", "-A");
+        git(cwd, "commit", "-qm", "renames");
+        return capture(cwd, { kind: "range", range: "HEAD~1..HEAD" });
+      })(),
+    ]) {
+      const modeOnly = fileOf(manifest, "tracked.txt")!;
+      expect(modeOnly.modeChange).toEqual({ old: "100644", new: "100755" });
+      expect(modeOnly.new).toEqual(modeOnly.old);
+      expect(fileOf(manifest, "script.sh")!.modeChange).toEqual({ old: "100644", new: "100755" });
+      // Both paths keep their captured bytes; the pair is metadata, not review hunks.
+      expect(fileOf(manifest, "old-name.txt")!.new).toEqual({ kind: "absent" });
+      const renamed = fileOf(manifest, "new-name.txt")!;
+      expect(renamed).toEqual({
+        path: "new-name.txt",
+        old: { kind: "absent" },
+        new: fileOf(manifest, "old-name.txt")!.old,
+        renamedFrom: "old-name.txt",
+      });
+      expect(String(await bytesOf(renamed.new))).toBe("moved\n");
+      expect(fileOf(manifest, "edited-new.txt")!.renamedFrom).toBeUndefined();
+      expect(manifest.hunks.map(({ file, patch }) => [file, patch])).toEqual([
+        ["edited-new.txt", "@@ -0,0 +1 @@\n+after"],
+        ["edited-old.txt", "@@ -1 +0,0 @@\n-before"],
+        ["script.sh", "@@ -1 +1 @@\n-echo one\n+echo two"],
+      ]);
+    }
+  });
+
+  it("keeps a BOM-prefixed filename distinct from the same name without it", async () => {
+    const cwd = await repo("bom-names");
+    await writeFile(join(cwd, "\uFEFFhelper.ts"), "prefixed\n");
+    await writeFile(join(cwd, "helper.ts"), "plain\n");
+    git(cwd, "add", ".");
+    git(cwd, "commit", "-qm", "both names");
+    await writeFile(join(cwd, "\uFEFFhelper.ts"), "prefixed edit\n");
     const manifest = await capture(cwd);
-    const modeOnly = fileOf(manifest, "tracked.txt")!;
-    expect(modeOnly.modeChange).toEqual({ old: "100644", new: "100755" });
-    expect(modeOnly.new).toEqual(modeOnly.old);
-    expect(fileOf(manifest, "script.sh")!.modeChange).toEqual({ old: "100644", new: "100755" });
-    expect(fileOf(manifest, "old-name.txt")!.new).toEqual({ kind: "absent" });
-    expect(fileOf(manifest, "new-name.txt")!.old).toEqual({ kind: "absent" });
-    expect(fileOf(manifest, "new-name.txt")!.new).toEqual(fileOf(manifest, "old-name.txt")!.old);
-    expect(manifest.hunks.map(({ file, patch }) => [file, patch])).toEqual([
-      ["new-name.txt", "@@ -0,0 +1 @@\n+moved"],
-      ["old-name.txt", "@@ -1 +0,0 @@\n-moved"],
-      ["script.sh", "@@ -1 +1 @@\n-echo one\n+echo two"],
+    expect(manifest.files.map((file) => file.path)).toEqual([
+      "helper.ts",
+      "tracked.txt",
+      "\uFEFFhelper.ts",
     ]);
+    expect(String(await bytesOf(fileOf(manifest, "helper.ts")!.new))).toBe("plain\n");
+    expect(String(await bytesOf(fileOf(manifest, "\uFEFFhelper.ts")!.old))).toBe("prefixed\n");
+    expect(String(await bytesOf(fileOf(manifest, "\uFEFFhelper.ts")!.new))).toBe("prefixed edit\n");
+    expect(hunkFiles(manifest)).toEqual(["\uFEFFhelper.ts"]);
+    const range = await capture(cwd, { kind: "range", range: "HEAD~1..HEAD" });
+    expect(range.files.map((file) => file.path)).toEqual([
+      "helper.ts",
+      "tracked.txt",
+      "\uFEFFhelper.ts",
+    ]);
+    expect(String(await bytesOf(fileOf(range, "\uFEFFhelper.ts")!.new))).toBe("prefixed\n");
+  });
+
+  it("stops at a gitlink that replaced a directory, keeping old text and reading no submodule file", async () => {
+    const cwd = await repo("conversion");
+    await mkdir(join(cwd, "module"));
+    await writeFile(join(cwd, "module", "helper.ts"), "project helper\n");
+    git(cwd, "add", ".");
+    git(cwd, "commit", "-qm", "module directory");
+    git(cwd, "rm", "-rq", "--cached", "module");
+    await rm(join(cwd, "module"), { recursive: true });
+    const nested = await repo("conversion/module");
+    await writeFile(join(nested, "helper.ts"), "submodule secret\n");
+    git(nested, "add", ".");
+    git(nested, "commit", "-qm", "submodule");
+    const moduleHead = git(nested, "rev-parse", "HEAD").trim();
+    git(cwd, "update-index", "--add", "--cacheinfo", `160000,${moduleHead},module`);
+    const manifest = await capture(cwd);
+    expect(manifest.files.map((file) => file.path)).toEqual([
+      "module",
+      "module/helper.ts",
+      "tracked.txt",
+    ]);
+    expect(fileOf(manifest, "module")).toMatchObject({
+      old: { kind: "absent" },
+      new: { kind: "unavailable", reason: "submodule" },
+    });
+    const helper = fileOf(manifest, "module/helper.ts")!;
+    expect(String(await bytesOf(helper.old))).toBe("project helper\n");
+    expect(helper.new).toEqual({ kind: "absent" });
+    expect(await blobs()).not.toContain(sha256("submodule secret\n"));
+  });
+
+  it.skipIf(process.platform === "win32")(
+    "drains or discards object-read diagnostics, so a noisy Git cannot stall capture",
+    async () => {
+      const cwd = await repo("noisy-cat-file");
+      const pids: number[] = [];
+      // Replace only `cat-file`: 1 MiB of stderr (far beyond a pipe's capacity) before stdout.
+      const noisy = Layer.effect(
+        ChildProcessSpawner.ChildProcessSpawner,
+        Effect.gen(function* () {
+          const live = yield* ChildProcessSpawner.ChildProcessSpawner;
+          return ChildProcessSpawner.make((command) =>
+            command._tag === "StandardCommand" && command.args.includes("cat-file")
+              ? live
+                  .spawn(
+                    ChildProcess.make(
+                      process.execPath,
+                      [
+                        "-e",
+                        "process.stderr.write('x'.repeat(1 << 20)); process.stdout.write('noisy object\\n');",
+                      ],
+                      command.options,
+                    ),
+                  )
+                  .pipe(Effect.tap((handle) => Effect.sync(() => pids.push(handle.pid))))
+              : live.spawn(command),
+          );
+        }),
+      ).pipe(Layer.provide(NodeServices.layer));
+      const manifest = await run(
+        Git.use((g) => g.capture(cwd, { kind: "uncommitted" })).pipe(Effect.timeout("5 seconds")),
+        undefined,
+        noisy,
+      );
+      expect(String(await bytesOf(fileOf(manifest, "tracked.txt")!.old))).toBe("noisy object\n");
+      expect(pids.length).toBeGreaterThan(0);
+      for (const pid of pids) expect(() => process.kill(pid, 0)).toThrow("ESRCH");
+    },
+    15_000,
+  );
+
+  it("frames NUL-separated inventory records across chunk boundaries", () => {
+    const framing = nulFraming();
+    const chunks = ["a\0b", "c\0", "\0d\0e"].map((chunk) => new TextEncoder().encode(chunk));
+    const records = chunks
+      .flatMap((chunk) => framing.push(chunk))
+      .map((record) => String(Buffer.from(record)));
+    expect(records).toEqual(["a", "bc", "", "d"]);
+    expect(framing.pending).toBe(1);
+  });
+
+  it("filters a large inventory while streaming it", async () => {
+    const cwd = await repo("large-inventory");
+    const vendored = join(cwd, "node_modules", "pkg");
+    await mkdir(vendored, { recursive: true });
+    // About 250 KiB of untracked inventory, so records cross many stdout chunks.
+    for (let index = 0; index < 2000; index++)
+      await writeFile(
+        join(vendored, `${String(index).padStart(4, "0")}-${"n".repeat(100)}.js`),
+        "",
+      );
+    await writeFile(join(cwd, "zz.txt"), "after the vendored paths\n");
+    const manifest = await capture(cwd);
+    expect(manifest.files.map((file) => file.path)).toEqual(["tracked.txt", "zz.txt"]);
+    expect(hunkFiles(manifest)).toEqual(["zz.txt"]);
   });
 
   it("captures against an empty baseline in a repository without HEAD", async () => {

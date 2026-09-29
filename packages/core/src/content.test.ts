@@ -87,6 +87,25 @@ describe("SnapshotManifestSchema", () => {
       expect(Result.isFailure(withMode(invalid))).toBe(true);
   });
 
+  it("records a byte-identical rename only between an absent-then-text pair of one blob", () => {
+    const text = { kind: "text", blob: blob("e"), size: 2 } as const;
+    const gone = { path: "a.old", old: text, new: { kind: "absent" } };
+    const added = { path: "b.new", old: { kind: "absent" }, new: text, renamedFrom: "a.old" };
+    const base = { ...manifest, files: [gone, added], hunks: [] };
+    expect(Result.isSuccess(decode(base))).toBe(true);
+    const other = { kind: "text", blob: blob("f"), size: 2 };
+    for (const invalid of [
+      { ...base, files: [gone, { ...added, renamedFrom: "missing" }] },
+      { ...base, files: [gone, { ...added, new: other }] },
+      { ...base, files: [{ ...gone, new: text }, added] },
+      { ...base, files: [gone, { ...added, old: text }] },
+      { ...base, files: [gone, added, { ...added, path: "c.new" }] },
+      { ...base, hunks: [{ ...manifest.hunks[0], file: "b.new" }] },
+      { ...base, hunks: [{ ...manifest.hunks[0], file: "a.old" }] },
+    ])
+      expect(Result.isFailure(decode(invalid))).toBe(true);
+  });
+
   it("requires provenance resolved for the recorded scope", () => {
     const commit = "d".repeat(40);
     const range = (recorded: string, mergeBase: string | null) =>

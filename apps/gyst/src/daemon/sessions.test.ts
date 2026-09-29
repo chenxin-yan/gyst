@@ -8,10 +8,21 @@ import {
   InternalError,
   type Scope,
   type Session,
+  type ManifestFile,
   type SnapshotManifest,
   snapshotIdOf,
 } from "@gyst/core";
-import { Crypto, Effect, Exit, Fiber, Layer, PlatformError, Result, Stream } from "effect";
+import {
+  Crypto,
+  Deferred,
+  Effect,
+  Exit,
+  Fiber,
+  Layer,
+  PlatformError,
+  Result,
+  Stream,
+} from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import { manifestOf, publishingContent } from "./capture-doubles.ts";
 import { Git } from "./git.ts";
@@ -45,6 +56,19 @@ let supporting: Record<string, string>;
 let patchEffect: Effect.Effect<SnapshotManifest, BadArgs | InternalError> | undefined;
 let manifestFails: boolean;
 let slowCapture: boolean;
+/** Files the capture double adds without content: binary, symlink or submodule sides. */
+let uncaptured: ManifestFile[];
+/** When set, each capture signals `started` and then waits for `release`. */
+let gate: { started: Deferred.Deferred<void>; release: Deferred.Deferred<void> } | undefined;
+const withUncaptured = (manifest: SnapshotManifest): SnapshotManifest => ({
+  ...manifest,
+  files: [...manifest.files, ...uncaptured].sort((a, b) => (a.path < b.path ? -1 : 1)),
+});
+const holdCaptures = Effect.gen(function* () {
+  const held = { started: yield* Deferred.make<void>(), release: yield* Deferred.make<void>() };
+  gate = held;
+  return held;
+});
 /** Content publications and session saves, in order. */
 let commits: string[];
 
@@ -65,8 +89,15 @@ const git = Layer.succeed(Git, {
   capture: (root, scope) =>
     Effect.suspend(() => {
       captureCalls.push({ root, scope });
-      const captured = patchEffect ?? Effect.sync(() => manifestOf(gitPatch, scope, supporting));
-      return slowCapture ? Effect.delay(captured, "20 millis") : captured;
+      const captured =
+        patchEffect ?? Effect.sync(() => withUncaptured(manifestOf(gitPatch, scope, supporting)));
+      const delayed = slowCapture ? Effect.delay(captured, "20 millis") : captured;
+      return gate
+        ? Deferred.succeed(gate.started, undefined).pipe(
+            Effect.andThen(Deferred.await(gate.release)),
+            Effect.andThen(delayed),
+          )
+        : delayed;
     }),
 });
 
@@ -200,6 +231,8 @@ beforeEach(() => {
   patchEffect = undefined;
   manifestFails = false;
   slowCapture = false;
+  uncaptured = [];
+  gate = undefined;
   commits = [];
 });
 
@@ -403,6 +436,48 @@ describe("Sessions.check", () => {
       ),
     );
   });
+  it("reports unavailable, not unchanged, when uncaptured working-tree inputs may have changed", async () => {
+    uncaptured = [
+      {
+        path: "image.bin",
+        old: { kind: "unavailable", reason: "binary" },
+        new: { kind: "unavailable", reason: "binary" },
+      },
+      { path: "link", old: { kind: "absent" }, new: { kind: "unavailable", reason: "symlink" } },
+    ];
+    const range = { kind: "range", range: "main..feature" } as const;
+    await run(
+      Sessions.use((sessions) =>
+        Effect.gen(function* () {
+          const { session } = yield* openScope();
+          const check = sessions.check({ command: "check", session: session.id });
+          expect(yield* check).toMatchObject({
+            state: "unavailable",
+            message: expect.stringMatching(/binary.*symlink.*image\.bin/),
+          });
+          // Committed endpoints identify every side, so a range compares completely.
+          const ranged = yield* openScope(range);
+          expect(
+            yield* sessions.check({ command: "check", session: ranged.session.id }),
+          ).toMatchObject({ state: "unchanged" });
+        }),
+      ),
+    );
+    // A difference in the captured inputs is still a definite change.
+    await run(
+      Sessions.use((sessions) =>
+        Effect.gen(function* () {
+          const [first] = (yield* sessions.list).sessions.filter(
+            (s) => s.scope.kind === "uncommitted",
+          );
+          gitPatch = patch.replace("+two", "+other");
+          expect(yield* sessions.check({ command: "check", session: first!.id })).toMatchObject({
+            state: "changed",
+          });
+        }),
+      ),
+    );
+  });
 });
 
 describe("Sessions.open", () => {
@@ -527,15 +602,69 @@ describe("Sessions.open", () => {
     expect(session.snapshotId).toBe(snapshotIdOf(manifestOf(patch, uncommitted, supporting)));
   });
 
-  it("keeps a session out of memory when persistence fails", async () => {
-    saveFails = true;
+  it("keeps a session out of memory when capture, publication or persistence fails", async () => {
     await run(
       Effect.gen(function* () {
         const sessions = yield* Sessions;
+        const listed = () =>
+          sessions.list.pipe(Effect.map(({ sessions }) => sessions.map(({ id }) => id)));
+        patchEffect = Effect.fail(new BadArgs({ message: "the working tree changed" }));
         expect(Exit.isFailure(yield* Effect.exit(openScope()))).toBe(true);
-        expect((yield* sessions.list).sessions.map(({ id }) => id)).toEqual([persisted.id]);
+        expect(yield* listed()).toEqual([persisted.id]);
+        patchEffect = undefined;
+        manifestFails = true;
+        expect(Exit.isFailure(yield* Effect.exit(openScope()))).toBe(true);
+        expect(yield* listed()).toEqual([persisted.id]);
+        manifestFails = false;
+        saveFails = true;
+        expect(Exit.isFailure(yield* Effect.exit(openScope()))).toBe(true);
+        expect(yield* listed()).toEqual([persisted.id]);
         expect([...files.keys()]).toEqual([persisted.id]);
+        // The same instance still opens once the fault clears.
+        saveFails = false;
+        expect((yield* openScope()).created).toBe(true);
       }),
+    );
+  });
+
+  it("keeps other sessions readable and writable while a capture is in progress", async () => {
+    await run(
+      Sessions.use((sessions) =>
+        Effect.gen(function* () {
+          const held = yield* holdCaptures;
+          const opening = yield* Effect.forkChild(openScope());
+          yield* Deferred.await(held.started);
+          const status = yield* sessions
+            .status({ command: "status", session: persisted.id })
+            .pipe(Effect.timeout("1 second"));
+          expect(status.revision).toBe(persisted.revision);
+          const applied = yield* sessions
+            .apply({
+              command: "apply",
+              session: persisted.id,
+              batch: JSON.stringify({
+                revision: persisted.revision,
+                idempotencyKey: "during-capture",
+                ops: [
+                  {
+                    type: "group.create",
+                    id: "g3",
+                    memberHunkIds: ["h3"],
+                    title: "third",
+                    notes: [{ hunkId: "h3", text: "third" }],
+                  },
+                  { type: "queue.set", itemIds: ["g1", "g2", "g3"] },
+                ],
+              }),
+            })
+            .pipe(Effect.timeout("1 second"));
+          expect(applied.revision).toBe(persisted.revision + 1);
+          expect((yield* sessions.list.pipe(Effect.timeout("1 second"))).sessions).toHaveLength(1);
+          yield* Deferred.succeed(held.release, undefined);
+          expect((yield* Fiber.join(opening)).created).toBe(true);
+          expect(files.size).toBe(2);
+        }),
+      ),
     );
   });
 });
@@ -860,31 +989,131 @@ diff --git a/c.txt b/c.txt
     expect(refreshed.session.scope).toEqual(persisted.scope);
     expect(files.get(persisted.id)?.snapshotId).toBe(refreshed.session.snapshotId);
   });
-  it("leaves the saved session untouched when capture or publication fails", async () => {
-    const before = JSON.stringify([...files]);
-    patchEffect = Effect.fail(new BadArgs({ message: "the working tree changed" }));
-    expect(
-      await failure(Sessions.use((s) => s.refresh({ command: "refresh", session: persisted.id }))),
-    ).toMatchObject({ _tag: "bad_args" });
-    patchEffect = undefined;
-    manifestFails = true;
-    expect(
-      await failure(Sessions.use((s) => s.refresh({ command: "refresh", session: persisted.id }))),
-    ).toMatchObject({ _tag: "internal_error" });
-    manifestFails = false;
-    saveFails = true;
+  it("leaves saved and in-memory state untouched when capture, publication or saving fails", async () => {
     await run(
       Effect.gen(function* () {
         const sessions = yield* Sessions;
-        const refresh = sessions.refresh({ command: "refresh", session: persisted.id });
-        expect(Exit.isFailure(yield* Effect.exit(refresh))).toBe(true);
-        expect(yield* sessions.status({ command: "status", session: persisted.id })).toMatchObject({
-          revision: persisted.revision,
-          session: { snapshotId: persisted.snapshotId },
+        // Agent and human work recorded before the failing refreshes.
+        yield* sessions.apply({
+          command: "apply",
+          session: persisted.id,
+          batch: JSON.stringify({
+            revision: persisted.revision,
+            idempotencyKey: "before-refresh",
+            ops: [
+              {
+                type: "group.create",
+                id: "g3",
+                memberHunkIds: ["h3"],
+                title: "third",
+                notes: [{ hunkId: "h3", text: "third" }],
+              },
+              { type: "queue.set", itemIds: ["g1", "g2", "g3"] },
+            ],
+          }),
         });
+        yield* recordHumanAction(persisted.id, {
+          type: "verdict.toggle",
+          sessionId: persisted.id,
+          revision: persisted.revision + 1,
+          itemId: "g3",
+        });
+        const before = JSON.stringify([...files]);
+        const status = yield* sessions.status({ command: "status", session: persisted.id });
+        expect(status).toMatchObject({ revision: persisted.revision + 2 });
+        expect(status.groups.find(({ id }) => id === "g3")?.accepted).toBe(true);
+        const refresh = sessions.refresh({ command: "refresh", session: persisted.id });
+        patchEffect = Effect.fail(new BadArgs({ message: "the working tree changed" }));
+        expect(yield* Effect.flip(refresh)).toMatchObject({ _tag: "bad_args" });
+        expect(yield* sessions.status({ command: "status", session: persisted.id })).toEqual(
+          status,
+        );
+        patchEffect = undefined;
+        manifestFails = true;
+        expect(yield* Effect.flip(refresh)).toMatchObject({ _tag: "internal_error" });
+        expect(yield* sessions.status({ command: "status", session: persisted.id })).toEqual(
+          status,
+        );
+        manifestFails = false;
+        saveFails = true;
+        expect(Exit.isFailure(yield* Effect.exit(refresh))).toBe(true);
+        expect(yield* sessions.status({ command: "status", session: persisted.id })).toEqual(
+          status,
+        );
+        expect(JSON.stringify([...files])).toBe(before);
       }),
     );
-    expect(JSON.stringify([...files])).toBe(before);
+  });
+
+  it("reconciles against work saved while it captured, not the session it started from", async () => {
+    await run(
+      Sessions.use((sessions) =>
+        Effect.gen(function* () {
+          const { session } = yield* openScope();
+          const created = yield* sessions.status({ command: "status", session: session.id });
+          const held = yield* holdCaptures;
+          const refreshing = yield* Effect.forkChild(
+            sessions.refresh({ command: "refresh", session: session.id }),
+          );
+          yield* Deferred.await(held.started);
+          yield* sessions
+            .apply({
+              command: "apply",
+              session: session.id,
+              batch: JSON.stringify({
+                revision: 0,
+                idempotencyKey: "late",
+                ops: [
+                  {
+                    type: "group.create",
+                    id: "late",
+                    title: "Late guidance",
+                    notes: [{ hunkId: created.inbox[0]!.id, text: "Written during capture." }],
+                    memberHunkIds: created.inbox.map(({ id }) => id),
+                  },
+                  { type: "queue.set", itemIds: ["late"] },
+                ],
+              }),
+            })
+            .pipe(Effect.timeout("1 second"));
+          // A human verdict persisted by another process, then loaded, also during the capture.
+          yield* recordHumanAction(session.id, {
+            type: "verdict.toggle",
+            sessionId: session.id,
+            revision: 1,
+            itemId: "late",
+          }).pipe(Effect.timeout("1 second"));
+          yield* Deferred.succeed(held.release, undefined);
+          const refreshed = yield* Fiber.join(refreshing);
+          expect(refreshed.revision).toBe(3);
+          expect(refreshed.groups).toEqual([
+            expect.objectContaining({ id: "late", accepted: true }),
+          ]);
+          expect(files.get(session.id)?.revision).toBe(3);
+        }),
+      ),
+    );
+  });
+
+  it("does not resurrect a session deleted while its refresh captured", async () => {
+    await run(
+      Sessions.use((sessions) =>
+        Effect.gen(function* () {
+          const held = yield* holdCaptures;
+          const refreshing = yield* Effect.forkChild(
+            sessions.refresh({ command: "refresh", session: persisted.id }),
+          );
+          yield* Deferred.await(held.started);
+          yield* sessions
+            .delete({ command: "delete", session: persisted.id, requestId: "gone" })
+            .pipe(Effect.timeout("1 second"));
+          yield* Deferred.succeed(held.release, undefined);
+          expect(yield* Effect.flip(Fiber.join(refreshing))).toMatchObject({ _tag: "no_session" });
+          expect(files.has(persisted.id)).toBe(false);
+          expect((yield* sessions.list).sessions).toEqual([]);
+        }),
+      ),
+    );
   });
 });
 

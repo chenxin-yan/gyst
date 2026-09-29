@@ -47,6 +47,24 @@ const opened = (session: Session, created: boolean): OpenPayload => ({
   launch: { argv: ["gyst", "--session", session.id] },
 });
 
+/**
+ * An equal manifest proves an unchanged source only where every side is identified. Commits
+ * identify both sides of a range and the old side of uncommitted work, but a working-tree side
+ * that was not captured (binary, undecodable, a link or a submodule) could have changed unseen.
+ */
+const uncaptured = (manifest: SnapshotManifest) => {
+  if (manifest.scope.kind !== "uncommitted") return undefined;
+  const sides = manifest.files.flatMap(({ path, new: side }) =>
+    side.kind === "unavailable" ? [{ path, reason: side.reason }] : [],
+  );
+  if (sides.length === 0) return undefined;
+  const reasons = [...new Set(sides.map(({ reason }) => reason))].sort().join(", ");
+  return {
+    state: "unavailable" as const,
+    message: `the working tree has ${reasons} inputs that gyst does not capture, so it cannot tell whether they changed (first: ${sides[0]!.path})`,
+  };
+};
+
 const decodeEnvelope = Schema.decodeUnknownEffect(Schema.fromJsonString(ApplyEnvelopeSchema), {
   onExcessProperty: "error",
 });
@@ -128,41 +146,56 @@ export class Sessions extends Context.Service<
         return session;
       });
 
+      // Capture and content staging run outside `lock`, so other sessions stay readable and
+      // writable meanwhile; `sourceLock` keeps captures one at a time, which also dedups opens.
+      // Only the final publication takes `lock`, against the session as it is by then.
+      const sourceLock = yield* Semaphore.make(1);
+      const underLock = Semaphore.withPermit(lock);
+
       const open = Effect.fn("Sessions.open")(function* (request: Input<"open">) {
-        if (!("cwd" in request)) return opened(yield* selected(request), false);
+        if (!("cwd" in request)) return opened(yield* underLock(selected(request)), false);
         const root = yield* git.repoRoot(request.cwd);
-        const saved = [...sessions.values()].find(
-          (session) => session.repoRoot === root && sameScope(session.scope, request.scope),
-        );
-        if (saved) return opened(saved, false);
+        const saved = () =>
+          [...sessions.values()].find(
+            (session) => session.repoRoot === root && sameScope(session.scope, request.scope),
+          );
+        const reused = yield* underLock(Effect.sync(saved));
+        if (reused) return opened(reused, false);
         const manifest = yield* git.capture(root, request.scope);
         const snapshotId = yield* publish(manifest);
-        const now = DateTime.formatIso(yield* DateTime.now);
-        // Like persistence, an id source that cannot produce randomness is an operational defect.
-        const id = yield* Effect.orDie(randomUUIDv4);
-        const session: Session = {
-          id,
-          repoRoot: root,
-          scope: request.scope,
-          snapshotId,
-          createdAt: now,
-          updatedAt: now,
-          revision: 0,
-          seq: 0,
-          cursor: { itemId: null, pane: "queue" },
-          hunks: manifest.hunks,
-          groups: [],
-          queue: [],
-          queueSet: false,
-          acceptHistory: [],
-          receiptNoteTexts: [],
-          applyReceipts: [],
-        };
-        yield* store.save(session).pipe(Effect.orDie);
-        sessions.set(session.id, session);
-        yield* idle.close;
-        return opened(session, true);
-      }, Semaphore.withPermit(lock));
+        return yield* underLock(
+          Effect.gen(function* () {
+            // A `load` during the capture may have brought this scope's session in.
+            const loaded = saved();
+            if (loaded) return opened(loaded, false);
+            const now = DateTime.formatIso(yield* DateTime.now);
+            // Like persistence, an id source that cannot produce randomness is an operational defect.
+            const id = yield* Effect.orDie(randomUUIDv4);
+            const session: Session = {
+              id,
+              repoRoot: root,
+              scope: request.scope,
+              snapshotId,
+              createdAt: now,
+              updatedAt: now,
+              revision: 0,
+              seq: 0,
+              cursor: { itemId: null, pane: "queue" },
+              hunks: manifest.hunks,
+              groups: [],
+              queue: [],
+              queueSet: false,
+              acceptHistory: [],
+              receiptNoteTexts: [],
+              applyReceipts: [],
+            };
+            yield* store.save(session).pipe(Effect.orDie);
+            sessions.set(session.id, session);
+            yield* idle.close;
+            return opened(session, true);
+          }),
+        );
+      }, Semaphore.withPermit(sourceLock));
 
       const list = Effect.sync(() => ({
         sessions: [...sessions.values()]
@@ -185,12 +218,11 @@ export class Sessions extends Context.Service<
                 const result = yield* git.capture(repoRoot, scope).pipe(
                   Effect.timeout("2 seconds"),
                   // Every captured input counts, so a changed helper is a changed source.
-                  Effect.map((manifest) => ({
-                    state:
-                      snapshotIdOf(manifest) === snapshotId
-                        ? ("unchanged" as const)
-                        : ("changed" as const),
-                  })),
+                  Effect.map((manifest) =>
+                    snapshotIdOf(manifest) !== snapshotId
+                      ? { state: "changed" as const }
+                      : (uncaptured(manifest) ?? { state: "unchanged" as const }),
+                  ),
                   Effect.catch((error) =>
                     Effect.succeed({ state: "unavailable" as const, message: error.message }),
                   ),
@@ -276,18 +308,26 @@ export class Sessions extends Context.Service<
       }, Semaphore.withPermit(lock));
 
       const refresh = Effect.fn("Sessions.refresh")(function* (request: Input<"refresh">) {
-        const session = yield* selected(request);
-        const manifest = yield* git.capture(session.repoRoot, session.scope);
-        const refreshed = refreshSession(
-          { ...session, snapshotId: yield* publish(manifest) },
-          manifest.hunks,
-          DateTime.formatIso(yield* DateTime.now),
+        const { repoRoot, scope } = yield* underLock(selected(request));
+        const manifest = yield* git.capture(repoRoot, scope);
+        const snapshotId = yield* publish(manifest);
+        return yield* underLock(
+          Effect.gen(function* () {
+            // Reconcile the session as it is now: work saved during the capture survives, and a
+            // deletion during it wins (the published manifest stays, unreferenced, until #93).
+            const session = yield* selected(request);
+            const refreshed = refreshSession(
+              { ...session, snapshotId },
+              manifest.hunks,
+              DateTime.formatIso(yield* DateTime.now),
+            );
+            yield* store.save(refreshed).pipe(Effect.orDie);
+            sessions.set(session.id, refreshed);
+            sourceChecks.delete(session.id);
+            return statusOf(refreshed);
+          }),
         );
-        yield* store.save(refreshed).pipe(Effect.orDie);
-        sessions.set(session.id, refreshed);
-        sourceChecks.delete(session.id);
-        return statusOf(refreshed);
-      }, Semaphore.withPermit(lock));
+      }, Semaphore.withPermit(sourceLock));
 
       const remove = Effect.fn("Sessions.delete")(function* (request: Input<"delete">) {
         const { requestId } = request;

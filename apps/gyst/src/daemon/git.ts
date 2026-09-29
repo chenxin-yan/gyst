@@ -9,7 +9,7 @@ import {
   type Scope,
   type SnapshotManifest,
 } from "@gyst/core";
-import { Context, Data, Effect, FileSystem, Layer, Schema, Stream } from "effect";
+import { Context, Data, Effect, FileSystem, Layer, PlatformError, Schema, Stream } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import { dirname } from "node:path";
 import { CapturedContent } from "./content.ts";
@@ -19,7 +19,8 @@ import * as Worktree from "./worktree.ts";
 const rangePattern = /^(?<base>[^\s]*?)(?<dots>\.\.\.?)(?<head>[^\s.][^\s]*|)$/u;
 
 // Every invocation: no pager, replacement objects, promisor fetches or optional index locks, and
-// no configured fsmonitor program. Needs Git 2.44+ for `--no-lazy-fetch`; older Git fails loudly.
+// no configured fsmonitor program. Verified with Git 2.55 only. A Git without `--no-lazy-fetch`
+// rejects the unknown option, so it fails loudly rather than fetching.
 const globalFlags = [
   "--no-pager",
   "--no-replace-objects",
@@ -44,21 +45,58 @@ const environment = (): Record<string, string> => ({
 
 const decoder = new TextDecoder();
 const text = (bytes: Uint8Array) => decoder.decode(bytes);
-const nulRecords = (bytes: Uint8Array) => {
-  const records: Uint8Array[] = [];
-  let start = 0;
-  for (let end = bytes.indexOf(0); end !== -1; end = bytes.indexOf(0, start)) {
-    records.push(bytes.subarray(start, end));
-    start = end + 1;
-  }
-  return records;
+const concat = (a: Uint8Array, b: Uint8Array) => {
+  const joined = new Uint8Array(a.byteLength + b.byteLength);
+  joined.set(a);
+  joined.set(b, a.byteLength);
+  return joined;
+};
+
+/**
+ * Incremental NUL framing: `push` returns the records a chunk completes; only the one record
+ * still being read is held back (`pending` bytes).
+ */
+export const nulFraming = () => {
+  let pending = new Uint8Array(0);
+  return {
+    push(chunk: Uint8Array): Uint8Array[] {
+      const records: Uint8Array[] = [];
+      let start = 0;
+      for (let end = chunk.indexOf(0); end !== -1; end = chunk.indexOf(0, start)) {
+        const piece = chunk.subarray(start, end);
+        records.push(pending.byteLength === 0 ? piece : concat(pending, piece));
+        pending = new Uint8Array(0);
+        start = end + 1;
+      }
+      if (start < chunk.byteLength) pending = concat(pending, chunk.subarray(start));
+      return records;
+    },
+    get pending() {
+      return pending.byteLength;
+    },
+  };
+};
+
+const diagnosticLimit = 8 * 1024;
+/** Drains a child's stderr completely, keeping only its first few KiB for error messages. */
+const diagnostics = <E>(stderr: Stream.Stream<Uint8Array, E>) => {
+  const utf8 = new TextDecoder();
+  return Stream.runFold(
+    stderr,
+    () => "",
+    (kept: string, chunk: Uint8Array) =>
+      kept.length >= diagnosticLimit
+        ? kept
+        : (kept + utf8.decode(chunk, { stream: true })).slice(0, diagnosticLimit),
+  );
 };
 
 const isLogicalPath = Schema.is(LogicalPathSchema);
 /** Git's raw pathname bytes as a manifest path; undecodable names fail rather than alias. */
 const logicalPath = (bytes: Uint8Array) =>
   Effect.try({
-    try: () => new TextDecoder("utf-8", { fatal: true }).decode(bytes),
+    // `ignoreBOM` keeps a leading U+FEFF: `\uFEFFa` and `a` are different files.
+    try: () => new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes),
     catch: () =>
       new BadArgs({
         message: "a repository path is not valid UTF-8 and cannot be captured",
@@ -120,44 +158,68 @@ export class Git extends Context.Service<
       const fs = yield* FileSystem.FileSystem;
       const content = yield* CapturedContent;
       const env = environment();
-      const command = (cwd: string, args: ReadonlyArray<string>, extra?: Record<string, string>) =>
+      const command = (
+        cwd: string,
+        args: ReadonlyArray<string>,
+        options: { readonly extra?: Record<string, string>; readonly stderr?: "ignore" } = {},
+      ) =>
         ChildProcess.make("git", [...globalFlags, ...args], {
           cwd,
-          env: extra ? { ...env, ...extra } : env,
+          env: options.extra ? { ...env, ...options.extra } : env,
           stdin: "ignore",
+          ...(options.stderr && { stderr: options.stderr }),
           // Timeout interruption must also terminate Git wrappers that ignore SIGTERM.
           forceKillAfter: "500 millis",
         });
+      const couldNotRun = <A, E, R>(
+        effect: Effect.Effect<A, E | PlatformError.PlatformError, R>,
+      ): Effect.Effect<A, Exclude<E, PlatformError.PlatformError> | BadArgs, R> =>
+        Effect.mapError(effect, (error) =>
+          error instanceof PlatformError.PlatformError
+            ? new BadArgs({ message: "git could not be run", detail: error.message })
+            : (error as Exclude<E, PlatformError.PlatformError>),
+        );
 
+      /** A small command's whole stdout (endpoints, one file's patch); stderr drained, bounded. */
       const run = Effect.fn("Git.run")(
         function* (cwd: string, args: ReadonlyArray<string>, extra?: Record<string, string>) {
-          const handle = yield* spawner.spawn(command(cwd, args, extra));
+          const handle = yield* spawner.spawn(command(cwd, args, extra && { extra }));
           const [stdout, stderr, exitCode] = yield* Effect.all(
-            [
-              Stream.mkUint8Array(handle.stdout),
-              handle.stderr.pipe(Stream.decodeText(), Stream.mkString),
-              handle.exitCode,
-            ],
+            [Stream.mkUint8Array(handle.stdout), diagnostics(handle.stderr), handle.exitCode],
             { concurrency: "unbounded" },
           );
           return { exitCode, stdout, stderr };
         },
         Effect.scoped,
-        Effect.mapError(
-          (error) => new BadArgs({ message: "git could not be run", detail: error.message }),
-        ),
+        couldNotRun,
       );
-      const records = Effect.fn("Git.records")(function* (
-        root: string,
-        args: ReadonlyArray<string>,
-      ) {
-        const result = yield* run(root, args);
-        if (result.exitCode !== 0)
-          return yield* new BadArgs({
-            message: result.stderr.trim() || `git ${args[0]} failed`,
-          });
-        return nulRecords(result.stdout);
-      });
+      /** Streams a NUL-separated inventory into `onRecord`, never holding the whole listing. */
+      const records = Effect.fn("Git.records")(
+        function* (
+          root: string,
+          args: ReadonlyArray<string>,
+          onRecord: (record: Uint8Array) => Effect.Effect<void, BadArgs>,
+        ) {
+          const handle = yield* spawner.spawn(command(root, args));
+          const framing = nulFraming();
+          const [, stderr, exitCode] = yield* Effect.all(
+            [
+              Stream.runForEach(handle.stdout, (chunk) =>
+                Effect.forEach(framing.push(chunk), onRecord, { discard: true }),
+              ),
+              diagnostics(handle.stderr),
+              handle.exitCode,
+            ],
+            { concurrency: "unbounded" },
+          );
+          if (exitCode !== 0)
+            return yield* new BadArgs({ message: stderr.trim() || `git ${args[0]} failed` });
+          if (framing.pending !== 0)
+            return yield* new BadArgs({ message: `git ${args[0]} ended inside a record` });
+        },
+        Effect.scoped,
+        couldNotRun,
+      );
 
       const repoRoot = Effect.fn("Git.repoRoot")(function* (cwd: string) {
         const result = yield* run(cwd, ["rev-parse", "--show-toplevel"]);
@@ -223,18 +285,13 @@ export class Git extends Context.Service<
       const tree = Effect.fn("Git.tree")(function* (root: string, commitId: string | null) {
         const entries = new Map<string, TreeEntry>();
         if (commitId === null) return entries;
-        for (const record of yield* records(root, [
-          "ls-tree",
-          "-r",
-          "-z",
-          "--full-tree",
-          commitId,
-        ])) {
+        yield* records(root, ["ls-tree", "-r", "-z", "--full-tree", commitId], (record) => {
           const tab = record.indexOf(9);
           const [mode, , oid] = text(record.subarray(0, tab)).split(" ");
-          const path = yield* logicalPath(record.subarray(tab + 1));
-          if (!excluded(path)) entries.set(path, { mode: mode!, oid: oid! });
-        }
+          return Effect.map(logicalPath(record.subarray(tab + 1)), (path) => {
+            if (!excluded(path)) entries.set(path, { mode: mode!, oid: oid! });
+          });
+        });
         return entries;
       });
 
@@ -242,24 +299,23 @@ export class Git extends Context.Service<
       const worktreeInventory = Effect.fn("Git.worktreeInventory")(function* (root: string) {
         const paths = new Set<string>();
         const submodules = new Set<string>();
-        for (const record of yield* records(root, ["ls-files", "-z", "--stage"])) {
+        yield* records(root, ["ls-files", "-z", "--stage"], (record) => {
           const tab = record.indexOf(9);
-          const path = yield* logicalPath(record.subarray(tab + 1));
-          if (excluded(path)) continue;
-          paths.add(path);
-          if (text(record.subarray(0, tab)).startsWith("160000 ")) submodules.add(path);
-        }
-        for (const record of yield* records(root, [
-          "ls-files",
-          "-z",
-          "--others",
-          "--exclude-standard",
-        ])) {
+          const gitlink = text(record.subarray(0, tab)).startsWith("160000 ");
+          return Effect.map(logicalPath(record.subarray(tab + 1)), (path) => {
+            if (excluded(path)) return;
+            paths.add(path);
+            if (gitlink) submodules.add(path);
+          });
+        });
+        yield* records(root, ["ls-files", "-z", "--others", "--exclude-standard"], (record) =>
           // A trailing slash is an untracked nested repository: its contents are not the project's.
-          if (record.at(-1) === 47) continue;
-          const path = yield* logicalPath(record);
-          if (!excluded(path)) paths.add(path);
-        }
+          record.at(-1) === 47
+            ? Effect.void
+            : Effect.map(logicalPath(record), (path) => {
+                if (!excluded(path)) paths.add(path);
+              }),
+        );
         return { paths, submodules };
       });
 
@@ -283,7 +339,11 @@ export class Git extends Context.Service<
       const objectBytes = (root: string, oid: string) =>
         Stream.unwrap(
           Effect.gen(function* () {
-            const handle = yield* spawner.spawn(command(root, ["cat-file", "blob", oid]));
+            // Its diagnostics are unused, so they go nowhere: an unread stderr pipe that fills up
+            // would block Git before it finishes stdout.
+            const handle = yield* spawner.spawn(
+              command(root, ["cat-file", "blob", oid], { stderr: "ignore" }),
+            );
             const exited = handle.exitCode.pipe(
               Effect.flatMap((code) =>
                 code === 0
@@ -402,6 +462,13 @@ export class Git extends Context.Service<
           const inventory = yield* worktreeInventory(root);
           const paths = [...new Set([...oldTree.keys(), ...inventory.paths])].sort();
           const seen = new Map<string, Worktree.WorktreeEntry>();
+          // A path under a gitlink (a directory the index now records as a submodule) belongs to
+          // that other repository: checked before any working-tree access, so none is read.
+          const insideSubmodule = (path: string) => {
+            for (let slash = path.indexOf("/"); slash !== -1; slash = path.indexOf("/", slash + 1))
+              if (inventory.submodules.has(path.slice(0, slash))) return true;
+            return false;
+          };
           for (const path of paths) {
             const old = yield* fromTree(oldTree.get(path));
             if (inventory.submodules.has(path)) {
@@ -410,6 +477,11 @@ export class Git extends Context.Service<
                 old,
                 new: { side: { kind: "unavailable", reason: "submodule" } },
               });
+              continue;
+            }
+            if (insideSubmodule(path)) {
+              if (old.side.kind !== "absent")
+                sides.push({ path, old, new: { side: { kind: "absent" } } });
               continue;
             }
             const entry = yield* Worktree.inspect(root, path);
@@ -432,13 +504,33 @@ export class Git extends Context.Service<
           const after = yield* worktreeInventory(root);
           const added = [...after.paths].find((path) => !inventory.paths.has(path));
           const removed = [...inventory.paths].find((path) => !after.paths.has(path));
-          if (added ?? removed) return yield* Worktree.changedDuringCapture((added ?? removed)!);
+          const relinked = [...inventory.submodules, ...after.submodules].find(
+            (path) => inventory.submodules.has(path) !== after.submodules.has(path),
+          );
+          const moved = added ?? removed ?? relinked;
+          if (moved !== undefined) return yield* Worktree.changedDuringCapture(moved);
           for (const [path, entry] of seen) {
             const again = yield* Worktree.inspect(root, path);
             if (JSON.stringify(again) !== JSON.stringify(entry))
               return yield* Worktree.changedDuringCapture(path);
           }
         }
+
+        // A deleted and an added file with the same bytes and mode are a rename: recorded, not
+        // reviewed. Several with equal bytes pair in path order (the bytes are identical anyway).
+        const deleted = new Map<string, string[]>();
+        const renamedFrom = new Map<string, string>();
+        const key = ({ side, mode }: CapturedSide) =>
+          side.kind === "text" ? `${side.blob}\0${mode}` : undefined;
+        for (const { path, old, new: current } of sides)
+          if (current.side.kind === "absent" && key(old))
+            deleted.set(key(old)!, [...(deleted.get(key(old)!) ?? []), path]);
+        for (const { path, old, new: current } of sides) {
+          const source =
+            old.side.kind === "absent" && key(current) && deleted.get(key(current)!)?.shift();
+          if (source) renamedFrom.set(path, source);
+        }
+        const renamed = new Set([...renamedFrom.keys(), ...renamedFrom.values()]);
 
         const files: ManifestFile[] = [];
         const hunks = [];
@@ -452,6 +544,7 @@ export class Git extends Context.Service<
             old: old.side,
             new: current.side,
             ...(modeChange && { modeChange }),
+            ...(renamedFrom.has(path) && { renamedFrom: renamedFrom.get(path)! }),
           });
           const textual =
             (old.side.kind === "text" || old.side.kind === "absent") &&
@@ -460,7 +553,8 @@ export class Git extends Context.Service<
             old.side.kind === "text" &&
             current.side.kind === "text" &&
             old.side.blob === current.side.blob;
-          if (textual && !same) hunks.push(...(yield* hunksOf(path, old.side, current.side)));
+          if (textual && !same && !renamed.has(path))
+            hunks.push(...(yield* hunksOf(path, old.side, current.side)));
         }
         return { scope, provenance, files, hunks } satisfies SnapshotManifest;
       });

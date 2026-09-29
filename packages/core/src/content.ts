@@ -49,6 +49,11 @@ export const ManifestFileSchema = Schema.Struct({
    * reviewed: hunks cover content alone, so a mode-only change has none.
    */
   modeChange: Schema.optional(Schema.Struct({ old: FileModeSchema, new: FileModeSchema })),
+  /**
+   * This added file's bytes are exactly those of the named deleted file. Renames are recorded,
+   * never reviewed: both paths keep their captured sides and neither has hunks.
+   */
+  renamedFrom: Schema.optional(LogicalPathSchema),
 }).check(
   Schema.makeFilter(
     (file) =>
@@ -68,6 +73,12 @@ export const ManifestFileSchema = Schema.Struct({
               side.reason !== "submodule"),
         )) ||
       "a mode change names two different modes of a regular file present on both sides",
+  ),
+  Schema.makeFilter(
+    ({ old, new: current, renamedFrom }) =>
+      renamedFrom === undefined ||
+      (old.kind === "absent" && current.kind === "text") ||
+      "a rename target is absent on its old side and text on its new side",
   ),
 );
 export type ManifestFile = typeof ManifestFileSchema.Type;
@@ -117,6 +128,26 @@ export const SnapshotManifestSchema = Schema.Struct({
       (hunks.every((hunk) => paths.has(hunk.file)) &&
         new Set(hunks.map((hunk) => hunk.id)).size === hunks.length) ||
       "hunks must have unique ids and name manifest files"
+    );
+  }),
+  Schema.makeFilter(({ files, hunks }) => {
+    const byPath = new Map(files.map((file) => [file.path, file]));
+    const sources = files.flatMap(({ renamedFrom }) => (renamedFrom ? [renamedFrom] : []));
+    const renamed = new Set([...sources, ...files.filter((f) => f.renamedFrom).map((f) => f.path)]);
+    return (
+      (new Set(sources).size === sources.length &&
+        files.every(({ renamedFrom, new: current }) => {
+          const source = renamedFrom === undefined ? undefined : byPath.get(renamedFrom);
+          return (
+            renamedFrom === undefined ||
+            (source?.old.kind === "text" &&
+              source.new.kind === "absent" &&
+              current.kind === "text" &&
+              source.old.blob === current.blob)
+          );
+        }) &&
+        hunks.every((hunk) => !renamed.has(hunk.file))) ||
+      "a rename pairs one deleted file with an added file of the same bytes, and neither has hunks"
     );
   }),
 );

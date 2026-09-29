@@ -95,4 +95,12 @@ describe("parseFilePatch", () => {
     );
     expect(reject("just text\n")._tag).toBe("bad_args");
   });
+
+  it("rejects malformed and truncated hunks as bad_args instead of throwing", () => {
+    const reject = (patch: string) => Result.getOrThrow(Result.flip(parseFilePatch(patch, "x")));
+    const truncated = reject("--- a/x\n+++ b/x\n@@ -1,2 +1,2 @@\n-old\n");
+    expect(truncated).toMatchObject({ _tag: "bad_args", message: "invalid unified diff" });
+    expect(truncated.detail).toBe("parsePatchContent: hunk line count mismatch");
+    expect(reject("--- a/x\n+++ b/x\n@@ not a header @@\n-old\n")._tag).toBe("bad_args");
+  });
 });
