@@ -6,7 +6,7 @@ import { Effect, Layer, Stdio, Stream } from "effect";
 import { DaemonClient } from "../../daemon/client.ts";
 import { Paths } from "../../daemon/paths.ts";
 
-const daemonClient = layer(
+export const daemonClient = layer(
   "daemonClient",
   DaemonClient.layer.pipe(Layer.provide(Paths.layer), Layer.provideMerge(NodeServices.layer)),
 );
