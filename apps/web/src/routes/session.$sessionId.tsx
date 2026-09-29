@@ -345,6 +345,7 @@ const sideSummary = (side: ContentSide) =>
 
 /** The snapshot's captured files, supporting and unavailable ones included, a page at a time. */
 function CapturedFiles(props: { sessionId: string; snapshotId: string; first: FilesPayload }) {
+  const router = useRouter();
   const [pages, setPages] = useState([props.first]);
   const [pending, setPending] = useState(false);
   const [failure, setFailure] = useState<unknown>();
@@ -388,14 +389,19 @@ function CapturedFiles(props: { sessionId: string; snapshotId: string; first: Fi
         ))}
       </ul>
       {failure !== undefined && <FailureNotice error={failure} />}
-      {after !== null && (
-        <PillButton disabled={pending} onClick={() => void more(after)}>
-          {pending
-            ? "Loading files…"
-            : failure !== undefined
-              ? "Retry loading files"
-              : `Load more files (${files.length} of ${props.first.total} shown)`}
-        </PillButton>
+      {/* A refresh replaced this snapshot: its cursor can never succeed again, so reload. */}
+      {isDaemonError(failure, "stale_revision") ? (
+        <PillButton onClick={() => void router.invalidate()}>Reload session</PillButton>
+      ) : (
+        after !== null && (
+          <PillButton disabled={pending} onClick={() => void more(after)}>
+            {pending
+              ? "Loading files…"
+              : failure !== undefined
+                ? "Retry loading files"
+                : `Load more files (${files.length} of ${props.first.total} shown)`}
+          </PillButton>
+        )
       )}
     </section>
   );

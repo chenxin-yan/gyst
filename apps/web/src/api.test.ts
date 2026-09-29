@@ -3,6 +3,7 @@ import {
   DaemonUnreachable,
   InternalError,
   NoSession,
+  StaleRevision,
   ValidationFailed,
 } from "@gyst/core/wire";
 import { afterEach, describe, expect, it, vi } from "vite-plus/test";
@@ -158,6 +159,7 @@ describe("isExpectedFailure", () => {
     new TransportError("unavailable", "m"),
     new NoSession({ message: "m" }),
     new DaemonUnreachable({ message: "m" }),
+    new StaleRevision({ message: "m" }),
   ])("explains %s in place without a diagnostic", (error) => {
     expect(isExpectedFailure(error)).toBe(true);
   });
