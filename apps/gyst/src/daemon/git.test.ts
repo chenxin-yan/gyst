@@ -406,6 +406,63 @@ describe("Git.capture", () => {
     expect(await blobs()).not.toContain(sha256("submodule secret\n"));
   });
 
+  it("captures sparse-checkout omissions as unchanged, beside a real edit in the checkout", async () => {
+    const cwd = await repo("sparse");
+    await mkdir(join(cwd, "visible"));
+    await mkdir(join(cwd, "hidden"));
+    await writeFile(join(cwd, "visible", "app.txt"), "app\n");
+    await writeFile(join(cwd, "hidden", "helper.txt"), "unchanged helper\n");
+    git(cwd, "add", ".");
+    git(cwd, "commit", "-qm", "sparse fixture");
+    git(cwd, "sparse-checkout", "init", "--cone");
+    git(cwd, "sparse-checkout", "set", "visible");
+    expect(existsSync(join(cwd, "hidden"))).toBe(false);
+    await writeFile(join(cwd, "visible", "app.txt"), "app edited\n");
+    const manifest = await capture(cwd);
+    const helper = fileOf(manifest, "hidden/helper.txt")!;
+    expect(helper.new).toEqual(helper.old);
+    expect(String(await bytesOf(helper.new))).toBe("unchanged helper\n");
+    expect(manifest.hunks.map(({ file, patch }) => [file, patch])).toEqual([
+      ["visible/app.txt", "@@ -1 +1 @@\n-app\n+app edited"],
+    ]);
+  });
+
+  it("captures a skip-worktree file from the index without reading its path, rechecking the bit", async () => {
+    const cwd = await repo("skip-worktree");
+    await writeFile(join(cwd, "gone.txt"), "gone\n");
+    git(cwd, "add", ".");
+    git(cwd, "commit", "-qm", "skip fixture");
+    git(cwd, "update-index", "--skip-worktree", "gone.txt", "tracked.txt");
+    await rm(join(cwd, "gone.txt"));
+    // As `git diff HEAD` does, the index entry stands for the path whatever the checkout holds.
+    await writeFile(join(cwd, "tracked.txt"), "local override\n");
+    expect(git(cwd, "diff", "HEAD")).toBe("");
+    const manifest = await capture(cwd);
+    expect(String(await bytesOf(fileOf(manifest, "gone.txt")!.new))).toBe("gone\n");
+    expect(String(await bytesOf(fileOf(manifest, "tracked.txt")!.new))).toBe("one\n");
+    expect(manifest.hunks).toEqual([]);
+    expect(await blobs()).not.toContain(sha256("local override\n"));
+
+    let cleared = false;
+    const error = await captureError(cwd, undefined, (real) => ({
+      ...real,
+      putBlob: (bytes) =>
+        real.putBlob(bytes).pipe(
+          Effect.tap(() =>
+            Effect.sync(() => {
+              if (!cleared) git(cwd, "update-index", "--no-skip-worktree", "gone.txt");
+              cleared = true;
+            }),
+          ),
+        ),
+    }));
+    expect(error).toMatchObject({
+      _tag: "bad_args",
+      message: expect.stringContaining("changed while it was being captured"),
+      detail: { path: "gone.txt" },
+    });
+  });
+
   it.skipIf(process.platform === "win32")(
     "drains or discards object-read diagnostics, so a noisy Git cannot stall capture",
     async () => {

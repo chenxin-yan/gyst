@@ -312,17 +312,23 @@ export class Git extends Context.Service<
         return entries;
       });
 
-      /** Index paths (staged additions included) plus nonignored untracked files. */
+      /**
+       * Index paths (staged additions included) plus nonignored untracked files. `skipped` holds
+       * skip-worktree (sparse) entries: Git compares their index entry, never the checkout.
+       */
       const worktreeInventory = Effect.fn("Git.worktreeInventory")(function* (root: string) {
         const paths = new Set<string>();
         const submodules = new Set<string>();
-        yield* records(root, ["ls-files", "-z", "--stage"], (record) => {
+        const skipped = new Map<string, TreeEntry>();
+        // `-t` prefixes each record with a status tag: `S` marks a skip-worktree entry.
+        yield* records(root, ["ls-files", "-z", "-t", "--stage"], (record) => {
           const tab = record.indexOf(9);
-          const gitlink = text(record.subarray(0, tab)).startsWith("160000 ");
+          const [tag, mode, oid] = text(record.subarray(0, tab)).split(" ");
           return Effect.map(logicalPath(record.subarray(tab + 1)), (path) => {
             if (excluded(path)) return;
             paths.add(path);
-            if (gitlink) submodules.add(path);
+            if (mode === "160000") submodules.add(path);
+            else if (tag === "S") skipped.set(path, { mode: mode!, oid: oid! });
           });
         });
         yield* records(root, ["ls-files", "-z", "--others", "--exclude-standard"], (record) =>
@@ -333,7 +339,7 @@ export class Git extends Context.Service<
                 if (!excluded(path)) paths.add(path);
               }),
         );
-        return { paths, submodules };
+        return { paths, submodules, skipped };
       });
 
       /** `read.bytes` counts the text bytes each capture read into content. */
@@ -528,6 +534,11 @@ export class Git extends Context.Service<
                 sides.push({ path, old, new: { side: { kind: "absent" } } });
               continue;
             }
+            const skippedEntry = inventory.skipped.get(path);
+            if (skippedEntry !== undefined) {
+              sides.push({ path, old, new: yield* fromTree(skippedEntry) });
+              continue;
+            }
             const entry = yield* Worktree.inspect(root, path);
             seen.set(path, entry);
             const current: CapturedSide =
@@ -552,7 +563,12 @@ export class Git extends Context.Service<
           const relinked = [...inventory.submodules, ...after.submodules].find(
             (path) => inventory.submodules.has(path) !== after.submodules.has(path),
           );
-          const moved = added ?? removed ?? relinked;
+          const reskipped = [...inventory.skipped.keys(), ...after.skipped.keys()].find(
+            (path) =>
+              JSON.stringify(inventory.skipped.get(path)) !==
+              JSON.stringify(after.skipped.get(path)),
+          );
+          const moved = added ?? removed ?? relinked ?? reskipped;
           if (moved !== undefined) return yield* Worktree.changedDuringCapture(moved);
           for (const [path, entry] of seen) {
             const again = yield* Worktree.inspect(root, path);
