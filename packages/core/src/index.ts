@@ -12,6 +12,24 @@ export {
   type ValidationDetail,
 } from "./apply.ts";
 export {
+  BlobIdSchema,
+  type ByteRange,
+  ByteRangeSchema,
+  canonicalManifestJson,
+  type ContentSide,
+  ContentSideSchema,
+  GitObjectIdSchema,
+  LogicalPathSchema,
+  type ManifestFile,
+  ManifestFileSchema,
+  type Provenance,
+  ProvenanceSchema,
+  type SnapshotManifest,
+  SnapshotIdSchema,
+  SnapshotManifestSchema,
+  snapshotIdOf,
+} from "./content.ts";
+export {
   BadArgs,
   DaemonError,
   DaemonUnreachable,
