@@ -49,12 +49,38 @@ const sessions = new Map([
   ["s-local", summary("s-local", { kind: "uncommitted" })],
 ]);
 
-const calls = { bootstrap: [], operations: [], deleteFailuresLeft: 1 };
+const calls = { bootstrap: [], operations: [] };
+// Test controls: lose the next delete reply after applying it (the first delete starts lost), or
+// hold the next delete until released.
+const control = {
+  loseNextDelete: true,
+  holdDelete: /** @type {Promise<void> | undefined} */ (undefined),
+  held: false,
+};
+// Like the daemon, a delete's request id is recorded and answers every retry of that request.
+const deleteReceipts = new Map();
 const reply = (res, status, body) => {
   res.writeHead(status, { "content-type": "application/json" });
   res.end(body === undefined ? undefined : JSON.stringify(body));
 };
+const internal = {
+  ok: false,
+  error: { code: "internal_error", message: "injected internal failure" },
+};
 const answer = (request) => {
+  // Deliberately broken daemon answers for the diagnostics regression; never listed.
+  if (request.session === "s-internal") return internal;
+  if (request.session === "s-bad")
+    return request.command === "open"
+      ? {
+          ok: true,
+          value: {
+            session: summary("s-bad", { kind: "uncommitted" }),
+            created: false,
+            launch: { argv: ["gyst"] },
+          },
+        }
+      : { ok: true, value: { sessionId: "s-bad", revision: 0, hunks: [], unexpected: true } };
   const session = sessions.get(request.session);
   const missing = { ok: false, error: { code: "no_session", message: "no such session" } };
   switch (request.command) {
@@ -66,10 +92,18 @@ const answer = (request) => {
         : missing;
     case "diff":
       return session ? { ok: true, value: { sessionId: session.id, revision: 0, hunks } } : missing;
-    case "delete":
-      if (!session) return missing;
-      sessions.delete(session.id);
-      return { ok: true, value: { deleted: true, sessionId: session.id } };
+    case "delete": {
+      const receipt = deleteReceipts.get(request.requestId);
+      if (receipt !== undefined && receipt !== request.session)
+        return {
+          ok: false,
+          error: { code: "validation_failed", message: "request id was used for another session" },
+        };
+      if (receipt === undefined && !session) return missing;
+      sessions.delete(request.session);
+      deleteReceipts.set(request.requestId, request.session);
+      return { ok: true, value: { deleted: true, sessionId: request.session } };
+    }
     default:
       return { ok: false, error: { code: "bad_args", message: "unsupported" } };
   }
@@ -89,16 +123,17 @@ const server = createServer(async (req, res) => {
     const request = JSON.parse(body);
     calls.operations.push({ request, headers: req.headers });
     if (req.headers.cookie !== `gyst=${cookie}`) return reply(res, 401);
-    // Lose the first delete's reply after the daemon applied it, as a dropped connection would.
-    if (request.command === "delete" && calls.deleteFailuresLeft-- > 0) {
+    if (request.command === "delete" && control.holdDelete) {
+      const hold = control.holdDelete;
+      control.holdDelete = undefined;
+      control.held = true;
+      await hold;
+    }
+    // Lose a delete's reply after the daemon applied it, as a dropped connection would.
+    if (request.command === "delete" && control.loseNextDelete) {
+      control.loseNextDelete = false;
       answer(request);
       return reply(res, 503);
-    }
-    if (request.command === "delete" && !sessions.has(request.session)) {
-      // Replay: the daemon returns the recorded result for the same request id.
-      const first = calls.operations.find((call) => call.request.command === "delete").request;
-      assert.equal(request.requestId, first.requestId);
-      return reply(res, 200, { ok: true, value: { deleted: true, sessionId: request.session } });
     }
     return reply(res, 200, answer(request));
   }
@@ -262,21 +297,160 @@ try {
   assert.equal(new URL(page.url()).pathname, "/");
   check("deleting from the session page returns to a fresh, empty saved-session list");
 
-  // A fresh browser with an expired or wrong secret and no cookie gets relaunch guidance.
-  const stranger = await browser.newContext();
-  const lost = watch(await stranger.newPage());
-  await lost.goto(`${base}/#wrong-secret`);
-  await lost.getByText("no longer signed in").waitFor();
-  const text = await lost.locator("body").innerText();
-  assert.match(text, /Run gyst \(or gyst --session <id>\)/);
-  for (const value of ["wrong-secret", secret, cookie]) assert.ok(!text.includes(value));
-  assert.equal(new URL(lost.url()).hash, "");
-  check("401 shows safe relaunch guidance without any secret; no fabricated login");
+  // Review regressions: each runs on its own page and records its failure without stopping the
+  // others, so a broken build reports every one.
+  const failures = [];
+  const regression = async (name, run) => {
+    try {
+      await run();
+      check(name);
+    } catch (error) {
+      failures.push(`${name}: ${error.message.split("\n").slice(0, 6).join(" ")}`);
+    }
+  };
+  const top = (tab) => tab.locator(".top");
+  const crumbIs = async (tab, text) => {
+    const heading = tab.getByRole("heading", { level: 1 });
+    await tab.waitForFunction(
+      (expected) => document.querySelector("h1")?.textContent === expected,
+      text,
+    );
+    assert.equal(await heading.textContent(), text);
+  };
+  const lastDelete = () =>
+    calls.operations.filter((call) => call.request.command === "delete").at(-1)?.request;
+  const addSessions = () => {
+    sessions.set("s-a", summary("s-a", { kind: "range", range: "topic-a" }));
+    sessions.set("s-b", summary("s-b", { kind: "range", range: "topic-b" }));
+  };
+  const onlyResourceErrors = (messages) =>
+    messages.every((message) => /^Failed to load resource: .* (401|503)/.test(message));
+
+  await regression(
+    "history switch after a lost delete reply does not carry B's retry to A",
+    async () => {
+      addSessions();
+      const tab = watch(await context.newPage());
+      await tab.goto(`${base}/session/s-a`);
+      await crumbIs(tab, "demo/topic-a");
+      await top(tab).getByRole("link", { name: "All sessions" }).click();
+      await tab.getByRole("link", { name: /topic-b/ }).click();
+      await crumbIs(tab, "demo/topic-b");
+      control.loseNextDelete = true;
+      await top(tab).getByRole("button", { name: "Delete…" }).click();
+      await top(tab).getByRole("button", { name: "Delete session" }).click();
+      await top(tab).getByRole("button", { name: "Retry delete" }).waitFor();
+      const lostB = lastDelete();
+      assert.equal(lostB.session, "s-b");
+      await tab.evaluate(() => history.go(-2));
+      await crumbIs(tab, "demo/topic-a");
+      assert.equal(await top(tab).getByRole("button", { name: "Retry delete" }).count(), 0);
+      assert.equal(await top(tab).getByRole("group").count(), 0);
+      await top(tab).getByRole("button", { name: "Delete…" }).click();
+      await top(tab).getByRole("group").getByText("s-a").waitFor();
+      await top(tab).getByRole("button", { name: "Delete session" }).click();
+      await tab.waitForURL(`${base}/`);
+      const deleteA = lastDelete();
+      assert.equal(deleteA.session, "s-a");
+      assert.notEqual(deleteA.requestId, lostB.requestId);
+      assert.ok(!sessions.has("s-a"));
+      await tab.close();
+    },
+  );
+
+  await regression(
+    "a delayed delete of A settling while B is shown leaves B selected",
+    async () => {
+      addSessions();
+      const tab = watch(await context.newPage());
+      await tab.goto(`${base}/session/s-a`);
+      await crumbIs(tab, "demo/topic-a");
+      let release;
+      control.held = false;
+      control.holdDelete = new Promise((resolve) => (release = resolve));
+      await top(tab).getByRole("button", { name: "Delete…" }).click();
+      await top(tab).getByRole("button", { name: "Delete session" }).click();
+      await top(tab).getByRole("button", { name: "Deleting…" }).waitFor();
+      for (let i = 0; !control.held; i++) {
+        assert.ok(i < 100, "delete never reached the mock launcher");
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+      await top(tab).getByRole("link", { name: "All sessions" }).click();
+      await tab.getByRole("link", { name: /topic-b/ }).click();
+      await crumbIs(tab, "demo/topic-b");
+      const settled = tab.waitForResponse(
+        (response) => response.request().postDataJSON()?.command === "delete",
+      );
+      release();
+      await settled;
+      await tab.evaluate(() => new Promise((resolve) => setTimeout(resolve, 200)));
+      assert.equal(new URL(tab.url()).pathname, "/session/s-b");
+      await crumbIs(tab, "demo/topic-b");
+      assert.equal(await tab.getByRole("alert").count(), 0);
+      await tab.close();
+    },
+  );
+
+  await regression(
+    "unexpected failures keep console diagnostics; expected ones do not",
+    async () => {
+      const tab = watch(await context.newPage());
+      const before = result.consoleErrors.length;
+      await tab.goto(`${base}/session/s-bad`);
+      await tab.getByRole("alert").getByText("can't read").waitFor();
+      await tab.goto(`${base}/session/s-internal`);
+      await tab.getByRole("alert").getByText("injected internal failure").waitFor();
+      await tab.evaluate(() => new Promise((resolve) => setTimeout(resolve, 200)));
+      // Move these deliberate diagnostics out of the final all-clear accounting.
+      const logged = result.consoleErrors.splice(before);
+      result.expectedDiagnostics = logged;
+      assert.ok(
+        logged.some((message) => message.includes("can't read")),
+        "bad payload not logged",
+      );
+      assert.ok(
+        logged.some((message) => message.includes("injected internal failure")),
+        "internal_error not logged",
+      );
+      for (const message of logged)
+        for (const value of [secret, cookie]) assert.ok(!message.includes(value));
+      await tab.close();
+    },
+  );
+
+  await regression("401 guidance separates an expired link from an ended launch", async () => {
+    const before = result.consoleErrors.length;
+    const expiredLink = watch(await (await browser.newContext()).newPage());
+    await expiredLink.goto(`${base}/#wrong-secret`);
+    const expired = expiredLink.getByRole("alert");
+    await expired.waitFor();
+    const expiredText = await expired.innerText();
+    assert.match(expiredText, /link/i);
+    assert.match(expiredText, /expired/);
+    assert.match(expiredText, /10 minutes/);
+    assert.match(expiredText, /Run gyst \(or gyst --session <id>\)/);
+    assert.equal(new URL(expiredLink.url()).hash, "");
+
+    const noLink = watch(await (await browser.newContext()).newPage());
+    await noLink.goto(`${base}/`);
+    const ended = noLink.getByRole("alert");
+    await ended.waitFor();
+    const endedText = await ended.innerText();
+    assert.doesNotMatch(endedText, /expire/);
+    assert.match(endedText, /until (its|that) gyst stops/);
+    assert.match(endedText, /Run gyst \(or gyst --session <id>\)/);
+    for (const text of [expiredText, endedText])
+      for (const value of ["wrong-secret", secret, cookie]) assert.ok(!text.includes(value));
+    // An expected 401 is explained on the page, not logged as a defect.
+    assert.ok(onlyResourceErrors(result.consoleErrors.slice(before)));
+  });
+
+  assert.deepEqual(failures, []);
 
   // Chromium logs each intentional non-2xx fetch (the lost delete reply and the refused 401s).
   const expected = /Failed to load resource: the server responded with a status of (401|503)/;
   assert.ok(result.consoleErrors.every((message) => expected.test(message)));
-  assert.equal(result.consoleErrors.filter((message) => message.includes("503")).length, 1);
+  assert.equal(result.consoleErrors.filter((message) => message.includes("503")).length, 2);
   assert.deepEqual(result.pageErrors, []);
   assert.deepEqual(result.requestFailures, []);
   check("no page errors or failed requests; console errors only for injected 401/503 responses");

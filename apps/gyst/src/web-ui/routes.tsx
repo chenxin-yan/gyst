@@ -10,8 +10,8 @@ import {
   useParams,
   useRouter,
 } from "@tanstack/react-router";
-import { type ReactNode, useState } from "react";
-import { newRequestId, operation, TransportError } from "./api.ts";
+import { type ReactNode, useEffect, useRef, useState } from "react";
+import { isExpectedFailure, newRequestId, operation, TransportError } from "./api.ts";
 
 const rootRoute = createRootRoute({ component: Outlet });
 
@@ -172,7 +172,12 @@ function SessionPage() {
           <Link to="/" className="pill">
             All sessions
           </Link>
-          <DeleteSession session={session} onDeleted={() => navigate({ to: "/" })} />
+          {/* Keyed: switching sessions on this route starts a new deletion intent, never B's retry. */}
+          <DeleteSession
+            key={session.id}
+            session={session}
+            onDeleted={() => navigate({ to: "/" })}
+          />
         </>
       }
       side={
@@ -283,12 +288,21 @@ function HunkDiff({ hunk }: { hunk: Hunk }) {
 /**
  * Deletes exactly this session after an explicit confirmation. The request id is minted when the
  * human confirms and kept for every retry of that intent, so a lost reply never deletes twice.
+ * Callers key it by session id; a reply that settles after it unmounted (another session or page
+ * is shown) changes nothing.
  */
 function DeleteSession(props: { session: SessionSummary; onDeleted: () => unknown }) {
   const [requestId, setRequestId] = useState<string>();
   const [confirming, setConfirming] = useState(false);
   const [pending, setPending] = useState(false);
   const [failure, setFailure] = useState<unknown>();
+  const mounted = useRef(false);
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+    };
+  }, []);
   const cancel = () => {
     setConfirming(false);
     setRequestId(undefined);
@@ -300,11 +314,12 @@ function DeleteSession(props: { session: SessionSummary; onDeleted: () => unknow
     setFailure(undefined);
     try {
       await operation({ command: "delete", session: props.session.id, requestId: id });
-      await props.onDeleted();
+      if (mounted.current) await props.onDeleted();
     } catch (error) {
-      setFailure(error);
+      if (!isExpectedFailure(error)) console.error(error);
+      if (mounted.current) setFailure(error);
     } finally {
-      setPending(false);
+      if (mounted.current) setPending(false);
     }
   };
   if (!confirming)
@@ -354,9 +369,9 @@ export function FailureNotice({ error }: { error: unknown }) {
       <div role="alert" className="notice">
         <p>{error.message}</p>
         <p className="muted">
-          Access ends when its gyst launcher stops or its private link expires. Run{" "}
-          <code>gyst</code> (or <code>gyst --session &lt;id&gt;</code>) in the repository again and
-          open the new link it prints.
+          Run <code>gyst</code> (or <code>gyst --session &lt;id&gt;</code>) in the repository again
+          and open the new link it prints. A link signs a browser in within 10 minutes of launch;
+          that browser then stays signed in until its gyst stops.
         </p>
       </div>
     );

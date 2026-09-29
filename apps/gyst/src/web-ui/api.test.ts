@@ -1,6 +1,12 @@
-import { BadArgs, DaemonUnreachable, NoSession } from "@gyst/core/wire";
+import {
+  BadArgs,
+  DaemonUnreachable,
+  InternalError,
+  NoSession,
+  ValidationFailed,
+} from "@gyst/core/wire";
 import { afterEach, describe, expect, it, vi } from "vite-plus/test";
-import { bootstrap, newRequestId, operation, TransportError } from "./api.ts";
+import { bootstrap, isExpectedFailure, newRequestId, operation, TransportError } from "./api.ts";
 
 // Explicitly mocked transport: these tests pin the viewer's HTTP handling, not the launcher.
 const respond = (status: number, body?: unknown) => {
@@ -107,4 +113,27 @@ it("mints distinct 128-bit request ids", () => {
   const [a, b] = [newRequestId(), newRequestId()];
   expect(a).toMatch(/^[0-9a-f]{32}$/);
   expect(a).not.toBe(b);
+});
+
+describe("isExpectedFailure", () => {
+  it.each([
+    new TransportError("unauthorized", "m"),
+    new TransportError("forbidden", "m"),
+    new TransportError("unavailable", "m"),
+    new NoSession({ message: "m" }),
+    new DaemonUnreachable({ message: "m" }),
+  ])("explains %s in place without a diagnostic", (error) => {
+    expect(isExpectedFailure(error)).toBe(true);
+  });
+
+  it.each([
+    new TransportError("unexpected", "m"),
+    new InternalError({ message: "m" }),
+    new BadArgs({ message: "m" }),
+    new ValidationFailed({ message: "m" }),
+    new TypeError("render failed"),
+    "thrown string",
+  ])("keeps a diagnostic for %s", (error) => {
+    expect(isExpectedFailure(error)).toBe(false);
+  });
 });

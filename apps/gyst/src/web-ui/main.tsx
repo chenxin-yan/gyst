@@ -1,9 +1,7 @@
-import { DaemonError } from "@gyst/core/wire";
 import { RouterProvider } from "@tanstack/react-router";
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
-import { Schema } from "effect";
-import { bootstrap, TransportError } from "./api.ts";
+import { bootstrap, isExpectedFailure } from "./api.ts";
 import { createAppRouter, FailureNotice } from "./routes.tsx";
 
 // The launch URL's fragment is this launch's bootstrap secret. Take it out of the address bar and
@@ -12,11 +10,10 @@ const secret = location.hash.slice(1);
 if (location.href.includes("#"))
   history.replaceState(history.state, "", location.pathname + location.search);
 
-const isDaemonError = Schema.is(DaemonError);
 const root = createRoot(document.getElementById("root")!, {
-  // Route error views already show transport and domain failures; log only unexpected errors.
+  // Route error views explain expected failures; everything else keeps its console diagnostic.
   onCaughtError: (error) => {
-    if (!(error instanceof TransportError || isDaemonError(error))) console.error(error);
+    if (!isExpectedFailure(error)) console.error(error);
   },
 });
 
@@ -30,10 +27,11 @@ async function start() {
   );
 }
 
-start().catch((error: unknown) =>
+start().catch((error: unknown) => {
+  if (!isExpectedFailure(error)) console.error(error);
   root.render(
     <main className="app f-mocha standalone">
       <FailureNotice error={error} />
     </main>,
-  ),
-);
+  );
+});

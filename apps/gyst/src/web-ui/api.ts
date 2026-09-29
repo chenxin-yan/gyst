@@ -1,5 +1,6 @@
 import {
   type BrowserRequest,
+  DaemonError,
   DeletePayloadSchema,
   DiffPayloadSchema,
   ListPayloadSchema,
@@ -20,10 +21,26 @@ export class TransportError extends Error {
   constructor(
     readonly reason: "unauthorized" | "forbidden" | "unavailable" | "unexpected",
     message: string,
+    options?: ErrorOptions,
   ) {
-    super(message);
+    super(message, options);
   }
 }
+
+const isDaemonError = Schema.is(DaemonError);
+
+/**
+ * Failures the viewer explains in place and that say nothing about a gyst defect: sign-in, host,
+ * outage and a missing session. Everything else (an unreadable reply, internal_error, rejected
+ * input, render exceptions) also deserves a console diagnostic.
+ */
+export const isExpectedFailure = (error: unknown) =>
+  error instanceof TransportError
+    ? error.reason !== "unexpected"
+    : isDaemonError(error) && (error._tag === "no_session" || error._tag === "daemon_unreachable");
+
+// Whether this page's launch link was refused, which decides what a later 401 means.
+let linkRefused = false;
 
 const unavailable = () =>
   new TransportError(
@@ -53,7 +70,10 @@ export async function bootstrap(secret: string): Promise<boolean> {
   });
   await drain(response);
   if (response.status === 204) return true;
-  if (response.status === 401) return false;
+  if (response.status === 401) {
+    linkRefused = true;
+    return false;
+  }
   throw failureOf(response.status);
 }
 
@@ -84,8 +104,8 @@ export async function operation<Request extends BrowserRequest>(
     return Schema.decodeUnknownSync(payloadSchemas[request.command], {
       onExcessProperty: "error",
     })(reply.value);
-  } catch {
-    throw new TransportError("unexpected", "gyst sent a reply this viewer can't read.");
+  } catch (cause) {
+    throw new TransportError("unexpected", "gyst sent a reply this viewer can't read.", { cause });
   }
 }
 
@@ -111,7 +131,12 @@ const drain = (response: Response) => response.text().catch(() => "");
 function failureOf(status: number): TransportError {
   switch (status) {
     case 401:
-      return new TransportError("unauthorized", "This viewer is no longer signed in to gyst.");
+      return new TransportError(
+        "unauthorized",
+        linkRefused
+          ? "This link's sign-in has expired or belongs to another gyst launch."
+          : "This browser is not signed in to a running gyst: the launch it signed in to has stopped.",
+      );
     case 403:
       return new TransportError(
         "forbidden",
