@@ -42,6 +42,7 @@ let dataDir: string;
 let socketPath: string;
 let statusHeld: Deferred.Deferred<void>;
 let statusRelease: Deferred.Deferred<void>;
+let progressGate: Deferred.Deferred<void> | undefined;
 const files = new Map<string, Session>();
 
 const git = Layer.succeed(Git, {
@@ -52,12 +53,17 @@ const git = Layer.succeed(Git, {
           Effect.andThen(Effect.fail(new BadArgs({ message: "not a repository" }))),
         )
       : Effect.succeed(cwd),
-  // Two interim reports, then the manifest: the server must frame them before the reply.
+  // Two interim reports, then the manifest: the server must frame them before the reply. With
+  // `progressGate` set, the capture waits on it between them.
   capture: (_root, scope, onProgress = () => Effect.void) =>
-    onProgress({ phase: "capture", done: 0, total: 1, bytes: 0 }).pipe(
-      Effect.andThen(onProgress({ phase: "diff", done: 1, total: 1, bytes: 4 })),
-      Effect.as(manifestOf(patch, scope)),
-    ),
+    Effect.suspend(() => {
+      const gate = progressGate;
+      return onProgress({ phase: "capture", done: 0, total: 1, bytes: 0 }).pipe(
+        Effect.andThen(gate ? Deferred.await(gate) : Effect.void),
+        Effect.andThen(onProgress({ phase: "diff", done: 1, total: 1, bytes: 4 })),
+        Effect.as(manifestOf(patch, scope)),
+      );
+    }),
 });
 const store = Layer.succeed(SessionStore, {
   loadAll: Effect.sync(() => [...files.values()]),
@@ -308,6 +314,50 @@ describe("DaemonServer", () => {
           ),
         ),
       ),
+    );
+  }, 10_000);
+
+  it("finishes and publishes a capture whose client disconnected between progress reports", async () => {
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        const server = yield* DaemonServer;
+        const running = yield* Effect.forkChild(server.run);
+        const hello = yield* exchange({ command: "daemon.info" }).pipe(
+          Effect.retry({ schedule: Schedule.spaced("10 millis"), times: 100 }),
+        );
+        if (!hello.ok) throw new Error("handshake failed");
+        const info = Schema.decodeUnknownSync(DaemonInfoSchema)(hello.value);
+        const gate = yield* Deferred.make<void>();
+        progressGate = gate;
+        // Read the first report, then hang up while the capture is held.
+        yield* Effect.scoped(
+          Effect.gen(function* () {
+            const socket = yield* NodeSocket.makeNet({ path: socketPath });
+            const next = lineReader(yield* Socket.readerBytes(socket));
+            yield* writeLine(
+              socket,
+              JSON.stringify({
+                ...info,
+                request: { command: "open", cwd: "/disconnected", scope: { kind: "uncommitted" } },
+              }),
+            );
+            expect(JSON.parse(yield* next)).toHaveProperty("progress");
+          }),
+        );
+        progressGate = undefined;
+        yield* Effect.sleep("50 millis");
+        yield* Deferred.succeed(gate, undefined);
+        const published = () =>
+          [...files.values()].some((session) => session.repoRoot === "/disconnected");
+        yield* Effect.sync(published).pipe(
+          Effect.repeat({ until: (done) => done, schedule: Schedule.spaced("10 millis") }),
+          Effect.timeout("2 seconds"),
+        );
+        // The source lock was released: the next capture runs and reports to its own client.
+        const reply = yield* open("/after-disconnect").pipe(Effect.timeout("2 seconds"));
+        expect(reply.ok).toBe(true);
+        yield* Fiber.interrupt(running);
+      }).pipe(Effect.provide(serverLayer)),
     );
   }, 10_000);
 

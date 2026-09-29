@@ -174,9 +174,21 @@ export class DaemonServer extends Context.Service<
           const line = yield* readLine(yield* Socket.readerBytes(socket));
           const writer = yield* socket.writer;
           const writeLine = (text: string) => writer.write(`${text}\n`);
-          // Interim progress lines precede the reply; a client that went away never stops a capture.
+          // Interim progress lines precede the reply, and never hold a capture up: after a client
+          // stops reading or hangs up (the Node writer then awaits a drain that never comes), the
+          // first write that fails or takes a second ends reporting on this connection.
+          let reporting = true;
           const onProgress = (progress: CaptureProgress) =>
-            writeLine(encodeProgress({ progress })).pipe(Effect.ignore);
+            reporting
+              ? writeLine(encodeProgress({ progress })).pipe(
+                  Effect.timeout("1 second"),
+                  Effect.catch(() =>
+                    Effect.sync(() => {
+                      reporting = false;
+                    }),
+                  ),
+                )
+              : Effect.void;
           let restartAfterReply = false;
           const reply: Reply = yield* decodeRequest(line).pipe(
             Effect.mapError(
