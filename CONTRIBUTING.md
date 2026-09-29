@@ -74,7 +74,9 @@ The installed-product check builds, packs and privately installs the package, th
 foreground `gyst` launches, their daemon and a private key-authenticated SSH local forward on
 127.0.0.1 from a real sandboxed Chromium. It needs git and OpenSSH (`sshd`, `ssh`, `ssh-keygen`
 in `SSH_BIN_DIR`, default `/run/current-system/sw/bin`), creates its scratch directory under
-`$HOME` (sshd's `StrictModes` rejects a world-writable `/tmp` ancestor), and removes it after:
+`$HOME` (sshd's `StrictModes` rejects a world-writable `/tmp` ancestor), and removes it after.
+Its build, pnpm pack and npm install use that directory's HOME and XDG directories, an empty npm
+cache and empty user/global npm config (inherited `npm_config_*` settings are dropped):
 
 ```sh
 CHROMIUM_PATH=/path/to/chromium node apps/gyst/scripts/check-installed-browser.mjs
@@ -82,7 +84,8 @@ CHROMIUM_PATH=/path/to/chromium node apps/gyst/scripts/check-installed-browser.m
 
 `CHECK_INJECT=fail-after-ssh` or `CHECK_INJECT=launch-timeout` makes it fail on purpose, to
 confirm that it still stops every process it started; it then exits 1 with an empty
-`cleanup.failures` and `cleanup.leftoverPids`.
+`cleanup.failures` and `cleanup.leftoverPids`. `CHECK_INJECT=extra-401` adds one unexpected 401 and
+must fail the check's exact accounting of HTTP errors.
 
 Neither browser check runs in CI; `pnpm test` covers the installed CLI without a browser.
 

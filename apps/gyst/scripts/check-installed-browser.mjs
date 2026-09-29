@@ -13,11 +13,12 @@
 // throws once launcher, daemon, sshd, ssh and Chromium all run; `launch-timeout` makes the first
 // launch's readiness wait time out while that launcher and its daemon run. Both must exit 1 with
 // every owned process stopped (`result.cleanup`) and nothing left matching this run's paths.
+// `extra-401` adds one unlisted 401 on a deliberate page, which the exact accounting must reject.
 import assert from "node:assert/strict";
 import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { readFileSync } from "node:fs";
-import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { request as httpRequest } from "node:http";
 import { createServer as tcpServer } from "node:net";
 import { homedir, userInfo } from "node:os";
@@ -37,7 +38,7 @@ const redact = (text) => {
   return out;
 };
 const inject = process.env.CHECK_INJECT;
-const result = { node: process.version, checks: [], expectedConsoleErrors: 0, unexpected: [] };
+const result = { node: process.version, checks: [], unexpected: [] };
 if (inject) result.inject = inject;
 const check = (name) => result.checks.push(name);
 /** Every process this run spawned, each with its exit promise registered at spawn time. */
@@ -112,12 +113,19 @@ async function waitFor(condition, ms, label) {
  * `daemon run` (a stale pid file may name a reused pid). The daemon is not our child, so its exit
  * is observed through /proc; SIGKILL after 5 s is reported as a failure.
  */
-async function stopDaemon() {
-  const pid = await readFile(join(data, "daemon.pid"), "utf8").then(Number, () => NaN);
-  if (Number.isNaN(pid) || !installed || !isAlive(pid)) return { pid, stopped: "not running" };
+const daemonPid = () => readFile(join(data, "daemon.pid"), "utf8").then(Number, () => NaN);
+
+/** A live `daemon run` process launched from this run's private install. */
+function isOwnedDaemon(pid) {
+  if (Number.isNaN(pid) || !installed || !isAlive(pid)) return false;
   const args = spawnSync("ps", ["-ww", "-o", "args=", "-p", String(pid)], { encoding: "utf8" });
-  if (!args.stdout.includes(installed.prefix) || !args.stdout.trim().endsWith(" daemon run"))
-    return { pid, stopped: "not ours" };
+  return args.stdout.includes(installed.prefix) && args.stdout.trim().endsWith(" daemon run");
+}
+
+async function stopDaemon() {
+  const pid = await daemonPid();
+  if (Number.isNaN(pid) || !installed || !isAlive(pid)) return { pid, stopped: "not running" };
+  if (!isOwnedDaemon(pid)) return { pid, stopped: "not ours" };
   if (!signal(pid, "SIGTERM")) return { pid, stopped: "exited" };
   const exited = await waitFor(() => !isAlive(pid), 5_000, `daemon ${pid} to exit`).then(
     () => true,
@@ -145,6 +153,20 @@ const env = {
 delete env.SSH_AUTH_SOCK;
 delete env.DISPLAY;
 delete env.WAYLAND_DISPLAY;
+
+// Build, pnpm pack and npm install: private HOME, npm cache and user/global config; inherited
+// npm_config_* settings are dropped so none can redirect them.
+const npmFiles = {
+  cache: join(root, "npm-cache"),
+  userconfig: join(root, "npmrc"),
+  globalconfig: join(root, "npm-globalrc"),
+};
+const npmEnv = {
+  ...Object.fromEntries(Object.entries(env).filter(([name]) => !/^npm_config_/i.test(name))),
+  npm_config_cache: npmFiles.cache,
+  npm_config_userconfig: npmFiles.userconfig,
+  npm_config_globalconfig: npmFiles.globalconfig,
+};
 
 const git = (cwd, ...args) =>
   execFileSync("git", args, { cwd, env, encoding: "utf8", timeout: 15_000 });
@@ -219,17 +241,35 @@ const freePort = () =>
       });
   });
 
-function watch(page) {
+/**
+ * Every watched page records its HTTP error responses and Chromium's matching "Failed to load
+ * resource" console errors as `<path> <status>`, never headers or query strings. At the end each
+ * page's records must equal exactly its `expected` list (empty unless a case is deliberate); any
+ * other console error, page error or failed request is unexpected.
+ */
+const watched = [];
+function watch(page, label, expected = []) {
+  const record = { label, expected, responses: [], console: [] };
+  watched.push(record);
   page.setDefaultTimeout(15_000);
-  page.on("pageerror", (error) => result.unexpected.push(`pageerror: ${redact(error.message)}`));
-  page.on("requestfailed", (request) =>
-    result.unexpected.push(`requestfailed: ${redact(new URL(request.url()).pathname)}`),
+  page.on("pageerror", (error) =>
+    result.unexpected.push(`${label} pageerror: ${redact(error.message)}`),
   );
+  page.on("requestfailed", (request) =>
+    result.unexpected.push(`${label} requestfailed: ${redact(new URL(request.url()).pathname)}`),
+  );
+  page.on("response", (response) => {
+    if (response.status() >= 400)
+      record.responses.push(`${new URL(response.url()).pathname} ${response.status()}`);
+  });
   page.on("console", (message) => {
     if (message.type() !== "error") return;
-    // Only the deliberate 401s below are expected; each is counted, any other error is a failure.
-    if (page.expect401 && /status of 401/.test(message.text())) result.expectedConsoleErrors++;
-    else result.unexpected.push(`console: ${redact(message.text())}`);
+    const status = message
+      .text()
+      .match(/^Failed to load resource: the server responded with a status of (\d+)/);
+    const where = message.location().url;
+    if (status && where) record.console.push(`${new URL(where).pathname} ${status[1]}`);
+    else result.unexpected.push(`${label} console: ${redact(message.text())}`);
   });
   return page;
 }
@@ -242,14 +282,37 @@ const go = (page, url) =>
 
 try {
   assert.match(process.version, /^v24\./);
-  await setupInstalled({ provide: (_, value) => (installed = value) }).then(
+  // Private HOME and npm cache/config exist before anything, including npm, runs.
+  await mkdir(home);
+  await mkdir(npmFiles.cache);
+  await writeFile(npmFiles.userconfig, "");
+  await writeFile(npmFiles.globalconfig, "");
+  const npmGet = (key) =>
+    execFileSync("npm", ["config", "get", key], {
+      cwd: root,
+      env: npmEnv,
+      encoding: "utf8",
+      timeout: 15_000,
+    }).trim();
+  result.npmEffective = Object.fromEntries(
+    ["cache", "userconfig", "globalconfig"].map((key) => [key, npmGet(key)]),
+  );
+  assert.deepEqual(result.npmEffective, npmFiles);
+  assert.equal(
+    execFileSync("sh", ["-c", 'printf %s "$HOME"'], { env: npmEnv, encoding: "utf8" }),
+    home,
+  );
+  await setupInstalled({ provide: (_, value) => (installed = value) }, npmEnv).then(
     (stop) => (teardown = stop),
   );
+  // npm really used the private cache: the install filled it.
+  assert.ok((await readdir(join(npmFiles.cache, "_cacache"))).length > 0);
   assert.throws(() => execFileSync("sh", ["-c", "command -v bun"], { env, stdio: "ignore" }));
   result.installedPackageDir = installed.packageDir;
-  check("fresh build → pack → private global install outside the checkout; Bun absent on PATH");
+  check(
+    "fresh build → pack → private global install outside the checkout, npm confined to this run's HOME, cache and user/global config (effective paths checked, cache filled); Bun absent on PATH",
+  );
 
-  await mkdir(home);
   const repo = join(root, "r");
   await mkdir(repo);
   git(repo, "init", "-q", "-b", "main");
@@ -280,7 +343,7 @@ try {
 
   // Root launcher defaults to the uncommitted scope and shows the real captured hunk.
   const one = await launch(repo);
-  const page = watch(await context.newPage());
+  const page = watch(await context.newPage(), "launch one");
   const documents = [];
   page.on("request", (r) => r.resourceType() === "document" && documents.push(1));
   await go(page, one.url);
@@ -309,7 +372,7 @@ try {
   assert.equal(documents.length, 1);
   await page.reload();
   await page.getByRole("heading", { name: "Saved sessions" }).waitFor();
-  const tab = watch(await context.newPage());
+  const tab = watch(await context.newPage(), "new tab");
   await go(tab, `${one.origin}${one.path}`);
   await tab.locator(".pane").getByText("uncommitted-edit").waitFor();
   await go(tab, `${one.origin}/session/does-not-exist`);
@@ -325,10 +388,48 @@ try {
     "client navigation, cookie reload and new tab without fragment; not-found views; asset miss 404",
   );
 
+  // Loading state: the session's real diff operation is held in the browser (public route API),
+  // then continued unmodified to the installed bridge, whose own response the page renders.
+  const loading = watch(await context.newPage(), "held diff");
+  let release;
+  const released = new Promise((resolve) => (release = resolve));
+  const held = [];
+  await loading.route(
+    (url) => url.pathname === "/api/operation",
+    async (route) => {
+      const command = route.request().postDataJSON()?.command;
+      if (command === "diff") {
+        held.push(command);
+        await within(released, 20_000, "the held diff to be released").catch(() => {});
+      }
+      await route.continue();
+    },
+  );
+  const diffReply = loading.waitForResponse((r) => r.request().postDataJSON()?.command === "diff");
+  // Awaited below; this handler only keeps an earlier failure from also rejecting it unobserved.
+  diffReply.catch(() => {});
+  try {
+    await go(loading, `${one.origin}${one.path}`);
+    await loading.getByRole("status").getByText("Loading…").waitFor();
+    assert.deepEqual(held, ["diff"]);
+    assert.equal(await loading.locator(".pane").getByText("uncommitted-edit").count(), 0);
+  } finally {
+    release();
+  }
+  const diffResponse = await diffReply;
+  await loading.locator(".pane").getByText("uncommitted-edit").waitFor();
+  assert.equal(diffResponse.status(), 200);
+  assert.equal((await diffResponse.json()).ok, true);
+  assert.equal(await loading.getByRole("status").count(), 0);
+  await loading.unrouteAll();
+  check(
+    "loading state: with the real diff operation held, the session page shows Loading… and no hunk; released unmodified, the bridge's 200 reply renders the hunk",
+  );
+
   // A second concurrent launch in the same profile: recorded range, its own host and cookie.
   const two = await launch(repo, "main...feature");
   assert.notEqual(two.hostname, one.hostname);
-  const page2 = watch(await context.newPage());
+  const page2 = watch(await context.newPage(), "launch two");
   await go(page2, two.url);
   await page2.locator(".pane").getByText("range-only").waitFor();
   assert.equal(await page2.locator(".pane").getByText("uncommitted-edit").count(), 0);
@@ -348,14 +449,21 @@ try {
   );
 
   // Fresh profile against a live launch: cause-neutral 401 wording, and an expired/foreign link.
-  const fresh = watch(await (await browser.newContext()).newPage());
-  fresh.expect401 = true;
+  // Each deliberate page lists exactly the resource failures it must produce, in order.
+  const fresh = watch(await (await browser.newContext()).newPage(), "fresh profile", [
+    "/api/operation 401",
+  ]);
   await go(fresh, `${one.origin}/`);
   const notice = await fresh.getByRole("alert").innerText();
   assert.match(notice, /This browser is not signed in to this gyst launch\./);
   assert.doesNotMatch(notice, /expire|has stopped|ended/);
-  const foreign = watch(await (await browser.newContext()).newPage());
-  foreign.expect401 = true;
+  // One more 401 than the list allows must fail the final accounting.
+  if (inject === "extra-401")
+    await fresh.evaluate(() => fetch("/api/operation", { method: "POST", body: "{}" }));
+  const foreign = watch(await (await browser.newContext()).newPage(), "foreign link", [
+    "/bootstrap 401",
+    "/api/operation 401",
+  ]);
   await go(foreign, `${one.origin}/#${two.url.split("#")[1]}`);
   assert.match(
     await foreign.getByRole("alert").innerText(),
@@ -489,10 +597,11 @@ try {
   );
 
   // Ctrl-C both foreground launches: CLI and saved state stay usable, daemon keeps running.
-  const daemon = Number(await readFile(join(data, "daemon.pid"), "utf8"));
+  const daemon = await daemonPid();
+  assert.ok(isOwnedDaemon(daemon));
   assert.equal(await one.stop(), 130);
   assert.equal(await two.stop(), 130);
-  process.kill(daemon, 0);
+  assert.ok(isOwnedDaemon(daemon));
   assert.deepEqual(
     gyst(repo, "session", "list").sessions.map((s) => s.id),
     [one.id],
@@ -500,19 +609,29 @@ try {
   check("SIGINT stops each viewer with 130; daemon alive; saved sessions intact and CLI usable");
 
   // Scope reuse after refs move and a daemon restart; exact-id reopen through a new launcher.
-  assert.equal((await stopDaemon()).stopped, "SIGTERM");
+  const [saved] = gyst(repo, "session", "list").sessions;
+  assert.deepEqual(await stopDaemon(), { pid: daemon, stopped: "SIGTERM" });
   assert.equal(isAlive(daemon), false);
   git(repo, "commit", "-qam", "move feature");
   const three = await launch(repo);
   assert.equal(three.id, one.id);
+  // The launch started a new daemon from this install; the old one stayed gone.
+  const replacement = await daemonPid();
+  assert.notEqual(replacement, daemon);
+  assert.ok(isOwnedDaemon(replacement));
+  assert.equal(isAlive(daemon), false);
   const four = await launch(repo, "--session", one.id);
   assert.equal(four.id, one.id);
-  const page4 = watch(await context.newPage());
+  const page4 = watch(await context.newPage(), "exact-id reopen");
   await go(page4, four.url);
   await page4.locator(".pane").getByText("uncommitted-edit").waitFor();
   assert.equal(await three.stop(), 130);
+  const [reopened] = gyst(repo, "session", "list").sessions;
+  assert.deepEqual([reopened.id, reopened.snapshotId], [saved.id, saved.snapshotId]);
+  assert.equal(await daemonPid(), replacement);
+  result.daemons = { first: daemon, replacement };
   check(
-    "after a daemon restart and a new commit, root `gyst` reuses the saved uncommitted session and snapshot; exact-id reopen renders",
+    "daemon restart: the owned daemon exited on SIGTERM, the next root `gyst` started a new owned daemon (new pid); after a new commit it reused the saved session with the same snapshot id, which the exact-id reopen renders",
   );
 
   // Real private SSH local forward on an unequal port to the installed foreground app.
@@ -577,7 +696,7 @@ try {
     "Local forwarding listening on 127.0.0.1",
   );
   if (inject === "fail-after-ssh") throw new Error("injected failure with every process running");
-  const tunneled = watch(await (await browser.newContext()).newPage());
+  const tunneled = watch(await (await browser.newContext()).newPage(), "ssh forward");
   const bootstrap4 = four.url.split("#")[1];
   await go(tunneled, `http://${four.hostname}:${forward}${four.path}#${bootstrap4}`);
   await tunneled.locator(".pane").getByText("uncommitted-edit").waitFor();
@@ -594,9 +713,19 @@ try {
   assert.match(await page.locator("body").innerText(), /You are adequately sandboxed/);
   check("Chromium reports it is sandboxed");
 
+  result.httpErrors = watched.map(({ label, responses, console }) => ({
+    label,
+    responses,
+    console,
+  }));
+  for (const { label, expected, responses, console } of watched) {
+    assert.deepEqual(responses, expected, `${label}: HTTP error responses`);
+    assert.deepEqual(console, expected, `${label}: console resource errors`);
+  }
   assert.deepEqual(result.unexpected, []);
-  assert.ok(result.expectedConsoleErrors >= 2);
-  check("no page errors, failed requests or console errors besides the counted deliberate 401s");
+  check(
+    "every page's HTTP error responses and console resource errors equal exactly its deliberate list; no other console error, page error or failed request",
+  );
   result.status = "passed";
 } catch (error) {
   result.status = "failed";

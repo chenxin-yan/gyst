@@ -65,15 +65,30 @@ describe("installed gyst CLI", () => {
     await writeFile(join(cwd, "new.txt"), "hello\n");
 
     const viewer = spawn(installed.bin, [], { cwd, env, stdio: ["ignore", "pipe", "pipe"] });
-    onTestFinished(() => void viewer.kill("SIGKILL"));
-    const exited = new Promise<number | null>((resolve) => viewer.once("close", resolve));
+    // Exit (or spawn failure) is recorded from the start, so cleanup can await it.
+    let exit: number | NodeJS.Signals | Error | undefined;
+    viewer.once("error", (error) => (exit ??= error));
+    viewer.once("close", (code, signal) => (exit ??= code ?? signal ?? "SIGKILL"));
+    const exited = async (description: string) => {
+      await waitFor(() => exit !== undefined, description);
+      if (exit instanceof Error) throw exit;
+      return exit;
+    };
+    // onTestFinished hooks run in reverse, so this finishes before the sandbox is removed.
+    onTestFinished(async () => {
+      if (exit === undefined) viewer.kill("SIGKILL");
+      await waitFor(() => exit !== undefined, "the viewer to exit during cleanup");
+    });
     let stdout = "";
+    let stderr = "";
     viewer.stdout.setEncoding("utf8").on("data", (chunk: string) => (stdout += chunk));
+    viewer.stderr.setEncoding("utf8").on("data", (chunk: string) => (stderr += chunk));
     await waitFor(
-      () => stdout.includes("Press Ctrl-C"),
+      () => stdout.includes("Press Ctrl-C") || exit !== undefined,
       "the viewer to print its launch URL",
       10_000,
     );
+    if (exit !== undefined) throw new Error(`the viewer exited ${String(exit)} early: ${stderr}`);
     // The URL carries the bootstrap secret, so only its shape is compared, never printed.
     const url = stdout.split("\n").find((line) => line.startsWith("http://"));
     const launch = url?.match(
@@ -83,8 +98,8 @@ describe("installed gyst CLI", () => {
     const [, hostname, port, id] = launch!;
 
     const served = await new Promise<{ status: number | undefined; body: string }>(
-      (resolve, reject) =>
-        httpGet(
+      (resolve, reject) => {
+        const request = httpGet(
           {
             host: "127.0.0.1",
             port,
@@ -93,16 +108,20 @@ describe("installed gyst CLI", () => {
           },
           (response) => {
             let body = "";
+            response.once("error", reject);
             response.setEncoding("utf8").on("data", (chunk: string) => (body += chunk));
             response.once("end", () => resolve({ status: response.statusCode, body }));
           },
-        ).once("error", reject),
+        );
+        request.setTimeout(5_000, () => request.destroy(new Error("shell request timed out")));
+        request.once("error", reject);
+      },
     );
     expect(served.status).toBe(200);
     expect(served.body).toContain('<div id="root">');
 
     viewer.kill("SIGINT");
-    expect(await exited).toBe(130);
+    expect(await exited("the viewer to exit on SIGINT")).toBe(130);
     expect(json(await gyst(cwd, ["session", "list"])).sessions).toEqual([
       expect.objectContaining({ id: decodeURIComponent(id!), scope: { kind: "uncommitted" } }),
     ]);
