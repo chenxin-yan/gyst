@@ -1390,8 +1390,10 @@ describe("Sessions captured reads over real captures", () => {
   const bigLine = (index: number) => `line ${String(index).padStart(5, "0")} ${"x".repeat(40)}\n`;
   const big = Array.from({ length: 4000 }, (_, index) => bigLine(index + 1)).join("");
   const lineBytes = bigLine(1).length;
-  // Two-byte characters straddle every page split; a short line follows the giant one.
+  // Two-byte characters align with every page split; a short line follows the giant one.
   const giant = `${"é".repeat(100_000)}z\nshort\n`;
+  // Three-byte characters do not: 65,536 is one byte into a `€`, so a split must retreat.
+  const euros = `${"€".repeat(50_000)}\n`;
 
   it("reads exact captured bytes by line, page and side after the checkout is deleted", async () => {
     const cwd = await repo("exact", {
@@ -1405,6 +1407,7 @@ describe("Sessions captured reads over real captures", () => {
     await writeFile(join(cwd, "empty.txt"), "");
     await writeFile(join(cwd, "big.txt"), big);
     await writeFile(join(cwd, "giant.txt"), giant);
+    await writeFile(join(cwd, "euros.txt"), euros);
     await writeFile(join(cwd, "image.bin"), new Uint8Array([0x89, 0x50, 0, 1]));
 
     await runReal(
@@ -1466,6 +1469,25 @@ describe("Sessions captured reads over real captures", () => {
         // until it ends, and the last page holds the rest of it and the short line.
         const lastGiant = yield* read("giant.txt", "new", { offset: 3 * pageBytes });
         expect(lastGiant).toMatchObject({ start: { line: 1 }, next: null });
+        const euroPages = yield* allPages({ ...ids, file: "euros.txt", side: "new" });
+        expect(euroPages.text).toBe(euros);
+        expect(euroPages.pages).toBe(3);
+        expect(yield* read("euros.txt")).toMatchObject({
+          start: { line: 1, offset: 0 },
+          next: { line: 1, offset: pageBytes - 1 },
+        });
+        // End of content: one past the last line only after a final LF.
+        const endingsSize = Buffer.byteLength(endings);
+        expect(yield* read("endings.txt", "new", { offset: endingsSize })).toMatchObject({
+          start: { line: 3, offset: endingsSize },
+          text: "",
+          next: null,
+        });
+        expect(yield* read("big.txt", "new", { offset: big.length })).toMatchObject({
+          start: { line: 4001, offset: big.length },
+          text: "",
+          next: null,
+        });
         expect(yield* read("big.txt", "new", { startLine: 4000, endLine: 4000 })).toMatchObject({
           start: { line: 4000, offset: 3999 * lineBytes },
           text: bigLine(4000),

@@ -346,7 +346,8 @@ export class Sessions extends Context.Service<
         }
         const page = [];
         let bytes = 0;
-        for (const file of manifest.files.slice(first)) {
+        for (let index = first; index < manifest.files.length; index++) {
+          const file = manifest.files[index]!;
           bytes += Buffer.byteLength(JSON.stringify(file));
           if (page.length > 0 && bytes > pageBytes) break;
           page.push(file);

@@ -76,7 +76,8 @@ const LineNumberSchema = Schema.Int.check(Schema.isGreaterThanOrEqualTo(1));
 
 /**
  * A byte offset into one side's captured content and the line it falls in: 1 + the LFs before
- * `offset`. At the end of content that is one past the last line.
+ * `offset`. At the end of content that is one past the last line only when the content is empty or
+ * ends with LF; after an unterminated last line it is that last line.
  */
 export const CodePositionSchema = Schema.Struct({ line: LineNumberSchema, offset: Schema.Natural });
 export type CodePosition = typeof CodePositionSchema.Type;
