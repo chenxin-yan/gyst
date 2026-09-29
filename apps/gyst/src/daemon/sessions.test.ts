@@ -8,7 +8,7 @@ import {
   type Session,
 } from "@gyst/core";
 import { Crypto, Effect, Exit, Fiber, Layer, PlatformError, Result, Stream } from "effect";
-import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
+import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import { Git } from "./git.ts";
 import { Sessions } from "./sessions.ts";
 import { SessionStore } from "./store.ts";

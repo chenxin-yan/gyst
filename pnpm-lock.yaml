@@ -7,17 +7,17 @@ settings:
 catalogs:
   default:
     '@effect/platform-node':
-      specifier: 4.0.0-rc.117
-      version: 4.0.0-rc.117
+      specifier: 4.0.0-rc.118
+      version: 4.0.0-rc.118
     '@effect/platform-node-shared':
-      specifier: 4.0.0-rc.117
-      version: 4.0.0-rc.117
+      specifier: 4.0.0-rc.118
+      version: 4.0.0-rc.118
     '@pierre/diffs':
       specifier: 1.4.3
       version: 1.4.3
     effect:
-      specifier: 4.0.0-rc.117
-      version: 4.0.0-rc.117
+      specifier: 4.0.0-rc.118
+      version: 4.0.0-rc.118
     vite:
       specifier: npm:@voidzero-dev/vite-plus-core@1.0.0-rc.1
       version: 1.0.0-rc.1
@@ -65,7 +65,7 @@ importers:
         version: 0.5.0(typescript@7.0.2)
       '@crustjs/effect':
         specifier: 0.2.0
-        version: 0.2.0(@crustjs/core@0.5.0(typescript@7.0.2))(effect@4.0.0-rc.117)(typescript@7.0.2)
+        version: 0.2.0(@crustjs/core@0.5.0(typescript@7.0.2))(effect@4.0.0-rc.118)(typescript@7.0.2)
       '@crustjs/extensions':
         specifier: 0.5.0
         version: 0.5.0(@crustjs/core@0.5.0(typescript@7.0.2))(typescript@7.0.2)
@@ -74,16 +74,16 @@ importers:
         version: 0.5.0(@crustjs/core@0.5.0(typescript@7.0.2))(typescript@7.0.2)
       '@effect/platform-node':
         specifier: 'catalog:'
-        version: 4.0.0-rc.117(effect@4.0.0-rc.117)(redis@6.2.1)
+        version: 4.0.0-rc.118(effect@4.0.0-rc.118)(redis@6.2.1)
       '@effect/platform-node-shared':
         specifier: 'catalog:'
-        version: 4.0.0-rc.117(effect@4.0.0-rc.117)
+        version: 4.0.0-rc.118(effect@4.0.0-rc.118)
       '@pierre/diffs':
         specifier: 'catalog:'
         version: 1.4.3(@shikijs/themes@4.4.3)
       effect:
         specifier: 'catalog:'
-        version: 4.0.0-rc.117
+        version: 4.0.0-rc.118
       semver:
         specifier: 7.8.5
         version: 7.8.5
@@ -102,7 +102,7 @@ importers:
         version: 1.4.3(@shikijs/themes@4.4.3)
       effect:
         specifier: 'catalog:'
-        version: 4.0.0-rc.117
+        version: 4.0.0-rc.118
 
 packages:
 
@@ -278,17 +278,17 @@ packages:
     resolution: {integrity: sha512-Amg7YdXP56FyIIR67zdjUCC5IhBsSNDUyMxHcMjwIw2NHWiEwABYlh8CNW+GkDGZFXaqXtIWnmWki4jpAaRPqg==}
     engines: {bun: '>=1.4.0', deno: '>=2.8', node: '>=22'}
 
-  '@effect/platform-node-shared@4.0.0-rc.117':
-    resolution: {integrity: sha512-GyRkEfLBG49MwJe+/XDPiXYcQ44RA9p2z0AurlsWhR1cd1PqOUMEZU1pORL+/R5hR8aH6ZuqoJYD8lAc6h+wlA==}
+  '@effect/platform-node-shared@4.0.0-rc.118':
+    resolution: {integrity: sha512-pNbmIlxbAUxAthUNsp2xm1NLG9kxoYecsPkoYl9mNF2oxPcKDxAvkOar7tYnLSUpXJeATm4pxYVipdZjQfqO4Q==}
     engines: {node: '>=18.0.0'}
     peerDependencies:
-      effect: ^4.0.0-rc.117
+      effect: ^4.0.0-rc.118
 
-  '@effect/platform-node@4.0.0-rc.117':
-    resolution: {integrity: sha512-WbPcvQDkqXFnCeG6LohJ9eVNapCDhZbCpezhYKxm0IsZEk7swakRh7RkC1t2CXzd3hGmszTv2k9e/pXyZuL+wQ==}
+  '@effect/platform-node@4.0.0-rc.118':
+    resolution: {integrity: sha512-qdAxPZ+5bKxVnzkwziqcHZTHRHz2hyfFX6NhwEmm75CBpmaIzXIZR2LRqGd1/8eI3J3cOrXcAYzByhln7T1/EA==}
     engines: {node: '>=18.0.0'}
     peerDependencies:
-      effect: ^4.0.0-rc.117
+      effect: ^4.0.0-rc.118
       redis: '>=5.0.0 <7.0.0'
 
   '@jridgewell/resolve-uri@3.1.2':
@@ -1219,8 +1219,8 @@ packages:
   dom-accessibility-api@0.5.16:
     resolution: {integrity: sha512-X7BJ2yElsnOJ30pZF4uIIDfBEVgF4XEBxL9Bxhy6dnrm5hkzqmsWHGTiHqRiITNhMyFLyAiWndIJP7Z1NTteDg==}
 
-  effect@4.0.0-rc.117:
-    resolution: {integrity: sha512-UUyi9QiOW4nySFIBM3KnYbNMd9EZliOdKfBcyLD0mPMPheO2fkuXS5y0opjWc9oqzlJxPQICEGm8gGw3kh9j/w==}
+  effect@4.0.0-rc.118:
+    resolution: {integrity: sha512-hxhpCd+swzrtu9lnyPpEFre2ODQzJ9qxgyL1oHIEY8NKnW4PxTbM1XzplMZXiAsLD62HO+KJc41Nqxr9T791ZQ==}
 
   es-module-lexer@2.3.2:
     resolution: {integrity: sha512-poHGpORABojJJucnV9KbOavETW8lBVnphkW77ER5/BQ5Fz7oXSoCNek7IH3vR5nRjdsEz926ibFYX8KtLQmdyw==}
@@ -1820,10 +1820,10 @@ snapshots:
     optionalDependencies:
       typescript: 7.0.2
 
-  '@crustjs/effect@0.2.0(@crustjs/core@0.5.0(typescript@7.0.2))(effect@4.0.0-rc.117)(typescript@7.0.2)':
+  '@crustjs/effect@0.2.0(@crustjs/core@0.5.0(typescript@7.0.2))(effect@4.0.0-rc.118)(typescript@7.0.2)':
     dependencies:
       '@crustjs/core': 0.5.0(typescript@7.0.2)
-      effect: 4.0.0-rc.117
+      effect: 4.0.0-rc.118
     optionalDependencies:
       typescript: 7.0.2
 
@@ -1872,19 +1872,19 @@ snapshots:
 
   '@crustjs/utils@0.2.0': {}
 
-  '@effect/platform-node-shared@4.0.0-rc.117(effect@4.0.0-rc.117)':
+  '@effect/platform-node-shared@4.0.0-rc.118(effect@4.0.0-rc.118)':
     dependencies:
       '@types/ws': 8.18.1
-      effect: 4.0.0-rc.117
+      effect: 4.0.0-rc.118
       ws: 8.22.0
     transitivePeerDependencies:
       - bufferutil
       - utf-8-validate
 
-  '@effect/platform-node@4.0.0-rc.117(effect@4.0.0-rc.117)(redis@6.2.1)':
+  '@effect/platform-node@4.0.0-rc.118(effect@4.0.0-rc.118)(redis@6.2.1)':
     dependencies:
-      '@effect/platform-node-shared': 4.0.0-rc.117(effect@4.0.0-rc.117)
-      effect: 4.0.0-rc.117
+      '@effect/platform-node-shared': 4.0.0-rc.118(effect@4.0.0-rc.118)
+      effect: 4.0.0-rc.118
       redis: 6.2.1
       undici: 8.11.2
     transitivePeerDependencies:
@@ -2478,7 +2478,7 @@ snapshots:
 
   dom-accessibility-api@0.5.16: {}
 
-  effect@4.0.0-rc.117: {}
+  effect@4.0.0-rc.118: {}
 
   es-module-lexer@2.3.2: {}
 

@@ -10,8 +10,8 @@ import {
   type Request,
 } from "@gyst/core";
 import { Context, Effect, FileSystem, Layer, Schedule, Schema } from "effect";
-import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
-import * as Socket from "effect/unstable/socket/Socket";
+import { ChildProcess, ChildProcessSpawner } from "effect/process";
+import * as Socket from "effect/socket/Socket";
 import { compare } from "semver";
 import { Paths } from "./paths.ts";
 import {

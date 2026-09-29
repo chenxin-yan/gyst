@@ -21,8 +21,8 @@ import {
   Schedule,
   Schema,
 } from "effect";
-import * as Socket from "effect/unstable/socket/Socket";
-import type * as SocketServer from "effect/unstable/socket/SocketServer";
+import * as Socket from "effect/socket/Socket";
+import type * as SocketServer from "effect/socket/SocketServer";
 import { compare } from "semver";
 import { Paths } from "./paths.ts";
 import { DaemonMessageSchema, daemonVersion } from "./protocol.ts";
