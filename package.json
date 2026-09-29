@@ -3,7 +3,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "build": "pnpm -r build",
+    "build": "vp run -r build",
     "check": "vp run check:task",
     "test": "vp test",
     "test:source": "vp run test:source:task"
