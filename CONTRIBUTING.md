@@ -22,10 +22,10 @@ Commands are `package.json` scripts. Scripts worth caching call a `<name>:task`
 [Vite+ task](https://viteplus.dev/guide/run) in [`vite.config.ts`](vite.config.ts) or
 [`apps/gyst/vite.config.ts`](apps/gyst/vite.config.ts). `check` runs formatting, lint and type
 checks (`pnpm exec vp check --fix` fixes formatting and lint issues) and is cached. `test` runs
-Vitest: the `source` project (unit and integration tests beside the code), and the `installed`
-project, which builds the CLI, packs it and installs it globally with npm into a temporary
-prefix. `pnpm test:source` skips that and is cached. Run both checks and tests before opening a
-PR.
+`test:unit` and `test:e2e` in parallel. `test:unit` covers the unit and integration tests beside
+the code and is cached. `test:e2e` builds the CLI, packs it, installs it globally with npm into a
+temporary prefix and tests that install; it is never cached. Run both checks and tests before
+opening a PR.
 
 ## Build
 

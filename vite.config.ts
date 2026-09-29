@@ -3,11 +3,11 @@ import { defineConfig } from "vite-plus";
 export default defineConfig({
   run: {
     tasks: {
-      // Scripts in package.json are the entry points; these back the ones worth caching. `test` has
-      // no task: installed tests spawn daemons and read Git and temporary state that input tracking
-      // cannot see.
+      // Scripts in package.json are the entry points; these back the ones that need task settings.
       "check:task": "vp check",
-      "test:source:task": "vp test --project source",
+      "test:unit:task": "vp test --project unit",
+      // E2E tests spawn daemons and read Git and temporary state that input tracking cannot see.
+      "test:e2e:task": { command: "vp test --project e2e", cache: false },
     },
   },
   fmt: {
@@ -17,13 +17,13 @@ export default defineConfig({
     ignorePatterns: [".github/workflows/pullfrog.yml"],
   },
   test: {
-    // Source-only runs must not build or install the CLI.
+    // Unit-only runs must not build or install the CLI.
     projects: [
-      { extends: true, test: { name: "source", include: ["{apps,packages}/*/src/**/*.test.ts"] } },
+      { extends: true, test: { name: "unit", include: ["{apps,packages}/*/src/**/*.test.ts"] } },
       {
         extends: true,
         test: {
-          name: "installed",
+          name: "e2e",
           include: ["apps/gyst/tests/**/*.test.ts"],
           globalSetup: ["apps/gyst/tests/e2e/global-setup.ts"],
         },
