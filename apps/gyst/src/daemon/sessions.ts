@@ -3,15 +3,17 @@ import {
   ApplyEnvelopeSchema,
   BadArgs,
   type DeletePayload,
+  InternalError,
   type DiffPayload,
   type ListPayload,
   NoSession,
   type OpenPayload,
-  parseSnapshot,
   refreshSession,
   type Request,
   type Scope,
   type Session,
+  type SnapshotManifest,
+  snapshotIdOf,
   StaleRevision,
   type SourceCheckPayload,
   type StatusPayload,
@@ -30,11 +32,9 @@ import {
   Schema,
   Semaphore,
 } from "effect";
-import { createHash } from "node:crypto";
+import { CapturedContent } from "./content.ts";
 import { Git } from "./git.ts";
 import { type DeleteReceipt, SessionStore } from "./store.ts";
-
-const snapshotIdOf = (patch: string) => createHash("sha256").update(patch).digest("hex");
 type SourceCheck = Omit<SourceCheckPayload, "sessionId" | "revision">;
 type Input<C extends Request["command"]> = Extract<Request, { readonly command: C }>;
 
@@ -58,7 +58,7 @@ export class Sessions extends Context.Service<
      * Returns the saved session for this repository and recorded scope as it is, else captures and
      * persists a new one. Opens are serialized, so concurrent opens of one scope return one session.
      */
-    open(request: Input<"open">): Effect.Effect<OpenPayload, BadArgs | NoSession>;
+    open(request: Input<"open">): Effect.Effect<OpenPayload, BadArgs | NoSession | InternalError>;
     readonly list: Effect.Effect<ListPayload>;
     status(request: Input<"status">): Effect.Effect<StatusPayload, NoSession>;
     check(request: Input<"check">): Effect.Effect<SourceCheckPayload, NoSession>;
@@ -72,7 +72,7 @@ export class Sessions extends Context.Service<
     /** Re-captures the recorded scope; unchanged hunks keep their group and verdict. */
     refresh(
       request: Input<"refresh">,
-    ): Effect.Effect<StatusPayload, BadArgs | NoSession | ValidationFailed>;
+    ): Effect.Effect<StatusPayload, BadArgs | NoSession | ValidationFailed | InternalError>;
     /**
      * Removes one saved session. A retry with the same `requestId` and session returns the recorded
      * result, even after a restart; the same `requestId` for another session fails.
@@ -96,6 +96,7 @@ export class Sessions extends Context.Service<
     Sessions,
     Effect.gen(function* () {
       const git = yield* Git;
+      const content = yield* CapturedContent;
       const store = yield* SessionStore;
       const { randomUUIDv4 } = yield* Crypto.Crypto;
       const sessions = new Map<string, Session>();
@@ -104,6 +105,19 @@ export class Sessions extends Context.Service<
       // Server handlers run concurrently; one permit keeps state changes from interleaving.
       const lock = yield* Semaphore.make(1);
       const idle = yield* Latch.make(false);
+
+      // The manifest and every blob it names are committed before any session points at it.
+      const publish = (manifest: SnapshotManifest) =>
+        content.putManifest(manifest).pipe(
+          Effect.mapError((error) =>
+            error._tag === "internal_error"
+              ? error
+              : new InternalError({
+                  message: "could not publish the captured snapshot",
+                  detail: error.message,
+                }),
+          ),
+        );
 
       const selected = Effect.fn("Sessions.selected")(function* (request: {
         readonly session: string;
@@ -121,8 +135,8 @@ export class Sessions extends Context.Service<
           (session) => session.repoRoot === root && sameScope(session.scope, request.scope),
         );
         if (saved) return opened(saved, false);
-        const patch = yield* git.capture(root, request.scope);
-        const hunks = yield* Effect.fromResult(parseSnapshot(patch));
+        const manifest = yield* git.capture(root, request.scope);
+        const snapshotId = yield* publish(manifest);
         const now = DateTime.formatIso(yield* DateTime.now);
         // Like persistence, an id source that cannot produce randomness is an operational defect.
         const id = yield* Effect.orDie(randomUUIDv4);
@@ -130,13 +144,13 @@ export class Sessions extends Context.Service<
           id,
           repoRoot: root,
           scope: request.scope,
-          snapshotId: snapshotIdOf(patch),
+          snapshotId,
           createdAt: now,
           updatedAt: now,
           revision: 0,
           seq: 0,
           cursor: { itemId: null, pane: "queue" },
-          hunks,
+          hunks: manifest.hunks,
           groups: [],
           queue: [],
           queueSet: false,
@@ -170,9 +184,10 @@ export class Sessions extends Context.Service<
               Effect.gen(function* () {
                 const result = yield* git.capture(repoRoot, scope).pipe(
                   Effect.timeout("2 seconds"),
-                  Effect.map((patch) => ({
+                  // Every captured input counts, so a changed helper is a changed source.
+                  Effect.map((manifest) => ({
                     state:
-                      snapshotIdOf(patch) === snapshotId
+                      snapshotIdOf(manifest) === snapshotId
                         ? ("unchanged" as const)
                         : ("changed" as const),
                   })),
@@ -189,7 +204,8 @@ export class Sessions extends Context.Service<
           return { session, cached };
         }).pipe(Semaphore.withPermit(lock));
         // Slow Git reads share a cached computation, outside the review-state lock.
-        // ponytail: replay the full scoped patch; use cheaper fingerprints if large-scope checks become costly.
+        // ponytail: re-captures every input (committing new blobs, publishing no manifest) within the
+        // two-second bound; cheaper fingerprints if large scopes then report unavailable.
         return {
           sessionId: target.session.id,
           revision: target.session.revision,
@@ -261,10 +277,10 @@ export class Sessions extends Context.Service<
 
       const refresh = Effect.fn("Sessions.refresh")(function* (request: Input<"refresh">) {
         const session = yield* selected(request);
-        const patch = yield* git.capture(session.repoRoot, session.scope);
+        const manifest = yield* git.capture(session.repoRoot, session.scope);
         const refreshed = refreshSession(
-          { ...session, snapshotId: snapshotIdOf(patch) },
-          yield* Effect.fromResult(parseSnapshot(patch)),
+          { ...session, snapshotId: yield* publish(manifest) },
+          manifest.hunks,
           DateTime.formatIso(yield* DateTime.now),
         );
         yield* store.save(refreshed).pipe(Effect.orDie);

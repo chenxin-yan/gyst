@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vite-plus/test";
 import { Result } from "effect";
-import { parseSnapshot } from "./snapshot.ts";
+import { parseFilePatch, parseSnapshot } from "./snapshot.ts";
 
 const hunks = (patch: string) => Result.getOrThrow(parseSnapshot(patch));
 const rejection = (patch: string) => Result.getOrThrow(Result.flip(parseSnapshot(patch)));
@@ -65,5 +65,34 @@ new mode 100755
     expect(rejected._tag).toBe("bad_args");
     expect(rejected.message).toBe("invalid unified diff");
     expect(rejected.detail).toBe("parsePatchContent: hunk line count mismatch");
+  });
+});
+
+describe("parseFilePatch", () => {
+  const diffOf = (old: string, current: string) => `diff --git a${old} b${current}
+--- a${old}
++++ b${current}
+@@ -1 +1 @@
+-one
++two
+`;
+
+  it("attributes hunks and their ids to the logical path, not the header names", () => {
+    const [bound] = Result.getOrThrow(
+      parseFilePatch(diffOf("/tmp/x/object", "/tmp/y/object"), 'a "b".txt'),
+    );
+    const [named] = hunks(diffOf('/a "b".txt', '/a "b".txt'));
+    expect(bound).toEqual({ ...named!, file: 'a "b".txt' });
+    expect(bound!.id).toBe(named!.id);
+  });
+
+  it("allows a diff without hunks and rejects several files or non-diffs", () => {
+    const emptyAdd = "diff --git a/dev/null b/x\nnew file mode 100644\nindex 0000000..e69de29\n";
+    expect(Result.getOrThrow(parseFilePatch(emptyAdd, "x"))).toEqual([]);
+    const reject = (patch: string) => Result.getOrThrow(Result.flip(parseFilePatch(patch, "x")));
+    expect(reject(diffOf("/a", "/a") + diffOf("/b", "/b")).detail).toBe(
+      "expected a unified diff of exactly one file",
+    );
+    expect(reject("just text\n")._tag).toBe("bad_args");
   });
 });

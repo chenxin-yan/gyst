@@ -8,29 +8,48 @@ const invalidDiff = (detail: string) =>
   Result.fail(new BadArgs({ message: "invalid unified diff", detail }));
 
 export function parseSnapshot(patch: string): Result.Result<Hunk[], BadArgs> {
-  return Result.flatMap(
-    Result.try({
-      // TODO: Upgrade once https://github.com/pierrecomputer/pierre/pull/1143 ships.
-      // Git-quoted filenames currently stay escaped, so editor targets may not resolve.
-      try: () => parsePatchFiles(patch, undefined, true).flatMap((parsed) => parsed.files),
-      catch: (error) =>
-        new BadArgs({
-          message: "invalid unified diff",
-          detail: error instanceof Error ? error.message : String(error),
-        }),
-    }),
-    (files) => hunksOf(patch, files),
+  return Result.flatMap(parsed(patch), (files) => {
+    if (files.length === 0 && /\S/.test(patch)) return invalidDiff("input is not a unified diff");
+    const unsupported = files.find((file) => file.hunks.length === 0);
+    if (unsupported)
+      return invalidDiff(
+        `file-level change without text hunks is unsupported: ${unsupported.name}`,
+      );
+    return hunksOf(patch, files, (file) => file.name);
+  });
+}
+
+/**
+ * The text hunks of a diff of one file, attributed to `path` whatever names its headers carry: a
+ * capture diffs private copies, so only the manifest knows the logical path. No hunks (an added or
+ * deleted empty file) is an empty result, not an error.
+ */
+export function parseFilePatch(patch: string, path: string): Result.Result<Hunk[], BadArgs> {
+  return Result.flatMap(parsed(patch), (files) =>
+    files.length > 1 || (files.length === 0 && /\S/.test(patch))
+      ? invalidDiff("expected a unified diff of exactly one file")
+      : hunksOf(patch, files, () => path),
   );
+}
+
+function parsed(patch: string) {
+  return Result.try({
+    // TODO: Upgrade once https://github.com/pierrecomputer/pierre/pull/1143 ships.
+    // Git-quoted filenames stay escaped in `file.name`; `parseFilePatch` does not depend on them.
+    try: () => parsePatchFiles(patch, undefined, true).flatMap((parsedPatch) => parsedPatch.files),
+    catch: (error) =>
+      new BadArgs({
+        message: "invalid unified diff",
+        detail: error instanceof Error ? error.message : String(error),
+      }),
+  });
 }
 
 function hunksOf(
   patch: string,
   files: ReturnType<typeof parsePatchFiles>[number]["files"],
+  nameOf: (file: ReturnType<typeof parsePatchFiles>[number]["files"][number]) => string,
 ): Result.Result<Hunk[], BadArgs> {
-  if (files.length === 0 && /\S/.test(patch)) return invalidDiff("input is not a unified diff");
-  const unsupported = files.find((file) => file.hunks.length === 0);
-  if (unsupported)
-    return invalidDiff(`file-level change without text hunks is unsupported: ${unsupported.name}`);
   const rawHunks = [
     ...patch.matchAll(/^@@[^\n]*(?:\n|$)[\s\S]*?(?=^@@|^diff --git |(?![\s\S]))/gm),
   ].map((match) => match[0].replace(/\n$/, ""));
@@ -57,12 +76,13 @@ function hunksOf(
       const text = lines.slice(0, end).join("\n");
       // The body hash matches a hunk across refreshes even when its line numbers moved; the
       // occurrence index keeps identical hunks distinct so ids stay stable and unique.
-      const identity = `${file.name}\0${text}`;
+      const name = nameOf(file);
+      const identity = `${name}\0${text}`;
       const occurrence = occurrences.get(identity) ?? 0;
       occurrences.set(identity, occurrence + 1);
       hunks.push({
         id: hash(`${identity}\0${occurrence}`),
-        file: file.name,
+        file: name,
         header: (parsedHunk.hunkSpecs ?? "").trimEnd(),
         patch: text,
         contentHash: hash(text.slice(text.indexOf("\n") + 1)),

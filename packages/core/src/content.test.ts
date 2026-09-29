@@ -71,6 +71,22 @@ describe("SnapshotManifestSchema", () => {
     for (const value of invalid) expect(Result.isFailure(decode(value))).toBe(true);
   });
 
+  it("records a mode change only between two different regular-file modes", () => {
+    const [a, b] = manifest.files;
+    const withMode = (file: unknown) => decode({ ...manifest, files: [a, file] });
+    const change = { old: "100644", new: "100755" };
+    expect(Result.isSuccess(withMode({ ...b, modeChange: change }))).toBe(true);
+    const binary = { kind: "unavailable", reason: "binary" };
+    expect(Result.isSuccess(withMode({ ...b, old: binary, modeChange: change }))).toBe(true);
+    for (const invalid of [
+      { ...b, modeChange: { old: "100644", new: "100644" } },
+      { ...b, modeChange: { old: "100644", new: "120000" } },
+      { ...b, old: { kind: "absent" }, modeChange: change },
+      { ...b, old: { kind: "unavailable", reason: "symlink" }, modeChange: change },
+    ])
+      expect(Result.isFailure(withMode(invalid))).toBe(true);
+  });
+
   it("requires provenance resolved for the recorded scope", () => {
     const commit = "d".repeat(40);
     const range = (recorded: string, mergeBase: string | null) =>

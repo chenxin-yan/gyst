@@ -34,7 +34,7 @@ const sessionSummaryFields = {
   id: Schema.String,
   repoRoot: Schema.String,
   scope: ScopeSchema,
-  /** Identifies the captured snapshot: the SHA-256 of its unified diff. Refresh replaces it. */
+  /** The published snapshot manifest's `snapshotIdOf`: every captured input, not only the diff. Refresh replaces it. */
   snapshotId: Schema.String,
   createdAt: Schema.String,
   updatedAt: Schema.String,

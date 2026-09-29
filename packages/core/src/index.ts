@@ -18,6 +18,7 @@ export {
   canonicalManifestJson,
   type ContentSide,
   ContentSideSchema,
+  FileModeSchema,
   GitObjectIdSchema,
   LogicalPathSchema,
   type ManifestFile,
@@ -64,7 +65,7 @@ export {
   NoteSchema,
   NotesSchema,
 } from "./metadata.ts";
-export { parseSnapshot } from "./snapshot.ts";
+export { parseFilePatch, parseSnapshot } from "./snapshot.ts";
 export { statusOf, summaryOf } from "./status.ts";
 export {
   type BrowserRequest,

@@ -275,8 +275,9 @@ describe("gyst session CLI seam", () => {
     const threeDot = await open("main...feature");
     const twoDot = await open("main..feature");
     const uncommitted = await open();
-    // Equal resolved diffs, different recorded scopes: separate sessions.
-    expect(twoDot.session.snapshotId).toBe(threeDot.session.snapshotId);
+    // Equal resolved diffs, different recorded scopes: separate sessions and snapshots, since the
+    // recorded scope and its resolved endpoints are part of the snapshot's identity.
+    expect(twoDot.session.snapshotId).not.toBe(threeDot.session.snapshotId);
     expect(new Set([threeDot, twoDot, uncommitted].map(({ session }) => session.id)).size).toBe(3);
     const id = threeDot.session.id;
     const hunkId = json(await gyst(cwd, ["session", "status", "--session", id])).inbox[0].id;
@@ -391,7 +392,7 @@ describe("gyst session CLI seam", () => {
       () => !isAlive(respawned) && !existsSync(join(data, "daemon.pid")),
       `daemon ${respawned} to exit after the last delete`,
     );
-    expect((await readdir(data)).sort()).toEqual(["corrupt.json", "delete-receipts"]);
+    expect((await readdir(data)).sort()).toEqual(["content", "corrupt.json", "delete-receipts"]);
 
     // A lost acknowledgement retried after that exit starts a daemon that answers from the receipt
     // and, holding no sessions, shuts down again.
@@ -402,7 +403,7 @@ describe("gyst session CLI seam", () => {
       () => installedDaemons().length === 0 && !existsSync(join(data, "daemon.pid")),
       "the replaying daemon to exit with no sessions left",
     );
-    expect((await readdir(data)).sort()).toEqual(["corrupt.json", "delete-receipts"]);
+    expect((await readdir(data)).sort()).toEqual(["content", "corrupt.json", "delete-receipts"]);
   }, 20_000);
 
   it("keeps failed persistence from exposing an opened or hiding a deleted session", async () => {
@@ -580,7 +581,7 @@ describe("gyst session CLI seam", () => {
       `daemon.pid to name ${survivor}`,
     );
     expect(installedDaemons()).toEqual([survivor]);
-    expect((await readdir(data)).sort()).toEqual(["daemon.pid", "daemon.sock"]);
+    expect((await readdir(data)).sort()).toEqual(["content", "daemon.pid", "daemon.sock"]);
   }, 20_000);
 
   it("exits 130 on SIGINT through crust's cancellation and releases the socket and pid file", async () => {
@@ -604,7 +605,8 @@ describe("gyst session CLI seam", () => {
     daemon.kill("SIGINT");
     expect(await exited).toEqual([130, null]);
     expect(stderr).toBe("");
-    expect(await readdir(ownData)).toEqual([]);
+    // Only the daemon's private captured-content store remains.
+    expect(await readdir(ownData)).toEqual(["content"]);
   }, 20_000);
 
   it("applies batches atomically and replays receipts across a daemon restart", async () => {

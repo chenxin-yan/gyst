@@ -18,6 +18,7 @@ import {
   Path,
   type PlatformError,
   Schema,
+  type Scope,
   Stream,
 } from "effect";
 import { createHash } from "node:crypto";
@@ -63,6 +64,11 @@ export class CapturedContent extends Context.Service<
     ): Effect.Effect<{ readonly blob: string; readonly size: number }, E | Failure>;
     /** At most `range.length` bytes of a committed blob; see `ByteRangeSchema` for end semantics. */
     readBlob(blob: string, range: ByteRange): Stream.Stream<Uint8Array, Failure>;
+    /**
+     * A private 0600 copy of a committed blob, for a tool that reads files (the diff engine).
+     * It lives in this service's staging and is removed when the caller's scope closes.
+     */
+    materialize(blob: string): Effect.Effect<string, Failure, Scope.Scope>;
     /** Commits a manifest whose every text side names a committed blob of the stated size. */
     putManifest(manifest: SnapshotManifest): Effect.Effect<string, Failure>;
     loadManifest(snapshotId: string): Effect.Effect<SnapshotManifest, Failure>;
@@ -145,6 +151,17 @@ export class CapturedContent extends Context.Service<
           return fs.stream(blobFile(id), { offset, bytesToRead: Math.min(length, size - offset) });
         }).pipe(Stream.unwrap);
 
+      const materialize = (blob: string) =>
+        Effect.gen(function* () {
+          const id = yield* decodeBlobId(blob);
+          const copy = yield* stage;
+          yield* missingAs(
+            "captured content not found",
+            id,
+          )(fs.stream(blobFile(id)).pipe(Stream.run(fs.sink(copy, privateFile))));
+          return copy;
+        }).pipe(Effect.withSpan("CapturedContent.materialize"));
+
       const putManifest = Effect.fn("CapturedContent.putManifest")(function* (
         manifest: SnapshotManifest,
       ) {
@@ -193,7 +210,7 @@ export class CapturedContent extends Context.Service<
         return yield* decodeStoredManifest(text).pipe(Effect.mapError(() => corrupt));
       });
 
-      return CapturedContent.of({ putBlob, readBlob, putManifest, loadManifest });
+      return CapturedContent.of({ putBlob, readBlob, materialize, putManifest, loadManifest });
     }),
   );
 }

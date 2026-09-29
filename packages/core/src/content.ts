@@ -37,16 +37,37 @@ export const ContentSideSchema = Schema.Union([
 ]);
 export type ContentSide = typeof ContentSideSchema.Type;
 
+/** A regular file's Git mode: executable or not. */
+export const FileModeSchema = Schema.Literals(["100644", "100755"]);
+
 export const ManifestFileSchema = Schema.Struct({
   path: LogicalPathSchema,
   old: ContentSideSchema,
   new: ContentSideSchema,
+  /**
+   * Present only when a regular file's executable bit changed. Mode changes are recorded, never
+   * reviewed: hunks cover content alone, so a mode-only change has none.
+   */
+  modeChange: Schema.optional(Schema.Struct({ old: FileModeSchema, new: FileModeSchema })),
 }).check(
   Schema.makeFilter(
     (file) =>
       file.old.kind !== "absent" ||
       file.new.kind !== "absent" ||
       "a file cannot be absent on both sides",
+  ),
+  Schema.makeFilter(
+    ({ old, new: current, modeChange }) =>
+      modeChange === undefined ||
+      (modeChange.old !== modeChange.new &&
+        [old, current].every(
+          (side) =>
+            side.kind === "text" ||
+            (side.kind === "unavailable" &&
+              side.reason !== "symlink" &&
+              side.reason !== "submodule"),
+        )) ||
+      "a mode change names two different modes of a regular file present on both sides",
   ),
 );
 export type ManifestFile = typeof ManifestFileSchema.Type;

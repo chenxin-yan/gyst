@@ -17,6 +17,7 @@ import * as Socket from "effect/socket/Socket";
 import { mkdtemp, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { manifestOf, publishingContent } from "./capture-doubles.ts";
 import { Git } from "./git.ts";
 import { Paths } from "./paths.ts";
 import { DaemonInfoSchema, daemonVersion } from "./protocol.ts";
@@ -49,7 +50,7 @@ const git = Layer.succeed(Git, {
           Effect.andThen(Effect.fail(new BadArgs({ message: "not a repository" }))),
         )
       : Effect.succeed(cwd),
-  capture: () => Effect.succeed(patch),
+  capture: (_root, scope) => Effect.succeed(manifestOf(patch, scope)),
 });
 const store = Layer.succeed(SessionStore, {
   loadAll: Effect.sync(() => [...files.values()]),
@@ -74,7 +75,9 @@ const paths = Layer.sync(Paths, () => ({
 }));
 const serverLayerOver = (platform: Layer.Layer<Layer.Success<typeof NodeServices.layer>>) =>
   DaemonServer.layer.pipe(
-    Layer.provide(Sessions.layer.pipe(Layer.provide(Layer.mergeAll(git, store, crypto)))),
+    Layer.provide(
+      Sessions.layer.pipe(Layer.provide(Layer.mergeAll(git, store, crypto, publishingContent()))),
+    ),
     Layer.provide(paths),
     Layer.provide(platform),
   );

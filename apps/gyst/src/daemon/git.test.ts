@@ -1,17 +1,34 @@
 import { afterAll, beforeAll, describe, expect, it } from "vite-plus/test";
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import { Effect, Layer } from "effect";
+import { type ContentSide, type SnapshotManifest, snapshotIdOf } from "@gyst/core";
+import { ConfigProvider, Effect, Layer, PlatformError, Stream } from "effect";
 import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
-import { mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
+import {
+  appendFile,
+  chmod,
+  mkdir,
+  mkdtemp,
+  readdir,
+  readFile,
+  realpath,
+  rm,
+  symlink,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { CapturedContent } from "./content.ts";
 import { Git } from "./git.ts";
+import { Paths } from "./paths.ts";
 
 let root: string;
+let dataDir: string;
 
 const git = (cwd: string, ...args: string[]) =>
   execFileSync("git", args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+const sha256 = (bytes: string | Uint8Array) => createHash("sha256").update(bytes).digest("hex");
 
 async function repo(name: string, commit = true): Promise<string> {
   const cwd = join(root, name);
@@ -27,11 +44,57 @@ async function repo(name: string, commit = true): Promise<string> {
   return cwd;
 }
 
-const run = <A, E>(effect: Effect.Effect<A, E, Git>) =>
-  Effect.runPromise(Effect.provide(effect, Git.layer.pipe(Layer.provide(NodeServices.layer))));
+type ContentService = (typeof CapturedContent)["Service"];
+/** Real capture over a private data dir; `wrap` may replace content operations to inject faults. */
+const run = <A, E>(
+  effect: Effect.Effect<A, E, Git | CapturedContent>,
+  wrap: (real: ContentService) => ContentService = (real) => real,
+) =>
+  Effect.runPromise(
+    Effect.provide(
+      effect,
+      Git.layer.pipe(
+        Layer.provideMerge(
+          Layer.effect(CapturedContent, Effect.map(CapturedContent, wrap)).pipe(
+            Layer.provide(CapturedContent.layer),
+          ),
+        ),
+        Layer.provide(Paths.layer),
+        Layer.provide(NodeServices.layer),
+        Layer.provide(ConfigProvider.layer(ConfigProvider.fromUnknown({ GYST_DATA_DIR: dataDir }))),
+      ),
+    ),
+  );
+/** Captures and publishes, so every manifest a test inspects also passed strict publication. */
+const capture = (cwd: string, scope: SnapshotManifest["scope"] = { kind: "uncommitted" }) =>
+  run(
+    Effect.gen(function* () {
+      const manifest = yield* Git.use((g) => g.capture(cwd, scope));
+      expect(yield* CapturedContent.use((c) => c.putManifest(manifest))).toBe(
+        snapshotIdOf(manifest),
+      );
+      return manifest;
+    }),
+  );
+const captureError = (
+  cwd: string,
+  scope: SnapshotManifest["scope"] = { kind: "uncommitted" },
+  wrap?: (real: ContentService) => ContentService,
+) => run(Effect.flip(Git.use((g) => g.capture(cwd, scope))), wrap);
+
+const fileOf = (manifest: SnapshotManifest, path: string) =>
+  manifest.files.find((file) => file.path === path);
+const bytesOf = (side: ContentSide | undefined) => {
+  if (side?.kind !== "text") throw new Error(`not text: ${JSON.stringify(side)}`);
+  return readFile(join(dataDir, "content", "blobs", side.blob));
+};
+const hunkFiles = (manifest: SnapshotManifest) => [...new Set(manifest.hunks.map((h) => h.file))];
+const blobs = () => readdir(join(dataDir, "content", "blobs"));
+const staging = () => readdir(join(dataDir, "content", "staging"));
 
 beforeAll(async () => {
   root = await realpath(await mkdtemp(join(tmpdir(), "gyst-git-")));
+  dataDir = join(root, "data");
 });
 afterAll(() => rm(root, { recursive: true, force: true }));
 
@@ -45,44 +108,189 @@ describe("Git", () => {
     expect(error._tag).toBe("bad_args");
     await rm(outside, { recursive: true, force: true });
   });
+});
 
-  it("captures HEAD against the working tree plus untracked files, running no configured programs", async () => {
+describe("Git.capture", () => {
+  it("captures every eligible input of HEAD against the working tree, running no configured programs", async () => {
     const cwd = await repo("uncommitted");
-    const marker = join(cwd, "..", "uncommitted-ran");
+    await writeFile(join(cwd, "helper.ts"), "export const helper = 1;\n");
+    await writeFile(join(cwd, "package-lock.json"), "{}\n");
+    await writeFile(join(cwd, "notes.weird-extension"), "plain text\n");
+    await writeFile(join(cwd, ".gitignore"), "ignored-*\n");
+    await writeFile(join(cwd, "ignored-but-tracked.txt"), "tracked anyway\n");
+    await mkdir(join(cwd, "node_modules"));
+    await writeFile(join(cwd, "node_modules", "tracked.js"), "vendored\n");
+    git(cwd, "add", "-f", ".");
+    git(cwd, "commit", "-qm", "supporting files");
+    await writeFile(join(cwd, "staged.txt"), "staged\n");
+    git(cwd, "add", "staged.txt");
+    const head = git(cwd, "rev-parse", "HEAD").trim();
+
+    // Only after the last fixture Git command: every configurable program leaves a marker.
+    const marker = join(root, "uncommitted-ran");
     const script = join(root, "record.sh");
-    await writeFile(script, `#!/bin/sh\ntouch '${marker}'\ncat "$1"\n`, { mode: 0o755 });
-    git(cwd, "config", "color.ui", "always");
-    git(cwd, "config", "diff.external", script);
-    git(cwd, "config", "diff.recorded.textconv", script);
-    git(cwd, "config", "diff.relative", "true");
-    await writeFile(join(cwd, ".gitattributes"), "*.txt diff=recorded\n");
+    await writeFile(script, `#!/bin/sh\ntouch '${marker}'\ncat "$@"\n`, { mode: 0o755 });
+    const hooks = join(root, "hooks");
+    await mkdir(hooks);
+    for (const hook of [
+      "post-index-change",
+      "pre-commit",
+      "post-checkout",
+      "reference-transaction",
+    ])
+      await writeFile(join(hooks, hook), `#!/bin/sh\ntouch '${marker}'\n`, { mode: 0o755 });
+    for (const [key, value] of [
+      ["color.ui", "always"],
+      ["diff.external", script],
+      ["diff.recorded.textconv", script],
+      ["filter.spy.clean", script],
+      ["filter.spy.smudge", script],
+      ["core.fsmonitor", script],
+      ["core.hooksPath", hooks],
+      ["diff.relative", "true"],
+    ])
+      git(cwd, "config", key!, value!);
+    await writeFile(join(cwd, ".gitattributes"), "* diff=recorded filter=spy\n");
     await mkdir(join(cwd, "sub"));
     await writeFile(join(cwd, "tracked.txt"), "colored\n");
     await writeFile(join(cwd, "untracked.txt"), "new\n");
     await writeFile(join(cwd, "sub", "inner.txt"), "inner\n");
-    const patch = await run(Git.use((g) => g.capture(cwd, { kind: "uncommitted" })));
-    expect(patch).toContain("@@ -1 +1 @@\n-one\n+colored\n");
-    expect(patch.match(/^\+\+\+ (.*)$/gm)).toEqual([
-      "+++ b/tracked.txt",
-      "+++ b/.gitattributes",
-      "+++ b/sub/inner.txt",
-      "+++ b/untracked.txt",
-    ]);
-    expect(patch).not.toContain("\u001b[");
+    await writeFile(join(cwd, "ignored-untracked.txt"), "never captured\n");
+    await mkdir(join(cwd, "node_modules", "pkg"));
+    await writeFile(join(cwd, "node_modules", "pkg", "index.js"), "never captured\n");
+
+    const manifest = await capture(cwd);
     expect(existsSync(marker)).toBe(false);
+    expect(manifest.provenance).toEqual({ kind: "uncommitted", head });
+    expect(manifest.files.map((file) => file.path)).toEqual([
+      ".gitattributes",
+      ".gitignore",
+      "helper.ts",
+      "ignored-but-tracked.txt",
+      "notes.weird-extension",
+      "package-lock.json",
+      "staged.txt",
+      "sub/inner.txt",
+      "tracked.txt",
+      "untracked.txt",
+    ]);
+    const helper = fileOf(manifest, "helper.ts")!;
+    expect(helper.new).toEqual(helper.old);
+    expect(helper.old).toMatchObject({ kind: "text", blob: sha256("export const helper = 1;\n") });
+    expect(String(await bytesOf(fileOf(manifest, "tracked.txt")!.old))).toBe("one\n");
+    expect(String(await bytesOf(fileOf(manifest, "tracked.txt")!.new))).toBe("colored\n");
+    expect(fileOf(manifest, "staged.txt")!.old).toEqual({ kind: "absent" });
+    expect(hunkFiles(manifest)).toEqual([
+      ".gitattributes",
+      "staged.txt",
+      "sub/inner.txt",
+      "tracked.txt",
+      "untracked.txt",
+    ]);
+    const tracked = manifest.hunks.find((hunk) => hunk.file === "tracked.txt")!;
+    expect(tracked.patch).toBe("@@ -1 +1 @@\n-one\n+colored");
+    expect(JSON.stringify(manifest)).not.toContain("\u001b[");
+    expect(await staging()).toEqual([]);
   });
 
-  it("diffs against the empty tree in a repository without HEAD", async () => {
+  it("keeps a normalized LF object distinct from its CRLF checkout and preserves exact bytes", async () => {
+    const cwd = await repo("bytes");
+    await writeFile(join(cwd, ".gitattributes"), "*.crlf text eol=crlf\n");
+    await writeFile(join(cwd, "lines.crlf"), "a\nb\n");
+    git(cwd, "add", ".");
+    git(cwd, "commit", "-qm", "normalized");
+    await rm(join(cwd, "lines.crlf"));
+    git(cwd, "checkout", "--", "lines.crlf");
+    const bom = "\uFEFFfirst\r\nsecond";
+    await writeFile(join(cwd, "bom.txt"), bom);
+    // 64 KiB chunks split the two-byte "é" at the first boundary.
+    const split = `a${"é".repeat(40_000)}`;
+    await writeFile(join(cwd, "split.txt"), split);
+
+    const manifest = await capture(cwd);
+    const lines = fileOf(manifest, "lines.crlf")!;
+    // Tree sides are raw Git object bytes; the working side is the raw checkout.
+    expect(String(await bytesOf(lines.old))).toBe("a\nb\n");
+    expect(String(await bytesOf(lines.new))).toBe("a\r\nb\r\n");
+    expect(manifest.hunks.find((hunk) => hunk.file === "lines.crlf")!.patch).toBe(
+      "@@ -1,2 +1,2 @@\n-a\n-b\n+a\r\n+b\r",
+    );
+    expect(await bytesOf(fileOf(manifest, "bom.txt")!.new)).toEqual(Buffer.from(bom));
+    expect(fileOf(manifest, "split.txt")!.new).toMatchObject({
+      kind: "text",
+      size: Buffer.byteLength(split),
+    });
+    expect(String(await bytesOf(fileOf(manifest, "split.txt")!.new))).toBe(split);
+    const range = await capture(cwd, { kind: "range", range: "HEAD~1..HEAD" });
+    expect(String(await bytesOf(fileOf(range, "lines.crlf")!.new))).toBe("a\nb\n");
+  });
+
+  it("reports binary and undecodable content unavailable, never storing it, beside text hunks", async () => {
+    const cwd = await repo("binary");
+    await writeFile(join(cwd, "image.bin"), Buffer.from([1, 0, 2]));
+    git(cwd, "add", ".");
+    git(cwd, "commit", "-qm", "binary");
+    const nul = Buffer.from([1, 0, 3]);
+    const latin1 = Buffer.from("caf\xe9\n", "latin1");
+    await writeFile(join(cwd, "image.bin"), nul);
+    await writeFile(join(cwd, "latin1.txt"), latin1);
+    await writeFile(join(cwd, "tracked.txt"), "two\n");
+    const manifest = await capture(cwd);
+    expect(fileOf(manifest, "image.bin")).toEqual({
+      path: "image.bin",
+      old: { kind: "unavailable", reason: "binary" },
+      new: { kind: "unavailable", reason: "binary" },
+    });
+    expect(fileOf(manifest, "latin1.txt")!.new).toEqual({
+      kind: "unavailable",
+      reason: "unsupported-encoding",
+    });
+    expect(hunkFiles(manifest)).toEqual(["tracked.txt"]);
+    const stored = await blobs();
+    for (const bytes of [nul, latin1, Buffer.from([1, 0, 2])])
+      expect(stored).not.toContain(sha256(bytes));
+    expect(await staging()).toEqual([]);
+  });
+
+  it("records mode changes without reviewing them and captures a rename as a delete and an add", async () => {
+    const cwd = await repo("metadata");
+    await writeFile(join(cwd, "script.sh"), "echo one\n");
+    await writeFile(join(cwd, "old-name.txt"), "moved\n");
+    git(cwd, "add", ".");
+    git(cwd, "commit", "-qm", "metadata");
+    await chmod(join(cwd, "tracked.txt"), 0o755);
+    await writeFile(join(cwd, "script.sh"), "echo two\n");
+    await chmod(join(cwd, "script.sh"), 0o755);
+    git(cwd, "mv", "old-name.txt", "new-name.txt");
+    const manifest = await capture(cwd);
+    const modeOnly = fileOf(manifest, "tracked.txt")!;
+    expect(modeOnly.modeChange).toEqual({ old: "100644", new: "100755" });
+    expect(modeOnly.new).toEqual(modeOnly.old);
+    expect(fileOf(manifest, "script.sh")!.modeChange).toEqual({ old: "100644", new: "100755" });
+    expect(fileOf(manifest, "old-name.txt")!.new).toEqual({ kind: "absent" });
+    expect(fileOf(manifest, "new-name.txt")!.old).toEqual({ kind: "absent" });
+    expect(fileOf(manifest, "new-name.txt")!.new).toEqual(fileOf(manifest, "old-name.txt")!.old);
+    expect(manifest.hunks.map(({ file, patch }) => [file, patch])).toEqual([
+      ["new-name.txt", "@@ -0,0 +1 @@\n+moved"],
+      ["old-name.txt", "@@ -1 +0,0 @@\n-moved"],
+      ["script.sh", "@@ -1 +1 @@\n-echo one\n+echo two"],
+    ]);
+  });
+
+  it("captures against an empty baseline in a repository without HEAD", async () => {
     const cwd = await repo("unborn", false);
     await writeFile(join(cwd, "staged.txt"), "staged\n");
     git(cwd, "add", "staged.txt");
     await writeFile(join(cwd, "untracked.txt"), "untracked\n");
-    const patch = await run(Git.use((g) => g.capture(cwd, { kind: "uncommitted" })));
-    expect(patch).toContain("+++ b/staged.txt");
-    expect(patch).toContain("+++ b/untracked.txt");
+    await writeFile(join(cwd, "empty.txt"), "");
+    const manifest = await capture(cwd);
+    expect(manifest.provenance).toEqual({ kind: "uncommitted", head: null });
+    expect(manifest.files.every((file) => file.old.kind === "absent")).toBe(true);
+    expect(fileOf(manifest, "empty.txt")!.new).toMatchObject({ kind: "text", size: 0 });
+    expect(hunkFiles(manifest)).toEqual(["staged.txt", "untracked.txt"]);
   });
 
-  it("resolves two- and three-dot ranges at capture, excluding the working tree", async () => {
+  it("resolves two- and three-dot ranges once, from commits only", async () => {
     const cwd = await repo("range");
     git(cwd, "branch", "-M", "main");
     git(cwd, "switch", "-qc", "feature");
@@ -93,22 +301,71 @@ describe("Git", () => {
     await writeFile(join(cwd, "tracked.txt"), "main moved\n");
     git(cwd, "commit", "-qam", "main");
     await writeFile(join(cwd, "tracked.txt"), "uncommitted\n");
-    const files = async (range: string) =>
-      (await run(Git.use((g) => g.capture(cwd, { kind: "range", range })))).match(
-        /^\+\+\+ (.*)$/gm,
-      );
-    expect(await files("main...feature")).toEqual(["+++ b/feature.txt"]);
-    expect(await files("main..feature")).toEqual(["+++ b/feature.txt", "+++ b/tracked.txt"]);
+    const [main, feature] = ["main", "feature"].map((ref) => git(cwd, "rev-parse", ref).trim());
+    const mergeBase = git(cwd, "merge-base", "main", "feature").trim();
+    const threeDot = await capture(cwd, { kind: "range", range: "main...feature" });
+    expect(threeDot.provenance).toEqual({ kind: "range", base: main, head: feature, mergeBase });
+    expect(hunkFiles(threeDot)).toEqual(["feature.txt"]);
+    // The unchanged file is captured too, from the merge base and the head commit.
+    expect(String(await bytesOf(fileOf(threeDot, "tracked.txt")!.new))).toBe("one\n");
+    const twoDot = await capture(cwd, { kind: "range", range: "main..feature" });
+    expect(twoDot.provenance).toEqual({
+      kind: "range",
+      base: main,
+      head: feature,
+      mergeBase: null,
+    });
+    expect(hunkFiles(twoDot)).toEqual(["feature.txt", "tracked.txt"]);
     // An omitted endpoint is HEAD, as in Git.
-    expect(await files("feature...")).toEqual(["+++ b/tracked.txt"]);
-    git(cwd, "checkout", "--", "tracked.txt");
-    git(cwd, "switch", "-q", "feature");
-    await writeFile(join(cwd, "feature.txt"), "feature moved\n");
-    git(cwd, "commit", "-qam", "feature moved");
-    const moved = await run(
-      Git.use((g) => g.capture(cwd, { kind: "range", range: "main...feature" })),
+    expect(hunkFiles(await capture(cwd, { kind: "range", range: "feature..." }))).toEqual([
+      "tracked.txt",
+    ]);
+  });
+
+  it("keeps the endpoints it resolved when a ref moves mid-capture", async () => {
+    const cwd = await repo("moving-ref");
+    const initial = git(cwd, "rev-parse", "HEAD").trim();
+    await writeFile(join(cwd, "tracked.txt"), "two\n");
+    git(cwd, "commit", "-qam", "two");
+    const tip = git(cwd, "rev-parse", "HEAD").trim();
+    let moved = false;
+    const manifest = await run(
+      Git.use((g) => g.capture(cwd, { kind: "range", range: `${initial}..HEAD` })),
+      (real) => ({
+        ...real,
+        putBlob: (bytes) =>
+          real.putBlob(bytes).pipe(
+            Effect.tap(() =>
+              Effect.sync(() => {
+                if (!moved) git(cwd, "reset", "-q", "--hard", initial);
+                moved = true;
+              }),
+            ),
+          ),
+      }),
     );
-    expect(moved).toContain("+feature moved");
+    expect(moved).toBe(true);
+    expect(manifest.provenance).toEqual({
+      kind: "range",
+      base: initial,
+      head: tip,
+      mergeBase: null,
+    });
+    expect(String(await bytesOf(fileOf(manifest, "tracked.txt")!.new))).toBe("two\n");
+  });
+
+  it("ignores an inherited GIT_DIR that names another repository", async () => {
+    const cwd = await repo("inherited-env");
+    const other = await repo("inherited-env-other");
+    await writeFile(join(other, "tracked.txt"), "other\n");
+    git(other, "commit", "-qam", "other");
+    await writeFile(join(cwd, "mine.txt"), "mine\n");
+    process.env.GIT_DIR = join(other, ".git");
+    try {
+      expect(hunkFiles(await capture(cwd))).toEqual(["mine.txt"]);
+    } finally {
+      delete process.env.GIT_DIR;
+    }
   });
 
   it("rejects ranges that are not ranges, name unknown revisions, or look like options", async () => {
@@ -122,11 +379,187 @@ describe("Git", () => {
       ["HEAD..no-such-rev", "unknown revision in range: no-such-rev"],
       ["HEAD:tracked.txt..HEAD", "unknown revision in range: HEAD:tracked.txt"],
     ] as const) {
-      const error = await run(
-        Effect.flip(Git.use((g) => g.capture(cwd, { kind: "range", range }))),
-      );
+      const error = await captureError(cwd, { kind: "range", range });
       expect(error).toMatchObject({ _tag: "bad_args", message: expect.stringContaining(message) });
     }
     expect(existsSync(written)).toBe(false);
+  });
+
+  it("names hunks by logical path, including quotes and newlines, and rejects undecodable names", async () => {
+    const cwd = await repo("names");
+    const names = ["a b.txt", 'quo"te.txt', "new\nline.txt", "tab\there.txt", "ü.txt"];
+    for (const name of names) await writeFile(join(cwd, name), `${name}\n`);
+    const manifest = await capture(cwd);
+    expect(hunkFiles(manifest)).toEqual([...names].sort());
+    await writeFile(Buffer.concat([Buffer.from(`${cwd}/bad-`), Buffer.from([0xff])]), "x\n");
+    expect(await captureError(cwd)).toMatchObject({
+      _tag: "bad_args",
+      message: "a repository path is not valid UTF-8 and cannot be captured",
+    });
+  });
+
+  it("never follows links or enters submodules, and rejects a path under a linked directory", async () => {
+    const cwd = await repo("links");
+    const outside = join(root, "links-outside");
+    await mkdir(outside);
+    await writeFile(join(outside, "secret.txt"), "outside secret\n");
+    await symlink("tracked.txt", join(cwd, "link"));
+    const nested = await repo("links/module");
+    const moduleHead = git(nested, "rev-parse", "HEAD").trim();
+    git(cwd, "update-index", "--add", "--cacheinfo", `160000,${moduleHead},module`);
+    git(cwd, "add", "link");
+    git(cwd, "commit", "-qm", "link and submodule");
+    await symlink(join(outside, "secret.txt"), join(cwd, "leak"));
+    const manifest = await capture(cwd);
+    expect(manifest.files.map((file) => file.path)).toEqual([
+      "leak",
+      "link",
+      "module",
+      "tracked.txt",
+    ]);
+    expect(fileOf(manifest, "leak")!.new).toEqual({ kind: "unavailable", reason: "symlink" });
+    expect(fileOf(manifest, "link")!.old).toEqual({ kind: "unavailable", reason: "symlink" });
+    expect(fileOf(manifest, "module")).toMatchObject({
+      old: { kind: "unavailable", reason: "submodule" },
+      new: { kind: "unavailable", reason: "submodule" },
+    });
+    expect(await blobs()).not.toContain(sha256("outside secret\n"));
+
+    await mkdir(join(cwd, "dir"));
+    await writeFile(join(cwd, "dir", "secret.txt"), "inside\n");
+    git(cwd, "add", "dir");
+    git(cwd, "commit", "-qm", "dir");
+    await rm(join(cwd, "dir"), { recursive: true });
+    await symlink(outside, join(cwd, "dir"));
+    expect(await captureError(cwd)).toMatchObject({
+      _tag: "bad_args",
+      message: "a captured path crosses a symbolic link; captures never follow links",
+      detail: { path: "dir/secret.txt" },
+    });
+  });
+
+  it("fails on a missing object instead of fetching it from a promisor remote", async () => {
+    const origin = await repo("promisor-origin");
+    const clone = join(root, "promisor-clone");
+    git(root, "clone", "-q", "--no-hardlinks", origin, clone);
+    const blob = git(clone, "rev-parse", "HEAD:tracked.txt").trim();
+    await rm(join(clone, ".git", "objects", blob.slice(0, 2), blob.slice(2)));
+    git(clone, "config", "core.repositoryformatversion", "1");
+    git(clone, "config", "extensions.partialClone", "origin");
+    git(clone, "config", "remote.origin.promisor", "true");
+    expect(await captureError(clone)).toMatchObject({
+      _tag: "bad_args",
+      message: "a Git object is missing or unreadable; capture never fetches it",
+    });
+    const present = () => {
+      try {
+        execFileSync("git", ["--no-lazy-fetch", "cat-file", "-e", blob], { cwd: clone });
+        return true;
+      } catch {
+        return false;
+      }
+    };
+    expect(present()).toBe(false);
+    // Control: the fixture is a real promisor, so an ordinary read would have fetched the object.
+    git(clone, "cat-file", "-p", blob);
+    expect(present()).toBe(true);
+  });
+
+  it("refuses to publish when the working tree changes during capture", async () => {
+    const cwd = await repo("race");
+    await writeFile(join(cwd, "tracked.txt"), "edited\n");
+    let puts = 0;
+    // Puts run old side then new side per path: the second is tracked.txt's working bytes.
+    const edits = {
+      "before its read": (real: ContentService): ContentService => ({
+        ...real,
+        putBlob: (bytes) =>
+          ++puts === 2
+            ? Effect.promise(() => appendFile(join(cwd, "tracked.txt"), "more\n")).pipe(
+                Effect.andThen(real.putBlob(bytes)),
+              )
+            : real.putBlob(bytes),
+      }),
+      "after its read": (real: ContentService): ContentService => ({
+        ...real,
+        putBlob: (bytes) =>
+          real
+            .putBlob(bytes)
+            .pipe(
+              Effect.tap(() =>
+                ++puts === 2
+                  ? Effect.promise(() => appendFile(join(cwd, "tracked.txt"), "more\n"))
+                  : Effect.void,
+              ),
+            ),
+      }),
+      "by a new untracked file": (real: ContentService): ContentService => ({
+        ...real,
+        putBlob: (bytes) =>
+          real
+            .putBlob(bytes)
+            .pipe(
+              Effect.tap(() =>
+                ++puts === 1
+                  ? Effect.promise(() => writeFile(join(cwd, "new.txt"), "x\n"))
+                  : Effect.void,
+              ),
+            ),
+      }),
+    };
+    for (const [edit, wrap] of Object.entries(edits)) {
+      puts = 0;
+      const error = await captureError(cwd, undefined, wrap);
+      expect(error, edit).toMatchObject({
+        _tag: "bad_args",
+        message: expect.stringContaining("changed while it was being captured"),
+      });
+      await rm(join(cwd, "new.txt"), { force: true });
+    }
+    expect(await staging()).toEqual([]);
+  });
+
+  it("stores each distinct content once and serves it after the checkout is gone", async () => {
+    const cwd = await repo("dedup");
+    await writeFile(join(cwd, "copy.txt"), "one\n");
+    await writeFile(join(cwd, "tracked.txt"), "two\n");
+    const before = await blobs();
+    const manifest = await capture(cwd);
+    expect(fileOf(manifest, "copy.txt")!.new).toEqual(fileOf(manifest, "tracked.txt")!.old);
+    expect((await blobs()).filter((blob) => !before.includes(blob)).sort()).toEqual(
+      [sha256("one\n"), sha256("two\n")].filter((blob) => !before.includes(blob)).sort(),
+    );
+    await rm(cwd, { recursive: true, force: true });
+    const side = fileOf(manifest, "tracked.txt")!.new;
+    const bytes = await run(
+      CapturedContent.use((content) =>
+        side.kind === "text"
+          ? Stream.mkUint8Array(content.readBlob(side.blob, { offset: 0, length: side.size }))
+          : Effect.die("not text"),
+      ),
+    );
+    expect(new TextDecoder().decode(bytes)).toBe("two\n");
+  });
+
+  it("reports a failed content write as an actionable error and leaves no staging", async () => {
+    const cwd = await repo("write-failure");
+    const error = await captureError(cwd, undefined, (real) => ({
+      ...real,
+      putBlob: () =>
+        Effect.fail(
+          PlatformError.systemError({
+            _tag: "Unknown",
+            module: "FileSystem",
+            method: "writeFile",
+            description: "no space left on device",
+          }),
+        ),
+    }));
+    expect(error).toMatchObject({
+      _tag: "internal_error",
+      message: "could not store captured content",
+      detail: expect.stringContaining("no space left on device"),
+    });
+    expect(await staging()).toEqual([]);
   });
 });

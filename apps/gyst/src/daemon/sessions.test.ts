@@ -5,11 +5,15 @@ import {
   applyHumanAction,
   BadArgs,
   type HumanAction,
+  InternalError,
   type Scope,
   type Session,
+  type SnapshotManifest,
+  snapshotIdOf,
 } from "@gyst/core";
 import { Crypto, Effect, Exit, Fiber, Layer, PlatformError, Result, Stream } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
+import { manifestOf, publishingContent } from "./capture-doubles.ts";
 import { Git } from "./git.ts";
 import { Sessions } from "./sessions.ts";
 import { type DeleteReceipt, SessionStore } from "./store.ts";
@@ -37,7 +41,12 @@ let saveFails: boolean;
 let removeFails: boolean;
 let nextId: number;
 let gitPatch: string;
-let patchEffect: Effect.Effect<string, BadArgs> | undefined;
+let supporting: Record<string, string>;
+let patchEffect: Effect.Effect<SnapshotManifest, BadArgs | InternalError> | undefined;
+let manifestFails: boolean;
+let slowCapture: boolean;
+/** Content publications and session saves, in order. */
+let commits: string[];
 
 // Deterministic bytes: the n-th id is `nnnnnnnn-nnnn-4nnn-8nnn-nnnnnnnnnnnn` in hex.
 const crypto = Layer.succeed(
@@ -56,9 +65,19 @@ const git = Layer.succeed(Git, {
   capture: (root, scope) =>
     Effect.suspend(() => {
       captureCalls.push({ root, scope });
-      return patchEffect ?? Effect.succeed(gitPatch);
+      const captured = patchEffect ?? Effect.sync(() => manifestOf(gitPatch, scope, supporting));
+      return slowCapture ? Effect.delay(captured, "20 millis") : captured;
     }),
 });
+
+const content = publishingContent((manifest) =>
+  manifestFails
+    ? Effect.fail(writeFailure)
+    : Effect.sync(() => {
+        commits.push(`manifest ${manifest.files.map(({ path }) => path).join(",")}`);
+        return snapshotIdOf(manifest);
+      }),
+);
 
 const writeFailure = PlatformError.systemError({
   _tag: "PermissionDenied",
@@ -72,6 +91,7 @@ const store = Layer.succeed(SessionStore, {
     saveFails
       ? Effect.fail(writeFailure)
       : Effect.sync(() => {
+          commits.push(`session ${session.id}`);
           files.set(session.id, session);
         }),
   remove: (id) =>
@@ -89,7 +109,9 @@ const store = Layer.succeed(SessionStore, {
         }),
 });
 
-const sessionsLayer = Sessions.layer.pipe(Layer.provide(Layer.mergeAll(git, store, crypto)));
+const sessionsLayer = Sessions.layer.pipe(
+  Layer.provide(Layer.mergeAll(git, store, crypto, content)),
+);
 // Like the daemon: persisted sessions are loaded once the service is built, not while building it.
 // Each `run` is a fresh daemon over the same persisted files and receipts.
 const run = <A, E>(effect: Effect.Effect<A, E, Sessions>) =>
@@ -174,7 +196,11 @@ beforeEach(() => {
   removeFails = false;
   nextId = 0;
   gitPatch = patch;
+  supporting = {};
   patchEffect = undefined;
+  manifestFails = false;
+  slowCapture = false;
+  commits = [];
 });
 
 describe("Sessions.check", () => {
@@ -288,7 +314,9 @@ describe("Sessions.check", () => {
             const created = yield* sessions.status({ command: "status", session: session.id });
             patchEffect = Git.use((g) => g.capture(process.cwd(), uncommitted)).pipe(
               Effect.provide(
-                Git.layer.pipe(Layer.provide(Layer.merge(NodeServices.layer, spawner))),
+                Git.layer.pipe(
+                  Layer.provide(Layer.mergeAll(NodeServices.layer, spawner, publishingContent())),
+                ),
               ),
             );
             const started = performance.now();
@@ -325,7 +353,7 @@ describe("Sessions.check", () => {
       Sessions.use((sessions) =>
         Effect.gen(function* () {
           const { session } = yield* openScope();
-          gitPatch = patch + "\n";
+          gitPatch = patch.replace("+two", "+other");
           expect(yield* sessions.check({ command: "check", session: session.id })).toMatchObject({
             state: "changed",
           });
@@ -356,6 +384,21 @@ describe("Sessions.check", () => {
           });
           expect(captureCalls).toEqual([{ root: otherRoot, scope: persisted.scope }]);
           expect(JSON.stringify([...files])).toBe(before);
+        }),
+      ),
+    );
+  });
+  it("reports a changed supporting file as changed even when the diff is identical", async () => {
+    supporting = { "helper.ts": "export const helper = 1;\n" };
+    await run(
+      Sessions.use((sessions) =>
+        Effect.gen(function* () {
+          const { session } = yield* openScope();
+          supporting = { "helper.ts": "export const helper = 2;\n" };
+          expect(yield* sessions.check({ command: "check", session: session.id })).toMatchObject({
+            state: "changed",
+          });
+          expect(commits).toHaveLength(2);
         }),
       ),
     );
@@ -421,7 +464,8 @@ describe("Sessions.open", () => {
     ];
     const opened = await run(Effect.forEach(scopes, (scope) => openScope(scope)));
     expect(new Set(opened.map(({ session }) => session.id)).size).toBe(3);
-    expect(new Set(opened.map(({ session }) => session.snapshotId)).size).toBe(1);
+    // The recorded scope is part of the snapshot's identity, so equal diffs are distinct snapshots.
+    expect(new Set(opened.map(({ session }) => session.snapshotId)).size).toBe(3);
     expect(opened.map(({ session }) => session.scope)).toEqual(scopes);
     // Equal scope, other repository: the persisted session, not the one just opened.
     expect((await run(openScope(scopes[1], otherRoot))).session.id).toBe(persisted.id);
@@ -440,7 +484,7 @@ describe("Sessions.open", () => {
   });
 
   it("serializes concurrent opens so one scope gets exactly one session", async () => {
-    patchEffect = Effect.sleep("20 millis").pipe(Effect.as(patch));
+    slowCapture = true;
     const range = { kind: "range", range: "main..feature" } as const;
     const results = await run(
       Effect.all([openScope(), openScope(), openScope(range), openScope(range)], {
@@ -461,17 +505,26 @@ describe("Sessions.open", () => {
       _tag: "bad_args",
       message: "current directory is not inside a git repository",
     });
-    gitPatch = "just text\n";
+    patchEffect = Effect.fail(new BadArgs({ message: "the working tree changed" }));
     expect(await failure(openScope())).toMatchObject({
       _tag: "bad_args",
-      message: "invalid unified diff",
+      message: "the working tree changed",
     });
-    gitPatch = "--- a/a.txt\n+++ b/a.txt\n@@ -1 +1 @@\n-old\n";
+    patchEffect = undefined;
+    manifestFails = true;
     expect(await failure(openScope())).toMatchObject({
-      _tag: "bad_args",
-      detail: "parsePatchContent: hunk line count mismatch",
+      _tag: "internal_error",
+      message: "could not publish the captured snapshot",
     });
     expect([...files.keys()]).toEqual([persisted.id]);
+    expect(commits).toEqual([]);
+  });
+
+  it("publishes the snapshot manifest before the session that names it", async () => {
+    supporting = { "helper.ts": "export const helper = 1;\n" };
+    const { session } = await run(openScope());
+    expect(commits).toEqual([`manifest a.txt,b.txt,helper.ts`, `session ${session.id}`]);
+    expect(session.snapshotId).toBe(snapshotIdOf(manifestOf(patch, uncommitted, supporting)));
   });
 
   it("keeps a session out of memory when persistence fails", async () => {
@@ -806,6 +859,32 @@ diff --git a/c.txt b/c.txt
     expect(refreshed.revision).toBe(4);
     expect(refreshed.session.scope).toEqual(persisted.scope);
     expect(files.get(persisted.id)?.snapshotId).toBe(refreshed.session.snapshotId);
+  });
+  it("leaves the saved session untouched when capture or publication fails", async () => {
+    const before = JSON.stringify([...files]);
+    patchEffect = Effect.fail(new BadArgs({ message: "the working tree changed" }));
+    expect(
+      await failure(Sessions.use((s) => s.refresh({ command: "refresh", session: persisted.id }))),
+    ).toMatchObject({ _tag: "bad_args" });
+    patchEffect = undefined;
+    manifestFails = true;
+    expect(
+      await failure(Sessions.use((s) => s.refresh({ command: "refresh", session: persisted.id }))),
+    ).toMatchObject({ _tag: "internal_error" });
+    manifestFails = false;
+    saveFails = true;
+    await run(
+      Effect.gen(function* () {
+        const sessions = yield* Sessions;
+        const refresh = sessions.refresh({ command: "refresh", session: persisted.id });
+        expect(Exit.isFailure(yield* Effect.exit(refresh))).toBe(true);
+        expect(yield* sessions.status({ command: "status", session: persisted.id })).toMatchObject({
+          revision: persisted.revision,
+          session: { snapshotId: persisted.snapshotId },
+        });
+      }),
+    );
+    expect(JSON.stringify([...files])).toBe(before);
   });
 });
 
