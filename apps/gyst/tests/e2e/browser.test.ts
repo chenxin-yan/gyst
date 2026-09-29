@@ -271,6 +271,8 @@ describe("installed gyst in a sandboxed browser", () => {
       join(repo, "README.md"),
       `${await readFile(join(repo, "README.md"), "utf8")}A new line`,
     );
+    // Untracked binary: captured as an unavailable side, never as text.
+    await writeFile(join(repo, "logo.bin"), new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0, 1]));
 
     const chromiumPath = process.env.CHROMIUM_PATH;
     browser = await chromium.launch({
@@ -324,7 +326,8 @@ describe("installed gyst in a sandboxed browser", () => {
     expect(await page.evaluate(() => location.href.includes("#"))).toBe(false);
     await crumbIs(page, "demo/uncommitted changes");
     expect(await page.getByRole("heading", { level: 1 }).getAttribute("title")).toBe(repo);
-    expect((await gyst("session", "list")).sessions).toEqual([
+    const { sessions } = await gyst("session", "list");
+    expect(sessions).toEqual([
       expect.objectContaining({ id: one.id, scope: { kind: "uncommitted" } }),
     ]);
 
@@ -341,6 +344,7 @@ describe("installed gyst in a sandboxed browser", () => {
     const operations = requests.filter((r) => operationOf(r) !== undefined);
     expect(operations.map(operationOf).sort((a, b) => a.command.localeCompare(b.command))).toEqual([
       { command: "diff", session: one.id },
+      { command: "files", session: one.id, snapshotId: sessions[0].snapshotId },
       { command: "open", session: one.id },
     ]);
     for (const request of operations) {
@@ -368,7 +372,13 @@ describe("installed gyst in a sandboxed browser", () => {
     expect(await pane.getByText(hostile).count()).toBe(1);
     expect(await pane.locator("img").count()).toBe(0);
     expect(await page.evaluate(() => "injected" in window)).toBe(false);
-    expect(await pane.getByRole("heading", { level: 2 }).count()).toBe(2);
+    // The changed files' headings; the captured files section has its own.
+    expect(
+      await pane
+        .getByRole("heading", { level: 2 })
+        .filter({ hasNotText: /^Captured files/ })
+        .count(),
+    ).toBe(2);
     // A line is a row of old number, new number and code cells.
     const numbers = (text: string) =>
       pane
@@ -383,6 +393,28 @@ describe("installed gyst in a sandboxed browser", () => {
       "\\ No newline at end of file",
     ]);
     expect(await numbers("No newline at end of file")).toEqual(["", ""]);
+  }, 30_000);
+
+  it("lists captured files and renders captured code as escaped numbered text; an unavailable side shows its reason", async () => {
+    const page = await newPage();
+    await page.goto(`${one.origin}${one.path}`);
+    const pane = page.getByRole("main");
+    const capturedRow = (path: string) =>
+      pane
+        .getByRole("list", { name: "Captured files" })
+        .getByRole("listitem")
+        .filter({ hasText: path });
+    await capturedRow("app.ts").getByRole("button", { name: "View old" }).click();
+    const oldApp = pane.getByRole("region", { name: "app.ts, old side" });
+    await oldApp.getByText(hostile).waitFor();
+    expect(await oldApp.getByRole("row").count()).toBe(3);
+    expect(await pane.locator("img").count()).toBe(0);
+    expect(await page.evaluate(() => "injected" in window)).toBe(false);
+    await capturedRow("logo.bin").getByRole("button", { name: "View new" }).click();
+    await pane
+      .getByRole("region", { name: "logo.bin, new side" })
+      .getByText("Not captured: binary content is not captured.")
+      .waitFor();
   }, 30_000);
 
   it("keeps the session across client navigation, cookie reload and a new tab; shows not-found views", async () => {

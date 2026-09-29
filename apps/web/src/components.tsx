@@ -1,7 +1,7 @@
 import type { Scope, SessionSummary } from "@gyst/core/wire";
 import * as stylex from "@stylexjs/stylex";
 import { Link, useRouter } from "@tanstack/react-router";
-import { type ReactNode, useEffect, useRef, useState } from "react";
+import { type ComponentProps, type ReactNode, useEffect, useRef, useState } from "react";
 import { isExpectedFailure, newRequestId, operation, TransportError } from "./api.ts";
 import { media, theme } from "./tokens.stylex.ts";
 
@@ -132,6 +132,10 @@ export function AllSessionsLink() {
   );
 }
 
+export function PillButton(props: Omit<ComponentProps<"button">, "className" | "style">) {
+  return <button type="button" {...props} {...stylex.props(ui.pill)} />;
+}
+
 const ui = stylex.create({
   muted: { color: theme.muted },
   faint: { color: theme.faint },
@@ -184,6 +188,18 @@ export function Crumb({ session }: { session: SessionSummary }) {
   );
 }
 
+/** False once the component unmounted, so a late reply changes nothing. */
+export function useMounted() {
+  const mounted = useRef(false);
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+    };
+  }, []);
+  return mounted;
+}
+
 // ─── deletion ────────────────────────────────────────────────────────────
 
 /**
@@ -202,13 +218,7 @@ export function DeleteSession(props: {
   const [confirming, setConfirming] = useState(false);
   const [pending, setPending] = useState(false);
   const [failure, setFailure] = useState<unknown>();
-  const mounted = useRef(false);
-  useEffect(() => {
-    mounted.current = true;
-    return () => {
-      mounted.current = false;
-    };
-  }, []);
+  const mounted = useMounted();
   const cancel = () => {
     setConfirming(false);
     setRequestId(undefined);
