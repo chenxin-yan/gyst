@@ -304,6 +304,47 @@ describe("Git.capture", () => {
     }
   });
 
+  it("records a same-bytes rename that changes mode as paired metadata with no hunks", async () => {
+    const cwd = await repo("rename-chmod");
+    await writeFile(join(cwd, "old.txt"), "same bytes\n");
+    await writeFile(join(cwd, "tool.sh"), "run\n", { mode: 0o755 });
+    // Three deletions and additions of one content pair in path order.
+    for (const name of ["dup-a", "dup-b", "dup-c"]) await writeFile(join(cwd, name), "dup\n");
+    git(cwd, "add", ".");
+    git(cwd, "commit", "-qm", "sources");
+    git(cwd, "mv", "old.txt", "new.txt");
+    await chmod(join(cwd, "new.txt"), 0o755);
+    git(cwd, "mv", "tool.sh", "tool.txt");
+    await chmod(join(cwd, "tool.txt"), 0o644);
+    for (const name of ["dup-a", "dup-b", "dup-c"]) git(cwd, "mv", name, `${name}-moved`);
+    for (const manifest of [
+      await capture(cwd),
+      await (async () => {
+        git(cwd, "add", "-A");
+        git(cwd, "commit", "-qm", "renames with mode changes");
+        return capture(cwd, { kind: "range", range: "HEAD~1..HEAD" });
+      })(),
+    ]) {
+      expect(manifest.hunks).toEqual([]);
+      const pairs = manifest.files.flatMap((file) =>
+        file.renamedFrom ? [[file.renamedFrom, file.path, file.modeChange]] : [],
+      );
+      expect(pairs).toEqual([
+        ["dup-a", "dup-a-moved", undefined],
+        ["dup-b", "dup-b-moved", undefined],
+        ["dup-c", "dup-c-moved", undefined],
+        ["old.txt", "new.txt", { old: "100644", new: "100755" }],
+        ["tool.sh", "tool.txt", { old: "100755", new: "100644" }],
+      ]);
+      expect(fileOf(manifest, "old.txt")).toEqual({
+        path: "old.txt",
+        old: fileOf(manifest, "new.txt")!.new,
+        new: { kind: "absent" },
+      });
+      expect(String(await bytesOf(fileOf(manifest, "new.txt")!.new))).toBe("same bytes\n");
+    }
+  });
+
   it("keeps a BOM-prefixed filename distinct from the same name without it", async () => {
     const cwd = await repo("bom-names");
     await writeFile(join(cwd, "\uFEFFhelper.ts"), "prefixed\n");

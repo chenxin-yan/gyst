@@ -104,6 +104,17 @@ describe("SnapshotManifestSchema", () => {
       { ...base, hunks: [{ ...manifest.hunks[0], file: "a.old" }] },
     ])
       expect(Result.isFailure(decode(invalid))).toBe(true);
+    // A rename that changes mode records the source's mode as the old one, on the target only.
+    const change = { old: "100644", new: "100755" };
+    expect(
+      Result.isSuccess(decode({ ...base, files: [gone, { ...added, modeChange: change }] })),
+    ).toBe(true);
+    for (const invalid of [
+      { ...base, files: [gone, { ...added, modeChange: { old: "100755", new: "100755" } }] },
+      { ...base, files: [gone, { ...added, renamedFrom: undefined, modeChange: change }] },
+      { ...base, files: [{ ...gone, modeChange: change }, added] },
+    ])
+      expect(Result.isFailure(decode(invalid))).toBe(true);
   });
 
   it("requires provenance resolved for the recorded scope", () => {

@@ -46,7 +46,8 @@ export const ManifestFileSchema = Schema.Struct({
   new: ContentSideSchema,
   /**
    * Present only when a regular file's executable bit changed. Mode changes are recorded, never
-   * reviewed: hunks cover content alone, so a mode-only change has none.
+   * reviewed: hunks cover content alone, so a mode-only change has none. On a rename target,
+   * `old` is the mode of the `renamedFrom` source.
    */
   modeChange: Schema.optional(Schema.Struct({ old: FileModeSchema, new: FileModeSchema })),
   /**
@@ -62,17 +63,18 @@ export const ManifestFileSchema = Schema.Struct({
       "a file cannot be absent on both sides",
   ),
   Schema.makeFilter(
-    ({ old, new: current, modeChange }) =>
+    ({ old, new: current, modeChange, renamedFrom }) =>
       modeChange === undefined ||
       (modeChange.old !== modeChange.new &&
-        [old, current].every(
+        // A rename target's old mode belongs to its source, whose bytes the rename check pins.
+        (renamedFrom === undefined ? [old, current] : [current]).every(
           (side) =>
             side.kind === "text" ||
             (side.kind === "unavailable" &&
               side.reason !== "symlink" &&
               side.reason !== "submodule"),
         )) ||
-      "a mode change names two different modes of a regular file present on both sides",
+      "a mode change names two different modes of a regular file present on both sides, or of a rename's source and target",
   ),
   Schema.makeFilter(
     ({ old, new: current, renamedFrom }) =>

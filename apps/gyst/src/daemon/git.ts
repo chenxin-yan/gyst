@@ -516,35 +516,48 @@ export class Git extends Context.Service<
           }
         }
 
-        // A deleted and an added file with the same bytes and mode are a rename: recorded, not
-        // reviewed. Several with equal bytes pair in path order (the bytes are identical anyway).
-        const deleted = new Map<string, string[]>();
-        const renamedFrom = new Map<string, string>();
-        const key = ({ side, mode }: CapturedSide) =>
-          side.kind === "text" ? `${side.blob}\0${mode}` : undefined;
+        // A deleted and an added file with the same bytes are a rename: recorded, not reviewed,
+        // with any mode change between them. Several with equal bytes pair in path order (the
+        // bytes are identical anyway); `sides` is already sorted by path.
+        const deleted = new Map<
+          string,
+          { paths: Array<{ path: string; mode: FileMode }>; next: number }
+        >();
+        const renamedFrom = new Map<string, { path: string; mode: FileMode }>();
         for (const { path, old, new: current } of sides)
-          if (current.side.kind === "absent" && key(old))
-            deleted.set(key(old)!, [...(deleted.get(key(old)!) ?? []), path]);
+          if (current.side.kind === "absent" && old.side.kind === "text" && old.mode) {
+            const pending = deleted.get(old.side.blob);
+            if (pending) pending.paths.push({ path, mode: old.mode });
+            else deleted.set(old.side.blob, { paths: [{ path, mode: old.mode }], next: 0 });
+          }
         for (const { path, old, new: current } of sides) {
-          const source =
-            old.side.kind === "absent" && key(current) && deleted.get(key(current)!)?.shift();
-          if (source) renamedFrom.set(path, source);
+          if (old.side.kind !== "absent" || current.side.kind !== "text") continue;
+          const pending = deleted.get(current.side.blob);
+          const source = pending?.paths[pending.next];
+          if (source === undefined) continue;
+          pending!.next++;
+          renamedFrom.set(path, source);
         }
-        const renamed = new Set([...renamedFrom.keys(), ...renamedFrom.values()]);
+        const renamed = new Set([
+          ...renamedFrom.keys(),
+          ...[...renamedFrom.values()].map(({ path }) => path),
+        ]);
 
         const files: ManifestFile[] = [];
         const hunks = [];
         for (const { path, old, new: current } of sides) {
+          const source = renamedFrom.get(path);
+          const oldMode = source?.mode ?? old.mode;
           const modeChange =
-            old.mode !== undefined && current.mode !== undefined && old.mode !== current.mode
-              ? { old: old.mode, new: current.mode }
+            oldMode !== undefined && current.mode !== undefined && oldMode !== current.mode
+              ? { old: oldMode, new: current.mode }
               : undefined;
           files.push({
             path,
             old: old.side,
             new: current.side,
             ...(modeChange && { modeChange }),
-            ...(renamedFrom.has(path) && { renamedFrom: renamedFrom.get(path)! }),
+            ...(source && { renamedFrom: source.path }),
           });
           const textual =
             (old.side.kind === "text" || old.side.kind === "absent") &&
