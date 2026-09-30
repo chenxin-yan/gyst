@@ -19,7 +19,13 @@ export default defineConfig({
   test: {
     // Unit-only runs must not build or install the CLI.
     projects: [
-      { extends: true, test: { name: "unit", include: ["{apps,packages}/*/src/**/*.test.ts"] } },
+      {
+        extends: true,
+        test: {
+          name: "unit",
+          include: ["{apps,packages}/*/src/**/*.test.ts", "packages/*/tests/**/*.test.ts"],
+        },
+      },
       {
         extends: true,
         test: {
