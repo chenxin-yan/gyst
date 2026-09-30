@@ -5,7 +5,9 @@ export default defineConfig({
     tasks: {
       // Scripts in package.json are the entry points; these back the ones that need task settings.
       "check:task": "vp check",
-      "test:unit:task": "vp test --project unit",
+      // Vite+ does not fingerprint the Node runtime; PATH names the mise-selected version, so a run
+      // on another Node reruns instead of replaying. A same-path in-place upgrade is not detected.
+      "test:unit:task": { command: "vp test --project unit", cache: { env: ["PATH"] } },
       // E2E tests spawn daemons and read Git and temporary state that input tracking cannot see.
       "test:e2e:task": { command: "vp test --project e2e", cache: false },
     },
