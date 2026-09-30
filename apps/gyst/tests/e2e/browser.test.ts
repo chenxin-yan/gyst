@@ -107,6 +107,17 @@ async function launch(...args: string[]): Promise<Launch> {
   };
 }
 
+/** Opens a launch link; Playwright's failure message quotes the URL, so its secret is masked. */
+async function go(page: Page, url: string) {
+  const secret = new URL(url).hash.slice(1);
+  try {
+    await page.goto(url);
+  } catch (error) {
+    // oxlint-disable-next-line preserve-caught-error -- the original error quotes the secret
+    throw new Error(String(error).replaceAll(secret, "<secret>"));
+  }
+}
+
 const gyst = async (...args: string[]) => json(await run(installed.bin, args, { cwd: repo, env }));
 const git = (...args: string[]) => execFileSync("git", args, { cwd: repo, env, stdio: "ignore" });
 const sessionIds = async () =>
@@ -300,7 +311,7 @@ describe("installed gyst in a sandboxed browser", () => {
     const page = await newPage();
     const requests: PageRequest[] = [];
     page.on("request", (request) => requests.push(request));
-    await page.goto(one.url);
+    await go(page, one.url);
     const pane = page.locator(".pane");
     await pane.getByText("uncommitted-edit").waitFor();
     expect(await pane.getByText("range-only").count()).toBe(0);
@@ -422,7 +433,7 @@ describe("installed gyst in a sandboxed browser", () => {
     two = await launch("main...feature");
     expect(two.hostname).not.toBe(one.hostname);
     const page = await newPage();
-    await page.goto(two.url);
+    await go(page, two.url);
     await page.locator(".pane").getByText("range-only").waitFor();
     await crumbIs(page, "demo/main...feature");
     expect(await page.locator(".pane").getByText("uncommitted-edit").count()).toBe(0);
@@ -454,7 +465,7 @@ describe("installed gyst in a sandboxed browser", () => {
     const foreign = await newPage(await browser!.newContext(), {
       responses: ["/bootstrap 401", "/api/operation 401"],
     });
-    await foreign.goto(`${one.origin}/#${two.secret}`);
+    await go(foreign, `${one.origin}/#${two.secret}`);
     const expired = await foreign.getByRole("alert").innerText();
     expect(expired).toMatch(/expired or belongs to another gyst launch/);
     expect(expired).toMatch(/10 minutes/);
@@ -759,7 +770,7 @@ describe("installed gyst in a sandboxed browser", () => {
     four = await launch("--session", one.id);
     expect(four.id).toBe(one.id);
     const page = await newPage();
-    await page.goto(four.url);
+    await go(page, four.url);
     await page.locator(".pane").getByText("uncommitted-edit").waitFor();
     expect(await stop(three.proc, "SIGINT")).toBe(130);
     const [reopened] = (await gyst("session", "list")).sessions;
@@ -811,7 +822,7 @@ describe("installed gyst in a sandboxed browser", () => {
       "Local forwarding listening on 127.0.0.1",
     );
     const page = await newPage(await browser!.newContext());
-    await page.goto(`http://${four.hostname}:${forward}${four.path}#${four.secret}`);
+    await go(page, `http://${four.hostname}:${forward}${four.path}#${four.secret}`);
     await page.locator(".pane").getByText("uncommitted-edit").waitFor();
     expect(new URL(page.url()).port).toBe(String(forward));
     expect(sshd.log()).toContain("Accepted publickey");
