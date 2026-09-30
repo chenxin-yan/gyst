@@ -20,18 +20,11 @@ export default defineConfig({
           output: ["README.md", "LICENSE"],
         },
       },
+      // crust.include only takes directories inside this package, so the viewer build is copied in.
       "web-ui": {
-        command: "vp build src/web-ui",
-        cache: {
-          input: [
-            { auto: true },
-            "src/web-ui/**",
-            "src/web/contract.ts",
-            ...coreInputs,
-            "!dist/**",
-          ],
-          output: ["dist/web-ui/**"],
-        },
+        command: "rm -rf dist/web-ui && mkdir -p dist && cp -R ../web/dist dist/web-ui",
+        dependsOn: ["@gyst/web#build:task"],
+        cache: { input: ["../web/dist/**"], output: ["dist/web-ui/**"] },
       },
       "build:task": {
         command: "crust build",

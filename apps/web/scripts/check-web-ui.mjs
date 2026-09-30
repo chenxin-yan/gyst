@@ -1,8 +1,8 @@
-// Component check of the built viewer (apps/gyst/dist/web-ui) in a real sandboxed Chromium. The
+// Component check of the built viewer (apps/web/dist) in a real sandboxed Chromium. The
 // launcher is replaced by an explicit in-process MOCK transport with fixture sessions: this pins
 // the viewer's bootstrap, routing, rendering and deletion behavior, not the installed product.
 //
-//   CHROMIUM_PATH=/path/to/chromium node apps/gyst/scripts/check-web-ui.mjs
+//   CHROMIUM_PATH=/path/to/chromium node apps/web/scripts/check-web-ui.mjs
 //
 // Writes gyst-web-ui-{desktop,narrow}.png screenshots to the temporary directory.
 import assert from "node:assert/strict";
@@ -15,7 +15,7 @@ import { chromium } from "playwright-core";
 
 const executablePath = process.env.CHROMIUM_PATH;
 if (!executablePath) throw new Error("set CHROMIUM_PATH to a Chromium executable");
-const webUi = fileURLToPath(new URL("../dist/web-ui/", import.meta.url));
+const webUi = fileURLToPath(new URL("../dist/", import.meta.url));
 const secret = "check-bootstrap-secret";
 const cookie = "check-cookie-value";
 

@@ -1,10 +1,10 @@
 {
-  "extends": "../../../../tsconfig.json",
+  "extends": "../../tsconfig.json",
   "compilerOptions": {
     "jsx": "react-jsx",
     "lib": ["ESNext", "DOM", "DOM.Iterable"],
     // Browser code: no Node globals.
-    "types": []
+    "types": ["vite-plus/client"]
   },
-  "include": ["."]
+  "include": ["src"]
 }

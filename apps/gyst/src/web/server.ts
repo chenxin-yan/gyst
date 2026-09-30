@@ -22,7 +22,7 @@ import {
   isSameOrigin,
   type Launch,
 } from "./auth.ts";
-import { webPaths } from "./contract.ts";
+import { webPaths } from "@gyst/core/web";
 
 /** The packaged SPA (`dist/web-ui`) beside the bundled `bin/gyst.js`; never the cwd or checkout. */
 export const installedWebUiDir = fileURLToPath(new URL("../dist/web-ui", import.meta.url));

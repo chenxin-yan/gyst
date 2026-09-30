@@ -34,8 +34,8 @@ pnpm build
 node apps/gyst/.crust/root/bin/gyst.js --help
 ```
 
-`build` builds the browser viewer with `vp build src/web-ui` into `apps/gyst/dist/web-ui/`,
-then runs [`crust build`](https://crustjs.com/docs/guide/build-and-distribution) for a Node
+`build` builds the browser viewer (`apps/web`) into `apps/web/dist/`, copies it to
+`apps/gyst/dist/web-ui/`, then runs [`crust build`](https://crustjs.com/docs/guide/build-and-distribution) for a Node
 runtime package. Crust bundles the CLI and its dependencies, invokes the skills extension's
 build hook, copies `dist/web-ui/` through `crust.include`, and stages the package in
 `apps/gyst/.crust/root/`. Vite+ caches the build and copies the repository README/LICENSE before
@@ -52,19 +52,20 @@ npm install -g --prefix /tmp/gyst-prefix /tmp/gyst-pack/gyst-cli-*.tgz
 
 ## Browser viewer
 
-The viewer in [`apps/gyst/src/web-ui/`](apps/gyst/src/web-ui/) is a client-rendered React app
-with a standalone TanStack Router route tree, built by Vite+'s native JSX transform (no React
-plugin, Fast Refresh, SSR or hydration). It imports browser-safe contracts only from
-`@gyst/core/wire` and the shared HTTP paths from `apps/gyst/src/web/contract.ts`. React and the
-router are devDependencies bundled into `dist/web-ui/`, so the published package does not
-depend on them. The launcher serves the installed `dist/web-ui/`; there is no separate dev
-server backed by a daemon.
+The viewer is the private [`@gyst/web`](apps/web/) package, a client-rendered React app
+bootstrapped with `@tanstack/cli create --router-only --blank` (file-based TanStack Router, no
+SSR). Routes live in `apps/web/src/routes/`; the router plugin regenerates the committed
+`src/routeTree.gen.ts` on `dev` and `build`. It imports browser-safe contracts only from
+`@gyst/core/wire` and the shared HTTP paths from `@gyst/core/web`. `@gyst/cli` ships only the
+built `dist/`, so the published package does not depend on React or the router. The launcher
+serves the installed `dist/web-ui/`. `pnpm --dir apps/web dev` serves the viewer with Fast
+Refresh but no daemon behind it, so its pages show the request error.
 
 After `pnpm build`, check the built viewer in a real sandboxed Chromium against a mocked
 launcher (this is a component check, not an installed-product test):
 
 ```sh
-CHROMIUM_PATH=/path/to/chromium node apps/gyst/scripts/check-web-ui.mjs
+CHROMIUM_PATH=/path/to/chromium node apps/web/scripts/check-web-ui.mjs
 ```
 
 It uses `playwright-core` with your Chromium executable, keeps Chromium's sandbox on, and writes

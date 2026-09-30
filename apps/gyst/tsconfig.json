@@ -1,6 +1,4 @@
 {
   "extends": "../../tsconfig.json",
-  "include": ["src", "tests"],
-  // The browser viewer has its own DOM/JSX project.
-  "exclude": ["src/web-ui"]
+  "include": ["src", "tests"]
 }

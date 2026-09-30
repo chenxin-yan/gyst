@@ -118,7 +118,7 @@ describe("installed gyst CLI", () => {
       },
     );
     expect(served.status).toBe(200);
-    expect(served.body).toContain('<div id="root">');
+    expect(served.body).toContain('<div id="app">');
 
     viewer.kill("SIGINT");
     expect(await exited("the viewer to exit on SIGINT")).toBe(130);

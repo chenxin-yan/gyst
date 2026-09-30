@@ -1,3 +1,4 @@
+import { webPaths } from "@gyst/core/web";
 import {
   type BrowserRequest,
   DaemonError,
@@ -11,7 +12,6 @@ import {
   StatusPayloadSchema,
 } from "@gyst/core/wire";
 import { Schema } from "effect";
-import { webPaths } from "../web/contract.ts";
 
 /**
  * The HTTP hop to the launcher failed before a daemon Reply existed. Domain failures are not
