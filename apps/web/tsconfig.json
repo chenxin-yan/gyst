@@ -3,7 +3,6 @@
   "compilerOptions": {
     "jsx": "react-jsx",
     "lib": ["ESNext", "DOM", "DOM.Iterable"],
-    // Browser code: no Node globals.
     "types": ["vite-plus/client"]
   },
   "include": ["src"]
