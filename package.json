@@ -24,6 +24,7 @@
   "devDependencies": {
     "@changesets/changelog-github": "^1.0.1",
     "@changesets/cli": "^3.0.3",
+    "@stylexjs/eslint-plugin": "0.19.1",
     "@types/node": "~24.11.2",
     "@types/semver": "7.8.0",
     "typescript": "^7.0.2",

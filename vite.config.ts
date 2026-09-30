@@ -105,8 +105,14 @@ export default defineConfig({
       },
       {
         files: ["apps/web/**"],
-        // Vite loads stylesheets through side-effect imports.
-        rules: { "import/no-unassigned-import": ["error", { allow: ["**/*.css"] }] },
+        jsPlugins: ["@stylexjs/eslint-plugin"],
+        rules: {
+          // Vite loads stylesheets through side-effect imports.
+          "import/no-unassigned-import": ["error", { allow: ["**/*.css"] }],
+          // TypeScript accepts any key and value in stylex.create; only these rules check them.
+          "@stylexjs/valid-styles": "error",
+          "@stylexjs/no-unused": "error",
+        },
       },
     ],
   },
