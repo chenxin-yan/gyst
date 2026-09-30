@@ -7,5 +7,14 @@ import { defineConfig } from "vite-plus";
 export default defineConfig({
   base: "/",
   run: { tasks: { "build:task": "vp build" } },
-  plugins: [tanstackRouter({ target: "react", autoCodeSplitting: true }), viteReact()],
+  plugins: [
+    // The quote and semicolon options make the generated routeTree.gen.ts match the repo format.
+    tanstackRouter({
+      target: "react",
+      autoCodeSplitting: true,
+      quoteStyle: "double",
+      semicolons: true,
+    }),
+    viteReact(),
+  ],
 });

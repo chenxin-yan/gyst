@@ -8,70 +8,70 @@
 // You should NOT make any changes in this file as it will be overwritten.
 // Additionally, you should also exclude this file from your linter and/or formatter to prevent it from being checked or modified.
 
-import { Route as rootRouteImport } from './routes/__root'
-import { Route as IndexRouteImport } from './routes/index'
-import { Route as SessionSessionIdRouteImport } from './routes/session.$sessionId'
+import { Route as rootRouteImport } from "./routes/__root";
+import { Route as IndexRouteImport } from "./routes/index";
+import { Route as SessionSessionIdRouteImport } from "./routes/session.$sessionId";
 
 const IndexRoute = IndexRouteImport.update({
-  id: '/',
-  path: '/',
+  id: "/",
+  path: "/",
   getParentRoute: () => rootRouteImport,
-} as any)
+} as any);
 const SessionSessionIdRoute = SessionSessionIdRouteImport.update({
-  id: '/session/$sessionId',
-  path: '/session/$sessionId',
+  id: "/session/$sessionId",
+  path: "/session/$sessionId",
   getParentRoute: () => rootRouteImport,
-} as any)
+} as any);
 
 export interface FileRoutesByFullPath {
-  '/': typeof IndexRoute
-  '/session/$sessionId': typeof SessionSessionIdRoute
+  "/": typeof IndexRoute;
+  "/session/$sessionId": typeof SessionSessionIdRoute;
 }
 export interface FileRoutesByTo {
-  '/': typeof IndexRoute
-  '/session/$sessionId': typeof SessionSessionIdRoute
+  "/": typeof IndexRoute;
+  "/session/$sessionId": typeof SessionSessionIdRoute;
 }
 export interface FileRoutesById {
-  __root__: typeof rootRouteImport
-  '/': typeof IndexRoute
-  '/session/$sessionId': typeof SessionSessionIdRoute
+  __root__: typeof rootRouteImport;
+  "/": typeof IndexRoute;
+  "/session/$sessionId": typeof SessionSessionIdRoute;
 }
 export interface FileRouteTypes {
-  fileRoutesByFullPath: FileRoutesByFullPath
-  fullPaths: '/' | '/session/$sessionId'
-  fileRoutesByTo: FileRoutesByTo
-  to: '/' | '/session/$sessionId'
-  id: '__root__' | '/' | '/session/$sessionId'
-  fileRoutesById: FileRoutesById
+  fileRoutesByFullPath: FileRoutesByFullPath;
+  fullPaths: "/" | "/session/$sessionId";
+  fileRoutesByTo: FileRoutesByTo;
+  to: "/" | "/session/$sessionId";
+  id: "__root__" | "/" | "/session/$sessionId";
+  fileRoutesById: FileRoutesById;
 }
 export interface RootRouteChildren {
-  IndexRoute: typeof IndexRoute
-  SessionSessionIdRoute: typeof SessionSessionIdRoute
+  IndexRoute: typeof IndexRoute;
+  SessionSessionIdRoute: typeof SessionSessionIdRoute;
 }
 
-declare module '@tanstack/react-router' {
+declare module "@tanstack/react-router" {
   interface FileRoutesByPath {
-    '/': {
-      id: '/'
-      path: '/'
-      fullPath: '/'
-      preLoaderRoute: typeof IndexRouteImport
-      parentRoute: typeof rootRouteImport
-    }
-    '/session/$sessionId': {
-      id: '/session/$sessionId'
-      path: '/session/$sessionId'
-      fullPath: '/session/$sessionId'
-      preLoaderRoute: typeof SessionSessionIdRouteImport
-      parentRoute: typeof rootRouteImport
-    }
+    "/": {
+      id: "/";
+      path: "/";
+      fullPath: "/";
+      preLoaderRoute: typeof IndexRouteImport;
+      parentRoute: typeof rootRouteImport;
+    };
+    "/session/$sessionId": {
+      id: "/session/$sessionId";
+      path: "/session/$sessionId";
+      fullPath: "/session/$sessionId";
+      preLoaderRoute: typeof SessionSessionIdRouteImport;
+      parentRoute: typeof rootRouteImport;
+    };
   }
 }
 
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   SessionSessionIdRoute: SessionSessionIdRoute,
-}
+};
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)
-  ._addFileTypes<FileRouteTypes>()
+  ._addFileTypes<FileRouteTypes>();
