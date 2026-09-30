@@ -1,9 +1,11 @@
+import * as stylex from "@stylexjs/stylex";
 import { createRouter, RouterProvider } from "@tanstack/react-router";
 import { StrictMode } from "react";
 import ReactDOM from "react-dom/client";
 import { bootstrap, isExpectedFailure } from "./api.ts";
 import { Frame, PageNotFound, RouteError } from "./components.tsx";
 import { routeTree } from "./routeTree.gen.ts";
+import { theme } from "./tokens.stylex.ts";
 
 // The launch URL's fragment is this launch's bootstrap secret. Take it out of the address bar and
 // history before any request is sent or the router reads the location.
@@ -22,14 +24,16 @@ const signIn = () =>
       })
     : Promise.resolve());
 
+const styles = stylex.create({ muted: { color: theme.muted } });
+
 const router = createRouter({
   routeTree,
   context: { signIn },
   // Every visit reads the daemon again, so a list never shows a session deleted meanwhile.
   defaultGcTime: 0,
   defaultPendingComponent: () => (
-    <Frame top={<span className="muted">Loading…</span>}>
-      <p role="status" className="muted">
+    <Frame top={<span {...stylex.props(styles.muted)}>Loading…</span>}>
+      <p role="status" {...stylex.props(styles.muted)}>
         Loading…
       </p>
     </Frame>

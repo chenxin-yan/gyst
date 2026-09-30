@@ -61,6 +61,16 @@ built `dist/`, so the published package does not depend on React or the router. 
 serves the installed `dist/web-ui/`. `pnpm --dir apps/web dev` serves the viewer with Fast
 Refresh but no daemon behind it, so its pages show the request error.
 
+Viewer styles use [StyleX](https://stylexjs.com/docs/learn/): each component calls
+`stylex.create` and `stylex.props` in its own file, and colours, fonts and the narrow-layout media
+query come from `src/tokens.stylex.ts`. Give a child its variants through props or composed styles
+(or `stylex.when.*` for hover-driven ones) rather than descendant selectors, and share a styled
+piece as a component, since styles imported from another file need the StyleX runtime.
+`src/styles.css` holds only element resets and globals, in `@layer reset` so any StyleX style
+beats them. `pnpm check` runs StyleX's `valid-styles` and `no-unused` lint rules; TypeScript does
+not check style keys or values. The browser tests find elements by role, text or structure,
+because StyleX class names are hashed.
+
 `pnpm test` includes browser tests (`apps/gyst/tests/e2e/browser.test.ts`) that drive the
 installed package, its real launches, daemon and a private key-authenticated SSH local forward on
 127.0.0.1 from a sandboxed Chromium. They need Google Chrome (or

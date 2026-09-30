@@ -179,6 +179,10 @@ const deletesOf = (page: Page) => {
   return deletes;
 };
 
+// The viewer's styles hash its class names, so pages are read by role and structure.
+const sessionRows = (page: Page) =>
+  page.getByRole("list", { name: "Saved sessions" }).getByRole("listitem");
+
 const crumbIs = (page: Page, text: string) =>
   page.waitForFunction((expected) => document.querySelector("h1")?.textContent === expected, text);
 
@@ -312,7 +316,7 @@ describe("installed gyst in a sandboxed browser", () => {
     const requests: PageRequest[] = [];
     page.on("request", (request) => requests.push(request));
     await go(page, one.url);
-    const pane = page.locator(".pane");
+    const pane = page.getByRole("main");
     await pane.getByText("uncommitted-edit").waitFor();
     expect(await pane.getByText("range-only").count()).toBe(0);
     expect(new URL(page.url()).hash).toBe("");
@@ -365,14 +369,20 @@ describe("installed gyst in a sandboxed browser", () => {
     expect(await pane.locator("img").count()).toBe(0);
     expect(await page.evaluate(() => "injected" in window)).toBe(false);
     expect(await pane.getByRole("heading", { level: 2 }).count()).toBe(2);
+    // A line is a row of old number, new number and code cells.
     const numbers = (text: string) =>
-      pane.locator(".hunk-line", { hasText: text }).locator(".num").allTextContents();
+      pane
+        .getByRole("row")
+        .filter({ hasText: text })
+        .locator("[role=cell]:not(:last-child)")
+        .allTextContents();
     expect(await numbers("onerror")).toEqual(["2", ""]);
     expect(await numbers("uncommitted-edit")).toEqual(["", "2"]);
     expect(await numbers("A new line")).toEqual(["", "11"]);
-    expect(await pane.locator(".hunk-line.meta").allTextContents()).toEqual([
+    expect(await pane.getByRole("row").filter({ hasText: /^\\/ }).allTextContents()).toEqual([
       "\\ No newline at end of file",
     ]);
+    expect(await numbers("No newline at end of file")).toEqual(["", ""]);
   }, 30_000);
 
   it("keeps the session across client navigation, cookie reload and a new tab; shows not-found views", async () => {
@@ -384,10 +394,10 @@ describe("installed gyst in a sandboxed browser", () => {
       if (new URL(request.url()).pathname === "/bootstrap") bootstraps++;
     });
     await page.goto(`${one.origin}${one.path}`);
-    await page.locator(".pane").getByText("uncommitted-edit").waitFor();
+    await page.getByRole("main").getByText("uncommitted-edit").waitFor();
     await page.getByRole("link", { name: "All sessions" }).click();
     await page.getByRole("heading", { name: "Saved sessions" }).waitFor();
-    expect(await page.locator(".session-row").count()).toBe(1);
+    expect(await sessionRows(page).count()).toBe(1);
     expect(documents).toBe(1);
     await page.reload();
     await page.getByRole("heading", { name: "Saved sessions" }).waitFor();
@@ -418,12 +428,12 @@ describe("installed gyst in a sandboxed browser", () => {
       await page.goto(`${one.origin}${one.path}`);
       await page.getByRole("status").getByText("Loading…").waitFor();
       expect(held).toEqual(["diff"]);
-      expect(await page.locator(".pane").getByText("uncommitted-edit").count()).toBe(0);
+      expect(await page.getByRole("main").getByText("uncommitted-edit").count()).toBe(0);
     } finally {
       release();
     }
     const reply = await diffReply;
-    await page.locator(".pane").getByText("uncommitted-edit").waitFor();
+    await page.getByRole("main").getByText("uncommitted-edit").waitFor();
     expect(reply.status()).toBe(200);
     expect((await reply.json()).ok).toBe(true);
     expect(await page.getByRole("status").count()).toBe(0);
@@ -434,9 +444,9 @@ describe("installed gyst in a sandboxed browser", () => {
     expect(two.hostname).not.toBe(one.hostname);
     const page = await newPage();
     await go(page, two.url);
-    await page.locator(".pane").getByText("range-only").waitFor();
+    await page.getByRole("main").getByText("range-only").waitFor();
     await crumbIs(page, "demo/main...feature");
-    expect(await page.locator(".pane").getByText("uncommitted-edit").count()).toBe(0);
+    expect(await page.getByRole("main").getByText("uncommitted-edit").count()).toBe(0);
     const cookieOf = async (origin: string) =>
       (await context.cookies(origin)).filter((c) => c.name === "gyst_auth");
     const [first] = await cookieOf(one.origin);
@@ -446,7 +456,7 @@ describe("installed gyst in a sandboxed browser", () => {
     expect((await cookieOf(two.origin)).length).toBe(1);
     await page.goto(`${one.origin}/`);
     await page.getByRole("heading", { name: "Saved sessions" }).waitFor();
-    expect(await page.locator(".session-row").count()).toBe(2);
+    expect(await sessionRows(page).count()).toBe(2);
   }, 30_000);
 
   it("tells a fresh browser it is not signed in and a foreign link that it expired", async () => {
@@ -546,7 +556,7 @@ describe("installed gyst in a sandboxed browser", () => {
     const page = await newPage();
     const deletes = deletesOf(page);
     await page.goto(`${two.origin}/`);
-    const row = page.locator(".session-row", { hasText: "main...feature" });
+    const row = sessionRows(page).filter({ hasText: "main...feature" });
     await row.getByRole("button", { name: "Delete…" }).click();
     await row.getByRole("group", { name: "Confirm session deletion" }).getByText(two.id).waitFor();
     await row.getByRole("button", { name: "Cancel" }).click();
@@ -591,7 +601,7 @@ describe("installed gyst in a sandboxed browser", () => {
     expect(await sessionIds()).toEqual([one.id]);
     await page.reload();
     await page.getByRole("heading", { name: "Saved sessions" }).waitFor();
-    expect(await page.locator(".session-row").count()).toBe(1);
+    expect(await sessionRows(page).count()).toBe(1);
     expect(await page.getByText(two.id).count()).toBe(0);
   }, 30_000);
 
@@ -601,7 +611,7 @@ describe("installed gyst in a sandboxed browser", () => {
     const deletes = deletesOf(page);
     await loseNextDeleteReply(page);
     await page.goto(`${one.origin}/`);
-    const row = page.locator(".session-row", { hasText: "main...topic-a" });
+    const row = sessionRows(page).filter({ hasText: "main...topic-a" });
     await row.getByRole("button", { name: "Delete…" }).click();
     await row.getByRole("button", { name: "Delete session" }).click();
     await row.getByRole("alert").waitFor();
@@ -611,7 +621,7 @@ describe("installed gyst in a sandboxed browser", () => {
     expect(deletes).toHaveLength(2);
     expect(deletes[0].session).toBe(id);
     expect(deletes[1]).toEqual(deletes[0]);
-    expect(await page.locator(".session-row").count()).toBe(1);
+    expect(await sessionRows(page).count()).toBe(1);
   }, 30_000);
 
   it("does not carry B's lost-reply retry to A after a history switch", async () => {
@@ -619,7 +629,7 @@ describe("installed gyst in a sandboxed browser", () => {
     const b = await openRange("main...topic-b");
     const page = await newPage(context, { problems: ["requestfailed /api/operation"] });
     const deletes = deletesOf(page);
-    const top = page.locator(".top");
+    const top = page.getByRole("banner");
     await page.goto(`${one.origin}/session/${a}`);
     await crumbIs(page, "demo/main...topic-a");
     await top.getByRole("link", { name: "All sessions" }).click();
@@ -649,7 +659,7 @@ describe("installed gyst in a sandboxed browser", () => {
     const a = await openRange("main...topic-a");
     const b = await openRange("main...topic-b");
     const page = await newPage();
-    const top = page.locator(".top");
+    const top = page.getByRole("banner");
     let release = () => {};
     const released = new Promise<void>((resolve) => (release = resolve));
     let held = false;
@@ -725,7 +735,7 @@ describe("installed gyst in a sandboxed browser", () => {
     const page = await newPage();
     await page.setViewportSize({ width: 390, height: 844 });
     await page.goto(`${one.origin}${one.path}`);
-    await page.locator(".hunk").first().waitFor();
+    await page.getByRole("main").getByRole("table").first().waitFor();
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(
       true,
     );
@@ -734,16 +744,16 @@ describe("installed gyst in a sandboxed browser", () => {
   it("returns to a fresh saved-session list after deleting from the session page", async () => {
     const [b] = (await sessionIds()).filter((id: string) => id !== one.id);
     const page = await newPage();
-    const top = page.locator(".top");
+    const top = page.getByRole("banner");
     await page.goto(`${one.origin}/`);
-    await page.locator(".session-row").first().waitFor();
+    await sessionRows(page).first().waitFor();
     await page.getByRole("link", { name: /main\.\.\.topic-b/ }).click();
     await crumbIs(page, "demo/main...topic-b");
     await top.getByRole("button", { name: "Delete…" }).click();
     await top.getByRole("button", { name: "Delete session" }).click();
     await page.waitForURL(`${one.origin}/`);
     await page.getByRole("heading", { name: "Saved sessions" }).waitFor();
-    expect(await page.locator(".session-row").count()).toBe(1);
+    expect(await sessionRows(page).count()).toBe(1);
     expect(await page.getByText(b).count()).toBe(0);
     expect(await sessionIds()).toEqual([one.id]);
   }, 30_000);
@@ -771,7 +781,7 @@ describe("installed gyst in a sandboxed browser", () => {
     expect(four.id).toBe(one.id);
     const page = await newPage();
     await go(page, four.url);
-    await page.locator(".pane").getByText("uncommitted-edit").waitFor();
+    await page.getByRole("main").getByText("uncommitted-edit").waitFor();
     expect(await stop(three.proc, "SIGINT")).toBe(130);
     const [reopened] = (await gyst("session", "list")).sessions;
     expect([reopened.id, reopened.snapshotId]).toEqual([saved.id, saved.snapshotId]);
@@ -823,7 +833,7 @@ describe("installed gyst in a sandboxed browser", () => {
     );
     const page = await newPage(await browser!.newContext());
     await go(page, `http://${four.hostname}:${forward}${four.path}#${four.secret}`);
-    await page.locator(".pane").getByText("uncommitted-edit").waitFor();
+    await page.getByRole("main").getByText("uncommitted-edit").waitFor();
     expect(new URL(page.url()).port).toBe(String(forward));
     expect(sshd.log()).toContain("Accepted publickey");
     expect(client.log()).toContain("is known and matches the ED25519 host key");
