@@ -88,10 +88,6 @@ a {
   font: 400 13px / 1.5 var(--sans);
   -webkit-font-smoothing: antialiased;
 }
-.app.standalone {
-  display: block;
-  padding: 24px 32px;
-}
 .muted {
   color: var(--muted);
 }
