@@ -16,7 +16,7 @@ import { Sessions } from "../daemon/sessions.ts";
 import { SessionStore } from "../daemon/store.ts";
 import { readLine, writeLine } from "../daemon/wire.ts";
 import { browserOpener, serveViewer, type ViewerOpen } from "./launcher.ts";
-import { indexHtml, send, webUiFixture } from "./test-http.ts";
+import { indexHtml, send, webUiFixture } from "../../tests/http.ts";
 
 const patch = `diff --git a/a.txt b/a.txt
 --- a/a.txt

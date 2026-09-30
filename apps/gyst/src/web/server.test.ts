@@ -8,7 +8,7 @@ import { rm } from "node:fs/promises";
 import { DaemonClient } from "../daemon/client.ts";
 import { bootstrapLifetimeMillis, type Launch, makeLaunch } from "./auth.ts";
 import { browserApp, installedWebUiDir, loadWebAssets, type WebAssets } from "./server.ts";
-import { indexHtml, type RawResponse, secret, send, webUiFixture } from "./test-http.ts";
+import { indexHtml, type RawResponse, secret, send, webUiFixture } from "../../tests/http.ts";
 
 const t0 = 1_000_000;
 let now = t0;

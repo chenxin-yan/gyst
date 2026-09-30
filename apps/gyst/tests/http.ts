@@ -1,5 +1,5 @@
-// Test-only helpers: a raw HTTP/1.1 client (full control of Host, duplicates and request targets)
-// and a throwaway packaged-SPA fixture. Neither ships; the real SPA arrives at dist/web-ui.
+// For the bridge unit tests: a raw HTTP/1.1 client (full control of Host, duplicates and request
+// targets) and a throwaway packaged-SPA fixture.
 import { mkdir, mkdtemp, realpath, symlink, writeFile } from "node:fs/promises";
 import { connect } from "node:net";
 import { tmpdir } from "node:os";
