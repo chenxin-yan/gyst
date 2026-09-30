@@ -61,38 +61,12 @@ built `dist/`, so the published package does not depend on React or the router. 
 serves the installed `dist/web-ui/`. `pnpm --dir apps/web dev` serves the viewer with Fast
 Refresh but no daemon behind it, so its pages show the request error.
 
-After `pnpm build`, check the built viewer in a real sandboxed Chromium against a mocked
-launcher (this is a component check, not an installed-product test):
-
-```sh
-CHROMIUM_PATH=/path/to/chromium node apps/web/scripts/check-web-ui.mjs
-```
-
-It uses `playwright-core` with your Chromium executable, keeps Chromium's sandbox on, and writes
-`gyst-web-ui-{desktop,narrow}.png` screenshots to the temporary directory.
-
-The installed-product check builds, packs and privately installs the package, then drives real
-foreground `gyst` launches, their daemon and a private key-authenticated SSH local forward on
-127.0.0.1 from a real sandboxed Chromium. It needs git and OpenSSH (`sshd`, `ssh`, `ssh-keygen`
-in `SSH_BIN_DIR`, default `/run/current-system/sw/bin`), creates its scratch directory under
-`$HOME` (sshd's `StrictModes` rejects a world-writable `/tmp` ancestor), and removes it after.
-Its build, pnpm pack and npm install use that directory's HOME and XDG directories, an empty npm
-cache and empty user/global npm config (inherited `npm_config_*` settings are dropped):
-
-```sh
-CHROMIUM_PATH=/path/to/chromium node apps/gyst/scripts/check-installed-browser.mjs
-```
-
-`CHECK_INJECT=fail-after-ssh` or `CHECK_INJECT=launch-timeout` makes it fail on purpose, to
-confirm that it still stops every process it started; it then exits 1 with an empty
-`cleanup.failures` and `cleanup.leftoverPids`. `CHECK_INJECT=extra-401` adds one unexpected 401 and
-must fail the check's exact accounting of HTTP errors. The test-harness faults `ssh-missing`,
-`ssh-noexec`, `response-error`, `response-cut`, `replay-hang` and `pgrep-fault` (a failed SSH
-client start, a failed or cut bridge response, an unanswered replay and a failed leftover probe)
-must each exit 1 for that reason with every started process stopped; they are not product
-evidence.
-
-Neither browser check runs in CI; `pnpm test` covers the installed CLI without a browser.
+`pnpm test` includes browser tests (`apps/gyst/tests/e2e/browser.test.ts`) that drive the
+installed package, its real launches, daemon and a private key-authenticated SSH local forward on
+127.0.0.1 from a sandboxed Chromium. They need Google Chrome (or
+`CHROMIUM_PATH=/path/to/chromium`), git and OpenSSH (`sshd`, `ssh` and `ssh-keygen` on `PATH`, or
+`sshd` in `/usr/sbin`). Their scratch directory lives under `$HOME`, since sshd's `StrictModes`
+rejects a world-writable `/tmp` ancestor, and is removed after.
 
 To try the viewer over SSH, see the README's [Over SSH](README.md#over-ssh) section.
 

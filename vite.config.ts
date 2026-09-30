@@ -25,6 +25,8 @@ export default defineConfig({
         test: {
           name: "e2e",
           include: ["apps/gyst/tests/**/*.test.ts"],
+          // Files share one private install, and session.test.ts counts that install's daemons.
+          fileParallelism: false,
           globalSetup: ["apps/gyst/tests/e2e/global-setup.ts"],
         },
       },

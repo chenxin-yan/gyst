@@ -56,16 +56,8 @@ function exec(
   });
 }
 
-/**
- * Vitest calls this with the project only, so the build, pack and install inherit the test
- * process's environment; a caller that isolates them (HOME, cache, config) passes that
- * environment as `env`.
- */
-export default async function setup(
-  project: Pick<TestProject, "provide">,
-  env: NodeJS.ProcessEnv = process.env,
-) {
-  const testedEnv = withTestedNpm(env);
+export default async function setup(project: Pick<TestProject, "provide">) {
+  const testedEnv = withTestedNpm(process.env);
   const root = await realpath(await mkdtemp(join(tmpdir(), "gyst-installed-")));
   const prefix = join(root, "prefix");
   try {
