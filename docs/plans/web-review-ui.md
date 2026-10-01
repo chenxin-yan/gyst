@@ -193,7 +193,7 @@ Right-click targets the exact symbol; `gd`/`gr` operate from the current line, o
 
 Expand opens captured full-file context in the main panel, highlighted with snapshot/side identity. Ordinary movement, code/range comments, replies, nested `gd`/`gr`, Mouse gutter actions and nested Back work there. Back restores origin focus/position, loading evicted content if needed. Navigation never marks/unmarks Viewed. Older retained context is clearly older, not a current change.
 
-**Production rendering constraint:** the accepted full-width prototype uses an approved prototype-only layout bridge around a side-specific diff annotation interface. Do not copy that workaround. Verify a supported upstream full-width rendering path at the implementation's pinned version; if unavailable, report the blocker and obtain a decision rather than add an unauthorized patch or silently weaken the accepted interaction.
+**Production rendering constraint:** `@pierre/diffs` has no public full-width line-anchored slot (checked at 1.5.1; annotations are side-specific). The owner approved a temporary workaround on public APIs only: a line annotation renders an empty spacer that reserves the row in both columns, and the peek is an app-owned full-width element positioned over it with synced height, isolated in one `InlinePeek` component marked with a `TODO` to replace it with the native API ([#106](https://github.com/chenxin-yan/gyst/issues/106)). Do not copy the prototype's shadow-DOM layout bridge, patch the renderer or weaken the accepted interaction.
 
 ## 7. Native PR stacks
 
@@ -393,7 +393,7 @@ Phases are dependency-ordered increments, not separate competing models. Within 
 
 ### Phase 4 — Production reading UI and workflows
 
-**Change:** accepted layout, safe Markdown/Mermaid renderer, full-file diff expansion, keymap/Mouse mode, Viewed, inline conversation/Comments and nested captured-link navigation; bounded content loading. Implement `/gyst` and `/gyst-respond` with a shared bundled authoring reference and generated CLI reference. Wire native stack navigation/metadata and independent saved-session positions/drafts. Resolve the supported full-width rendering gate before adopting a diff implementation.
+**Change:** accepted layout, safe Markdown/Mermaid renderer, full-file diff expansion, keymap/Mouse mode, Viewed, inline conversation/Comments and nested captured-link navigation; bounded content loading. Implement `/gyst` and `/gyst-respond` with a shared bundled authoring reference and generated CLI reference. Wire native stack navigation/metadata and independent saved-session positions/drafts. Adopt `@pierre/diffs`; full-width peeks use the approved temporary workaround above until #106.
 
 **Gates:** real browser tests for both layouts/modes, narrow width, keyboard/input isolation, range/side correctness, local discussion only, Pending/Outdated/reopen and reference peek/Back. Hidden other-group hunks are real changes; navigation never changes Viewed; no hidden-diff mutations from expanded views. Disconnect/conflict/stale-target feedback retains drafts; live preparation doesn't jump the reader. Hostile Markdown/URL/Mermaid content remains inert; malformed diagrams have useful fallback. PR B in A → B → C receives whole-stack context but only B preparation; C opens plain, B resumes unchanged; non-restacked PR uses actual merge base; recheck removal/unavailable metadata never deletes work. Missing `gh`/auth/objects remain distinct. Requested local fix outside PR scope does not trigger retarget/commit/push/refresh. Packaged workflows/examples install without private skills or checkout dependencies.
 
@@ -437,7 +437,7 @@ Run relevant type/lint/format/tests through the migrated Vite+ commands, package
 
 Local branches are evidence pointers, not published artifacts or dependencies of implementation. Temporary tunnel URLs are not durable assets. Inspect prototype instructions on their branches; do not merge throwaway code wholesale or depend on this checkout's unrelated prototype files.
 
-Known implementation gates remain: supported full-width rendering; real-project project-only TS/JS usefulness; capture/GC/retry/subscription correctness; secure local/SSH access; production performance and human-set numerical release gates; and packaged platform execution. None is asserted passed by this spec. They call for implementation evidence or an explicit return with a blocker, not silent policy changes.
+Known implementation gates remain: native full-width rendering (#106; a temporary workaround is approved); real-project project-only TS/JS usefulness; capture/GC/retry/subscription correctness; secure local/SSH access; production performance and human-set numerical release gates; and packaged platform execution. None is asserted passed by this spec. They call for implementation evidence or an explicit return with a blocker, not silent policy changes.
 
 ### Out of scope
 
