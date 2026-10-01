@@ -1,4 +1,5 @@
-import { BunSocket, BunSocketServer } from "@effect/platform-bun";
+import * as NodeSocket from "@effect/platform-node/NodeSocket";
+import * as NodeSocketServer from "@effect/platform-node/NodeSocketServer";
 import {
   BadArgs,
   DaemonError,
@@ -20,8 +21,9 @@ import {
   Schedule,
   Schema,
 } from "effect";
-import * as Socket from "effect/unstable/socket/Socket";
-import type * as SocketServer from "effect/unstable/socket/SocketServer";
+import * as Socket from "effect/socket/Socket";
+import type * as SocketServer from "effect/socket/SocketServer";
+import { compare } from "semver";
 import { Paths } from "./paths.ts";
 import { DaemonMessageSchema, daemonVersion } from "./protocol.ts";
 import { Sessions } from "./sessions.ts";
@@ -64,7 +66,7 @@ export class DaemonServer extends Context.Service<
       const pid = String(process.pid);
 
       // Any other connect failure (EACCES, ...) is unknown territory: propagate, never reclaim.
-      const daemonAnswers = BunSocket.makeNet({ path: paths.socketPath }).pipe(
+      const daemonAnswers = NodeSocket.makeNet({ path: paths.socketPath }).pipe(
         Effect.flatMap((socket) => socket.reader),
         Effect.as(true),
         Effect.scoped,
@@ -83,7 +85,7 @@ export class DaemonServer extends Context.Service<
       const acquireSocket = Effect.gen(function* () {
         const privatePath = `${paths.socketPath}.${pid}`;
         yield* fs.remove(privatePath, { force: true });
-        const server = yield* BunSocketServer.make({ path: privatePath });
+        const server = yield* NodeSocketServer.make({ path: privatePath });
         const ino = (yield* fs.stat(privatePath)).ino;
         const publishedIno = fs.stat(paths.socketPath).pipe(
           Effect.map((info) => info.ino),
@@ -129,10 +131,24 @@ export class DaemonServer extends Context.Service<
         Effect.when(fs.remove(paths.pidPath, { force: true }), ownsPidFile).pipe(Effect.ignore),
       );
 
-      const handlers: Record<
-        Request["command"],
-        (request: Request) => Effect.Effect<unknown, DaemonError>
-      > = { ...sessions, "tui.action": (request) => sessions.tuiAction(request) };
+      const dispatch = (request: Request): Effect.Effect<unknown, DaemonError> => {
+        switch (request.command) {
+          case "create":
+            return sessions.create(request);
+          case "status":
+            return sessions.status(request);
+          case "check":
+            return sessions.check(request);
+          case "diff":
+            return sessions.diff(request);
+          case "apply":
+            return sessions.apply(request);
+          case "refresh":
+            return sessions.refresh(request);
+          case "close":
+            return sessions.close(request);
+        }
+      };
       // Accepted connections that have not replied yet; idle shutdown must not interrupt them.
       const active = yield* Ref.make(0);
       const restart = yield* Latch.make(false);
@@ -161,7 +177,7 @@ export class DaemonServer extends Context.Service<
                 if ("command" in message) {
                   if (
                     message.instanceId !== instanceId ||
-                    Bun.semver.order(message.version, daemonVersion) <= 0
+                    compare(message.version, daemonVersion) <= 0
                   )
                     return { restarting: false };
                   // Admission and draining change together; no request can slip between them.
@@ -204,7 +220,7 @@ export class DaemonServer extends Context.Service<
                         "daemon identity changed or upgrade is in progress; no review command was executed",
                     }),
                   );
-                return yield* handlers[message.request.command](message.request);
+                return yield* dispatch(message.request);
               }),
             ),
             Effect.map((value) => ({ ok: true as const, value })),

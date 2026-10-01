@@ -2,32 +2,31 @@
   "name": "gyst",
   "private": true,
   "type": "module",
-  "workspaces": [
-    "apps/*",
-    "packages/*"
-  ],
   "scripts": {
-    "build": "turbo run build",
-    "lint": "oxlint",
-    "lint:fix": "oxlint --fix",
-    "format": "oxfmt --check",
-    "format:fix": "oxfmt",
-    "check": "turbo run //#lint //#format check:types",
-    "check:fix": "oxlint --fix && oxfmt",
-    "test": "turbo run test",
-    "changeset": "changeset",
-    "release:version": "changeset version && bun install --lockfile-only",
-    "release:publish": "bun scripts/publish.ts"
+    "build": "vp run -r build",
+    "check": "vp run check:task",
+    "test": "pnpm run /^test:/",
+    "test:e2e": "vp run test:e2e:task",
+    "test:unit": "vp run test:unit:task"
+  },
+  "devEngines": {
+    "runtime": {
+      "name": "node",
+      "version": "24.21.0",
+      "onFail": "ignore"
+    },
+    "packageManager": {
+      "name": "pnpm",
+      "version": "12.6.0",
+      "onFail": "ignore"
+    }
   },
   "devDependencies": {
     "@changesets/changelog-github": "^1.0.1",
     "@changesets/cli": "^3.0.3",
-    "@types/bun": "^1.4.2",
-    "oxfmt": "^0.70.0",
-    "oxlint": "^1.85.0",
-    "oxlint-tsgolint": "^7.0.2002",
-    "turbo": "^2.11.3",
-    "typescript": "^7.0.2"
-  },
-  "packageManager": "bun@1.4.2"
+    "@types/node": "~24.11.2",
+    "@types/semver": "7.8.0",
+    "typescript": "^7.0.2",
+    "vite-plus": "catalog:"
+  }
 }

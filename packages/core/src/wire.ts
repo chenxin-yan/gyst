@@ -1,6 +1,5 @@
 import { Schema } from "effect";
 import { ErrorPayloadSchema } from "./errors.ts";
-import { HumanActionSchema } from "./human-action.ts";
 import { HunkSchema } from "./session.ts";
 
 export const DiffPayloadSchema = Schema.Struct({
@@ -25,22 +24,36 @@ export const ClosePayloadSchema = Schema.Struct({
 });
 export type ClosePayload = typeof ClosePayloadSchema.Type;
 
-export const RequestSchema = Schema.Struct({
-  command: Schema.Literals([
-    "create",
-    "status",
-    "check",
-    "diff",
-    "apply",
-    "refresh",
-    "close",
-    "tui.action",
-  ]),
-  cwd: Schema.String,
-  args: Schema.Array(Schema.String),
-  stdin: Schema.optional(Schema.String),
-  action: Schema.optional(HumanActionSchema),
-});
+// `cwd` is the caller's directory, bound by the entry point; `session` selects an exact id, else
+// the session of the repository containing `cwd`.
+const selection = { cwd: Schema.String, session: Schema.optional(Schema.String) };
+/** A supplied unified diff with repository-root-relative paths, replacing Git acquisition. */
+const patch = Schema.optional(Schema.String);
+
+/** One validated operation per session command; CLI flags and argv never cross the socket. */
+export const RequestSchema = Schema.Union([
+  Schema.Struct({
+    command: Schema.Literal("create"),
+    cwd: Schema.String,
+    /** Git revisions; when `pathspecs` is present Git sees `<revisions> -- <pathspecs>`. */
+    revisions: Schema.Array(Schema.String),
+    pathspecs: Schema.optional(Schema.Array(Schema.String)),
+    patch,
+  }),
+  Schema.Struct({ command: Schema.Literal("status"), ...selection }),
+  Schema.Struct({ command: Schema.Literal("check"), ...selection }),
+  Schema.Struct({
+    command: Schema.Literal("diff"),
+    ...selection,
+    hunk: Schema.optional(Schema.String),
+    group: Schema.optional(Schema.String),
+    file: Schema.optional(Schema.String),
+  }),
+  /** `batch` is the JSON apply envelope text; the use case validates it against `ApplyEnvelopeSchema`. */
+  Schema.Struct({ command: Schema.Literal("apply"), ...selection, batch: Schema.String }),
+  Schema.Struct({ command: Schema.Literal("refresh"), ...selection, patch }),
+  Schema.Struct({ command: Schema.Literal("close"), ...selection }),
+]);
 export type Request = typeof RequestSchema.Type;
 
 export const ReplySchema = Schema.Union([

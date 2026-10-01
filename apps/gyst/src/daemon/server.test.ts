@@ -1,5 +1,6 @@
-import { afterAll, beforeAll, describe, expect, it } from "bun:test";
-import { BunServices, BunSocket } from "@effect/platform-bun";
+import { afterAll, beforeAll, describe, expect, it } from "vite-plus/test";
+import * as NodeServices from "@effect/platform-node/NodeServices";
+import * as NodeSocket from "@effect/platform-node/NodeSocket";
 import { type Reply, ReplySchema, type Request, type Session } from "@gyst/core";
 import {
   Crypto,
@@ -12,7 +13,7 @@ import {
   Schedule,
   Schema,
 } from "effect";
-import * as Socket from "effect/unstable/socket/Socket";
+import * as Socket from "effect/socket/Socket";
 import { mkdtemp, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -68,26 +69,28 @@ const paths = Layer.sync(Paths, () => ({
   pidPath: join(dataDir, "daemon.pid"),
   sessionFile: (id: string) => join(dataDir, `${id}.json`),
 }));
-const serverLayerOver = (platform: Layer.Layer<Layer.Success<typeof BunServices.layer>>) =>
+const serverLayerOver = (platform: Layer.Layer<Layer.Success<typeof NodeServices.layer>>) =>
   DaemonServer.layer.pipe(
     Layer.provide(Sessions.layer.pipe(Layer.provide(Layer.mergeAll(git, store, crypto)))),
     Layer.provide(paths),
     Layer.provide(platform),
   );
-const serverLayer = serverLayerOver(BunServices.layer);
+const serverLayer = serverLayerOver(NodeServices.layer);
 
 const decodeReply = Schema.decodeUnknownSync(Schema.fromJsonString(ReplySchema));
 const exchange = Effect.fn("exchange")(function* (message: unknown) {
-  const socket = yield* BunSocket.makeNet({ path: socketPath });
+  const socket = yield* NodeSocket.makeNet({ path: socketPath });
   const pull = yield* Socket.readerBytes(socket);
   yield* writeLine(socket, JSON.stringify(message));
   return decodeReply(yield* readLine(pull));
 }, Effect.scoped);
-const send = Effect.fn("send")(function* (command: Request["command"], cwd: string) {
+const send = Effect.fn("send")(function* (command: "create" | "status" | "close", cwd: string) {
   const hello = yield* exchange({ command: "daemon.info" });
   if (!hello.ok) return hello;
   const info = Schema.decodeUnknownSync(DaemonInfoSchema)(hello.value);
-  return yield* exchange({ ...info, request: { command, cwd, args: [] } satisfies Request });
+  const request: Request =
+    command === "create" ? { command, cwd, revisions: [] } : { command, cwd };
+  return yield* exchange({ ...info, request });
 });
 const ok = (reply: Reply) => reply.ok;
 
@@ -161,7 +164,7 @@ describe("DaemonServer", () => {
             yield* exchange({
               ...info,
               instanceId: "another-daemon",
-              request: { command: "create", cwd: "/wrong", args: [] },
+              request: { command: "create", cwd: "/wrong", revisions: [] },
             }),
           ),
         ).toBe(false);
@@ -182,10 +185,41 @@ describe("DaemonServer", () => {
       }).pipe(
         Effect.provide(serverLayer),
         Effect.provide(paths),
-        Effect.provide(BunServices.layer),
+        Effect.provide(NodeServices.layer),
       ),
     );
     expect((await readdir(dataDir)).filter((name) => name.startsWith("daemon.sock"))).toEqual([]);
+  }, 10_000);
+
+  it("rejects argv, another command's fields and missing intent before any use case runs", async () => {
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        const server = yield* DaemonServer;
+        const running = yield* Effect.forkChild(server.run);
+        const hello = yield* exchange({ command: "daemon.info" }).pipe(
+          Effect.retry({ schedule: Schedule.spaced("10 millis"), times: 100 }),
+        );
+        if (!hello.ok) throw new Error("handshake failed");
+        const info = Schema.decodeUnknownSync(DaemonInfoSchema)(hello.value);
+        for (const request of [
+          { command: "create", cwd: "/argv", args: ["--stdin"], stdin: patch },
+          { command: "create", cwd: "/argv", revisions: [], args: ["--", "HEAD"] },
+          { command: "status", cwd: "/argv", args: ["--session", "x"] },
+          { command: "status", cwd: "/argv", patch },
+          { command: "apply", cwd: "/argv", batch: "{}", file: "a.txt" },
+          { command: "refresh", cwd: "/argv", hunk: "h1" },
+          { command: "apply", cwd: "/argv" },
+        ]) {
+          const reply = yield* exchange({ ...info, request });
+          expect(reply.ok ? reply : reply.error).toMatchObject({
+            _tag: "bad_args",
+            message: "invalid daemon request; update the CLI if its protocol is older",
+          });
+        }
+        expect(files.size).toBe(0);
+        yield* Fiber.interrupt(running);
+      }).pipe(Effect.provide(serverLayer)),
+    );
   }, 10_000);
 
   it("releases the published socket when startup fails after the link", async () => {
@@ -216,7 +250,7 @@ describe("DaemonServer", () => {
     );
     const exit = await Effect.runPromiseExit(
       DaemonServer.use((server) => server.run).pipe(
-        Effect.provide(serverLayerOver(Layer.provideMerge(brokenRemove, BunServices.layer))),
+        Effect.provide(serverLayerOver(Layer.provideMerge(brokenRemove, NodeServices.layer))),
       ),
     );
     expect(exit._tag).toBe("Failure");

@@ -30,8 +30,8 @@ jobs:
       - uses: actions/checkout@v7
         with:
           persist-credentials: false
-      - uses: oven-sh/setup-bun@v2
-      - run: bun install --frozen-lockfile
+      - uses: jdx/mise-action@v4
+      - run: pnpm install --frozen-lockfile
       - id: select-mode
         uses: changesets/action/select-mode@v2
 
@@ -46,13 +46,12 @@ jobs:
       - uses: actions/checkout@v7
         with:
           persist-credentials: false
-      - uses: oven-sh/setup-bun@v2
-      - run: bun install --frozen-lockfile
+      - uses: jdx/mise-action@v4
+      - run: pnpm install --frozen-lockfile
       - uses: changesets/action/version@v2
         with:
           pr-title: "chore: release @gyst/cli"
           commit-message: "chore: version packages"
-          script: bun run release:version
 
   publish:
     if: needs.select-mode.outputs.mode == 'publish'
@@ -64,29 +63,18 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         with:
-          # `changeset git-tag` needs existing tags to skip already-tagged versions.
+          # `changeset publish` needs existing tags to skip already-tagged versions.
           fetch-depth: 0
           persist-credentials: false
-      - uses: oven-sh/setup-bun@v2
-      # npm >= 11.5.1 for trusted publishing; Node 24 bundles it. No token, no .npmrc: every
-      # published package needs a trusted publisher on npmjs.com for chenxin-yan/gyst + release.yml.
-      - uses: actions/setup-node@v7
-        with:
-          node-version: 24
-          package-manager-cache: false
-      - run: bun install --frozen-lockfile --os='*' --cpu='*'
-      - name: Stage every platform package
-        working-directory: apps/gyst
-        run: bun run build
-      - name: Verify publish order without network writes
-        working-directory: apps/gyst
-        run: bun run release -- --dry-run
-      - name: Publish platform packages, then @gyst/cli, then tag and release
+      # No token, no .npmrc: @gyst/cli needs a trusted publisher on npmjs.com for
+      # chenxin-yan/gyst + release.yml.
+      - uses: jdx/mise-action@v4
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm build
+      - name: Publish @gyst/cli, then tag and release
         id: publish
         uses: changesets/action/publish@v2
-        with:
-          script: bun run release:publish
-      - name: Attach raw binaries and the skills archive to the GitHub release
+      - name: Attach the skills archive to the GitHub release
         if: steps.publish.outputs.published == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
@@ -96,5 +84,4 @@ jobs:
           version=$(jq -r '.[] | select(.name == "@gyst/cli") | .version' <<<"$PUBLISHED")
           gh release upload "@gyst/cli@$version" --clobber \
             LICENSE \
-            apps/gyst/.crust/*/bin/gyst-bun-* \
             apps/gyst/.crust/gyst-skills.tar.gz

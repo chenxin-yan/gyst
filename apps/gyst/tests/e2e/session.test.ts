@@ -1,65 +1,59 @@
-import { afterAll, beforeAll, describe, expect, it } from "bun:test";
-import { chmod, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import {
+  applyHumanAction,
+  SessionSchema,
+  SourceCheckPayloadSchema,
+  StatusPayloadSchema,
+  statusOf,
+} from "@gyst/core";
+import { Result, Schema } from "effect";
+import { execFileSync, spawn } from "node:child_process";
+import { existsSync } from "node:fs";
+import { chmod, mkdir, mkdtemp, readFile, readdir, writeFile } from "node:fs/promises";
+import { connect, createServer, type Socket } from "node:net";
 import { join } from "node:path";
-import { tmpdir } from "node:os";
-import { connect } from "node:net";
-import { BunServices } from "@effect/platform-bun";
-import { SourceCheckPayloadSchema, StatusPayloadSchema } from "@gyst/core";
-import { ConfigProvider, Layer, ManagedRuntime, Schema } from "effect";
-import { DaemonClient } from "../../src/daemon/client.ts";
-import { Paths } from "../../src/daemon/paths.ts";
-import { daemonVersion } from "../../src/daemon/protocol.ts";
-import { daemonTuiClient } from "../../src/tui/client.ts";
-import { isolatedHome } from "./isolated-home.ts";
+import { setTimeout as sleep } from "node:timers/promises";
+import { describe, expect, it, onTestFinished } from "vite-plus/test";
 
-const binary = join(tmpdir(), `gyst-e2e-${process.pid}`);
-let root: string;
-let data: string;
+import packageJson from "../../package.json" with { type: "json" };
+import {
+  commandLine,
+  daemonPid,
+  failed,
+  installed,
+  installedDaemons,
+  isAlive,
+  json,
+  killDaemon,
+  sandbox,
+  succeeded,
+  waitFor,
+} from "./installed-gyst.ts";
 
-function git(cwd: string, ...args: string[]) {
-  const result = Bun.spawnSync(["git", ...args], { cwd, stdout: "pipe", stderr: "pipe" });
-  if (result.exitCode !== 0) throw new Error(result.stderr.toString());
-  return result.stdout.toString();
-}
+// The installed daemon reports its package version.
+const daemonVersion = packageJson.version;
+const decodeSession = Schema.decodeUnknownSync(Schema.fromJsonString(SessionSchema));
 
-async function repo(name: string): Promise<string> {
-  const cwd = join(root, name);
-  await Bun.$`mkdir -p ${cwd}`.quiet();
-  git(cwd, "init", "-q");
-  git(cwd, "config", "user.email", "test@gyst.invalid");
-  git(cwd, "config", "user.name", "Gyst Test");
+type Sandbox = Awaited<ReturnType<typeof sandbox>>;
+
+const git = (box: Sandbox, cwd: string, ...args: string[]) =>
+  execFileSync("git", args, {
+    cwd,
+    env: box.env,
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+
+async function repo(box: Sandbox, name: string): Promise<string> {
+  const cwd = join(box.root, name);
+  await mkdir(cwd, { recursive: true });
+  git(box, cwd, "init", "-q");
+  git(box, cwd, "config", "user.email", "test@gyst.invalid");
+  git(box, cwd, "config", "user.name", "Gyst Test");
   await writeFile(join(cwd, "tracked.txt"), "one\n");
-  git(cwd, "add", ".");
-  git(cwd, "commit", "-qm", "initial");
+  git(box, cwd, "add", ".");
+  git(box, cwd, "commit", "-qm", "initial");
   return cwd;
 }
-
-function isAlive(pid: number): boolean {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-type Result = { exitCode: number; stdout: string; stderr: string };
-async function gyst(cwd: string, args: string[], stdin?: string, dataDir = data): Promise<Result> {
-  const child = Bun.spawn([binary, ...args], {
-    cwd,
-    env: { ...isolatedHome(root), GYST_DATA_DIR: dataDir },
-    stdin: stdin === undefined ? "ignore" : new Blob([stdin]),
-    stdout: "pipe",
-    stderr: "pipe",
-  });
-  return {
-    exitCode: await child.exited,
-    stdout: await new Response(child.stdout).text(),
-    stderr: await new Response(child.stderr).text(),
-  };
-}
-
-const daemonPid = () => readFile(join(data, "daemon.pid"), "utf8").then(Number, () => Number.NaN);
 
 function socketRequest(dataDir: string, message: unknown): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -78,105 +72,200 @@ function socketRequest(dataDir: string, message: unknown): Promise<string> {
   });
 }
 
-beforeAll(async () => {
-  root = await mkdtemp(join(tmpdir(), "gyst-e2e-"));
-  data = join(root, "data");
-  const built = Bun.spawnSync(
-    ["bun", "build", "--compile", "--minify", "--outfile", binary, "src/index.tsx"],
-    {
-      cwd: join(import.meta.dir, "../.."),
-      stdout: "pipe",
-      stderr: "pipe",
-    },
-  );
-  if (built.exitCode !== 0) throw new Error(built.stderr.toString());
-});
-
-afterAll(async () => {
-  try {
-    process.kill(await daemonPid(), "SIGTERM");
-  } catch {}
-  await rm(root, { recursive: true, force: true });
-  await rm(binary, { force: true });
-});
+/**
+ * A scripted socket peer for client negotiation cases that no daemon of this version produces:
+ * `reply` returns the reply line's value, `null` to close without replying, or `undefined` to never answer.
+ * Stopped after the test.
+ */
+async function fakeDaemon(dataDir: string, reply: (message: any) => unknown) {
+  const commands: string[] = [];
+  const sockets = new Set<Socket>();
+  const server = createServer((socket) => {
+    sockets.add(socket);
+    socket.once("close", () => sockets.delete(socket));
+    let buffered = "";
+    socket.setEncoding("utf8").on("data", (chunk: string) => {
+      buffered += chunk;
+      const end = buffered.indexOf("\n");
+      if (end === -1) return;
+      const message = JSON.parse(buffered.slice(0, end));
+      commands.push(message.command ?? message.request?.command);
+      const value = reply(message);
+      if (value === null) socket.end();
+      else if (value !== undefined) socket.end(`${JSON.stringify(value)}\n`);
+    });
+  });
+  await new Promise<void>((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(join(dataDir, "daemon.sock"), resolve);
+  });
+  const stop = () =>
+    new Promise<void>((resolve) => {
+      for (const socket of sockets) socket.destroy();
+      server.close(() => resolve());
+    });
+  onTestFinished(stop);
+  return { commands, stop };
+}
 
 describe("gyst session CLI seam", () => {
   it("checks scoped Git sources across restart without replacing snapshots, and distinguishes stdin", async () => {
-    const cwd = await repo("source-check");
+    const box = await sandbox();
+    const { data, gyst } = box;
+    const cwd = await repo(box, "source-check");
     const nested = join(cwd, "nested");
     await mkdir(nested);
     await writeFile(join(nested, "inside.txt"), "base\n");
-    git(cwd, "add", ".");
-    git(cwd, "commit", "-qm", "nested file");
+    git(box, cwd, "add", ".");
+    git(box, cwd, "commit", "-qm", "nested file");
     await writeFile(join(nested, "inside.txt"), "captured\n");
     const created = await gyst(nested, ["session", "create", "--", "HEAD", "--", "inside.txt"]);
-    expect(created.exitCode).toBe(0);
-    const captured = JSON.parse(created.stdout);
+    const captured = json(created);
     const savedPath = join(data, `${captured.session.id}.json`);
     const saved = await readFile(savedPath, "utf8");
-    const check = async (directory = cwd) => {
-      const result = await gyst(directory, ["session", "check"]);
-      expect(result.exitCode).toBe(0);
-      return Schema.decodeUnknownSync(SourceCheckPayloadSchema)(JSON.parse(result.stdout));
-    };
+    const check = async (directory = cwd) =>
+      Schema.decodeUnknownSync(SourceCheckPayloadSchema)(
+        json(await gyst(directory, ["session", "check"])),
+      );
     await writeFile(join(cwd, "tracked.txt"), "outside scope\n");
     expect((await check()).state).toBe("unchanged");
     await writeFile(join(nested, "inside.txt"), "changed after capture\n");
-    process.kill(await daemonPid(), "SIGKILL");
-    await Bun.sleep(50);
+    await killDaemon(data);
     expect((await check()).state).toBe("changed");
-    expect(JSON.parse((await gyst(cwd, ["session", "status"])).stdout)).toEqual(captured);
+    expect(json(await gyst(cwd, ["session", "status"]))).toEqual(captured);
     expect(await readFile(savedPath, "utf8")).toBe(saved);
-    expect((await gyst(cwd, ["session", "refresh"])).exitCode).toBe(0);
+    succeeded(await gyst(cwd, ["session", "refresh"]));
     expect((await check()).state).toBe("unchanged");
-    await gyst(cwd, ["session", "close"]);
+    succeeded(await gyst(cwd, ["session", "close"]));
 
-    expect((await gyst(nested, ["session", "create"])).exitCode).toBe(0);
+    succeeded(await gyst(nested, ["session", "create"]));
     await writeFile(join(cwd, "new-untracked.txt"), "new\n");
     expect((await check()).state).toBe("changed");
-    await gyst(cwd, ["session", "close"]);
+    succeeded(await gyst(cwd, ["session", "close"]));
 
-    const base = git(cwd, "rev-parse", "HEAD~1").trim();
-    const head = git(cwd, "rev-parse", "HEAD").trim();
-    expect((await gyst(cwd, ["session", "create", "--", base, head])).exitCode).toBe(0);
+    const base = git(box, cwd, "rev-parse", "HEAD~1").trim();
+    const head = git(box, cwd, "rev-parse", "HEAD").trim();
+    succeeded(await gyst(cwd, ["session", "create", "--", base, head]));
     await writeFile(join(nested, "inside.txt"), "working tree is not the fixed range\n");
     expect((await check()).state).toBe("unchanged");
-    await gyst(cwd, ["session", "close"]);
+    succeeded(await gyst(cwd, ["session", "close"]));
 
-    expect(
-      (await gyst(cwd, ["session", "create", "--stdin"], git(cwd, "diff", "HEAD"))).exitCode,
-    ).toBe(0);
+    succeeded(await gyst(cwd, ["session", "create", "--stdin"], git(box, cwd, "diff", "HEAD")));
     expect((await check()).state).toBe("stdin");
-    await gyst(cwd, ["session", "close"]);
+    succeeded(await gyst(cwd, ["session", "close"]));
+  }, 20_000);
+
+  it("maps create operands and selectors from the command line without changing their replies", async () => {
+    const box = await sandbox();
+    const { gyst } = box;
+    const cwd = await repo(box, "operands");
+    await writeFile(join(cwd, "tracked.txt"), "two\n");
+    await writeFile(join(cwd, "other.txt"), "new\n");
+    git(box, cwd, "add", "other.txt");
+    const source = async (args: string[]) => {
+      const { session } = json(await gyst(cwd, ["session", "create", ...args]));
+      succeeded(await gyst(cwd, ["session", "close", "--session", session.id]));
+      return session.source.args;
+    };
+    expect(await source(["HEAD"])).toEqual(["HEAD"]);
+    expect(await source(["--", "HEAD", "--", "tracked.txt"])).toEqual([
+      "HEAD",
+      "--",
+      "tracked.txt",
+    ]);
+    expect(await source(["HEAD", "--", "tracked.txt"])).toEqual(["HEAD", "tracked.txt"]);
+    expect(await source(["--", "HEAD", "--", "a", "--", "tracked.txt"])).toEqual([
+      "HEAD",
+      "--",
+      "a",
+      "--",
+      "tracked.txt",
+    ]);
+
+    const failure = async (args: string[], stdin?: string) =>
+      failed(await gyst(cwd, ["session", ...args], stdin));
+    expect(await failure(["create", "--", "HEAD", "--stat"])).toEqual({
+      code: "bad_args",
+      message: "git options are not accepted: --stat",
+    });
+    expect(await failure(["create", "--", "HEAD", "--", "-p"])).toEqual({
+      code: "bad_args",
+      message: "git options are not accepted: -p",
+    });
+    expect(await failure(["create", "--stdin", "HEAD"], "")).toEqual({
+      code: "bad_args",
+      message: "--stdin cannot be combined with git arguments",
+    });
+    expect(await failure(["status", "--stdin"])).toMatchObject({ code: "bad_args" });
+
+    const created = json(await gyst(cwd, ["session", "create"]));
+    const hunks = async (args: string[]) =>
+      json(await gyst(cwd, ["session", "diff", ...args])).hunks.map(
+        ({ file }: { file: string }) => file,
+      );
+    expect(await hunks([])).toEqual(["other.txt", "tracked.txt"]);
+    expect(await hunks(["--session", created.session.id, "--file", "other.txt"])).toEqual([
+      "other.txt",
+    ]);
+    expect(await failure(["diff", "--hunk", "x", "--file", "other.txt"])).toEqual({
+      code: "bad_args",
+      message: "choose only one diff selector",
+    });
+    expect(await failure(["status", "--session", "missing"])).toEqual({
+      code: "no_session",
+      message: "no session with id missing",
+    });
+    succeeded(await gyst(cwd, ["session", "close"]));
+  }, 20_000);
+
+  it("passes inline string flag values that start with a dash to the operation unchanged", async () => {
+    const box = await sandbox();
+    const { gyst } = box;
+    const cwd = await repo(box, "inline-flags");
+    await writeFile(join(cwd, "-name.txt"), "dash\n");
+    await writeFile(join(cwd, "tracked.txt"), "two\n");
+    git(box, cwd, "add", "--", "-name.txt");
+    const created = json(await gyst(cwd, ["session", "create"]));
+    expect(failed(await gyst(cwd, ["session", "status", "--session=--missing"]))).toEqual({
+      code: "no_session",
+      message: "no session with id --missing",
+    });
+    const selected = json(
+      await gyst(cwd, ["session", "diff", `--session=${created.session.id}`, "--file=-name.txt"]),
+    );
+    expect(selected.hunks.map(({ file }: { file: string }) => file)).toEqual(["-name.txt"]);
+    succeeded(await gyst(cwd, ["session", "close"]));
   }, 20_000);
 
   it("serializes concurrent startup and create for one repository", async () => {
-    const cwd = await repo("concurrent-create");
+    const box = await sandbox();
+    const { data, gyst } = box;
+    const cwd = await repo(box, "concurrent-create");
     await writeFile(join(cwd, "tracked.txt"), "changed\n");
 
     const results = await Promise.all([
       gyst(cwd, ["session", "create"]),
       gyst(cwd, ["session", "create"]),
     ]);
-    expect(results.map(({ exitCode }) => exitCode).sort((a, b) => a - b)).toEqual([0, 1]);
-    expect(JSON.parse(results.find(({ exitCode }) => exitCode === 1)!.stderr).code).toBe(
-      "session_exists",
-    );
-    const status = JSON.parse((await gyst(cwd, ["session", "status"])).stdout);
+    expect(results.map(({ exitCode }) => exitCode).sort((a, b) => a! - b!)).toEqual([0, 1]);
+    expect(failed(results.find(({ exitCode }) => exitCode === 1)!).code).toBe("session_exists");
+    const status = json(await gyst(cwd, ["session", "status"]));
     expect((await readdir(data)).filter((file) => file.endsWith(".json"))).toEqual([
       `${status.session.id}.json`,
     ]);
-    await gyst(cwd, ["session", "close"]);
+    succeeded(await gyst(cwd, ["session", "close"]));
   }, 20_000);
 
   it("creates bare snapshots, respawns from persistence, and shuts down after the last close", async () => {
-    const cwd = await repo("bare");
+    const box = await sandbox();
+    const { data, gyst } = box;
+    const cwd = await repo(box, "bare");
     await writeFile(join(cwd, "tracked.txt"), "one\ntwo\n");
     await writeFile(join(cwd, "untracked.txt"), "new\n");
 
-    const created = await gyst(cwd, ["session", "create"]);
-    expect(created.exitCode).toBe(0);
-    const status = Schema.decodeUnknownSync(StatusPayloadSchema)(JSON.parse(created.stdout));
+    const status = Schema.decodeUnknownSync(StatusPayloadSchema)(
+      json(await gyst(cwd, ["session", "create"])),
+    );
     expect(status.inbox.length).toBe(2);
     expect(status.session.source).toEqual({
       kind: "git",
@@ -187,9 +276,7 @@ describe("gyst session CLI seam", () => {
     });
     const hunkId = status.inbox[0]!.id;
 
-    const pid = await daemonPid();
-    process.kill(pid, "SIGKILL");
-    await Bun.sleep(50);
+    const pid = await killDaemon(data);
     // Seed review state on disk: the respawned daemon must serve it, not the pre-kill snapshot.
     const statePath = join(data, `${status.session.id}.json`);
     const state = JSON.parse(await readFile(statePath, "utf8"));
@@ -212,9 +299,7 @@ describe("gyst session CLI seam", () => {
     });
     await writeFile(statePath, JSON.stringify(state));
     await writeFile(join(data, "corrupt.json"), "not json");
-    const restored = await gyst(cwd, ["session", "status"]);
-    expect(restored.exitCode).toBe(0);
-    const restoredStatus = JSON.parse(restored.stdout);
+    const restoredStatus = json(await gyst(cwd, ["session", "status"]));
     expect(restoredStatus.session.id).toBe(status.session.id);
     expect(restoredStatus.groups[0].count).toBe(1);
     expect(restoredStatus.groups[1]).toEqual({
@@ -226,60 +311,74 @@ describe("gyst session CLI seam", () => {
       accepted: false,
     });
     expect(restoredStatus.inbox).toEqual([]);
-    expect(await daemonPid()).not.toBe(pid);
+    const respawned = await daemonPid(data);
+    expect(respawned).not.toBe(pid);
+    // The CLI relaunched its own installed entry on the Node under test.
+    const launched = commandLine(respawned);
+    expect(launched.startsWith(`${process.execPath} `)).toBe(true);
+    expect(launched).toContain(installed.prefix);
+    expect(launched.endsWith(" daemon run")).toBe(true);
 
-    const closed = await gyst(cwd, ["session", "close"]);
-    expect(JSON.parse(closed.stdout)).toEqual({
+    expect(json(await gyst(cwd, ["session", "close"]))).toEqual({
       closed: true,
       sessionId: status.session.id,
     });
-    for (
-      let attempt = 0;
-      attempt < 50 && (await Bun.file(join(data, "daemon.pid")).exists());
-      attempt++
-    )
-      await Bun.sleep(20);
+    await waitFor(
+      () => !isAlive(respawned) && !existsSync(join(data, "daemon.pid")),
+      `daemon ${respawned} to exit after the last close`,
+    );
     expect(await readdir(data)).toEqual(["corrupt.json"]);
-    await rm(join(data, "corrupt.json"));
   }, 20_000);
 
   it("keeps failed persistence from exposing a session", async () => {
-    const cwd = await repo("persist-failure");
+    const box = await sandbox();
+    const { data, gyst } = box;
+    const cwd = await repo(box, "persist-failure");
     await writeFile(join(cwd, "tracked.txt"), "changed\n");
-    expect((await gyst(cwd, ["session", "status"])).exitCode).toBe(1);
+    expect(failed(await gyst(cwd, ["session", "status"])).code).toBe("no_session");
     await chmod(data, 0o500);
-    const failed = await gyst(cwd, ["session", "create"]);
+    const failedCreate = await gyst(cwd, ["session", "create"]);
     await chmod(data, 0o700);
-    expect(failed.exitCode).toBe(1);
-    expect(JSON.parse(failed.stderr).code).toBe("daemon_unreachable");
+    expect(failed(failedCreate).code).toBe("daemon_unreachable");
 
-    const retried = await gyst(cwd, ["session", "create"]);
-    expect(retried.exitCode).toBe(0);
-    await gyst(cwd, ["session", "close"]);
+    succeeded(await gyst(cwd, ["session", "create"]));
+    succeeded(await gyst(cwd, ["session", "close"]));
   }, 20_000);
 
   it("keeps a replacement session alive during final-session shutdown", async () => {
-    const first = await repo("shutdown-first");
-    const replacement = await repo("shutdown-replacement");
+    const box = await sandbox();
+    const { data, gyst } = box;
+    const first = await repo(box, "shutdown-first");
+    const replacement = await repo(box, "shutdown-replacement");
     await writeFile(join(first, "tracked.txt"), "first changed\n");
     await writeFile(join(replacement, "tracked.txt"), "replacement changed\n");
-    expect((await gyst(first, ["session", "create"])).exitCode).toBe(0);
+    succeeded(await gyst(first, ["session", "create"]));
 
+    // Independent processes: the replacement may reach the first daemon or, after its idle exit, a
+    // new one. Either way a daemon must keep serving it. server.test.ts pins the overlapping order.
     const [closed, created] = await Promise.all([
       gyst(first, ["session", "close"]),
       gyst(replacement, ["session", "create"]),
     ]);
-    expect(closed.exitCode).toBe(0);
-    expect(created.exitCode).toBe(0);
-    await Bun.sleep(50);
-    expect((await gyst(replacement, ["session", "status"])).exitCode).toBe(0);
-    await gyst(replacement, ["session", "close"]);
+    succeeded(closed);
+    succeeded(created);
+    // Wait past the 20 ms idle debounce so a wrongful idle exit is likely to show; this cannot
+    // prove its absence.
+    await sleep(100);
+    const pid = await daemonPid(data);
+    expect(isAlive(pid)).toBe(true);
+    succeeded(await gyst(replacement, ["session", "status"]));
+    // Served by that daemon, not a respawn from persistence.
+    expect(await daemonPid(data)).toBe(pid);
+    succeeded(await gyst(replacement, ["session", "close"]));
   }, 20_000);
 
   it("preserves split UTF-8 input at the socket boundary", async () => {
-    const cwd = await repo("utf8-socket");
+    const box = await sandbox();
+    const { data, gyst } = box;
+    const cwd = await repo(box, "utf8-socket");
     // Start the daemon without creating a session, then write one request in deliberately split byte chunks.
-    expect((await gyst(cwd, ["session", "status"])).exitCode).toBe(1);
+    expect(failed(await gyst(cwd, ["session", "status"])).code).toBe("no_session");
     const patch = `diff --git a/tracked.txt b/tracked.txt
 --- a/tracked.txt
 +++ b/tracked.txt
@@ -289,7 +388,7 @@ describe("gyst session CLI seam", () => {
 `;
     const hello = JSON.parse(await socketRequest(data, { command: "daemon.info" }));
     const request = new TextEncoder().encode(
-      `${JSON.stringify({ ...hello.value, request: { command: "create", cwd, args: ["--stdin"], stdin: patch } })}\n`,
+      `${JSON.stringify({ ...hello.value, request: { command: "create", cwd, revisions: [], patch } })}\n`,
     );
     const marker = new TextEncoder().encode("é");
     const markerStart = request.findIndex(
@@ -299,31 +398,30 @@ describe("gyst session CLI seam", () => {
     const reply = await new Promise<string>((resolve, reject) => {
       let response = "";
       const decoder = new TextDecoder();
-      void Bun.connect({
-        unix: join(data, "daemon.sock"),
-        socket: {
-          open(socket) {
-            socket.write(request.slice(0, markerStart + 1));
-            setTimeout(() => socket.write(request.slice(markerStart + 1)), 5);
-          },
-          data(_socket, bytes) {
-            response += decoder.decode(bytes, { stream: true });
-            if (response.includes("\n")) resolve(response);
-          },
-          error(_socket, error) {
-            reject(error);
-          },
-        },
-      }).catch(reject);
+      const socket = connect(join(data, "daemon.sock"));
+      socket.once("error", reject);
+      socket.once("connect", () => {
+        socket.write(request.slice(0, markerStart + 1));
+        setTimeout(() => socket.write(request.slice(markerStart + 1)), 5);
+      });
+      socket.on("data", (bytes) => {
+        response += decoder.decode(bytes, { stream: true });
+        if (response.includes("\n")) {
+          socket.destroy();
+          resolve(response);
+        }
+      });
     });
     expect(JSON.parse(reply).ok).toBe(true);
-    const diff = JSON.parse((await gyst(cwd, ["session", "diff"])).stdout);
+    const diff = json(await gyst(cwd, ["session", "diff"]));
     expect(diff.hunks[0].patch).toContain("café");
-    await gyst(cwd, ["session", "close"]);
+    succeeded(await gyst(cwd, ["session", "close"]));
   }, 20_000);
 
   it("moves large requests and replies through the socket completely", async () => {
-    const cwd = await repo("large");
+    const box = await sandbox();
+    const { gyst } = box;
+    const cwd = await repo(box, "large");
     const line = "x".repeat(2_000_000);
     const patch = `diff --git a/tracked.txt b/tracked.txt
 --- a/tracked.txt
@@ -332,99 +430,94 @@ describe("gyst session CLI seam", () => {
 -one
 +${line}
 `;
-    const created = await gyst(cwd, ["session", "create", "--stdin"], patch);
-    expect(created.exitCode).toBe(0);
-    const diff = JSON.parse((await gyst(cwd, ["session", "diff"])).stdout);
+    succeeded(await gyst(cwd, ["session", "create", "--stdin"], patch));
+    const diff = json(await gyst(cwd, ["session", "diff"]));
     expect(diff.hunks[0].patch.endsWith(line)).toBe(true);
-    await gyst(cwd, ["session", "close"]);
+    succeeded(await gyst(cwd, ["session", "close"]));
   }, 20_000);
 
   it("reclaims a dead daemon's socket under concurrent starts", async () => {
-    const cwd = await repo("reclaim");
-    expect((await gyst(cwd, ["session", "status"])).exitCode).toBe(1);
-    const pid = await daemonPid();
-    process.kill(pid, "SIGKILL");
-    for (let attempt = 0; attempt < 50 && isAlive(pid); attempt++) await Bun.sleep(10);
+    const box = await sandbox();
+    const { data, gyst } = box;
+    const cwd = await repo(box, "reclaim");
+    expect(failed(await gyst(cwd, ["session", "status"])).code).toBe("no_session");
+    const pid = await killDaemon(data);
     expect(await readdir(data)).toContain("daemon.sock");
 
     const results = await Promise.all(
       Array.from({ length: 4 }, () => gyst(cwd, ["session", "status"])),
     );
-    expect(results.map(({ stderr }) => JSON.parse(stderr).code)).toEqual(
-      Array(4).fill("no_session"),
-    );
-    const daemons = () =>
-      Bun.spawnSync(["pgrep", "-f", `^${binary} daemon run`], { stdout: "pipe" })
-        .stdout.toString()
-        .trim()
-        .split("\n");
-    // Losers of the rename race notice within their 1 s inode check and exit.
-    for (let attempt = 0; attempt < 60 && daemons().length > 1; attempt++) await Bun.sleep(50);
-    const survivor = daemons()[0] ?? "";
-    expect(daemons()).toEqual([survivor]);
-    expect(Number(survivor)).not.toBe(pid);
-    expect(isAlive(Number(survivor))).toBe(true);
+    expect(results.map((result) => failed(result).code)).toEqual(Array(4).fill("no_session"));
+    // Losers of the link race notice within their 1 s inode check and exit.
+    await waitFor(() => installedDaemons().length === 1, "exactly one daemon to remain");
+    const [survivor] = installedDaemons();
+    expect(survivor).not.toBe(pid);
+    expect(isAlive(survivor!)).toBe(true);
     // The pid file may briefly name a loser; the owner rewrites it on its next inode check.
-    for (let attempt = 0; attempt < 40 && (await daemonPid()) !== Number(survivor); attempt++)
-      await Bun.sleep(50);
-    const survivorPid = await daemonPid();
-    expect(survivorPid).toBe(Number(survivor));
-    expect(daemons()).toEqual([String(survivorPid)]);
+    await waitFor(
+      async () => (await daemonPid(data)) === survivor,
+      `daemon.pid to name ${survivor}`,
+    );
+    expect(installedDaemons()).toEqual([survivor]);
     expect((await readdir(data)).sort()).toEqual(["daemon.pid", "daemon.sock"]);
   }, 20_000);
 
   it("exits 130 on SIGINT through crust's cancellation and releases the socket and pid file", async () => {
-    const ownData = join(root, "sigint-data");
-    const daemon = Bun.spawn([binary, "daemon", "run"], {
-      cwd: root,
-      env: { ...process.env, GYST_DATA_DIR: ownData },
-      stdin: "ignore",
-      stdout: "pipe",
-      stderr: "pipe",
+    const box = await sandbox();
+    const ownData = join(box.root, "sigint-data");
+    const daemon = spawn(installed.bin, ["daemon", "run"], {
+      cwd: box.root,
+      env: { ...box.env, GYST_DATA_DIR: ownData },
+      stdio: ["ignore", "pipe", "pipe"],
     });
-    while (!(await readdir(ownData).catch((): string[] => [])).includes("daemon.pid")) {
-      await Bun.sleep(20);
-    }
+    let stderr = "";
+    daemon.stderr.setEncoding("utf8").on("data", (chunk: string) => (stderr += chunk));
+    const exited = new Promise<[number | null, NodeJS.Signals | null]>((resolve) =>
+      daemon.once("close", (code, signal) => resolve([code, signal])),
+    );
+    onTestFinished(() => void daemon.kill("SIGKILL"));
+    await waitFor(
+      async () => (await daemonPid(ownData)) === daemon.pid,
+      `daemon ${daemon.pid} to publish its pid file`,
+    );
     daemon.kill("SIGINT");
-    const [exitCode, stderr] = await Promise.all([
-      daemon.exited,
-      new Response(daemon.stderr).text(),
-    ]);
-    expect(exitCode).toBe(130);
+    expect(await exited).toEqual([130, null]);
     expect(stderr).toBe("");
     expect(await readdir(ownData)).toEqual([]);
   }, 20_000);
 
   it("applies batches atomically and replays receipts across a daemon restart", async () => {
-    const cwd = await repo("apply");
+    const box = await sandbox();
+    const { data, gyst } = box;
+    const cwd = await repo(box, "apply");
     await writeFile(join(cwd, "tracked.txt"), "one\ntwo\n");
     await writeFile(join(cwd, "other.txt"), "new\n");
-    const created = JSON.parse((await gyst(cwd, ["session", "create"])).stdout);
+    const created = json(await gyst(cwd, ["session", "create"]));
     const [first, second] = created.inbox;
 
-    const invalid = await gyst(
-      cwd,
-      ["session", "apply"],
-      JSON.stringify({
-        revision: 0,
-        idempotencyKey: "invalid-batch",
-        ops: [
-          {
-            type: "group.create",
-            id: "group-1",
-            title: "coherent change",
-            notes: [{ hunkId: first.id, text: "intent and behavior" }],
-            memberHunkIds: [first.id],
-          },
-          { type: "group.update", id: "missing", title: "nope" },
-        ],
-      }),
+    const invalidError = failed(
+      await gyst(
+        cwd,
+        ["session", "apply"],
+        JSON.stringify({
+          revision: 0,
+          idempotencyKey: "invalid-batch",
+          ops: [
+            {
+              type: "group.create",
+              id: "group-1",
+              title: "coherent change",
+              notes: [{ hunkId: first.id, text: "intent and behavior" }],
+              memberHunkIds: [first.id],
+            },
+            { type: "group.update", id: "missing", title: "nope" },
+          ],
+        }),
+      ),
     );
-    expect(invalid.exitCode).toBe(1);
-    const invalidError = JSON.parse(invalid.stderr);
     expect(invalidError.code).toBe("validation_failed");
     expect(invalidError.detail).toEqual([expect.objectContaining({ opIndex: 1 })]);
-    expect(JSON.parse((await gyst(cwd, ["session", "status"])).stdout).groups).toEqual([]);
+    expect(json(await gyst(cwd, ["session", "status"])).groups).toEqual([]);
 
     const envelope = {
       revision: 0,
@@ -447,9 +540,9 @@ describe("gyst session CLI seam", () => {
         { type: "queue.set", itemIds: ["group-2", "group-1"] },
       ],
     };
-    const applied = await gyst(cwd, ["session", "apply"], JSON.stringify(envelope));
-    expect(applied.exitCode).toBe(0);
-    const status = Schema.decodeUnknownSync(StatusPayloadSchema)(JSON.parse(applied.stdout));
+    const status = Schema.decodeUnknownSync(StatusPayloadSchema)(
+      json(await gyst(cwd, ["session", "apply"], JSON.stringify(envelope))),
+    );
     expect(status.revision).toBe(1);
     expect(status.groups).toHaveLength(2);
     expect(status.inbox).toEqual([]);
@@ -457,51 +550,50 @@ describe("gyst session CLI seam", () => {
     expect(status.queueSet).toBe(true);
     expect(status.ready).toBe(true);
 
-    const pid = Number(await readFile(join(data, "daemon.pid"), "utf8"));
-    process.kill(pid, "SIGKILL");
-    await Bun.sleep(50);
+    await killDaemon(data);
     const statePath = join(data, `${status.session.id}.json`);
     const persisted = JSON.parse(await readFile(statePath, "utf8"));
     persisted.cursor = { itemId: "group-1", pane: "diff", hunkId: first.id };
     await writeFile(statePath, JSON.stringify(persisted));
 
-    const changed = await gyst(
-      cwd,
-      ["session", "apply"],
-      JSON.stringify({
-        revision: 1,
-        idempotencyKey: "change",
-        ops: [
-          {
-            type: "group.update",
-            id: "group-2",
-            title: "updated",
-            notes: [{ hunkId: second.id, text: "updated" }],
-          },
-          { type: "queue.set", itemIds: ["group-2", "group-1"] },
-        ],
-      }),
+    const changed = json(
+      await gyst(
+        cwd,
+        ["session", "apply"],
+        JSON.stringify({
+          revision: 1,
+          idempotencyKey: "change",
+          ops: [
+            {
+              type: "group.update",
+              id: "group-2",
+              title: "updated",
+              notes: [{ hunkId: second.id, text: "updated" }],
+            },
+            { type: "queue.set", itemIds: ["group-2", "group-1"] },
+          ],
+        }),
+      ),
     );
-    expect(JSON.parse(changed.stdout).revision).toBe(2);
-    const replay = await gyst(cwd, ["session", "apply"], JSON.stringify(envelope));
-    expect(replay.exitCode).toBe(0);
-    expect(JSON.parse(replay.stdout)).toEqual(status);
-    expect(JSON.parse((await gyst(cwd, ["session", "status"])).stdout).revision).toBe(2);
+    expect(changed.revision).toBe(2);
+    expect(json(await gyst(cwd, ["session", "apply"], JSON.stringify(envelope)))).toEqual(status);
+    expect(json(await gyst(cwd, ["session", "status"])).revision).toBe(2);
 
-    const dissolved = await gyst(
-      cwd,
-      ["session", "apply"],
-      JSON.stringify({
-        revision: 2,
-        idempotencyKey: "dissolve",
-        ops: [
-          { type: "group.dissolve", id: "group-1" },
-          { type: "queue.set", itemIds: ["group-2"] },
-        ],
-      }),
+    const dissolved = json(
+      await gyst(
+        cwd,
+        ["session", "apply"],
+        JSON.stringify({
+          revision: 2,
+          idempotencyKey: "dissolve",
+          ops: [
+            { type: "group.dissolve", id: "group-1" },
+            { type: "queue.set", itemIds: ["group-2"] },
+          ],
+        }),
+      ),
     );
-    expect(dissolved.exitCode).toBe(0);
-    expect(JSON.parse(dissolved.stdout)).toEqual(
+    expect(dissolved).toEqual(
       expect.objectContaining({
         groups: [expect.objectContaining({ id: "group-2", hunkIds: [second.id] })],
         queue: ["group-2"],
@@ -510,107 +602,81 @@ describe("gyst session CLI seam", () => {
         cursor: { itemId: null, pane: "queue" },
       }),
     );
-    await gyst(cwd, ["session", "close"]);
+    succeeded(await gyst(cwd, ["session", "close"]));
   }, 20_000);
 
   it("serializes concurrent mutations so revision checks prevent lost updates", async () => {
-    const cwd = await repo("concurrent-apply");
+    const box = await sandbox();
+    const { gyst } = box;
+    const cwd = await repo(box, "concurrent-apply");
     await writeFile(join(cwd, "tracked.txt"), "one\ntwo\n");
-    const created = JSON.parse((await gyst(cwd, ["session", "create"])).stdout);
+    const created = json(await gyst(cwd, ["session", "create"]));
     const hunkId = created.inbox[0].id;
+    const batch = (idempotencyKey: string, title: string) =>
+      JSON.stringify({
+        revision: 0,
+        idempotencyKey,
+        ops: [
+          { type: "group.create", id: "group-1", memberHunkIds: [hunkId], title, notes: [] },
+          { type: "queue.set", itemIds: ["group-1"] },
+        ],
+      });
 
     const results = await Promise.all([
-      gyst(
-        cwd,
-        ["session", "apply"],
-        JSON.stringify({
-          revision: 0,
-          idempotencyKey: "concurrent-a",
-          ops: [
-            {
-              type: "group.create",
-              id: "group-1",
-              memberHunkIds: [hunkId],
-              title: "first",
-              notes: [],
-            },
-            { type: "queue.set", itemIds: ["group-1"] },
-          ],
-        }),
-      ),
-      gyst(
-        cwd,
-        ["session", "apply"],
-        JSON.stringify({
-          revision: 0,
-          idempotencyKey: "concurrent-b",
-          ops: [
-            {
-              type: "group.create",
-              id: "group-1",
-              memberHunkIds: [hunkId],
-              title: "second",
-              notes: [],
-            },
-            { type: "queue.set", itemIds: ["group-1"] },
-          ],
-        }),
-      ),
+      gyst(cwd, ["session", "apply"], batch("concurrent-a", "first")),
+      gyst(cwd, ["session", "apply"], batch("concurrent-b", "second")),
     ]);
 
-    expect(results.map(({ exitCode }) => exitCode).sort((a, b) => a - b)).toEqual([0, 1]);
-    const rejected = results.find(({ exitCode }) => exitCode === 1)!;
-    expect(JSON.parse(rejected.stderr).code).toBe("stale_revision");
-    expect(JSON.parse((await gyst(cwd, ["session", "status"])).stdout).revision).toBe(1);
-    await gyst(cwd, ["session", "close"]);
+    expect(results.map(({ exitCode }) => exitCode).sort((a, b) => a! - b!)).toEqual([0, 1]);
+    expect(failed(results.find(({ exitCode }) => exitCode === 1)!).code).toBe("stale_revision");
+    expect(json(await gyst(cwd, ["session", "status"])).revision).toBe(1);
+    succeeded(await gyst(cwd, ["session", "close"]));
   }, 20_000);
 
   it("refreshes git and stdin snapshots while preserving only unchanged review work", async () => {
-    const cwd = await repo("refresh");
+    const box = await sandbox();
+    const { data, gyst } = box;
+    const cwd = await repo(box, "refresh");
     await writeFile(join(cwd, "tracked.txt"), "one\ntwo\n");
     await writeFile(join(cwd, "second.txt"), "base\n");
-    git(cwd, "add", ".");
-    git(cwd, "commit", "-qm", "add second");
+    git(box, cwd, "add", ".");
+    git(box, cwd, "commit", "-qm", "add second");
     await writeFile(join(cwd, "tracked.txt"), "one\ntwo\nthree\n");
     await writeFile(join(cwd, "second.txt"), "base\nfirst change\n");
-    const created = JSON.parse((await gyst(cwd, ["session", "create"])).stdout);
+    const created = json(await gyst(cwd, ["session", "create"]));
     const first = created.inbox.find((hunk: { file: string }) => hunk.file === "tracked.txt");
     const second = created.inbox.find((hunk: { file: string }) => hunk.file === "second.txt");
     expect(first).toBeDefined();
     expect(second).toBeDefined();
-    const applied = JSON.parse(
-      (
-        await gyst(
-          cwd,
-          ["session", "apply"],
-          JSON.stringify({
-            revision: 0,
-            idempotencyKey: "fold",
-            ops: [
-              {
-                type: "group.create",
-                id: "group-1",
-                title: "stable group",
-                notes: [{ hunkId: first.id, text: "intent and behavior" }],
-                memberHunkIds: [first.id],
-              },
-              {
-                type: "group.create",
-                id: "group-2",
-                memberHunkIds: [second.id],
-                title: "stale group",
-                notes: [{ hunkId: second.id, text: "stale group" }],
-              },
-              { type: "queue.set", itemIds: ["group-1", "group-2"] },
-            ],
-          }),
-        )
-      ).stdout,
+    const applied = json(
+      await gyst(
+        cwd,
+        ["session", "apply"],
+        JSON.stringify({
+          revision: 0,
+          idempotencyKey: "fold",
+          ops: [
+            {
+              type: "group.create",
+              id: "group-1",
+              title: "stable group",
+              notes: [{ hunkId: first.id, text: "intent and behavior" }],
+              memberHunkIds: [first.id],
+            },
+            {
+              type: "group.create",
+              id: "group-2",
+              memberHunkIds: [second.id],
+              title: "stale group",
+              notes: [{ hunkId: second.id, text: "stale group" }],
+            },
+            { type: "queue.set", itemIds: ["group-1", "group-2"] },
+          ],
+        }),
+      ),
     );
 
-    const pid = Number(await readFile(join(data, "daemon.pid"), "utf8"));
-    process.kill(pid, "SIGKILL");
-    await Bun.sleep(50);
+    await killDaemon(data);
     const statePath = join(data, `${applied.session.id}.json`);
     const state = JSON.parse(await readFile(statePath, "utf8"));
     state.groups[0].accepted = true;
@@ -618,9 +684,7 @@ describe("gyst session CLI seam", () => {
 
     await writeFile(join(cwd, "second.txt"), "base\nreplacement change\n");
     await writeFile(join(cwd, "new.txt"), "brand new\n");
-    const refresh = await gyst(cwd, ["session", "refresh"]);
-    expect(refresh.exitCode).toBe(0);
-    const refreshed = JSON.parse(refresh.stdout);
+    const refreshed = json(await gyst(cwd, ["session", "refresh"]));
     expect(refreshed.groups[0]).toEqual(
       expect.objectContaining({ id: "group-1", accepted: true, hunkIds: [first.id] }),
     );
@@ -633,156 +697,63 @@ describe("gyst session CLI seam", () => {
     expect(refreshed.queueSet).toBe(false);
     expect(refreshed.ready).toBe(false);
 
-    const updated = await gyst(
-      cwd,
-      ["session", "apply"],
-      JSON.stringify({
-        revision: refreshed.revision,
-        idempotencyKey: "update-group",
-        ops: [
-          { type: "group.update", id: "group-1", title: "updated group" },
-          { type: "queue.set", itemIds: ["group-1"] },
-        ],
-      }),
-    );
-    expect(updated.exitCode).toBe(0);
-    expect(JSON.parse(updated.stdout).groups[0].accepted).toBe(false);
-    await gyst(cwd, ["session", "close"]);
-
-    const stdinRepo = await repo("refresh-stdin");
-    const firstPatch = `diff --git a/a.txt b/a.txt\n--- a/a.txt\n+++ b/a.txt\n@@ -1 +1 @@\n-old\n+new\n`;
-    const secondPatch = `diff --git a/a.txt b/a.txt\n--- a/a.txt\n+++ b/a.txt\n@@ -1 +1 @@\n-old\n+newer\n`;
-    const stdinCreated = JSON.parse(
-      (await gyst(stdinRepo, ["session", "create", "--stdin"], firstPatch)).stdout,
-    );
-    const withoutPipe = await gyst(stdinRepo, ["session", "refresh"]);
-    expect(withoutPipe.exitCode).toBe(1);
-    expect(JSON.parse(withoutPipe.stderr).code).toBe("bad_args");
-    const stdinRefresh = await gyst(stdinRepo, ["session", "refresh", "--stdin"], secondPatch);
-    expect(stdinRefresh.exitCode).toBe(0);
-    expect(JSON.parse(stdinRefresh.stdout).inbox[0].id).not.toBe(stdinCreated.inbox[0].id);
-    await gyst(stdinRepo, ["session", "close"]);
-  }, 20_000);
-
-  it("persists human cursor, pane state, and verdicts through the daemon", async () => {
-    const cwd = await repo("human-actions");
-    await writeFile(join(cwd, "tracked.txt"), "one\ntwo\n");
-    await writeFile(join(cwd, "other.txt"), "new\n");
-    const created = JSON.parse((await gyst(cwd, ["session", "create"])).stdout);
-    const [first, second] = created.inbox;
-    // The TUI's runtime, pointed at this test's data dir; the daemon is already up, so nothing spawns.
-    await using runtime = ManagedRuntime.make(
-      DaemonClient.layer.pipe(
-        Layer.provide(Paths.layer),
-        Layer.provide(BunServices.layer),
-        Layer.provide(ConfigProvider.layer(ConfigProvider.fromUnknown({ GYST_DATA_DIR: data }))),
+    const updated = json(
+      await gyst(
+        cwd,
+        ["session", "apply"],
+        JSON.stringify({
+          revision: refreshed.revision,
+          idempotencyKey: "update-group",
+          ops: [
+            { type: "group.update", id: "group-1", title: "updated group" },
+            { type: "queue.set", itemIds: ["group-1"] },
+          ],
+        }),
       ),
     );
-    const client = daemonTuiClient(runtime, cwd);
-    const frame = (revision: number) => ({ sessionId: created.session.id, revision });
-    await expect(
-      client.action({ type: "verdict.toggle", itemId: first.id, ...frame(0) }),
-    ).rejects.toThrow("review queue is not set");
-    await gyst(
-      cwd,
-      ["session", "apply"],
-      JSON.stringify({
-        revision: 0,
-        idempotencyKey: "human-session",
-        ops: [
-          {
-            type: "group.create",
-            id: "group-1",
-            title: "coherent change",
-            notes: [{ hunkId: first.id, text: "intent and behavior" }],
-            memberHunkIds: [first.id],
-          },
-          {
-            type: "group.create",
-            id: "group-2",
-            memberHunkIds: [second.id],
-            title: "read this",
-            notes: [{ hunkId: second.id, text: "read this" }],
-          },
-          { type: "queue.set", itemIds: ["group-1", "group-2"] },
-        ],
-      }),
-    );
+    expect(updated.groups[0].accepted).toBe(false);
+    succeeded(await gyst(cwd, ["session", "close"]));
 
-    await expect(client.action({ type: "verdict.undo", ...frame(1) })).rejects.toThrow(
-      "TUI action does not apply",
+    const stdinRepo = await repo(box, "refresh-stdin");
+    const firstPatch = `diff --git a/a.txt b/a.txt\n--- a/a.txt\n+++ b/a.txt\n@@ -1 +1 @@\n-old\n+new\n`;
+    const secondPatch = `diff --git a/a.txt b/a.txt\n--- a/a.txt\n+++ b/a.txt\n@@ -1 +1 @@\n-old\n+newer\n`;
+    const stdinCreated = json(await gyst(stdinRepo, ["session", "create", "--stdin"], firstPatch));
+    expect(failed(await gyst(stdinRepo, ["session", "refresh"])).code).toBe("bad_args");
+    const stdinRefresh = json(
+      await gyst(stdinRepo, ["session", "refresh", "--stdin"], secondPatch),
     );
-    await client.action({ type: "cursor.move", itemId: "group-1" });
-    await client.action({
-      type: "cursor.focus",
-      itemId: "group-1",
-      pane: "diff",
-      hunkId: first.id,
-    });
-    // The frame the human saw is stale once the pre-pass moved the revision on.
-    await expect(
-      client.action({ type: "verdict.toggle", itemId: "group-1", ...frame(0) }),
-    ).rejects.toThrow("verdict targets a stale snapshot");
-    const accepted = await client.action({
-      type: "verdict.toggle",
-      itemId: "group-1",
-      ...frame(1),
-    });
-    expect(accepted.cursor).toEqual({ itemId: "group-2", pane: "diff", hunkId: second.id });
-    expect(accepted.groups[0]!.accepted).toBe(true);
-    expect(accepted.revision).toBe(2);
-    expect(accepted.seq).toBe(4);
-    expect(JSON.parse((await gyst(cwd, ["session", "status"])).stdout)).toEqual(accepted);
-
-    const pid = Number(await readFile(join(data, "daemon.pid"), "utf8"));
-    process.kill(pid, "SIGKILL");
-    await Bun.sleep(50);
-    const restored = JSON.parse((await gyst(cwd, ["session", "status"])).stdout);
-    expect(restored.cursor).toEqual({ itemId: "group-2", pane: "diff", hunkId: second.id });
-    expect(restored.groups[0]!.accepted).toBe(true);
-    const undone = await client.action({ type: "verdict.undo", ...frame(2) });
-    expect(undone.cursor).toEqual({ itemId: "group-1", pane: "diff", hunkId: first.id });
-    expect(undone.groups[0]!.accepted).toBe(false);
-    await gyst(cwd, ["session", "close"]);
+    expect(stdinRefresh.inbox[0].id).not.toBe(stdinCreated.inbox[0].id);
+    succeeded(await gyst(stdinRepo, ["session", "close"]));
   }, 20_000);
 
   it("skips undecodable saved sessions without reserving their repo or modifying their files", async () => {
-    const cwd = await repo("legacy");
-    const ownData = await mkdtemp(join(root, "legacy-data-"));
+    const box = await sandbox();
+    const { gyst } = box;
+    const cwd = await repo(box, "legacy");
+    const ownData = await mkdtemp(join(box.root, "legacy-data-"));
     const path = join(ownData, "legacy.json");
     const content = JSON.stringify({ id: "legacy", repoRoot: cwd, groups: [{ tldr: "old" }] });
     await writeFile(path, content);
-    try {
-      for (const args of [["status"], ["status", "--session", "legacy"], ["close"]]) {
-        const result = await gyst(cwd, ["session", ...args], undefined, ownData);
-        expect(result.exitCode).toBe(1);
-        expect(JSON.parse(result.stderr).code).toBe("no_session");
-      }
-      expect((await gyst(cwd, ["session", "create"], undefined, ownData)).exitCode).toBe(0);
-      expect(await readFile(path, "utf8")).toBe(content);
-      expect((await gyst(cwd, ["session", "close"], undefined, ownData)).exitCode).toBe(0);
-      expect(await readFile(path, "utf8")).toBe(content);
-    } finally {
-      await readFile(join(ownData, "daemon.pid"), "utf8")
-        .then((pid) => process.kill(Number(pid), "SIGTERM"))
-        .catch((error: NodeJS.ErrnoException) => {
-          if (!["ENOENT", "ESRCH"].includes(error.code ?? "")) throw error;
-        });
-    }
+    for (const args of [["status"], ["status", "--session", "legacy"], ["close"]])
+      expect(failed(await gyst(cwd, ["session", ...args], undefined, ownData)).code).toBe(
+        "no_session",
+      );
+    succeeded(await gyst(cwd, ["session", "create"], undefined, ownData));
+    expect(await readFile(path, "utf8")).toBe(content);
+    succeeded(await gyst(cwd, ["session", "close"], undefined, ownData));
+    expect(await readFile(path, "utf8")).toBe(content);
   }, 20_000);
 
   it("automatically replaces an older cooperative daemon without changing saved review state", async () => {
-    const cwd = await repo("automatic-upgrade");
-    const ownData = await mkdtemp(join(root, "automatic-upgrade-data-"));
-    const pidPath = join(ownData, "daemon.pid");
-    let stopFake = () => {};
-    try {
-      await writeFile(join(cwd, "tracked.txt"), "changed\n");
-      const created = await gyst(cwd, ["session", "create"], undefined, ownData);
-      expect(created.exitCode).toBe(0);
-      const initial = JSON.parse(created.stdout);
-      const hunkId = initial.inbox[0].id;
-      const prepared = await gyst(
+    const box = await sandbox();
+    const { gyst } = box;
+    const cwd = await repo(box, "automatic-upgrade");
+    const ownData = await mkdtemp(join(box.root, "automatic-upgrade-data-"));
+    await writeFile(join(cwd, "tracked.txt"), "changed\n");
+    const initial = json(await gyst(cwd, ["session", "create"], undefined, ownData));
+    const hunkId = initial.inbox[0].id;
+    const published = json(
+      await gyst(
         cwd,
         ["session", "apply"],
         JSON.stringify({
@@ -800,237 +771,121 @@ describe("gyst session CLI seam", () => {
           ],
         }),
         ownData,
-      );
-      expect(prepared.exitCode).toBe(0);
-      const hello = JSON.parse(await socketRequest(ownData, { command: "daemon.info" }));
-      const verdict = JSON.parse(
-        await socketRequest(ownData, {
-          ...hello.value,
-          request: {
-            command: "tui.action",
-            cwd,
-            args: [],
-            action: {
-              type: "verdict.toggle",
-              sessionId: initial.session.id,
-              revision: 1,
-              itemId: "group",
-            },
-          },
-        }),
-      );
-      expect(verdict.ok).toBe(true);
-      const status = verdict.value;
-      expect(status.groups[0].accepted).toBe(true);
-      const savedPath = join(ownData, `${status.session.id}.json`);
-      const saved = await readFile(savedPath, "utf8");
-      process.kill(Number(await readFile(pidPath, "utf8")), "SIGTERM");
-      for (let i = 0; i < 100 && (await Bun.file(pidPath).exists()); i++) await Bun.sleep(10);
-      expect(await Bun.file(pidPath).exists()).toBe(false);
-      const commands: string[] = [];
-      const fake = Bun.listen({
-        unix: join(ownData, "daemon.sock"),
-        socket: {
-          data(socket, bytes) {
-            const request = JSON.parse(bytes.toString());
-            commands.push(request.command ?? request.request?.command);
-            const restarting = request.command === "daemon.restart";
-            socket.end(
-              JSON.stringify({
-                ok: true,
-                value: restarting ? { restarting: true } : { version: "0.0.0", instanceId: "old" },
-              }) + "\n",
-            );
-            if (restarting) setTimeout(() => fake.stop(true), 5);
-          },
-        },
-      });
-      stopFake = () => fake.stop(true);
-      const results = await Promise.all([
-        gyst(cwd, ["session", "status"], undefined, ownData),
-        gyst(cwd, ["session", "status"], undefined, ownData),
-      ]);
-      for (const result of results) {
-        expect(result.exitCode).toBe(0);
-        expect(JSON.parse(result.stdout)).toEqual(status);
-      }
-      expect(await readFile(savedPath, "utf8")).toBe(saved);
-      expect(commands).toContain("daemon.restart");
-      expect(commands.every((command) => ["daemon.info", "daemon.restart"].includes(command))).toBe(
-        true,
-      );
-      expect((await gyst(cwd, ["session", "close"], undefined, ownData)).exitCode).toBe(0);
-    } finally {
-      stopFake();
-      await readFile(pidPath, "utf8")
-        .then((pid) => process.kill(Number(pid), "SIGTERM"))
-        .catch(() => {});
-    }
+      ),
+    );
+    const savedPath = join(ownData, `${published.session.id}.json`);
+    await killDaemon(ownData, "SIGTERM");
+    expect(existsSync(join(ownData, "daemon.pid"))).toBe(false);
+    // No command records human work any more: accept the group with the pure reducer and save it
+    // as the store does, so the upgrade must carry a non-default verdict and accept history.
+    const session = decodeSession(await readFile(savedPath, "utf8"));
+    const reviewed = Result.getOrThrow(
+      applyHumanAction(
+        session,
+        { type: "verdict.toggle", itemId: "group", sessionId: session.id, revision: 1 },
+        new Date().toISOString(),
+      ),
+    );
+    const status = statusOf(reviewed);
+    expect(status.groups[0]!.accepted).toBe(true);
+    const saved = `${JSON.stringify(reviewed)}\n`;
+    await writeFile(savedPath, saved);
+    const fake = await fakeDaemon(ownData, (message) => {
+      if (message.command !== "daemon.restart")
+        return { ok: true, value: { version: "0.0.0", instanceId: "old" } };
+      // A cooperative old daemon exits once it has agreed to restart.
+      setTimeout(() => void fake.stop(), 5);
+      return { ok: true, value: { restarting: true } };
+    });
+    const results = await Promise.all([
+      gyst(cwd, ["session", "status"], undefined, ownData),
+      gyst(cwd, ["session", "status"], undefined, ownData),
+    ]);
+    for (const result of results) expect(json(result)).toEqual(status);
+    expect(await readFile(savedPath, "utf8")).toBe(saved);
+    expect(fake.commands).toContain("daemon.restart");
+    expect(
+      fake.commands.every((command) => ["daemon.info", "daemon.restart"].includes(command)),
+    ).toBe(true);
+    succeeded(await gyst(cwd, ["session", "close"], undefined, ownData));
   }, 20_000);
 
   it("bounds recovery when an older daemon stays busy or never answers the handshake", async () => {
+    const box = await sandbox();
     for (const mode of ["busy", "silent"] as const) {
-      const ownData = await mkdtemp(join(root, `${mode}-upgrade-`));
-      const commands: string[] = [];
-      const fake = Bun.listen({
-        unix: join(ownData, "daemon.sock"),
-        socket: {
-          data(socket, bytes) {
-            const message = JSON.parse(bytes.toString());
-            commands.push(message.command ?? message.request?.command);
-            if (mode === "busy")
-              socket.end(
-                JSON.stringify({
-                  ok: true,
-                  value:
-                    message.command === "daemon.info"
-                      ? { version: "0.0.0", instanceId: "busy" }
-                      : { restarting: false },
-                }) + "\n",
-              );
-          },
-        },
-      });
-      try {
-        const started = performance.now();
-        const result = await gyst(root, ["session", "create"], undefined, ownData);
-        expect(result.exitCode).toBe(1);
-        expect(JSON.parse(result.stderr).message).toContain(mode === "busy" ? "busy" : "timed out");
-        expect(performance.now() - started).toBeLessThan(10_000);
-        expect(
-          commands.every((command) => ["daemon.info", "daemon.restart"].includes(command)),
-        ).toBe(true);
-      } finally {
-        fake.stop(true);
-      }
+      const ownData = await mkdtemp(join(box.root, `${mode}-upgrade-`));
+      const fake = await fakeDaemon(ownData, (message) =>
+        mode === "silent"
+          ? undefined
+          : {
+              ok: true,
+              value:
+                message.command === "daemon.info"
+                  ? { version: "0.0.0", instanceId: "busy" }
+                  : { restarting: false },
+            },
+      );
+      const started = performance.now();
+      const error = failed(await box.gyst(box.root, ["session", "create"], undefined, ownData));
+      expect(error.message).toContain(mode === "busy" ? "busy" : "timed out");
+      expect(performance.now() - started).toBeLessThan(10_000);
+      expect(
+        fake.commands.every((command) => ["daemon.info", "daemon.restart"].includes(command)),
+      ).toBe(true);
     }
   }, 20_000);
 
   it("never retries a mutation when its reply is lost after a successful handshake", async () => {
-    const ownData = await mkdtemp(join(root, "lost-mutation-reply-"));
-    let mutations = 0;
-    const fake = Bun.listen({
-      unix: join(ownData, "daemon.sock"),
-      socket: {
-        data(socket, bytes) {
-          const message = JSON.parse(bytes.toString());
-          if (message.command === "daemon.info")
-            socket.end(
-              JSON.stringify({ ok: true, value: { version: daemonVersion, instanceId: "same" } }) +
-                "\n",
-            );
-          else {
-            mutations++;
-            socket.end();
-          }
-        },
-      },
-    });
-    try {
-      const result = await gyst(root, ["session", "create"], undefined, ownData);
-      expect(result.exitCode).toBe(1);
-      expect(JSON.parse(result.stderr).code).toBe("daemon_unreachable");
-      expect(mutations).toBe(1);
-    } finally {
-      fake.stop(true);
-    }
+    const box = await sandbox();
+    const ownData = await mkdtemp(join(box.root, "lost-mutation-reply-"));
+    const fake = await fakeDaemon(ownData, (message) =>
+      message.command === "daemon.info"
+        ? { ok: true, value: { version: daemonVersion, instanceId: "same" } }
+        : null,
+    );
+    const error = failed(await box.gyst(box.root, ["session", "create"], undefined, ownData));
+    expect(error.code).toBe("daemon_unreachable");
+    expect(fake.commands.filter((command) => command !== "daemon.info")).toEqual(["create"]);
   }, 20_000);
 
   it("blocks legacy, newer and incompatible daemons before sending a mutation", async () => {
+    const box = await sandbox();
     for (const mode of ["legacy", "newer", "incompatible"] as const) {
-      const ownData = await mkdtemp(join(root, `${mode}-daemon-`));
+      const ownData = await mkdtemp(join(box.root, `${mode}-daemon-`));
       const saved = JSON.stringify({ id: "old", spotlight: [] });
       await writeFile(join(ownData, "old.json"), saved);
-      const commands: string[] = [];
-      const fake = Bun.listen({
-        unix: join(ownData, "daemon.sock"),
-        socket: {
-          data(socket, bytes) {
-            const request = JSON.parse(bytes.toString());
-            commands.push(request.command ?? request.request?.command);
-            socket.end(
-              JSON.stringify({
-                ok: true,
-                value:
-                  mode === "legacy"
-                    ? { spotlight: [] }
-                    : { version: mode === "newer" ? "999.0.0" : "0.0.0", instanceId: mode },
-              }) + "\n",
-            );
-          },
-        },
-      });
-      try {
-        const result = await gyst(root, ["session", "create"], undefined, ownData);
-        expect(result.exitCode).toBe(1);
-        const error = JSON.parse(result.stderr);
-        expect(error.code).toBe("daemon_unreachable");
-        expect(`${error.message} ${error.detail}`).toContain(
-          mode === "legacy" ? "compatibility" : mode === "newer" ? "newer" : "incompatible",
-        );
-        expect(commands).toEqual(["daemon.info"]);
-        expect(await readFile(join(ownData, "old.json"), "utf8")).toBe(saved);
-      } finally {
-        fake.stop(true);
-      }
-    }
-  }, 20_000);
-
-  it("rejects malformed success replies visibly in both CLI and TUI clients", async () => {
-    const ownData = await mkdtemp(join(root, "mismatched-reply-"));
-    const fake = Bun.listen({
-      unix: join(ownData, "daemon.sock"),
-      socket: {
-        data(socket, bytes) {
-          const request = JSON.parse(bytes.toString());
-          socket.end(
-            JSON.stringify({
-              ok: true,
-              value:
-                request.command === "daemon.info"
-                  ? { version: daemonVersion, instanceId: "fake" }
-                  : { sessionId: "invalid", revision: 0 },
-            }) + "\n",
-          );
-        },
-      },
-    });
-    try {
-      const result = await gyst(root, ["session", "diff"], undefined, ownData);
-      expect(result.exitCode).toBe(1);
-      expect(result.stdout).toBe("");
-      expect(JSON.parse(result.stderr)).toMatchObject({
-        code: "daemon_unreachable",
-        message: expect.stringContaining("invalid daemon reply"),
-      });
-      await using runtime = ManagedRuntime.make(
-        DaemonClient.layer.pipe(
-          Layer.provide(Paths.layer),
-          Layer.provide(BunServices.layer),
-          Layer.provide(
-            ConfigProvider.layer(ConfigProvider.fromUnknown({ GYST_DATA_DIR: ownData })),
-          ),
-        ),
+      const fake = await fakeDaemon(ownData, () => ({
+        ok: true,
+        value:
+          mode === "legacy"
+            ? { spotlight: [] }
+            : { version: mode === "newer" ? "999.0.0" : "0.0.0", instanceId: mode },
+      }));
+      const error = failed(await box.gyst(box.root, ["session", "create"], undefined, ownData));
+      expect(error.code).toBe("daemon_unreachable");
+      expect(`${error.message} ${error.detail}`).toContain(
+        mode === "legacy" ? "compatibility" : mode === "newer" ? "newer" : "incompatible",
       );
-      await expect(daemonTuiClient(runtime, root).diff()).rejects.toThrow("invalid daemon reply");
-    } finally {
-      fake.stop(true);
+      expect(fake.commands).toEqual(["daemon.info"]);
+      expect(await readFile(join(ownData, "old.json"), "utf8")).toBe(saved);
     }
   }, 20_000);
 
-  it("starts the daemon when run from source under bun", async () => {
-    const sourceData = join(root, "source-data");
-    // From apps/gyst, as `bun run dev` is: bunfig.toml supplies the JSX preload.
-    const child = Bun.spawn(["bun", "src/index.tsx", "session", "status"], {
-      cwd: join(import.meta.dir, "../.."),
-      env: { ...isolatedHome(root), GYST_DATA_DIR: sourceData },
-      stdin: "ignore",
-      stdout: "pipe",
-      stderr: "pipe",
+  it("rejects malformed success replies visibly", async () => {
+    const box = await sandbox();
+    const ownData = await mkdtemp(join(box.root, "mismatched-reply-"));
+    await fakeDaemon(ownData, (message) => ({
+      ok: true,
+      value:
+        message.command === "daemon.info"
+          ? { version: daemonVersion, instanceId: "fake" }
+          : { sessionId: "invalid", revision: 0 },
+    }));
+    const result = await box.gyst(box.root, ["session", "diff"], undefined, ownData);
+    expect(failed(result)).toMatchObject({
+      code: "daemon_unreachable",
+      message: expect.stringContaining("invalid daemon reply"),
     });
-    const [exitCode, stderr] = await Promise.all([child.exited, new Response(child.stderr).text()]);
-    expect(exitCode).toBe(1);
-    expect(JSON.parse(stderr).code).toBe("no_session");
-    process.kill(Number(await readFile(join(sourceData, "daemon.pid"), "utf8")), "SIGTERM");
+    expect(result.stdout).toBe("");
   }, 20_000);
 });

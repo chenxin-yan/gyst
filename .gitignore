@@ -1,9 +1,8 @@
 node_modules/
 dist/
 .crust/
-/apps/gyst/LICENSE
 /apps/gyst/README.md
-.turbo/
+/apps/gyst/LICENSE
 *.tsbuildinfo
 .env
 .env.*
@@ -16,3 +15,4 @@ logs/
 *.tgz
 .pi-subagents/
 .agent-sources/
+.vitest/

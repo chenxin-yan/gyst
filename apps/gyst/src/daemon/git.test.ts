@@ -1,20 +1,17 @@
-import { afterAll, beforeAll, describe, expect, it } from "bun:test";
-import { BunServices } from "@effect/platform-bun";
+import { afterAll, beforeAll, describe, expect, it } from "vite-plus/test";
+import * as NodeServices from "@effect/platform-node/NodeServices";
 import { parseSnapshot } from "@gyst/core";
 import { Effect, Layer, Result } from "effect";
+import { execFileSync } from "node:child_process";
 import { mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { editorTarget } from "../tui/editor.ts";
 import { Git } from "./git.ts";
 
 let root: string;
 
-function git(cwd: string, ...args: string[]) {
-  const result = Bun.spawnSync(["git", ...args], { cwd, stdout: "pipe", stderr: "pipe" });
-  if (result.exitCode !== 0) throw new Error(result.stderr.toString());
-  return result.stdout.toString();
-}
+const git = (cwd: string, ...args: string[]) =>
+  execFileSync("git", args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
 
 async function repo(name: string, commit = true): Promise<string> {
   const cwd = join(root, name);
@@ -31,7 +28,7 @@ async function repo(name: string, commit = true): Promise<string> {
 }
 
 const run = <A, E>(effect: Effect.Effect<A, E, Git>) =>
-  Effect.runPromise(Effect.provide(effect, Git.layer.pipe(Layer.provide(BunServices.layer))));
+  Effect.runPromise(Effect.provide(effect, Git.layer.pipe(Layer.provide(NodeServices.layer))));
 
 beforeAll(async () => {
   root = await realpath(await mkdtemp(join(tmpdir(), "gyst-git-")));
@@ -104,7 +101,7 @@ describe("Git", () => {
     expect(error.message).toContain("no-such-rev");
   });
 
-  it("keeps explicit pathspec output root-relative under diff.relative so the editor opens the reviewed file", async () => {
+  it("keeps explicit pathspec output root-relative under diff.relative", async () => {
     const cwd = await repo("relative-pathspec");
     git(cwd, "config", "diff.relative", "true");
     await mkdir(join(cwd, "sub"));
@@ -118,16 +115,5 @@ describe("Git", () => {
     );
     const [hunk] = Result.getOrThrow(parseSnapshot(patch));
     expect(hunk?.file).toBe("sub/same.txt");
-    const target = await editorTarget(
-      {
-        sessionId: "s",
-        revision: 0,
-        repoRoot: cwd,
-        file: hunk!.file,
-        cursor: { itemId: hunk!.id, pane: "diff", hunkId: hunk!.id },
-      },
-      process.execPath,
-    );
-    expect(target.file).toBe(join(cwd, "sub", "same.txt"));
   });
 });

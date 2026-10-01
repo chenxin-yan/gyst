@@ -1,70 +1,70 @@
 # Contributing
 
-Run commands from the repository root. Use the Bun version in
-[`package.json`](package.json) (`mise` reads it automatically).
+Run commands from the repository root. Node.js and pnpm are pinned once in
+[`package.json`](package.json)'s `devEngines`. [`mise.toml`](mise.toml) enables mise's
+[idiomatic version files](https://mise.jdx.dev/lang/node.html#package-json), so `mise install`
+and GitHub Actions' `mise-action` read the same pins. Use `mise ls --current` to inspect them.
+
+`onFail: "ignore"` leaves tool installation to mise rather than
+[pnpm's runtime/package-manager management](https://pnpm.io/package_json#devenginesruntime).
+Activate mise in your shell or prefix commands with `mise exec --`. Gyst runs on Node;
+Crust's build tool embeds Bun, so no separate Bun installation is needed.
 
 ## Develop
 
 ```sh
-bun install --frozen-lockfile
-bun run --cwd apps/gyst dev --help
-bun run check
-bun run test
+pnpm install
+pnpm check
+pnpm test
 ```
 
-`check` runs lint, formatting, and type checks. `bun run check:fix` fixes lint and
-formatting issues. Run both checks and tests before opening a PR.
-
-For editor lifecycle changes, also run the Linux PTY regression (Bun, Vim, `stty`
-and `setsid` must be available; artifacts go outside the repository):
-
-```sh
-bun apps/gyst/tests/pty/editor.ts --evidence /path/outside/repo/editor-pty
-```
-
-It exercises real OpenTUI/App handoff with fake editors and Vim, signals, resize,
-input/poll gating, terminal restoration and child reaping. Cross-builds do not
-substitute for macOS/Windows terminal runtime verification.
+Commands are `package.json` scripts. Scripts worth caching call a `<name>:task`
+[Vite+ task](https://viteplus.dev/guide/run) in [`vite.config.ts`](vite.config.ts) or
+[`apps/gyst/vite.config.ts`](apps/gyst/vite.config.ts). `check` runs formatting, lint and type
+checks (`pnpm exec vp check --fix` fixes formatting and lint issues) and is cached. `test` runs
+`test:unit` and `test:e2e` in parallel. `test:unit` covers the unit and integration tests beside
+the code and is cached. `test:e2e` builds the CLI, packs it, installs it globally with npm into a
+temporary prefix and tests that install; it is never cached. Run both checks and tests before
+opening a PR.
 
 ## Build
 
-Build for your machine:
-
 ```sh
-bun run --cwd apps/gyst build --target host
-bun run --cwd apps/gyst start --help
+pnpm build
+node apps/gyst/.crust/root/bin/gyst.js --help
 ```
 
-Build all configured release targets and inspect the publish plan without publishing:
+`build` runs [`crust build`](https://crustjs.com/docs/guide/build-and-distribution) for a Node
+runtime package. Crust bundles the CLI and its dependencies, invokes the skills extension's
+build hook, and stages the package in `apps/gyst/.crust/root/`. Vite+ caches the build and copies
+the repository README/LICENSE before it. `publishConfig.directory` points pnpm and Changesets
+at Crust's output; no custom publisher or skill-generation script is needed.
+
+Pack and install it to try the release artifact outside the checkout:
 
 ```sh
-bun install --frozen-lockfile --os='*' --cpu='*'
-bun run --cwd apps/gyst build
-bun run --cwd apps/gyst release -- --dry-run
+pnpm --dir apps/gyst pack --pack-destination /tmp/gyst-pack
+npm install -g --prefix /tmp/gyst-prefix /tmp/gyst-pack/gyst-cli-*.tgz
+/tmp/gyst-prefix/bin/gyst --help
 ```
-
-Output is in `apps/gyst/.crust/`. Targets and build settings live in
-[`apps/gyst/package.json`](apps/gyst/package.json).
 
 ## Releases
 
 For changes to the CLI, add a changeset and commit the generated file:
 
 ```sh
-bun run changeset
+pnpm exec changeset
 ```
 
 Merging the change opens or updates the release PR. Merging that PR publishes the
-platform packages and CLI, creates the Git tag and GitHub Release, and attaches
-binaries, skills, and the license. Do not bump versions or create release tags by hand.
+`@gyst/cli` npm package, creates the Git tag and GitHub Release, and attaches
+the skills archive and the license. Do not bump versions or create release tags by hand.
 
-For prereleases, use `bun run changeset pre enter <tag>`; publication uses that npm
+For prereleases, use `pnpm exec changeset pre enter <tag>`; publication uses that npm
 dist-tag. The [release workflow](.github/workflows/release.yml) owns the automation.
 
 ### Maintainer setup (once)
 
 - Enable **Allow GitHub Actions to create and approve pull requests** in repository settings.
-- Configure npm trusted publishing on `@gyst/cli` and all six platform packages:
-  repository `chenxin-yan/gyst`, workflow `release.yml`, no environment restriction,
-  with direct publishing allowed. New packages need an initial manual publish before
-  npm allows this setup.
+- Configure npm trusted publishing on `@gyst/cli`: repository `chenxin-yan/gyst`,
+  workflow `release.yml`, no environment restriction, with direct publishing allowed.

@@ -1,6 +1,6 @@
 import type { NonEmptyReadonlyArray } from "effect/Array";
 import { Effect, Predicate } from "effect";
-import * as Socket from "effect/unstable/socket/Socket";
+import * as Socket from "effect/socket/Socket";
 
 /** ENOENT: no socket file; ECONNREFUSED: a file nobody listens on. Anything else is not "nobody there". */
 export const daemonAbsent = (error: { readonly _tag: string }) =>

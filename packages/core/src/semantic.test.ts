@@ -1,4 +1,4 @@
-import { expect, it } from "bun:test";
+import { expect, it } from "vite-plus/test";
 import { Result, Schema } from "effect";
 import { type ApplyEnvelope, ApplyEnvelopeSchema, applyBatch } from "./apply.ts";
 import { applyHumanAction } from "./human-action.ts";

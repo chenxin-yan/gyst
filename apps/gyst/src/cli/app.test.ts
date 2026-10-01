@@ -1,4 +1,4 @@
-import { describe, expect, it } from "bun:test";
+import { describe, expect, it } from "vite-plus/test";
 import { buildCommandDocumentation } from "@crustjs/core/tooling";
 
 import packageJson from "../../package.json" with { type: "json" };
