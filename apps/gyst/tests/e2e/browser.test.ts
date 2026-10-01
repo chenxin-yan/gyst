@@ -202,6 +202,45 @@ const fileHeadings = (page: Page) =>
     .getByRole("heading", { level: 2 })
     .evaluateAll((headings) => headings.map((heading) => heading.getAttribute("aria-label")));
 
+/** The status line, which names the Vim cursor's place, the selection and Viewed progress. */
+const statusLine = (page: Page) => page.getByRole("contentinfo");
+/** Waits for the status line to say exactly `text`, such as `long.ts:97 · new`. */
+const says = (page: Page, text: string) =>
+  statusLine(page).getByText(text, { exact: true }).waitFor();
+/** The Vim cursor's accent bar over a code line or hidden range. */
+const cursorBar = (page: Page) => page.getByRole("main").locator("[data-cursor][aria-hidden=true]");
+/** Presses keys in order, from the page rather than a focused control. */
+async function keys(page: Page, ...pressed: string[]) {
+  await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
+  for (const key of pressed) await page.keyboard.press(key);
+}
+/** Waits until the cursor bar covers a copy of the line `text`, on the bar's own column. */
+const barOn = (page: Page, text: string) =>
+  waitFor(async () => {
+    const bar = await cursorBar(page).boundingBox();
+    if (bar === null) return false;
+    for (const copy of await page.getByRole("main").getByText(text, { exact: true }).all()) {
+      const box = await copy.boundingBox();
+      if (box && Math.abs(box.y - bar.y) < 4 && box.x >= bar.x && box.x < bar.x + bar.width)
+        return true;
+    }
+    return false;
+  }, `the cursor bar on ${text}`);
+/** A file header's fold toggle, whichever way it points. */
+const foldToggle = (page: Page, path: string) =>
+  page
+    .getByRole("main")
+    .getByRole("button", { name: new RegExp(`^(Fold|Unfold) ${path.replace(/[.]/g, "\\.")}$`) });
+const viewedBox = (page: Page, path: string) =>
+  page.getByRole("main").getByRole("checkbox", { name: `${path} viewed`, exact: true });
+const viewedOf = (page: Page) => {
+  const writes: any[] = [];
+  page.on("request", (request) => {
+    if (operationOf(request)?.command === "viewed") writes.push(operationOf(request));
+  });
+  return writes;
+};
+
 /**
  * A raw request to a launch's listener with explicit headers, as a hostile client could send;
  * resolves its status.
@@ -381,6 +420,7 @@ describe("installed gyst in a sandboxed browser", () => {
       { command: "diff", session: one.id },
       { command: "files", session: one.id, snapshotId: sessions[0].snapshotId },
       { command: "open", session: one.id },
+      { command: "status", session: one.id },
     ]);
     for (const request of operations) {
       const headers = await request.allHeaders();
@@ -626,6 +666,433 @@ describe("installed gyst in a sandboxed browser", () => {
     // README.md, now being read, is what the whole snapshot returns to, not the earlier app.ts.
     await select("All changes", ["README.md", "app.ts", "logo.bin", "src/long.ts"]);
     await waitFor(async () => (await topFile()) === "README.md", "README.md at the top");
+  }, 30_000);
+
+  it("marks a file section Viewed from its header, shared by the snapshot and file views, folding and advancing, and keeps it across a reload", async () => {
+    const page = await newPage();
+    await page.setViewportSize({ width: 1280, height: 800 });
+    const writes = viewedOf(page);
+    await page.goto(`${one.origin}${one.path}`);
+    const tree = page.getByRole("navigation", { name: "gyst" });
+    await page.getByRole("main").getByText("uncommitted-edit").waitFor();
+    const { hunks, snapshotId } = await gyst("session", "diff", "--session", one.id);
+    const idsOf = (file: string) =>
+      hunks
+        .filter((hunk: { file: string }) => hunk.file === file)
+        .map(({ id }: { id: string }) => id);
+    await says(page, "0/3 hunks viewed in 4 files");
+
+    // Checking sends one write for exactly the file's hunks, folds it and moves to the next file.
+    await viewedBox(page, "README.md").check();
+    await says(page, "1/3 hunks viewed in 4 files");
+    expect(writes).toEqual([
+      {
+        command: "viewed",
+        session: one.id,
+        snapshotId,
+        revision: expect.any(Number),
+        requestId: expect.stringMatching(/^[0-9a-f]{32}$/),
+        hunkIds: idsOf("README.md"),
+        viewed: true,
+      },
+    ]);
+    expect(await foldToggle(page, "README.md").getAttribute("aria-expanded")).toBe("false");
+    await says(page, "app.ts · file");
+    expect((await gyst("session", "status", "--session", one.id)).viewedHunkIds).toEqual(
+      idsOf("README.md"),
+    );
+
+    // The file view reads the same Viewed hunks; unchecking there clears only that section.
+    await tree.getByRole("button", { name: "README.md (modified)", exact: true }).click();
+    expect(await viewedBox(page, "README.md").isChecked()).toBe(true);
+    await viewedBox(page, "README.md").uncheck();
+    await says(page, "0/1 hunk viewed in 1 file");
+    expect(writes[1]).toMatchObject({ hunkIds: idsOf("README.md"), viewed: false });
+    expect(writes[1].requestId).not.toBe(writes[0].requestId);
+    await tree.getByRole("button", { name: "All changes", exact: true }).click();
+    await says(page, "0/3 hunks viewed in 4 files");
+    expect(await viewedBox(page, "README.md").isChecked()).toBe(false);
+
+    // m marks the cursor's file and advances past files without hunks.
+    await keys(page, "g", "g", "]", "f");
+    await says(page, "app.ts · file");
+    await keys(page, "m");
+    await says(page, "1/3 hunks viewed in 4 files");
+    await says(page, "long.ts · file");
+    expect(writes[2]).toMatchObject({ hunkIds: idsOf("app.ts"), viewed: true });
+    // Moving never writes Viewed.
+    await keys(page, "j", "j", "k", "]", "c");
+    expect(writes).toHaveLength(3);
+
+    await page.reload();
+    await viewedBox(page, "app.ts").waitFor();
+    expect(await viewedBox(page, "app.ts").isChecked()).toBe(true);
+    expect(await viewedBox(page, "README.md").isChecked()).toBe(false);
+    await says(page, "1/3 hunks viewed in 4 files");
+  }, 30_000);
+
+  it("conflicts a stale Viewed write from another page without overwriting, and retries a lost reply with the same request id", async () => {
+    const [first, second] = [await newPage(), await newPage()];
+    for (const page of [first, second]) {
+      await page.setViewportSize({ width: 1280, height: 800 });
+      await page.goto(`${one.origin}${one.path}`);
+      await viewedBox(page, "src/long.ts").waitFor();
+    }
+    await viewedBox(first, "README.md").check();
+    await says(first, "2/3 hunks viewed in 4 files");
+    // The second page saw an older revision: its write conflicts, then it reads progress again,
+    // so the box goes back unchecked.
+    await viewedBox(second, "src/long.ts").click();
+    await second
+      .getByRole("main")
+      .getByText("Not saved: progress changed elsewhere and was read again.")
+      .waitFor();
+    await says(second, "2/3 hunks viewed in 4 files");
+    expect(await viewedBox(second, "src/long.ts").isChecked()).toBe(false);
+    expect((await gyst("session", "status", "--session", one.id)).viewedHunkIds).toHaveLength(2);
+    // Acting again is a new intent against what it read, and applies.
+    await viewedBox(second, "src/long.ts").check();
+    await says(second, "3/3 hunks viewed in 4 files");
+
+    const third = await newPage(context, { problems: ["requestfailed /api/operation"] });
+    await third.setViewportSize({ width: 1280, height: 800 });
+    const writes = viewedOf(third);
+    const commands: string[] = [];
+    third.on("request", (request) => {
+      const operation = operationOf(request);
+      if (operation) commands.push(operation.command);
+    });
+    let lost = false;
+    await third.route(isOperationUrl, async (route) => {
+      if (lost || route.request().postDataJSON()?.command !== "viewed") return route.continue();
+      lost = true;
+      await route.fetch();
+      await route.abort();
+    });
+    await third.goto(`${one.origin}${one.path}`);
+    // The lost reply leaves the box as the daemon last said, with the failure beside it.
+    await viewedBox(third, "src/long.ts").click();
+    const failure = third
+      .getByRole("main")
+      .getByRole("alert")
+      .filter({ hasText: "Couldn't save Viewed" });
+    await failure.waitFor();
+    // The daemon applied it; only the reply was lost.
+    expect((await gyst("session", "status", "--session", one.id)).viewedHunkIds).toHaveLength(2);
+    commands.length = 0;
+    await failure.getByRole("button", { name: "Retry" }).click();
+    await says(third, "2/3 hunks viewed in 4 files");
+    expect(writes).toHaveLength(2);
+    expect(writes[1]).toEqual(writes[0]);
+    // A retried answer may replay history, so status is read again before any new write.
+    await waitFor(async () => commands.join() === "viewed,status", "status read after the retry");
+    expect(await viewedBox(third, "src/long.ts").isChecked()).toBe(false);
+
+    // A reread that fails blocks every write until a reload of the same snapshot reads progress.
+    const fourth = await newPage(context, { responses: ["/api/operation 503"] });
+    await fourth.setViewportSize({ width: 1280, height: 800 });
+    const blocked = viewedOf(fourth);
+    await fourth.goto(`${one.origin}${one.path}`);
+    await says(fourth, "2/3 hunks viewed in 4 files");
+    await viewedBox(third, "src/long.ts").click();
+    await says(third, "3/3 hunks viewed in 4 files");
+    let unreadable = true;
+    await fourth.route(isOperationUrl, async (route) => {
+      if (!unreadable || route.request().postDataJSON()?.command !== "status")
+        return route.continue();
+      unreadable = false;
+      await route.fulfill({ status: 503, body: "" });
+    });
+    await viewedBox(fourth, "app.ts").click();
+    const unread = fourth
+      .getByRole("main")
+      .getByRole("alert")
+      .filter({ hasText: "Progress can't be read again." });
+    await unread.waitFor();
+    await viewedBox(fourth, "app.ts").click();
+    await viewedBox(fourth, "README.md").click();
+    expect(blocked).toHaveLength(1);
+    await unread.getByRole("button", { name: "Reload session" }).click();
+    await unread.waitFor({ state: "detached" });
+    await says(fourth, "3/3 hunks viewed in 4 files");
+    // README.md, not app.ts: the daemon-restart test reads app.ts still Viewed.
+    await viewedBox(fourth, "README.md").click();
+    await says(fourth, "2/3 hunks viewed in 4 files");
+    expect(blocked).toHaveLength(2);
+    expect((await gyst("session", "status", "--session", one.id)).viewedHunkIds).toHaveLength(2);
+  }, 30_000);
+
+  it("walks the Vim cursor over headers, hidden ranges and lines with its bar on the line and side, keeping scrolloff, selection and layout", async () => {
+    const page = await newPage();
+    await page.setViewportSize({ width: 1280, height: 800 });
+    await page.goto(`${one.origin}${one.path}`);
+    const pane = page.getByRole("main");
+    await pane.getByText("uncommitted-edit").waitFor();
+    await says(page, "README.md · file");
+    await keys(page, "]", "c");
+    await says(page, "README.md:11 · new");
+    await barOn(page, "A new line");
+    await keys(page, "]", "c");
+    await says(page, "app.ts:2 · new");
+    await barOn(page, "const b = 'uncommitted-edit';");
+    await keys(page, "h");
+    await says(page, "app.ts:2 · old");
+    await barOn(page, `const b = '${hostile}';`);
+    await keys(page, "[", "c", "]", "f");
+    await says(page, "app.ts · file");
+    await keys(page, "]", "f", "[", "f");
+    await says(page, "app.ts · file");
+
+    await page.getByRole("button", { name: "src/", exact: true }).click();
+    await pane.getByRole("heading", { name: "src/long.ts" }).waitFor();
+    await keys(page, "g", "g", "j");
+    await says(page, "long.ts · hidden lines");
+    await keys(page, "j", "l");
+    await says(page, "long.ts:97 · new");
+    await barOn(page, "export const line97 = 97;");
+    await keys(page, "h");
+    await says(page, "long.ts:97 · old");
+    await barOn(page, "export const line97 = 97;");
+    await keys(page, "l");
+    // Enter opens the hidden range; once its sides load the cursor is on its first line.
+    await keys(page, "k", "Enter");
+    await says(page, "long.ts:1 · new");
+    await barOn(page, "export const line1 = 1;");
+
+    // A held j keeps the cursor clear of the panel's bottom edge.
+    await keys(page, "g", "g", ...Array.from({ length: 30 }, () => "j"));
+    await says(page, "long.ts:30 · new");
+    await barOn(page, "export const line30 = 30;");
+    const panel = (await pane.boundingBox())!;
+    await waitFor(async () => {
+      const bar = await cursorBar(page).boundingBox();
+      return bar !== null && bar.y + bar.height <= panel.y + panel.height - 80;
+    }, "the cursor clear of the bottom edge");
+
+    // A selection and the cursor survive layout switches.
+    await keys(page, "V", "j", "j");
+    await says(page, "3 lines selected");
+    await keys(page, "2");
+    await says(page, "long.ts:32");
+    await says(page, "3 lines selected");
+    await barOn(page, "export const line32 = 32;");
+    await keys(page, "1");
+    await says(page, "long.ts:32 · new");
+    await says(page, "3 lines selected");
+    await barOn(page, "export const line32 = 32;");
+    await keys(page, "Escape");
+    await statusLine(page).getByText("3 lines selected").waitFor({ state: "detached" });
+
+    // Scrolling by hand pulls the cursor back into the panel.
+    await pane.hover();
+    await page.mouse.wheel(0, 1500);
+    await waitFor(async () => {
+      const box = await cursorBar(page).boundingBox();
+      return (
+        (await statusLine(page).getByText("long.ts:32 · new", { exact: true }).count()) === 0 &&
+        box !== null &&
+        box.y >= panel.y &&
+        box.y + box.height <= panel.y + panel.height
+      );
+    }, "the cursor pulled back on screen");
+    // The pulled-back cursor stands on the line its bar covers.
+    const pulled = Number(/long\.ts:(\d+) · new/.exec(await statusLine(page).innerText())![1]);
+    const doubled = (pulled >= 100 && pulled <= 110) || (pulled >= 114 && pulled <= 180);
+    await barOn(page, `export const line${pulled} = ${pulled}${doubled ? " * 2" : ""};`);
+
+    // A selecting cursor stays where a hand scroll leaves it; a layout switch then keeps the
+    // reading position rather than scrolling back to it.
+    await keys(page, "V");
+    await says(page, "1 line selected");
+    await pane.hover();
+    await page.mouse.wheel(0, 1500);
+    // Hidden or above: either way not in the panel.
+    const above = async () => {
+      const box = await cursorBar(page).boundingBox();
+      return box === null || box.y + box.height <= panel.y;
+    };
+    await waitFor(above, "the selecting cursor left above the panel");
+    await keys(page, "2");
+    await waitFor(
+      async () => (await pane.locator("[data-diff-type=split]").count()) === 0,
+      "the stacked layout",
+    );
+    await page.evaluate(() => new Promise((resolve) => setTimeout(resolve, 1000)));
+    expect(await above()).toBe(true);
+    await says(page, "1 line selected");
+  }, 30_000);
+
+  it("folds and unfolds files and opens hidden ranges with Enter, zo, zc, za, zR and zM; Esc never folds", async () => {
+    const page = await newPage();
+    await page.setViewportSize({ width: 1280, height: 800 });
+    await page.goto(`${one.origin}${one.path}`);
+    await page.getByRole("main").getByText("uncommitted-edit").waitFor();
+    const expanded = (path: string) => foldToggle(page, path).getAttribute("aria-expanded");
+    const allExpanded = async (value: string) =>
+      waitFor(
+        async () => {
+          const states = await Promise.all(
+            ["README.md", "app.ts", "src/long.ts"].map((path) => expanded(path)),
+          );
+          return states.every((state) => state === value);
+        },
+        `every file ${value === "true" ? "unfolded" : "folded"}`,
+      );
+    await says(page, "README.md · file");
+    await keys(page, "Enter");
+    await waitFor(async () => (await expanded("README.md")) === "false", "README.md folded");
+    await keys(page, "Enter");
+    await waitFor(async () => (await expanded("README.md")) === "true", "README.md unfolded");
+    await keys(page, "Escape");
+    expect(await expanded("README.md")).toBe("true");
+    await keys(page, "z", "a");
+    await waitFor(async () => (await expanded("README.md")) === "false", "za folds");
+    await keys(page, "z", "o");
+    await waitFor(async () => (await expanded("README.md")) === "true", "zo unfolds");
+    await keys(page, "j", "Enter");
+    await page.getByRole("main").getByText("line 1", { exact: true }).first().waitFor();
+    await keys(page, "j", "z", "c");
+    await waitFor(async () => (await expanded("README.md")) === "false", "zc folds");
+    await says(page, "README.md · file");
+    await keys(page, "z", "M");
+    await allExpanded("false");
+    await keys(page, "z", "R");
+    await allExpanded("true");
+    // The header's toggle does the same by mouse.
+    await foldToggle(page, "app.ts").click();
+    await waitFor(async () => (await expanded("app.ts")) === "false", "app.ts folded by click");
+
+    // A fold keeps the selection: it is there again when the file unfolds.
+    await keys(page, "g", "g", "]", "c", "V", "k");
+    await says(page, "2 lines selected");
+    await foldToggle(page, "README.md").click();
+    await waitFor(async () => (await expanded("README.md")) === "false", "README.md folded");
+    await says(page, "2 lines selected");
+    await foldToggle(page, "README.md").click();
+    await waitFor(async () => (await expanded("README.md")) === "true", "README.md unfolded");
+    await says(page, "2 lines selected");
+  }, 30_000);
+
+  it("scrolls with movement keys in Mouse mode, without a cursor, and selects lines with the hover + and by dragging", async () => {
+    const page = await newPage();
+    await page.setViewportSize({ width: 1280, height: 800 });
+    await page.goto(`${one.origin}${one.path}`);
+    const pane = page.getByRole("main");
+    await page.getByRole("button", { name: "src/", exact: true }).click();
+    await pane.getByRole("heading", { name: "src/long.ts" }).waitFor();
+    await page
+      .getByRole("radiogroup", { name: "Input mode" })
+      .getByRole("radio", { name: "Mouse" })
+      .check();
+    expect(await cursorBar(page).isVisible()).toBe(false);
+    expect(await statusLine(page).getByText("long.ts · file").count()).toBe(0);
+    const line = pane.getByText("export const line99 = 99;", { exact: true }).last();
+    const before = (await line.boundingBox())!.y;
+    await keys(page, "j");
+    await waitFor(async () => (await line.boundingBox())!.y < before - 40, "j scrolled down");
+    await keys(page, "k");
+    await waitFor(
+      async () => Math.abs((await line.boundingBox())!.y - before) < 4,
+      "k scrolled up",
+    );
+
+    // The renderer may redraw the hovered row once its scroll settles, taking the + with it; hover
+    // again until the + selects the line.
+    const plus = pane.locator("button[data-utility-button]").filter({ visible: true }).first();
+    await waitFor(async () => {
+      await line.hover();
+      await plus.click({ timeout: 500 }).catch(() => {});
+      return (await statusLine(page).getByText("1 line selected", { exact: true }).count()) === 1;
+    }, "the hover + selecting the line");
+    const from = (await pane
+      .getByText("export const line97 = 97;", { exact: true })
+      .last()
+      .boundingBox())!;
+    const to = (await line.boundingBox())!;
+    await page.mouse.move(from.x - 20, from.y + 8);
+    await page.mouse.down();
+    await page.mouse.move(to.x - 20, to.y + 8, { steps: 5 });
+    await page.mouse.up();
+    await says(page, "3 lines selected");
+    await keys(page, "Escape");
+    await statusLine(page).getByText("3 lines selected").waitFor({ state: "detached" });
+  }, 30_000);
+
+  it("runs commands from a keyboard-operable ⌘K menu and lists the implemented keys in ? help, ignoring review keys while typing", async () => {
+    const page = await newPage();
+    await page.setViewportSize({ width: 1280, height: 800 });
+    await page.goto(`${one.origin}${one.path}`);
+    await page.getByRole("main").getByText("uncommitted-edit").waitFor();
+    await says(page, "README.md · file");
+    const focused = () =>
+      page.evaluate(() => {
+        const element = document.activeElement as HTMLElement;
+        return {
+          name: element.getAttribute("aria-label") ?? element.textContent,
+          visible:
+            element.matches(":focus-visible") && getComputedStyle(element).outlineStyle !== "none",
+        };
+      });
+
+    await keys(page, "Control+k");
+    const menu = page.getByRole("dialog", { name: "Command menu" });
+    await menu.waitFor();
+    expect(await focused()).toEqual({ name: "Search commands", visible: true });
+    // Typing in the search box filters; it never moves the cursor.
+    await page.keyboard.type("jk");
+    expect(await menu.getByRole("combobox", { name: "Search commands" }).inputValue()).toBe("jk");
+    await says(page, "README.md · file");
+    await menu.getByRole("combobox").fill("");
+    await page.keyboard.type("stacked");
+    expect(await menu.getByRole("option").allTextContents()).toEqual(["Stacked diff2"]);
+    await page.keyboard.press("Enter");
+    await menu.waitFor({ state: "detached" });
+    expect(await page.getByRole("radio", { name: "Stacked", exact: true }).isChecked()).toBe(true);
+
+    await keys(page, "Meta+k");
+    await menu.waitFor();
+    const active = () => menu.getByRole("option", { selected: true }).innerText();
+    const firstOption = await active();
+    await page.keyboard.press("ArrowDown");
+    expect(await active()).not.toBe(firstOption);
+    // Past the menu's viewport the active option scrolls into view: ArrowUp from the first wraps
+    // to the last.
+    await page.keyboard.press("ArrowUp");
+    await page.keyboard.press("ArrowUp");
+    expect(await active()).toMatch(/^Keyboard shortcuts/);
+    await waitFor(async () => {
+      const [option, box] = await Promise.all([
+        menu.getByRole("option", { selected: true }).boundingBox(),
+        menu.boundingBox(),
+      ]);
+      return (
+        option !== null &&
+        box !== null &&
+        option.y >= box.y &&
+        option.y + option.height <= box.y + box.height
+      );
+    }, "the last option in view");
+    await page.keyboard.press("Escape");
+    await menu.waitFor({ state: "detached" });
+    await page.getByRole("button", { name: /^Commands/ }).click();
+    await menu.waitFor();
+    await page.keyboard.press("Escape");
+    await menu.waitFor({ state: "detached" });
+
+    await keys(page, "?");
+    const help = page.getByRole("dialog", { name: "Keyboard shortcuts" });
+    await help.waitFor();
+    expect(await focused()).toEqual({ name: "Close Esc", visible: true });
+    for (const label of ["Next change", "Fold every file", "Command menu"])
+      await help.getByText(label, { exact: true }).waitFor();
+    // Keys of later tickets are not listed.
+    expect(await help.getByText(/Reply|comment|Resolve/i).count()).toBe(0);
+    await page.keyboard.press("j");
+    await says(page, "README.md · file");
+    await page.keyboard.press("Escape");
+    await help.waitFor({ state: "detached" });
+    await keys(page, "j");
+    await says(page, "README.md · hidden lines");
   }, 30_000);
 
   it("pages the snapshot's files into the tree on demand and offers a session reload when a refresh replaced the snapshot between pages", async () => {
@@ -982,7 +1449,8 @@ describe("installed gyst in a sandboxed browser", () => {
   it("keeps console diagnostics for an unreadable or internal-error reply, not for an outage", async () => {
     const [b] = (await sessionIds()).filter((id: string) => id !== one.id);
     const page = await newPage(context, {
-      responses: ["/api/operation 503", "/api/operation 503"],
+      // The outage fails each of the load's three reads: open, diff and status.
+      responses: ["/api/operation 503", "/api/operation 503", "/api/operation 503"],
       problems: [
         expect.stringContaining("can't read"),
         expect.stringContaining("injected internal failure"),
@@ -1059,6 +1527,9 @@ describe("installed gyst in a sandboxed browser", () => {
     const page = await newPage();
     await go(page, four.url);
     await page.getByRole("main").getByText("uncommitted-edit").waitFor();
+    // Viewed progress was saved with the session and survives the restart.
+    await viewedBox(page, "app.ts").waitFor();
+    expect(await viewedBox(page, "app.ts").isChecked()).toBe(true);
     expect(await stop(three.proc, "SIGINT")).toBe(130);
     const [reopened] = (await gyst("session", "list")).sessions;
     expect([reopened.id, reopened.snapshotId]).toEqual([saved.id, saved.snapshotId]);
