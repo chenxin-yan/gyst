@@ -463,13 +463,49 @@ describe("browserApp operations", () => {
       expect(response.status).toBe(400);
       expect(JSON.parse(response.body)).toMatchObject({ ok: false, error: { code: "bad_args" } });
     }
+    expect(forwarded).toEqual([]);
+  });
+});
+
+describe("browserApp operation size", () => {
+  it("forwards a Viewed request naming thousands of hunks, well over 64 KiB", async () => {
+    forwarded = [];
+    const { operation } = await serve();
+    const request: BrowserRequest = {
+      command: "viewed",
+      session: "s1",
+      snapshotId,
+      revision: 1,
+      requestId: "r1",
+      hunkIds: Array.from({ length: 4_000 }, (_, index) => index.toString(16).padStart(16, "0")),
+      viewed: true,
+    };
+    expect(JSON.stringify(request).length).toBeGreaterThan(64 * 1024);
+    const response = await operation(request);
+    expect([response.status, JSON.parse(response.body)]).toEqual([
+      200,
+      { ok: true, value: { sessions: [] } },
+    ]);
+    expect(forwarded).toEqual([request]);
+  });
+
+  it("rejects a body over 16 MiB as unreadable before decoding or the daemon", async () => {
+    forwarded = [];
+    const { operation } = await serve();
     // Over the size limit the server answers without reading the rest, so the client may see a
-    // reset instead of the 400; either way nothing reaches the daemon.
-    const oversized = await operation({ command: "list", padding: "x".repeat(70_000) }).then(
-      (response) => response.status,
+    // reset or a bare close instead of the 400; either way nothing reaches the daemon. A body read
+    // in full would instead fail decoding with a different 400.
+    const oversized = await operation(" ".repeat(16 * 1024 * 1024 + 1)).then(
+      (response) =>
+        response.status ? [response.status, JSON.parse(response.body) as unknown] : "closed",
       (error: NodeJS.ErrnoException) => error.code,
     );
-    expect([400, "ECONNRESET", "EPIPE"]).toContain(oversized);
+    expect([
+      "ECONNRESET",
+      "EPIPE",
+      "closed",
+      [400, { ok: false, error: { code: "bad_args", message: "unreadable request body" } }],
+    ]).toContainEqual(oversized);
     expect(forwarded).toEqual([]);
   });
 });

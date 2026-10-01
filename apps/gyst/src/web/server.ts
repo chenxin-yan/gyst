@@ -75,8 +75,9 @@ export const loadWebAssets = (dir: string) =>
       }),
   });
 
-// Browser operations are a few hundred bytes; anything larger is not one.
-const maxOperationBytes = ByteSize.kilobytes(64);
+// Bounds a hostile body, not a review: a Viewed request names its hunk ids explicitly (~19 bytes
+// each in JSON), so 16 MiB admits roughly 800,000 hunks in one atomic write.
+const maxOperationBytes = ByteSize.mebibytes(16);
 const decodeOperation = Schema.decodeUnknownEffect(Schema.fromJsonString(BrowserRequestSchema), {
   onExcessProperty: "error",
 });

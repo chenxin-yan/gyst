@@ -1,5 +1,5 @@
 import { Result, Schema } from "effect";
-import { draftOf, type MutableSession, reconcileQueue } from "./draft.ts";
+import { draftOf, type MutableSession } from "./draft.ts";
 import { StaleRevision, ValidationFailed } from "./errors.ts";
 import { hash } from "./hash.ts";
 import { metadataFields, MetadataSchema, NotesSchema, TitleSchema } from "./metadata.ts";
@@ -23,15 +23,10 @@ export const GroupDissolveSchema = Schema.Struct({
   type: Schema.Literal("group.dissolve"),
   id: Schema.String,
 });
-export const QueueSetSchema = Schema.Struct({
-  type: Schema.Literal("queue.set"),
-  itemIds: Schema.Array(Schema.String),
-});
 export const ApplyOpSchema = Schema.Union([
   GroupCreateSchema,
   GroupUpdateSchema,
   GroupDissolveSchema,
-  QueueSetSchema,
 ]);
 export type ApplyOp = typeof ApplyOpSchema.Type;
 export const ApplyEnvelopeSchema = Schema.Struct({
@@ -151,10 +146,7 @@ export function applyBatch(
         title: op.title,
         notes: op.notes.map((note) => ({ ...note })),
         hunkIds: [...op.memberHunkIds],
-        accepted: false,
       });
-      draft.queueSet = false;
-      reconcileQueue(draft);
       continue;
     }
     if (op.type === "group.update") {
@@ -190,53 +182,19 @@ export function applyBatch(
         hunkIds: [...members],
         title,
         notes: notes.map((note) => ({ ...note })),
-        accepted: false,
       });
-      draft.queueSet = false;
-      reconcileQueue(draft);
       continue;
     }
-    if (op.type === "group.dissolve") {
-      const index = draft.groups.findIndex((group) => group.id === op.id);
-      if (index < 0) {
-        fail(opIndex, `group ${op.id} does not exist`);
-        continue;
-      }
-      draft.groups.splice(index, 1);
-      draft.queueSet = false;
-      reconcileQueue(draft);
-      continue;
-    }
-    const expected = draft.groups.map((group) => group.id);
-    if (
-      op.itemIds.length !== expected.length ||
-      new Set(op.itemIds).size !== op.itemIds.length ||
-      expected.some((id) => !op.itemIds.includes(id))
-    ) {
-      fail(opIndex, "queue must contain every group exactly once");
-      continue;
-    }
-    draft.queue = [...op.itemIds];
-    draft.queueSet = true;
+    const index = draft.groups.findIndex((group) => group.id === op.id);
+    if (index < 0) fail(opIndex, `group ${op.id} does not exist`);
+    else draft.groups.splice(index, 1);
   }
 
-  const queueOpIndex = envelope.ops.findLastIndex((op) => op.type === "queue.set");
-  if (
-    queueOpIndex >= 0 &&
-    !draft.queueSet &&
-    !errors.some(({ opIndex }) => opIndex === queueOpIndex)
-  ) {
-    fail(queueOpIndex, "queue.set must describe the batch's final groups");
-  }
-  if (!errors.length && !draft.queueSet && envelope.ops.some((op) => op.type !== "queue.set"))
-    fail(envelope.ops.length - 1, "group changes require a complete queue.set");
   if (errors.length)
     return Result.fail(
       new ValidationFailed({ message: "apply validation failed", detail: errors }),
     );
-  if (!draft.queueSet) reconcileQueue(draft);
   draft.revision++;
-  draft.seq++;
   draft.updatedAt = updatedAt;
   const status = statusOf(draft);
   draft.applyReceipts.push({
