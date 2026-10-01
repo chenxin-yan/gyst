@@ -7,7 +7,7 @@ import packageJson from "../../package.json" with { type: "json" };
 import { browserOpener, serveViewer } from "../web/launcher.ts";
 import { installedWebUiDir } from "../web/server.ts";
 import { daemon } from "./commands/daemon.ts";
-import { daemonClient, session } from "./commands/session.ts";
+import { daemonClient, session, terminalProgress } from "./commands/session.ts";
 import { coReviewSkill } from "./extensions/co-review-skill.ts";
 import { jsonErrors } from "./extensions/json-errors.ts";
 
@@ -50,6 +50,7 @@ export const app = new Crust("gyst", {
           webUiDir: installedWebUiDir,
           opener: browserOpener(process.platform, process.env, process.stdout.isTTY),
           stdout,
+          progress: terminalProgress(process.stderr),
         },
       );
     }),

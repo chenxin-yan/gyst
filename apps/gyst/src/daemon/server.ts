@@ -2,6 +2,7 @@ import * as NodeSocket from "@effect/platform-node/NodeSocket";
 import * as NodeSocketServer from "@effect/platform-node/NodeSocketServer";
 import {
   BadArgs,
+  type CaptureProgress,
   DaemonError,
   DaemonUnreachable,
   type Reply,
@@ -25,15 +26,16 @@ import * as Socket from "effect/socket/Socket";
 import type * as SocketServer from "effect/socket/SocketServer";
 import { compare } from "semver";
 import { Paths } from "./paths.ts";
-import { DaemonMessageSchema, daemonVersion } from "./protocol.ts";
+import { DaemonMessageSchema, daemonVersion, ProgressLineSchema } from "./protocol.ts";
 import { Sessions } from "./sessions.ts";
 import { inspectSavedSessions } from "./store.ts";
-import { daemonAbsent, readLine, writeLine } from "./wire.ts";
+import { daemonAbsent, readLine } from "./wire.ts";
 
 const decodeRequest = Schema.decodeUnknownEffect(Schema.fromJsonString(DaemonMessageSchema), {
   onExcessProperty: "error",
 });
 const encodeReply = Schema.encodeSync(Schema.fromJsonString(ReplySchema));
+const encodeProgress = Schema.encodeSync(Schema.fromJsonString(ProgressLineSchema));
 
 const isAlreadyExists = (error: PlatformError.PlatformError | Socket.SocketError) =>
   error._tag === "PlatformError" && error.reason._tag === "AlreadyExists";
@@ -131,10 +133,13 @@ export class DaemonServer extends Context.Service<
         Effect.when(fs.remove(paths.pidPath, { force: true }), ownsPidFile).pipe(Effect.ignore),
       );
 
-      const dispatch = (request: Request): Effect.Effect<unknown, DaemonError> => {
+      const dispatch = (
+        request: Request,
+        onProgress: (progress: CaptureProgress) => Effect.Effect<void>,
+      ): Effect.Effect<unknown, DaemonError> => {
         switch (request.command) {
           case "open":
-            return sessions.open(request);
+            return sessions.open(request, onProgress);
           case "list":
             return sessions.list;
           case "status":
@@ -143,10 +148,14 @@ export class DaemonServer extends Context.Service<
             return sessions.check(request);
           case "diff":
             return sessions.diff(request);
+          case "files":
+            return sessions.files(request);
+          case "code":
+            return sessions.code(request);
           case "apply":
             return sessions.apply(request);
           case "refresh":
-            return sessions.refresh(request);
+            return sessions.refresh(request, onProgress);
           case "delete":
             return sessions.delete(request);
         }
@@ -163,6 +172,23 @@ export class DaemonServer extends Context.Service<
             () => Ref.update(active, (n) => n - 1),
           );
           const line = yield* readLine(yield* Socket.readerBytes(socket));
+          const writer = yield* socket.writer;
+          const writeLine = (text: string) => writer.write(`${text}\n`);
+          // Interim progress lines precede the reply, and never hold a capture up: after a client
+          // stops reading or hangs up (the Node writer then awaits a drain that never comes), the
+          // first write that fails or takes a second ends reporting on this connection.
+          let reporting = true;
+          const onProgress = (progress: CaptureProgress) =>
+            reporting
+              ? writeLine(encodeProgress({ progress })).pipe(
+                  Effect.timeout("1 second"),
+                  Effect.catch(() =>
+                    Effect.sync(() => {
+                      reporting = false;
+                    }),
+                  ),
+                )
+              : Effect.void;
           let restartAfterReply = false;
           const reply: Reply = yield* decodeRequest(line).pipe(
             Effect.mapError(
@@ -222,7 +248,7 @@ export class DaemonServer extends Context.Service<
                         "daemon identity changed or upgrade is in progress; no review command was executed",
                     }),
                   );
-                return yield* dispatch(message.request);
+                return yield* dispatch(message.request, onProgress);
               }),
             ),
             Effect.map((value) => ({ ok: true as const, value })),
@@ -230,7 +256,7 @@ export class DaemonServer extends Context.Service<
               Effect.succeed({ ok: false as const, error }),
             ),
           );
-          yield* writeLine(socket, encodeReply(reply)).pipe(
+          yield* writeLine(encodeReply(reply)).pipe(
             Effect.ensuring(restartAfterReply ? restart.open : Effect.void),
           );
         },

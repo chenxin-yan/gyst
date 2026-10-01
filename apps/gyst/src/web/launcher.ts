@@ -1,5 +1,5 @@
 import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
-import type { OpenPayload, Request } from "@gyst/core";
+import type { CaptureProgress, OpenPayload, Request } from "@gyst/core";
 import { Clock, Effect, Option } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import { createServer } from "node:http";
@@ -53,12 +53,21 @@ export const serveViewer = Effect.fn("serveViewer")(function* (
     readonly webUiDir: string;
     readonly opener: string | undefined;
     readonly stdout: (text: string) => void;
+    /** Shows a capture's progress while the open waits for it, then clears it. */
+    readonly progress?:
+      | {
+          readonly report: (progress: CaptureProgress) => Effect.Effect<void>;
+          readonly clear: Effect.Effect<void>;
+        }
+      | undefined;
   },
 ) {
   const assets = yield* loadWebAssets(options.webUiDir);
   const client = yield* DaemonClient;
   // The client decoded this reply with `OpenPayloadSchema`.
-  const opened = (yield* client.request(open)) as OpenPayload;
+  const opened = (yield* client
+    .request(open, options.progress?.report)
+    .pipe(Effect.ensuring(options.progress?.clear ?? Effect.void))) as OpenPayload;
   const launch = makeLaunch(yield* Clock.currentTimeMillis);
 
   const server = createServer();

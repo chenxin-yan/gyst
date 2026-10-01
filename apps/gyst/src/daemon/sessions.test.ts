@@ -1,19 +1,45 @@
-import { beforeEach, describe, expect, it } from "vite-plus/test";
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vite-plus/test";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import {
   type ApplyEnvelope,
   applyHumanAction,
   BadArgs,
+  type ByteRange,
   type HumanAction,
+  InternalError,
   type Scope,
   type Session,
+  type ManifestFile,
+  pageBytes,
+  type Request,
+  type SnapshotManifest,
+  snapshotIdOf,
 } from "@gyst/core";
-import { Crypto, Effect, Exit, Fiber, Layer, PlatformError, Result, Stream } from "effect";
+import {
+  ConfigProvider,
+  Crypto,
+  Deferred,
+  Effect,
+  Exit,
+  Fiber,
+  Layer,
+  PlatformError,
+  Result,
+  Stream,
+} from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
+import { execFileSync } from "node:child_process";
+import { mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { manifestOf, publishingContent } from "./capture-doubles.ts";
+import { CapturedContent } from "./content.ts";
 import { Git } from "./git.ts";
+import { Paths } from "./paths.ts";
 import { Sessions } from "./sessions.ts";
 import { type DeleteReceipt, SessionStore } from "./store.ts";
 
+type Input<C extends Request["command"]> = Extract<Request, { readonly command: C }>;
 const root = "/repo";
 const otherRoot = "/other";
 const patch = `diff --git a/a.txt b/a.txt
@@ -37,7 +63,25 @@ let saveFails: boolean;
 let removeFails: boolean;
 let nextId: number;
 let gitPatch: string;
-let patchEffect: Effect.Effect<string, BadArgs> | undefined;
+let supporting: Record<string, string>;
+let patchEffect: Effect.Effect<SnapshotManifest, BadArgs | InternalError> | undefined;
+let manifestFails: boolean;
+let slowCapture: boolean;
+/** Files the capture double adds without content: binary, symlink or submodule sides. */
+let uncaptured: ManifestFile[];
+/** When set, each capture signals `started` and then waits for `release`. */
+let gate: { started: Deferred.Deferred<void>; release: Deferred.Deferred<void> } | undefined;
+const withUncaptured = (manifest: SnapshotManifest): SnapshotManifest => ({
+  ...manifest,
+  files: [...manifest.files, ...uncaptured].sort((a, b) => (a.path < b.path ? -1 : 1)),
+});
+const holdCaptures = Effect.gen(function* () {
+  const held = { started: yield* Deferred.make<void>(), release: yield* Deferred.make<void>() };
+  gate = held;
+  return held;
+});
+/** Content publications and session saves, in order. */
+let commits: string[];
 
 // Deterministic bytes: the n-th id is `nnnnnnnn-nnnn-4nnn-8nnn-nnnnnnnnnnnn` in hex.
 const crypto = Layer.succeed(
@@ -56,9 +100,26 @@ const git = Layer.succeed(Git, {
   capture: (root, scope) =>
     Effect.suspend(() => {
       captureCalls.push({ root, scope });
-      return patchEffect ?? Effect.succeed(gitPatch);
+      const captured =
+        patchEffect ?? Effect.sync(() => withUncaptured(manifestOf(gitPatch, scope, supporting)));
+      const delayed = slowCapture ? Effect.delay(captured, "20 millis") : captured;
+      return gate
+        ? Deferred.succeed(gate.started, undefined).pipe(
+            Effect.andThen(Deferred.await(gate.release)),
+            Effect.andThen(delayed),
+          )
+        : delayed;
     }),
 });
+
+const content = publishingContent((manifest) =>
+  manifestFails
+    ? Effect.fail(writeFailure)
+    : Effect.sync(() => {
+        commits.push(`manifest ${manifest.files.map(({ path }) => path).join(",")}`);
+        return snapshotIdOf(manifest);
+      }),
+);
 
 const writeFailure = PlatformError.systemError({
   _tag: "PermissionDenied",
@@ -72,6 +133,7 @@ const store = Layer.succeed(SessionStore, {
     saveFails
       ? Effect.fail(writeFailure)
       : Effect.sync(() => {
+          commits.push(`session ${session.id}`);
           files.set(session.id, session);
         }),
   remove: (id) =>
@@ -89,7 +151,9 @@ const store = Layer.succeed(SessionStore, {
         }),
 });
 
-const sessionsLayer = Sessions.layer.pipe(Layer.provide(Layer.mergeAll(git, store, crypto)));
+const sessionsLayer = Sessions.layer.pipe(
+  Layer.provide(Layer.mergeAll(git, store, crypto, content)),
+);
 // Like the daemon: persisted sessions are loaded once the service is built, not while building it.
 // Each `run` is a fresh daemon over the same persisted files and receipts.
 const run = <A, E>(effect: Effect.Effect<A, E, Sessions>) =>
@@ -174,7 +238,13 @@ beforeEach(() => {
   removeFails = false;
   nextId = 0;
   gitPatch = patch;
+  supporting = {};
   patchEffect = undefined;
+  manifestFails = false;
+  slowCapture = false;
+  uncaptured = [];
+  gate = undefined;
+  commits = [];
 });
 
 describe("Sessions.check", () => {
@@ -288,7 +358,9 @@ describe("Sessions.check", () => {
             const created = yield* sessions.status({ command: "status", session: session.id });
             patchEffect = Git.use((g) => g.capture(process.cwd(), uncommitted)).pipe(
               Effect.provide(
-                Git.layer.pipe(Layer.provide(Layer.merge(NodeServices.layer, spawner))),
+                Git.layer.pipe(
+                  Layer.provide(Layer.mergeAll(NodeServices.layer, spawner, publishingContent())),
+                ),
               ),
             );
             const started = performance.now();
@@ -325,7 +397,7 @@ describe("Sessions.check", () => {
       Sessions.use((sessions) =>
         Effect.gen(function* () {
           const { session } = yield* openScope();
-          gitPatch = patch + "\n";
+          gitPatch = patch.replace("+two", "+other");
           expect(yield* sessions.check({ command: "check", session: session.id })).toMatchObject({
             state: "changed",
           });
@@ -356,6 +428,63 @@ describe("Sessions.check", () => {
           });
           expect(captureCalls).toEqual([{ root: otherRoot, scope: persisted.scope }]);
           expect(JSON.stringify([...files])).toBe(before);
+        }),
+      ),
+    );
+  });
+  it("reports a changed supporting file as changed even when the diff is identical", async () => {
+    supporting = { "helper.ts": "export const helper = 1;\n" };
+    await run(
+      Sessions.use((sessions) =>
+        Effect.gen(function* () {
+          const { session } = yield* openScope();
+          supporting = { "helper.ts": "export const helper = 2;\n" };
+          expect(yield* sessions.check({ command: "check", session: session.id })).toMatchObject({
+            state: "changed",
+          });
+          expect(commits).toHaveLength(2);
+        }),
+      ),
+    );
+  });
+  it("reports unavailable, not unchanged, when uncaptured working-tree inputs may have changed", async () => {
+    uncaptured = [
+      {
+        path: "image.bin",
+        old: { kind: "unavailable", reason: "binary" },
+        new: { kind: "unavailable", reason: "binary" },
+      },
+      { path: "link", old: { kind: "absent" }, new: { kind: "unavailable", reason: "symlink" } },
+    ];
+    const range = { kind: "range", range: "main..feature" } as const;
+    await run(
+      Sessions.use((sessions) =>
+        Effect.gen(function* () {
+          const { session } = yield* openScope();
+          const check = sessions.check({ command: "check", session: session.id });
+          expect(yield* check).toMatchObject({
+            state: "unavailable",
+            message: expect.stringMatching(/binary.*symlink.*image\.bin/),
+          });
+          // Committed endpoints identify every side, so a range compares completely.
+          const ranged = yield* openScope(range);
+          expect(
+            yield* sessions.check({ command: "check", session: ranged.session.id }),
+          ).toMatchObject({ state: "unchanged" });
+        }),
+      ),
+    );
+    // A difference in the captured inputs is still a definite change.
+    await run(
+      Sessions.use((sessions) =>
+        Effect.gen(function* () {
+          const [first] = (yield* sessions.list).sessions.filter(
+            (s) => s.scope.kind === "uncommitted",
+          );
+          gitPatch = patch.replace("+two", "+other");
+          expect(yield* sessions.check({ command: "check", session: first!.id })).toMatchObject({
+            state: "changed",
+          });
         }),
       ),
     );
@@ -421,7 +550,8 @@ describe("Sessions.open", () => {
     ];
     const opened = await run(Effect.forEach(scopes, (scope) => openScope(scope)));
     expect(new Set(opened.map(({ session }) => session.id)).size).toBe(3);
-    expect(new Set(opened.map(({ session }) => session.snapshotId)).size).toBe(1);
+    // The recorded scope is part of the snapshot's identity, so equal diffs are distinct snapshots.
+    expect(new Set(opened.map(({ session }) => session.snapshotId)).size).toBe(3);
     expect(opened.map(({ session }) => session.scope)).toEqual(scopes);
     // Equal scope, other repository: the persisted session, not the one just opened.
     expect((await run(openScope(scopes[1], otherRoot))).session.id).toBe(persisted.id);
@@ -440,7 +570,7 @@ describe("Sessions.open", () => {
   });
 
   it("serializes concurrent opens so one scope gets exactly one session", async () => {
-    patchEffect = Effect.sleep("20 millis").pipe(Effect.as(patch));
+    slowCapture = true;
     const range = { kind: "range", range: "main..feature" } as const;
     const results = await run(
       Effect.all([openScope(), openScope(), openScope(range), openScope(range)], {
@@ -461,28 +591,91 @@ describe("Sessions.open", () => {
       _tag: "bad_args",
       message: "current directory is not inside a git repository",
     });
-    gitPatch = "just text\n";
+    patchEffect = Effect.fail(new BadArgs({ message: "the working tree changed" }));
     expect(await failure(openScope())).toMatchObject({
       _tag: "bad_args",
-      message: "invalid unified diff",
+      message: "the working tree changed",
     });
-    gitPatch = "--- a/a.txt\n+++ b/a.txt\n@@ -1 +1 @@\n-old\n";
+    patchEffect = undefined;
+    manifestFails = true;
     expect(await failure(openScope())).toMatchObject({
-      _tag: "bad_args",
-      detail: "parsePatchContent: hunk line count mismatch",
+      _tag: "internal_error",
+      message: "could not publish the captured snapshot",
     });
     expect([...files.keys()]).toEqual([persisted.id]);
+    expect(commits).toEqual([]);
   });
 
-  it("keeps a session out of memory when persistence fails", async () => {
-    saveFails = true;
+  it("publishes the snapshot manifest before the session that names it", async () => {
+    supporting = { "helper.ts": "export const helper = 1;\n" };
+    const { session } = await run(openScope());
+    expect(commits).toEqual([`manifest a.txt,b.txt,helper.ts`, `session ${session.id}`]);
+    expect(session.snapshotId).toBe(snapshotIdOf(manifestOf(patch, uncommitted, supporting)));
+  });
+
+  it("keeps a session out of memory when capture, publication or persistence fails", async () => {
     await run(
       Effect.gen(function* () {
         const sessions = yield* Sessions;
+        const listed = () =>
+          sessions.list.pipe(Effect.map(({ sessions }) => sessions.map(({ id }) => id)));
+        patchEffect = Effect.fail(new BadArgs({ message: "the working tree changed" }));
         expect(Exit.isFailure(yield* Effect.exit(openScope()))).toBe(true);
-        expect((yield* sessions.list).sessions.map(({ id }) => id)).toEqual([persisted.id]);
+        expect(yield* listed()).toEqual([persisted.id]);
+        patchEffect = undefined;
+        manifestFails = true;
+        expect(Exit.isFailure(yield* Effect.exit(openScope()))).toBe(true);
+        expect(yield* listed()).toEqual([persisted.id]);
+        manifestFails = false;
+        saveFails = true;
+        expect(Exit.isFailure(yield* Effect.exit(openScope()))).toBe(true);
+        expect(yield* listed()).toEqual([persisted.id]);
         expect([...files.keys()]).toEqual([persisted.id]);
+        // The same instance still opens once the fault clears.
+        saveFails = false;
+        expect((yield* openScope()).created).toBe(true);
       }),
+    );
+  });
+
+  it("keeps other sessions readable and writable while a capture is in progress", async () => {
+    await run(
+      Sessions.use((sessions) =>
+        Effect.gen(function* () {
+          const held = yield* holdCaptures;
+          const opening = yield* Effect.forkChild(openScope());
+          yield* Deferred.await(held.started);
+          const status = yield* sessions
+            .status({ command: "status", session: persisted.id })
+            .pipe(Effect.timeout("1 second"));
+          expect(status.revision).toBe(persisted.revision);
+          const applied = yield* sessions
+            .apply({
+              command: "apply",
+              session: persisted.id,
+              batch: JSON.stringify({
+                revision: persisted.revision,
+                idempotencyKey: "during-capture",
+                ops: [
+                  {
+                    type: "group.create",
+                    id: "g3",
+                    memberHunkIds: ["h3"],
+                    title: "third",
+                    notes: [{ hunkId: "h3", text: "third" }],
+                  },
+                  { type: "queue.set", itemIds: ["g1", "g2", "g3"] },
+                ],
+              }),
+            })
+            .pipe(Effect.timeout("1 second"));
+          expect(applied.revision).toBe(persisted.revision + 1);
+          expect((yield* sessions.list.pipe(Effect.timeout("1 second"))).sessions).toHaveLength(1);
+          yield* Deferred.succeed(held.release, undefined);
+          expect((yield* Fiber.join(opening)).created).toBe(true);
+          expect(files.size).toBe(2);
+        }),
+      ),
     );
   });
 });
@@ -807,6 +1000,132 @@ diff --git a/c.txt b/c.txt
     expect(refreshed.session.scope).toEqual(persisted.scope);
     expect(files.get(persisted.id)?.snapshotId).toBe(refreshed.session.snapshotId);
   });
+  it("leaves saved and in-memory state untouched when capture, publication or saving fails", async () => {
+    await run(
+      Effect.gen(function* () {
+        const sessions = yield* Sessions;
+        // Agent and human work recorded before the failing refreshes.
+        yield* sessions.apply({
+          command: "apply",
+          session: persisted.id,
+          batch: JSON.stringify({
+            revision: persisted.revision,
+            idempotencyKey: "before-refresh",
+            ops: [
+              {
+                type: "group.create",
+                id: "g3",
+                memberHunkIds: ["h3"],
+                title: "third",
+                notes: [{ hunkId: "h3", text: "third" }],
+              },
+              { type: "queue.set", itemIds: ["g1", "g2", "g3"] },
+            ],
+          }),
+        });
+        yield* recordHumanAction(persisted.id, {
+          type: "verdict.toggle",
+          sessionId: persisted.id,
+          revision: persisted.revision + 1,
+          itemId: "g3",
+        });
+        const before = JSON.stringify([...files]);
+        const status = yield* sessions.status({ command: "status", session: persisted.id });
+        expect(status).toMatchObject({ revision: persisted.revision + 2 });
+        expect(status.groups.find(({ id }) => id === "g3")?.accepted).toBe(true);
+        const refresh = sessions.refresh({ command: "refresh", session: persisted.id });
+        patchEffect = Effect.fail(new BadArgs({ message: "the working tree changed" }));
+        expect(yield* Effect.flip(refresh)).toMatchObject({ _tag: "bad_args" });
+        expect(yield* sessions.status({ command: "status", session: persisted.id })).toEqual(
+          status,
+        );
+        patchEffect = undefined;
+        manifestFails = true;
+        expect(yield* Effect.flip(refresh)).toMatchObject({ _tag: "internal_error" });
+        expect(yield* sessions.status({ command: "status", session: persisted.id })).toEqual(
+          status,
+        );
+        manifestFails = false;
+        saveFails = true;
+        expect(Exit.isFailure(yield* Effect.exit(refresh))).toBe(true);
+        expect(yield* sessions.status({ command: "status", session: persisted.id })).toEqual(
+          status,
+        );
+        expect(JSON.stringify([...files])).toBe(before);
+      }),
+    );
+  });
+
+  it("reconciles against work saved while it captured, not the session it started from", async () => {
+    await run(
+      Sessions.use((sessions) =>
+        Effect.gen(function* () {
+          const { session } = yield* openScope();
+          const created = yield* sessions.status({ command: "status", session: session.id });
+          const held = yield* holdCaptures;
+          const refreshing = yield* Effect.forkChild(
+            sessions.refresh({ command: "refresh", session: session.id }),
+          );
+          yield* Deferred.await(held.started);
+          yield* sessions
+            .apply({
+              command: "apply",
+              session: session.id,
+              batch: JSON.stringify({
+                revision: 0,
+                idempotencyKey: "late",
+                ops: [
+                  {
+                    type: "group.create",
+                    id: "late",
+                    title: "Late guidance",
+                    notes: [{ hunkId: created.inbox[0]!.id, text: "Written during capture." }],
+                    memberHunkIds: created.inbox.map(({ id }) => id),
+                  },
+                  { type: "queue.set", itemIds: ["late"] },
+                ],
+              }),
+            })
+            .pipe(Effect.timeout("1 second"));
+          // A human verdict persisted by another process, then loaded, also during the capture.
+          yield* recordHumanAction(session.id, {
+            type: "verdict.toggle",
+            sessionId: session.id,
+            revision: 1,
+            itemId: "late",
+          }).pipe(Effect.timeout("1 second"));
+          yield* Deferred.succeed(held.release, undefined);
+          const refreshed = yield* Fiber.join(refreshing);
+          expect(refreshed.revision).toBe(3);
+          expect(refreshed.groups).toEqual([
+            expect.objectContaining({ id: "late", accepted: true }),
+          ]);
+          expect(files.get(session.id)?.revision).toBe(3);
+        }),
+      ),
+    );
+  });
+
+  it("does not resurrect a session deleted while its refresh captured", async () => {
+    await run(
+      Sessions.use((sessions) =>
+        Effect.gen(function* () {
+          const held = yield* holdCaptures;
+          const refreshing = yield* Effect.forkChild(
+            sessions.refresh({ command: "refresh", session: persisted.id }),
+          );
+          yield* Deferred.await(held.started);
+          yield* sessions
+            .delete({ command: "delete", session: persisted.id, requestId: "gone" })
+            .pipe(Effect.timeout("1 second"));
+          yield* Deferred.succeed(held.release, undefined);
+          expect(yield* Effect.flip(Fiber.join(refreshing))).toMatchObject({ _tag: "no_session" });
+          expect(files.has(persisted.id)).toBe(false);
+          expect((yield* sessions.list).sessions).toEqual([]);
+        }),
+      ),
+    );
+  });
 });
 
 describe("Sessions.load", () => {
@@ -983,5 +1302,321 @@ describe("Sessions.delete", () => {
     );
     expect(results[0]).toEqual(results[1]);
     expect(deleteReceipts).toEqual([{ requestId: "twice", sessionId: persisted.id }]);
+  });
+});
+
+describe("Sessions captured reads over real captures", () => {
+  let dir: string;
+  beforeAll(async () => {
+    dir = await realpath(await mkdtemp(join(tmpdir(), "gyst-reads-")));
+  });
+  afterAll(() => rm(dir, { recursive: true, force: true }));
+
+  /** When set, each captured-content read signals `started` and then waits for `release`. */
+  let readGate: { started: Deferred.Deferred<void>; release: Deferred.Deferred<void> } | undefined;
+  const gatedContent = Layer.effect(
+    CapturedContent,
+    Effect.map(CapturedContent, (real) => ({
+      ...real,
+      readBlob: (blob: string, range: ByteRange) =>
+        readGate
+          ? Stream.unwrap(
+              Deferred.succeed(readGate.started, undefined).pipe(
+                Effect.andThen(Deferred.await(readGate.release)),
+                Effect.as(real.readBlob(blob, range)),
+              ),
+            )
+          : real.readBlob(blob, range),
+    })),
+  ).pipe(Layer.provide(CapturedContent.layer));
+  /** Real Git capture into real captured content under a private data dir. */
+  const runReal = <A, E>(effect: Effect.Effect<A, E, Sessions>) =>
+    Effect.runPromise(
+      Effect.provide(
+        Sessions.use((s) => s.load).pipe(Effect.andThen(effect)),
+        Sessions.layer.pipe(
+          Layer.provide(Git.layer.pipe(Layer.provideMerge(gatedContent))),
+          Layer.provide(Layer.mergeAll(store, crypto)),
+          Layer.provide(Paths.layer),
+          Layer.provide(NodeServices.layer),
+          Layer.provide(
+            ConfigProvider.layer(ConfigProvider.fromUnknown({ GYST_DATA_DIR: join(dir, "data") })),
+          ),
+        ),
+      ),
+    );
+
+  const git = (cwd: string, ...args: string[]) =>
+    execFileSync("git", args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+  const repo = async (name: string, committed: Record<string, string | Uint8Array>) => {
+    const cwd = join(dir, name);
+    await mkdir(cwd, { recursive: true });
+    git(cwd, "init", "-q");
+    git(cwd, "config", "user.email", "test@gyst.invalid");
+    git(cwd, "config", "user.name", "Gyst Test");
+    for (const [path, content] of Object.entries(committed))
+      await writeFile(join(cwd, path), content);
+    git(cwd, "add", ".");
+    git(cwd, "commit", "-qm", "initial");
+    return cwd;
+  };
+
+  type Code = Input<"code">;
+  const code = (request: Omit<Code, "command">) =>
+    Sessions.use((s) => s.code({ command: "code", ...request }));
+  const codeError = (request: Omit<Code, "command">) => Effect.flip(code(request));
+  /** Every page from the start, following `next.offset`, checking each page's bound and labels. */
+  const allPages = (request: Omit<Code, "command">) =>
+    Effect.gen(function* () {
+      let text = "";
+      let pages = 0;
+      let offset: number | undefined;
+      let expectedLine = 1;
+      while (true) {
+        const { content } = yield* code({ ...request, offset });
+        if (content.kind !== "text") throw new Error(`not text: ${content.kind}`);
+        pages++;
+        expect(Buffer.byteLength(content.text)).toBeLessThanOrEqual(pageBytes);
+        expect(content.start).toEqual({ line: expectedLine, offset: offset ?? 0 });
+        text += content.text;
+        if (!content.next) return { text, pages };
+        expectedLine = 1 + (text.match(/\n/g)?.length ?? 0);
+        expect(content.next).toEqual({ line: expectedLine, offset: Buffer.byteLength(text) });
+        offset = content.next.offset;
+      }
+    });
+
+  const endings = "\uFEFFfirst\r\nsecond\rstill second\nlast";
+  const bigLine = (index: number) => `line ${String(index).padStart(5, "0")} ${"x".repeat(40)}\n`;
+  const big = Array.from({ length: 4000 }, (_, index) => bigLine(index + 1)).join("");
+  const lineBytes = bigLine(1).length;
+  // Two-byte characters align with every page split; a short line follows the giant one.
+  const giant = `${"é".repeat(100_000)}z\nshort\n`;
+  // Three-byte characters do not: 65,536 is one byte into a `€`, so a split must retreat.
+  const euros = `${"€".repeat(50_000)}\n`;
+
+  it("reads exact captured bytes by line, page and side after the checkout is deleted", async () => {
+    const cwd = await repo("exact", {
+      "changed.txt": "old one\nold two\n",
+      "deleted.txt": "going away\n",
+      "helper.ts": "export const helper = 1;\n",
+    });
+    await writeFile(join(cwd, "changed.txt"), "old one\nnew two\n");
+    await rm(join(cwd, "deleted.txt"));
+    await writeFile(join(cwd, "endings.txt"), endings);
+    await writeFile(join(cwd, "empty.txt"), "");
+    await writeFile(join(cwd, "big.txt"), big);
+    await writeFile(join(cwd, "giant.txt"), giant);
+    await writeFile(join(cwd, "euros.txt"), euros);
+    await writeFile(join(cwd, "image.bin"), new Uint8Array([0x89, 0x50, 0, 1]));
+
+    await runReal(
+      Effect.gen(function* () {
+        const sessions = yield* Sessions;
+        const { session } = yield* sessions.open({ command: "open", cwd, scope: uncommitted });
+        yield* Effect.promise(() => rm(cwd, { recursive: true, force: true }));
+        const ids = { session: session.id, snapshotId: session.snapshotId };
+        const diff = yield* sessions.diff({ command: "diff", session: session.id });
+        expect(diff.snapshotId).toBe(session.snapshotId);
+
+        const read = (file: string, side: "old" | "new" = "new", more = {}) =>
+          code({ ...ids, file, side, ...more }).pipe(Effect.map(({ content }) => content));
+        expect(yield* read("endings.txt")).toEqual({
+          kind: "text",
+          size: Buffer.byteLength(endings),
+          start: { line: 1, offset: 0 },
+          text: endings,
+          next: null,
+        });
+        const firstLine = Buffer.byteLength("\uFEFFfirst\r\n");
+        expect(yield* read("endings.txt", "new", { startLine: 2, endLine: 2 })).toMatchObject({
+          start: { line: 2, offset: firstLine },
+          text: "second\rstill second\n",
+          next: null,
+        });
+        expect(yield* read("endings.txt", "new", { startLine: 3 })).toMatchObject({
+          start: { line: 3 },
+          text: "last",
+          next: null,
+        });
+        expect(yield* read("empty.txt")).toEqual({
+          kind: "text",
+          size: 0,
+          start: { line: 1, offset: 0 },
+          text: "",
+          next: null,
+        });
+        // Unchanged supporting files are members too, on both sides.
+        expect(yield* read("helper.ts", "old")).toMatchObject({
+          text: "export const helper = 1;\n",
+        });
+        expect(yield* read("changed.txt", "old")).toMatchObject({ text: "old one\nold two\n" });
+        expect(yield* read("changed.txt")).toMatchObject({ text: "old one\nnew two\n" });
+        expect(yield* read("deleted.txt")).toEqual({ kind: "absent" });
+        expect(yield* read("endings.txt", "old")).toEqual({ kind: "absent" });
+        expect(yield* read("image.bin")).toEqual({ kind: "unavailable", reason: "binary" });
+
+        const bigPages = yield* allPages({ ...ids, file: "big.txt", side: "new" });
+        expect(bigPages.text).toBe(big);
+        expect(bigPages.pages).toBe(Math.ceil(4000 / Math.floor(pageBytes / lineBytes)));
+        const firstBig = yield* read("big.txt");
+        // A page ends after its last whole line.
+        if (firstBig.kind === "text") expect(firstBig.text.endsWith("\n")).toBe(true);
+        const giantPages = yield* allPages({ ...ids, file: "giant.txt", side: "new" });
+        expect(giantPages.text).toBe(giant);
+        expect(giantPages.pages).toBe(4);
+        // The giant line continues across pages: every page after the first still starts in line 1
+        // until it ends, and the last page holds the rest of it and the short line.
+        const lastGiant = yield* read("giant.txt", "new", { offset: 3 * pageBytes });
+        expect(lastGiant).toMatchObject({ start: { line: 1 }, next: null });
+        const euroPages = yield* allPages({ ...ids, file: "euros.txt", side: "new" });
+        expect(euroPages.text).toBe(euros);
+        expect(euroPages.pages).toBe(3);
+        expect(yield* read("euros.txt")).toMatchObject({
+          start: { line: 1, offset: 0 },
+          next: { line: 1, offset: pageBytes - 1 },
+        });
+        // End of content: one past the last line only after a final LF.
+        const endingsSize = Buffer.byteLength(endings);
+        expect(yield* read("endings.txt", "new", { offset: endingsSize })).toMatchObject({
+          start: { line: 3, offset: endingsSize },
+          text: "",
+          next: null,
+        });
+        expect(yield* read("big.txt", "new", { offset: big.length })).toMatchObject({
+          start: { line: 4001, offset: big.length },
+          text: "",
+          next: null,
+        });
+        expect(yield* read("big.txt", "new", { startLine: 4000, endLine: 4000 })).toMatchObject({
+          start: { line: 4000, offset: 3999 * lineBytes },
+          text: bigLine(4000),
+          next: null,
+        });
+        expect(yield* read("big.txt", "new", { startLine: 2, endLine: 3 })).toMatchObject({
+          text: bigLine(2) + bigLine(3),
+          next: null,
+        });
+
+        const invalid = (file: string, more: object) =>
+          codeError({ ...ids, file, side: "new", ...more });
+        expect(yield* invalid("endings.txt", { startLine: 4 })).toMatchObject({
+          _tag: "bad_args",
+          detail: { startLine: 4, lines: 3 },
+        });
+        expect(yield* invalid("empty.txt", { startLine: 1 })).toMatchObject({
+          _tag: "bad_args",
+          detail: { lines: 0 },
+        });
+        expect(yield* invalid("big.txt", { startLine: 4001 })).toMatchObject({
+          _tag: "bad_args",
+          detail: { lines: 4000 },
+        });
+        expect(yield* invalid("big.txt", { endLine: 4001 })).toMatchObject({ _tag: "bad_args" });
+        expect(
+          yield* invalid("big.txt", { offset: lineBytes * 10 + 5, endLine: 10 }),
+        ).toMatchObject({
+          _tag: "bad_args",
+          detail: { endLine: 10, line: 11 },
+        });
+        expect(yield* invalid("big.txt", { offset: big.length + 1 })).toMatchObject({
+          _tag: "bad_args",
+        });
+        // Byte 1 of the BOM, and the second byte of an `é`.
+        expect(yield* invalid("endings.txt", { offset: 1 })).toMatchObject({ _tag: "bad_args" });
+        expect(yield* invalid("giant.txt", { offset: 1 })).toMatchObject({ _tag: "bad_args" });
+        expect(yield* read("giant.txt", "new", { offset: 2 })).toMatchObject({
+          start: { line: 1, offset: 2 },
+        });
+        expect(yield* invalid("missing.txt", {})).toMatchObject({
+          _tag: "validation_failed",
+          detail: { file: "missing.txt" },
+        });
+      }),
+    );
+  });
+
+  it("lists every captured file in bounded pages that resume after the previous one", async () => {
+    const committed = Object.fromEntries(
+      Array.from({ length: 700 }, (_, index) => [
+        `${String(index).padStart(3, "0")}-${"n".repeat(80)}.txt`,
+        "same\n",
+      ]),
+    );
+    const cwd = await repo("many", committed);
+    await writeFile(join(cwd, "added.txt"), "new\n");
+    await runReal(
+      Effect.gen(function* () {
+        const sessions = yield* Sessions;
+        const { session } = yield* sessions.open({ command: "open", cwd, scope: uncommitted });
+        const ids = { command: "files", session: session.id, snapshotId: session.snapshotId };
+        const listed = [];
+        let after: string | undefined;
+        let pages = 0;
+        do {
+          const page = yield* sessions.files({ ...ids, after } as Input<"files">);
+          pages++;
+          expect(page.total).toBe(701);
+          expect(Buffer.byteLength(JSON.stringify(page.files))).toBeLessThanOrEqual(
+            pageBytes + page.files.length + 1,
+          );
+          listed.push(...page.files);
+          after = page.next ?? undefined;
+          if (page.next) expect(page.next).toBe(page.files.at(-1)!.path);
+        } while (after !== undefined);
+        expect(pages).toBeGreaterThan(2);
+        expect(listed.map(({ path }) => path)).toEqual(
+          [...Object.keys(committed), "added.txt"].sort(),
+        );
+        expect(listed.find(({ path }) => path === "added.txt")).toMatchObject({
+          old: { kind: "absent" },
+          new: { kind: "text", size: 4 },
+        });
+        expect(
+          yield* Effect.flip(sessions.files({ ...ids, after: "not-a-member" } as Input<"files">)),
+        ).toMatchObject({ _tag: "validation_failed" });
+      }),
+    );
+  });
+
+  it("rejects a replaced snapshot as stale and finishes an in-flight read against its own", async () => {
+    const cwd = await repo("stale", { "a.txt": "before\n" });
+    await writeFile(join(cwd, "a.txt"), "during\n");
+    await runReal(
+      Effect.gen(function* () {
+        const sessions = yield* Sessions;
+        const { session } = yield* sessions.open({ command: "open", cwd, scope: uncommitted });
+        const first = { session: session.id, snapshotId: session.snapshotId };
+        const held = {
+          started: yield* Deferred.make<void>(),
+          release: yield* Deferred.make<void>(),
+        };
+        readGate = held;
+        const reading = yield* Effect.forkChild(code({ ...first, file: "a.txt", side: "new" }));
+        yield* Deferred.await(held.started);
+        readGate = undefined;
+        yield* Effect.promise(() => writeFile(join(cwd, "a.txt"), "after\n"));
+        const refreshed = yield* sessions.refresh({ command: "refresh", session: session.id });
+        const current = refreshed.session.snapshotId;
+        expect(current).not.toBe(session.snapshotId);
+        yield* Deferred.succeed(held.release, undefined);
+        expect(yield* Fiber.join(reading)).toMatchObject({
+          snapshotId: session.snapshotId,
+          content: { text: "during\n" },
+        });
+
+        const stale = { _tag: "stale_revision", detail: { snapshotId: current } };
+        expect(yield* codeError({ ...first, file: "a.txt", side: "new" })).toMatchObject(stale);
+        expect(yield* Effect.flip(sessions.files({ command: "files", ...first }))).toMatchObject(
+          stale,
+        );
+        expect(
+          yield* codeError({ ...first, snapshotId: "f".repeat(64), file: "a.txt", side: "new" }),
+        ).toMatchObject(stale);
+        expect(
+          yield* code({ session: session.id, snapshotId: current, file: "a.txt", side: "new" }),
+        ).toMatchObject({ snapshotId: current, content: { text: "after\n" } });
+      }),
+    );
   });
 });

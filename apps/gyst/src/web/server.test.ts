@@ -11,6 +11,7 @@ import { browserApp, installedWebUiDir, loadWebAssets, type WebAssets } from "./
 import { indexHtml, type RawResponse, secret, send, webUiFixture } from "../../tests/http.ts";
 
 const t0 = 1_000_000;
+const snapshotId = "0".repeat(64);
 let now = t0;
 const clock: Clock.Clock = {
   currentTimeMillisUnsafe: () => now,
@@ -379,6 +380,9 @@ describe("browserApp operations", () => {
       { command: "list" },
       { command: "open", session: "s1" },
       { command: "diff", session: "s1", file: "a.txt" },
+      { command: "files", session: "s1", snapshotId, after: "src/a.ts" },
+      { command: "code", session: "s1", snapshotId, file: "src/a.ts", side: "old", startLine: 3 },
+      { command: "code", session: "s1", snapshotId, file: "src/a.ts", side: "new", offset: 7 },
       { command: "delete", session: "s1", requestId: "r1" },
     ];
     for (const request of requests) {
@@ -419,6 +423,41 @@ describe("browserApp operations", () => {
       JSON.stringify({ command: "apply", session: "s1", batch: "{}" }),
       JSON.stringify({ command: "refresh", session: "s1" }),
       JSON.stringify({ command: "delete", session: "s1" }),
+      // Captured reads name a logical path in an exact snapshot: no host path, blob or checkout.
+      JSON.stringify({
+        command: "code",
+        session: "s1",
+        snapshotId,
+        file: "/etc/passwd",
+        side: "new",
+      }),
+      JSON.stringify({
+        command: "code",
+        session: "s1",
+        snapshotId,
+        file: "a/../../b",
+        side: "new",
+      }),
+      JSON.stringify({
+        command: "code",
+        session: "s1",
+        snapshotId,
+        file: "a",
+        side: "new",
+        blob: "b",
+      }),
+      JSON.stringify({ command: "code", session: "s1", snapshotId, file: "a", side: "live" }),
+      JSON.stringify({ command: "code", session: "s1", file: "a", side: "new" }),
+      JSON.stringify({
+        command: "code",
+        session: "s1",
+        snapshotId,
+        file: "a",
+        side: "new",
+        cwd: "/",
+      }),
+      JSON.stringify({ command: "files", session: "s1", snapshotId: "../snapshots/x" }),
+      JSON.stringify({ command: "files", session: "s1", snapshotId, after: "/abs" }),
     ]) {
       const response = await operation(body);
       expect(response.status).toBe(400);

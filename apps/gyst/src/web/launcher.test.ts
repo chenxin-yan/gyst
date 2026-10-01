@@ -9,6 +9,7 @@ import { connect } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DaemonClient } from "../daemon/client.ts";
+import { manifestOf, publishingContent } from "../daemon/capture-doubles.ts";
 import { Git } from "../daemon/git.ts";
 import { Paths } from "../daemon/paths.ts";
 import { DaemonServer } from "../daemon/server.ts";
@@ -49,7 +50,7 @@ const paths = Layer.sync(Paths, () => ({
 }));
 const git = Layer.succeed(Git, {
   repoRoot: (cwd) => Effect.succeed(cwd),
-  capture: () => Effect.succeed(patch),
+  capture: (_root, scope) => Effect.succeed(manifestOf(patch, scope)),
 });
 const receipts: Array<{ requestId: string; sessionId: string }> = [];
 const store = Layer.succeed(SessionStore, {
@@ -68,7 +69,9 @@ const crypto = Layer.succeed(
 );
 const layer = Layer.mergeAll(
   DaemonServer.layer.pipe(
-    Layer.provide(Sessions.layer.pipe(Layer.provide(Layer.mergeAll(git, store, crypto)))),
+    Layer.provide(
+      Sessions.layer.pipe(Layer.provide(Layer.mergeAll(git, store, crypto, publishingContent()))),
+    ),
   ),
   DaemonClient.layer,
 ).pipe(Layer.provide(paths), Layer.provideMerge(NodeServices.layer));

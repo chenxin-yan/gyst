@@ -257,6 +257,22 @@ describe("installed gyst in a sandboxed browser", () => {
     );
     git("add", ".");
     git("commit", "-qm", "init");
+    // bulk...paged: the snapshot holds the whole tree (these 400 unchanged files, app.ts, README.md
+    // and paged.ts), more than one 64 KiB files page; paged~1 is another snapshot of the same files
+    // for a refresh between pages.
+    git("switch", "-qc", "bulk");
+    await mkdir(join(repo, "bulk"));
+    for (let i = 0; i < 400; i++)
+      await writeFile(join(repo, "bulk", `${String(i).padStart(3, "0")}.txt`), "bulk\n");
+    git("add", ".");
+    git("commit", "-qm", "bulk");
+    git("switch", "-qc", "paged");
+    for (const version of ["v1", "v2"]) {
+      await writeFile(join(repo, "paged.ts"), `${version}\n`);
+      git("add", ".");
+      git("commit", "-qm", version);
+    }
+    git("switch", "-q", "main");
     git("switch", "-qc", "feature");
     await writeFile(join(repo, "feature.ts"), "export const feature = 'range-only';\n");
     git("add", ".");
@@ -271,6 +287,8 @@ describe("installed gyst in a sandboxed browser", () => {
       join(repo, "README.md"),
       `${await readFile(join(repo, "README.md"), "utf8")}A new line`,
     );
+    // Untracked binary: captured as an unavailable side, never as text.
+    await writeFile(join(repo, "logo.bin"), new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0, 1]));
 
     const chromiumPath = process.env.CHROMIUM_PATH;
     browser = await chromium.launch({
@@ -324,7 +342,8 @@ describe("installed gyst in a sandboxed browser", () => {
     expect(await page.evaluate(() => location.href.includes("#"))).toBe(false);
     await crumbIs(page, "demo/uncommitted changes");
     expect(await page.getByRole("heading", { level: 1 }).getAttribute("title")).toBe(repo);
-    expect((await gyst("session", "list")).sessions).toEqual([
+    const { sessions } = await gyst("session", "list");
+    expect(sessions).toEqual([
       expect.objectContaining({ id: one.id, scope: { kind: "uncommitted" } }),
     ]);
 
@@ -341,6 +360,7 @@ describe("installed gyst in a sandboxed browser", () => {
     const operations = requests.filter((r) => operationOf(r) !== undefined);
     expect(operations.map(operationOf).sort((a, b) => a.command.localeCompare(b.command))).toEqual([
       { command: "diff", session: one.id },
+      { command: "files", session: one.id, snapshotId: sessions[0].snapshotId },
       { command: "open", session: one.id },
     ]);
     for (const request of operations) {
@@ -368,7 +388,13 @@ describe("installed gyst in a sandboxed browser", () => {
     expect(await pane.getByText(hostile).count()).toBe(1);
     expect(await pane.locator("img").count()).toBe(0);
     expect(await page.evaluate(() => "injected" in window)).toBe(false);
-    expect(await pane.getByRole("heading", { level: 2 }).count()).toBe(2);
+    // The changed files' headings; the captured files section has its own.
+    expect(
+      await pane
+        .getByRole("heading", { level: 2 })
+        .filter({ hasNotText: /^Captured files/ })
+        .count(),
+    ).toBe(2);
     // A line is a row of old number, new number and code cells.
     const numbers = (text: string) =>
       pane
@@ -383,6 +409,94 @@ describe("installed gyst in a sandboxed browser", () => {
       "\\ No newline at end of file",
     ]);
     expect(await numbers("No newline at end of file")).toEqual(["", ""]);
+  }, 30_000);
+
+  it("lists captured files and renders captured code, unchanged supporting files included, as escaped numbered text; an unavailable side shows its reason", async () => {
+    const page = await newPage();
+    await page.goto(`${one.origin}${one.path}`);
+    const pane = page.getByRole("main");
+    const capturedRow = (path: string) =>
+      pane
+        .getByRole("list", { name: "Captured files" })
+        .getByRole("listitem")
+        .filter({ hasText: path });
+    await capturedRow("app.ts").getByRole("button", { name: "View old" }).click();
+    const oldApp = pane.getByRole("region", { name: "app.ts, old side" });
+    await oldApp.getByText(hostile).waitFor();
+    // Each line is a row of its line number and code cells.
+    expect(
+      await oldApp.getByRole("row").locator("[role=cell]:not(:last-child)").allTextContents(),
+    ).toEqual(["1", "2", "3"]);
+    expect(await pane.locator("img").count()).toBe(0);
+    expect(await page.evaluate(() => "injected" in window)).toBe(false);
+    // The uncommitted scope's supporting file comes from the snapshot, not only its changed files.
+    await capturedRow("feature.ts").getByRole("button", { name: "View new" }).click();
+    await pane
+      .getByRole("region", { name: "feature.ts, new side" })
+      .getByText("range-only")
+      .waitFor();
+    expect(await capturedRow("logo.bin").innerText()).toMatch(/new: unavailable \(binary\)/);
+    await capturedRow("logo.bin").getByRole("button", { name: "View new" }).click();
+    await pane
+      .getByRole("region", { name: "logo.bin, new side" })
+      .getByText("Not captured: binary content is not captured.")
+      .waitFor();
+    for (const [path, side] of [
+      ["app.ts", "old"],
+      ["feature.ts", "new"],
+      ["logo.bin", "new"],
+    ] as const) {
+      await capturedRow(path)
+        .getByRole("button", { name: `Hide ${side}` })
+        .click();
+      await pane.getByRole("region", { name: `${path}, ${side} side` }).waitFor({
+        state: "detached",
+      });
+    }
+  }, 30_000);
+
+  it("pages captured files on demand and offers a session reload when a refresh replaced the snapshot between pages", async () => {
+    const id = await openRange("bulk...paged");
+    // Deleted even on failure: later tests count saved sessions.
+    onTestFinished(() =>
+      gyst("session", "delete", "--session", id, "--request-id", randomBytes(16).toString("hex")),
+    );
+    const snapshotOf = async () =>
+      (await gyst("session", "list")).sessions.find((session: { id: string }) => session.id === id)
+        .snapshotId;
+    const captured = await snapshotOf();
+    const page = await newPage();
+    const listings: any[] = [];
+    page.on("request", (request) => {
+      if (operationOf(request)?.command === "files") listings.push(operationOf(request));
+    });
+    await page.goto(`${one.origin}/session/${id}`);
+    await crumbIs(page, "demo/bulk...paged");
+    // The first page's size depends on the daemon's page byte limit; only its presence matters.
+    const more = page.getByRole("button", { name: /^Load more files \(\d+ of 403 shown\)$/ });
+    await more.waitFor();
+    git("branch", "-f", "paged", "paged~1");
+    await gyst("session", "refresh", "--session", id);
+    const refreshed = await snapshotOf();
+    expect(refreshed).not.toBe(captured);
+    await more.click();
+    await page.getByRole("alert").getByText("is not the current snapshot").waitFor();
+    expect(await page.getByRole("button", { name: "Retry loading files" }).count()).toBe(0);
+    await page.getByRole("button", { name: "Reload session" }).click();
+    await more.click();
+    await page
+      .getByRole("list", { name: "Captured files" })
+      .getByRole("listitem")
+      .filter({ hasText: "paged.ts" })
+      .waitFor();
+    expect(await page.getByRole("alert").count()).toBe(0);
+    expect(await page.getByRole("button", { name: /Load more files/ }).count()).toBe(0);
+    expect(listings.at(-1)).toEqual({
+      command: "files",
+      session: id,
+      snapshotId: refreshed,
+      after: expect.stringMatching(/^bulk\/\d{3}\.txt$/),
+    });
   }, 30_000);
 
   it("keeps the session across client navigation, cookie reload and a new tab; shows not-found views", async () => {

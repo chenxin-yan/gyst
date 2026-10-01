@@ -3,6 +3,7 @@ import {
   DaemonUnreachable,
   InternalError,
   NoSession,
+  StaleRevision,
   ValidationFailed,
 } from "@gyst/core/wire";
 import { afterEach, describe, expect, it, vi } from "vite-plus/test";
@@ -72,6 +73,42 @@ describe("operation", () => {
     expect(init).toMatchObject({ method: "POST", credentials: "same-origin", cache: "no-store" });
   });
 
+  it("decodes captured file and code pages, including an unavailable side's reason", async () => {
+    const snapshotId = "a".repeat(64);
+    const identity = { sessionId: "s-1", snapshotId, file: "src/a.ts", side: "new" } as const;
+    const page = {
+      ...identity,
+      content: {
+        kind: "text",
+        size: 7,
+        start: { line: 1, offset: 0 },
+        text: "\uFEFFa\r\n",
+        next: { line: 2, offset: 6 },
+      },
+    };
+    respond(200, { ok: true, value: page });
+    const request = { command: "code", session: "s-1", snapshotId, file: "src/a.ts" } as const;
+    expect(await operation({ ...request, side: "new" })).toEqual(page);
+    const unavailable = { ...identity, content: { kind: "unavailable", reason: "binary" } };
+    respond(200, { ok: true, value: unavailable });
+    expect(await operation({ ...request, side: "new" })).toEqual(unavailable);
+    const files = {
+      sessionId: "s-1",
+      snapshotId,
+      total: 1,
+      files: [
+        {
+          path: "src/a.ts",
+          old: { kind: "absent" },
+          new: { kind: "unavailable", reason: "symlink" },
+        },
+      ],
+      next: null,
+    };
+    respond(200, { ok: true, value: files });
+    expect(await operation({ command: "files", session: "s-1", snapshotId })).toEqual(files);
+  });
+
   it("throws a domain error Reply as its DaemonError", async () => {
     respond(200, { ok: false, error: { code: "no_session", message: "no session with id x" } });
     expect(await reason(operation({ command: "open", session: "x" }))).toBeInstanceOf(NoSession);
@@ -122,6 +159,7 @@ describe("isExpectedFailure", () => {
     new TransportError("unavailable", "m"),
     new NoSession({ message: "m" }),
     new DaemonUnreachable({ message: "m" }),
+    new StaleRevision({ message: "m" }),
   ])("explains %s in place without a diagnostic", (error) => {
     expect(isExpectedFailure(error)).toBe(true);
   });

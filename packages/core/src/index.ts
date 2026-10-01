@@ -12,6 +12,25 @@ export {
   type ValidationDetail,
 } from "./apply.ts";
 export {
+  BlobIdSchema,
+  type ByteRange,
+  ByteRangeSchema,
+  canonicalManifestJson,
+  type ContentSide,
+  ContentSideSchema,
+  FileModeSchema,
+  GitObjectIdSchema,
+  LogicalPathSchema,
+  type ManifestFile,
+  ManifestFileSchema,
+  type Provenance,
+  ProvenanceSchema,
+  type SnapshotManifest,
+  SnapshotIdSchema,
+  SnapshotManifestSchema,
+} from "./content.ts";
+export { snapshotIdOf } from "./hash.ts";
+export {
   BadArgs,
   DaemonError,
   DaemonUnreachable,
@@ -46,11 +65,20 @@ export {
   NoteSchema,
   NotesSchema,
 } from "./metadata.ts";
-export { parseSnapshot } from "./snapshot.ts";
+export { parseFilePatch, parseSnapshot } from "./snapshot.ts";
 export { statusOf, summaryOf } from "./status.ts";
 export {
   type BrowserRequest,
   BrowserRequestSchema,
+  type CaptureProgress,
+  CaptureProgressSchema,
+  type CodePayload,
+  CodePayloadSchema,
+  type CodePosition,
+  CodePositionSchema,
+  type FilesPayload,
+  FilesPayloadSchema,
+  pageBytes,
   type DeletePayload,
   DeletePayloadSchema,
   type DiffPayload,

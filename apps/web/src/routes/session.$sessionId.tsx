@@ -1,8 +1,32 @@
-import type { DaemonError, Hunk } from "@gyst/core/wire";
+import type {
+  CodePayload,
+  ContentSide,
+  DaemonError,
+  FilesPayload,
+  Hunk,
+  ManifestFile,
+} from "@gyst/core/wire";
 import * as stylex from "@stylexjs/stylex";
-import { createFileRoute, Link, notFound, useNavigate, useParams } from "@tanstack/react-router";
-import { operation } from "../api.ts";
-import { AllSessionsLink, Crumb, DeleteSession, Frame, Title } from "../components.tsx";
+import {
+  createFileRoute,
+  Link,
+  notFound,
+  useNavigate,
+  useParams,
+  useRouter,
+} from "@tanstack/react-router";
+import { useEffect, useState } from "react";
+import { isExpectedFailure, operation } from "../api.ts";
+import {
+  AllSessionsLink,
+  Crumb,
+  DeleteSession,
+  FailureNotice,
+  Frame,
+  PillButton,
+  Title,
+  useMounted,
+} from "../components.tsx";
 import { media, theme } from "../tokens.stylex.ts";
 
 export const Route = createFileRoute("/session/$sessionId")({
@@ -12,7 +36,10 @@ export const Route = createFileRoute("/session/$sessionId")({
         operation({ command: "open", session: sessionId }),
         operation({ command: "diff", session: sessionId }),
       ]);
-      return { session: opened.session, hunks: diff.hunks };
+      // Captured reads name the snapshot the hunks came from.
+      const { snapshotId } = diff;
+      const files = await operation({ command: "files", session: sessionId, snapshotId });
+      return { session: opened.session, hunks: diff.hunks, snapshotId, files };
     } catch (error) {
       if (isDaemonError(error, "no_session")) throw notFound();
       throw error;
@@ -26,7 +53,7 @@ const isDaemonError = (error: unknown, tag: DaemonError["_tag"]) =>
   typeof error === "object" && error !== null && "_tag" in error && error._tag === tag;
 
 function SessionPage() {
-  const { session, hunks } = Route.useLoaderData();
+  const { session, hunks, snapshotId, files: captured } = Route.useLoaderData();
   const navigate = useNavigate();
   const files = [...Map.groupBy(hunks, (hunk) => hunk.file)];
   const jump = (index: number) => {
@@ -92,6 +119,13 @@ function SessionPage() {
           <FileDiff key={file} id={`file-${index}`} file={file} hunks={fileHunks} />
         ))
       )}
+      {/* Keyed: another snapshot starts its own listing and code views. */}
+      <CapturedFiles
+        key={snapshotId}
+        sessionId={session.id}
+        snapshotId={snapshotId}
+        first={captured}
+      />
     </Frame>
   );
 }
@@ -165,7 +199,7 @@ const fileStyles = stylex.create({
   box: {
     borderRadius: "6px",
     boxShadow: `0 0 0 1px ${theme.line}`,
-    // Spaces files apart; the pane holds only these sections.
+    // Spaces files apart; they are the pane's first sections.
     marginTop: { default: "10px", ":first-of-type": 0 },
   },
   head: {
@@ -292,6 +326,290 @@ const lineProps = {
   del: stylex.props(hunkStyles.line, hunkStyles.del),
   meta: stylex.props(hunkStyles.line, hunkStyles.meta),
 };
+
+// ─── captured files ──────────────────────────────────────────────────────
+
+const notCaptured = {
+  binary: "binary content is not captured",
+  "unsupported-encoding": "content that is not UTF-8 text is not captured",
+  symlink: "a symbolic link; its target is not captured",
+  submodule: "a submodule; its contents are not captured",
+} satisfies Record<Extract<ContentSide, { kind: "unavailable" }>["reason"], string>;
+
+const sideSummary = (side: ContentSide) =>
+  side.kind === "text"
+    ? `${side.size} ${side.size === 1 ? "byte" : "bytes"}`
+    : side.kind === "absent"
+      ? "absent"
+      : `unavailable (${side.reason})`;
+
+/** The snapshot's captured files, supporting and unavailable ones included, a page at a time. */
+function CapturedFiles(props: { sessionId: string; snapshotId: string; first: FilesPayload }) {
+  const router = useRouter();
+  const [pages, setPages] = useState([props.first]);
+  const [pending, setPending] = useState(false);
+  const [failure, setFailure] = useState<unknown>();
+  const mounted = useMounted();
+  const files = pages.flatMap((page) => page.files);
+  const after = pages.at(-1)!.next;
+  const more = async (path: string) => {
+    setPending(true);
+    setFailure(undefined);
+    try {
+      const page = await operation({
+        command: "files",
+        session: props.sessionId,
+        snapshotId: props.snapshotId,
+        after: path,
+      });
+      if (mounted.current) setPages((loaded) => [...loaded, page]);
+    } catch (error) {
+      if (!isExpectedFailure(error)) console.error(error);
+      if (mounted.current) setFailure(error);
+    } finally {
+      if (mounted.current) setPending(false);
+    }
+  };
+  return (
+    <section {...stylex.props(capturedStyles.box)} aria-labelledby="captured-files">
+      <h2 {...stylex.props(capturedStyles.head)} id="captured-files">
+        Captured files <span {...stylex.props(styles.muted)}>{props.first.total}</span>
+      </h2>
+      <p {...stylex.props(styles.muted)}>
+        Exact text saved with this snapshot; it is read from gyst, never from the checkout.
+      </p>
+      <ul {...stylex.props(capturedStyles.list)} aria-label="Captured files">
+        {files.map((file) => (
+          <CapturedFileRow
+            key={file.path}
+            file={file}
+            sessionId={props.sessionId}
+            snapshotId={props.snapshotId}
+          />
+        ))}
+      </ul>
+      {failure !== undefined && <FailureNotice error={failure} />}
+      {/* A refresh replaced this snapshot: its cursor can never succeed again, so reload. */}
+      {isDaemonError(failure, "stale_revision") ? (
+        <PillButton onClick={() => void router.invalidate()}>Reload session</PillButton>
+      ) : (
+        after !== null && (
+          <PillButton disabled={pending} onClick={() => void more(after)}>
+            {pending
+              ? "Loading files…"
+              : failure !== undefined
+                ? "Retry loading files"
+                : `Load more files (${files.length} of ${props.first.total} shown)`}
+          </PillButton>
+        )
+      )}
+    </section>
+  );
+}
+
+function CapturedFileRow(props: { file: ManifestFile; sessionId: string; snapshotId: string }) {
+  const { file } = props;
+  const [shown, setShown] = useState<"old" | "new">();
+  return (
+    <li {...stylex.props(capturedStyles.file)}>
+      <div {...stylex.props(capturedStyles.row)}>
+        <code {...stylex.props(capturedStyles.path)}>{file.path}</code>
+        <span {...stylex.props(styles.muted)}>
+          old: {sideSummary(file.old)} · new: {sideSummary(file.new)}
+        </span>
+        {file.renamedFrom !== undefined && (
+          <span {...stylex.props(styles.muted)}>
+            renamed from <code>{file.renamedFrom}</code> (not reviewed)
+          </span>
+        )}
+        {file.modeChange !== undefined && (
+          <span {...stylex.props(styles.muted)}>
+            mode {file.modeChange.old} → {file.modeChange.new} (not reviewed)
+          </span>
+        )}
+        <span {...stylex.props(styles.grow)} />
+        {(["old", "new"] as const).map((side) => (
+          <PillButton
+            key={side}
+            aria-expanded={shown === side}
+            onClick={() => setShown(shown === side ? undefined : side)}
+          >
+            {shown === side ? `Hide ${side}` : `View ${side}`}
+          </PillButton>
+        ))}
+      </div>
+      {shown !== undefined && (
+        <CapturedCode
+          key={shown}
+          sessionId={props.sessionId}
+          snapshotId={props.snapshotId}
+          file={file.path}
+          side={shown}
+        />
+      )}
+    </li>
+  );
+}
+
+/**
+ * One side of a captured file, fetched a page at a time on demand. A failed page keeps what was
+ * already loaded and retries from where it stopped; a replaced snapshot asks for a reload.
+ */
+function CapturedCode(props: {
+  sessionId: string;
+  snapshotId: string;
+  file: string;
+  side: "old" | "new";
+}) {
+  const router = useRouter();
+  const [text, setText] = useState("");
+  const [content, setContent] = useState<CodePayload["content"]>();
+  const [pending, setPending] = useState(false);
+  const [failure, setFailure] = useState<{ error: unknown; offset: number | undefined }>();
+  const mounted = useMounted();
+  const load = async (offset?: number) => {
+    setPending(true);
+    setFailure(undefined);
+    try {
+      const page = await operation({
+        command: "code",
+        session: props.sessionId,
+        snapshotId: props.snapshotId,
+        file: props.file,
+        side: props.side,
+        offset,
+      });
+      if (!mounted.current) return;
+      const loaded = page.content;
+      if (loaded.kind === "text")
+        setText((before) => (offset === undefined ? loaded.text : before + loaded.text));
+      setContent(loaded);
+    } catch (error) {
+      if (!isExpectedFailure(error)) console.error(error);
+      if (mounted.current) setFailure({ error, offset });
+    } finally {
+      if (mounted.current) setPending(false);
+    }
+  };
+  // The first page, once per mount: the caller keys this view by side.
+  useEffect(() => {
+    void load();
+  }, []);
+  const next = content?.kind === "text" ? content.next : null;
+  const stale = failure !== undefined && isDaemonError(failure.error, "stale_revision");
+  return (
+    <div
+      {...stylex.props(capturedStyles.code)}
+      role="region"
+      aria-label={`${props.file}, ${props.side} side`}
+    >
+      {content?.kind === "absent" && (
+        <p {...stylex.props(capturedStyles.inset, styles.muted)}>
+          This file does not exist on the {props.side} side.
+        </p>
+      )}
+      {content?.kind === "unavailable" && (
+        <p {...stylex.props(capturedStyles.inset, capturedStyles.notice)}>
+          Not captured: {notCaptured[content.reason]}.
+        </p>
+      )}
+      {content?.kind === "text" &&
+        (content.size === 0 ? (
+          <p {...stylex.props(capturedStyles.inset, styles.muted)}>Empty file.</p>
+        ) : (
+          <CodeLines text={text} partial={next !== null && !text.endsWith("\n")} />
+        ))}
+      {pending && (
+        <p role="status" {...stylex.props(capturedStyles.inset, styles.muted)}>
+          Loading…
+        </p>
+      )}
+      {failure !== undefined && (
+        <>
+          <div {...stylex.props(capturedStyles.inset)}>
+            <FailureNotice error={failure.error} />
+          </div>
+          <div {...stylex.props(capturedStyles.buttonInset)}>
+            <PillButton onClick={() => void (stale ? router.invalidate() : load(failure.offset))}>
+              {stale ? "Reload session" : "Retry"}
+            </PillButton>
+          </div>
+        </>
+      )}
+      {next !== null && !pending && failure === undefined && content?.kind === "text" && (
+        <div {...stylex.props(capturedStyles.buttonInset)}>
+          <PillButton onClick={() => void load(next.offset)}>
+            Load more ({next.offset} of {content.size} bytes shown)
+          </PillButton>
+        </div>
+      )}
+    </div>
+  );
+}
+
+const capturedStyles = stylex.create({
+  box: { marginTop: "24px" },
+  head: { fontSize: "14px", fontWeight: 500 },
+  list: { margin: "10px 0" },
+  file: {
+    borderTopWidth: { default: "1px", ":first-of-type": 0 },
+    borderTopStyle: "solid",
+    borderTopColor: theme.line,
+  },
+  row: {
+    display: "flex",
+    flexWrap: "wrap",
+    alignItems: "center",
+    gap: "4px 10px",
+    padding: "6px 0",
+    fontSize: "12.5px",
+  },
+  path: { overflowWrap: "anywhere" },
+  code: {
+    marginBottom: "8px",
+    borderRadius: "6px",
+    boxShadow: `0 0 0 1px ${theme.line}`,
+  },
+  inset: { margin: "8px 10px" },
+  // Padding, not margin: an inline button's margins never collapsed into the box's edge.
+  buttonInset: { padding: "8px 10px" },
+  notice: { maxWidth: "80ch" },
+});
+
+/**
+ * Loaded captured text from line 1 (React escapes it): a table whose rows are its lines, each a
+ * line number and a code cell. A cut-off last line says it continues.
+ */
+function CodeLines({ text, partial }: { text: string; partial: boolean }) {
+  const lines = text.split("\n");
+  // A final LF ends the last line; it does not start another.
+  if (lines.at(-1) === "") lines.pop();
+  return (
+    // ponytail: renders every loaded line; window/virtualize with the richer reader.
+    <div role="table" {...stylex.props(codeStyles.table)}>
+      {lines.map((line, index) => (
+        // Index keys: loaded lines only ever append.
+        <div key={index} role="row" {...stylex.props(codeStyles.line)}>
+          <span role="cell" {...stylex.props(hunkStyles.num)}>
+            {index + 1}
+          </span>
+          <span role="cell" {...stylex.props(hunkStyles.code)}>
+            {line}
+            {partial && index === lines.length - 1 && (
+              <span {...stylex.props(styles.muted)}> … continues</span>
+            )}
+          </span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+// The hunk look without its rules between hunks, and one number column.
+const codeStyles = stylex.create({
+  table: { overflowX: "auto", fontFamily: theme["--mono"], fontSize: "12px", lineHeight: 1.6 },
+  line: { display: "grid", gridTemplateColumns: "6ch minmax(max-content, 1fr)" },
+});
 
 function SessionNotFound() {
   const { sessionId } = useParams({ strict: false });

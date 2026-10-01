@@ -1,9 +1,11 @@
 import { webPaths } from "@gyst/core/web";
 import {
   type BrowserRequest,
+  CodePayloadSchema,
   DaemonError,
   DeletePayloadSchema,
   DiffPayloadSchema,
+  FilesPayloadSchema,
   ListPayloadSchema,
   OpenPayloadSchema,
   type Reply,
@@ -31,13 +33,16 @@ const isDaemonError = Schema.is(DaemonError);
 
 /**
  * Failures the viewer explains in place and that say nothing about a gyst defect: sign-in, host,
- * outage and a missing session. Everything else (an unreadable reply, internal_error, rejected
- * input, render exceptions) also deserves a console diagnostic.
+ * outage, a missing session and a snapshot a refresh replaced. Everything else (an unreadable
+ * reply, internal_error, rejected input, render exceptions) also deserves a console diagnostic.
  */
 export const isExpectedFailure = (error: unknown) =>
   error instanceof TransportError
     ? error.reason !== "unexpected"
-    : isDaemonError(error) && (error._tag === "no_session" || error._tag === "daemon_unreachable");
+    : isDaemonError(error) &&
+      (error._tag === "no_session" ||
+        error._tag === "daemon_unreachable" ||
+        error._tag === "stale_revision");
 
 // Whether this page's launch link was refused, which decides what a later 401 means.
 let linkRefused = false;
@@ -83,6 +88,8 @@ const payloadSchemas = {
   status: StatusPayloadSchema,
   check: SourceCheckPayloadSchema,
   diff: DiffPayloadSchema,
+  files: FilesPayloadSchema,
+  code: CodePayloadSchema,
   delete: DeletePayloadSchema,
 } satisfies Record<BrowserRequest["command"], Schema.Top>;
 export type Payload<Command extends BrowserRequest["command"]> =

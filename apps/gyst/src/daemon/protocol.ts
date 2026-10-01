@@ -1,4 +1,4 @@
-import { RequestSchema } from "@gyst/core";
+import { CaptureProgressSchema, RequestSchema } from "@gyst/core";
 import { Schema } from "effect";
 import { valid } from "semver";
 import packageJson from "../../package.json" with { type: "json" };
@@ -27,3 +27,9 @@ export const DaemonMessageSchema = Schema.Union([
     request: RequestSchema,
   }),
 ]);
+/**
+ * An interim line the daemon may write before a request's one `Reply` line: `open` and `refresh`
+ * report capture progress this way. Readers take the first line with an `ok` field as the reply
+ * and may ignore every other line.
+ */
+export const ProgressLineSchema = Schema.Struct({ progress: CaptureProgressSchema });

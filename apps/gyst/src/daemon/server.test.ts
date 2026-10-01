@@ -15,15 +15,18 @@ import {
 } from "effect";
 import * as Socket from "effect/socket/Socket";
 import { mkdtemp, readdir, rm } from "node:fs/promises";
+import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { manifestOf, publishingContent } from "./capture-doubles.ts";
 import { Git } from "./git.ts";
 import { Paths } from "./paths.ts";
 import { DaemonInfoSchema, daemonVersion } from "./protocol.ts";
 import { DaemonServer } from "./server.ts";
 import { Sessions } from "./sessions.ts";
 import { inspectSavedSessions, SessionStore } from "./store.ts";
-import { readLine, writeLine } from "./wire.ts";
+import { DaemonClient } from "./client.ts";
+import { lineReader, writeLine } from "./wire.ts";
 
 const patch = `diff --git a/a.txt b/a.txt
 --- a/a.txt
@@ -39,6 +42,7 @@ let dataDir: string;
 let socketPath: string;
 let statusHeld: Deferred.Deferred<void>;
 let statusRelease: Deferred.Deferred<void>;
+let progressGate: Deferred.Deferred<void> | undefined;
 const files = new Map<string, Session>();
 
 const git = Layer.succeed(Git, {
@@ -49,7 +53,17 @@ const git = Layer.succeed(Git, {
           Effect.andThen(Effect.fail(new BadArgs({ message: "not a repository" }))),
         )
       : Effect.succeed(cwd),
-  capture: () => Effect.succeed(patch),
+  // Two interim reports, then the manifest: the server must frame them before the reply. With
+  // `progressGate` set, the capture waits on it between them.
+  capture: (_root, scope, onProgress = () => Effect.void) =>
+    Effect.suspend(() => {
+      const gate = progressGate;
+      return onProgress({ phase: "capture", done: 0, total: 1, bytes: 0 }).pipe(
+        Effect.andThen(gate ? Deferred.await(gate) : Effect.void),
+        Effect.andThen(onProgress({ phase: "diff", done: 1, total: 1, bytes: 4 })),
+        Effect.as(manifestOf(patch, scope)),
+      );
+    }),
 });
 const store = Layer.succeed(SessionStore, {
   loadAll: Effect.sync(() => [...files.values()]),
@@ -74,7 +88,9 @@ const paths = Layer.sync(Paths, () => ({
 }));
 const serverLayerOver = (platform: Layer.Layer<Layer.Success<typeof NodeServices.layer>>) =>
   DaemonServer.layer.pipe(
-    Layer.provide(Sessions.layer.pipe(Layer.provide(Layer.mergeAll(git, store, crypto)))),
+    Layer.provide(
+      Sessions.layer.pipe(Layer.provide(Layer.mergeAll(git, store, crypto, publishingContent()))),
+    ),
     Layer.provide(paths),
     Layer.provide(platform),
   );
@@ -83,9 +99,12 @@ const serverLayer = serverLayerOver(NodeServices.layer);
 const decodeReply = Schema.decodeUnknownSync(Schema.fromJsonString(ReplySchema));
 const exchange = Effect.fn("exchange")(function* (message: unknown) {
   const socket = yield* NodeSocket.makeNet({ path: socketPath });
-  const pull = yield* Socket.readerBytes(socket);
+  const next = lineReader(yield* Socket.readerBytes(socket));
   yield* writeLine(socket, JSON.stringify(message));
-  return decodeReply(yield* readLine(pull));
+  // Interim progress lines come first; the reply is the line with `ok`.
+  let line = yield* next;
+  while (!("ok" in JSON.parse(line))) line = yield* next;
+  return decodeReply(line);
 }, Effect.scoped);
 const send = Effect.fn("send")(function* (request: Request) {
   const hello = yield* exchange({ command: "daemon.info" });
@@ -230,6 +249,171 @@ describe("DaemonServer", () => {
       }).pipe(Effect.provide(serverLayer)),
     );
   }, 10_000);
+
+  it("writes capture progress lines before the reply, which clients with or without a handler decode", async () => {
+    const progress = [
+      { phase: "capture", done: 0, total: 1, bytes: 0 },
+      { phase: "diff", done: 1, total: 1, bytes: 4 },
+    ];
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        const server = yield* DaemonServer;
+        const running = yield* Effect.forkChild(server.run);
+        const hello = yield* exchange({ command: "daemon.info" }).pipe(
+          Effect.retry({ schedule: Schedule.spaced("10 millis"), times: 100 }),
+        );
+        if (!hello.ok) throw new Error("handshake failed");
+        const info = Schema.decodeUnknownSync(DaemonInfoSchema)(hello.value);
+
+        // On the wire: one JSON line per report, in order, then the one Reply line.
+        const lines = yield* Effect.scoped(
+          Effect.gen(function* () {
+            const socket = yield* NodeSocket.makeNet({ path: socketPath });
+            const next = lineReader(yield* Socket.readerBytes(socket));
+            yield* writeLine(
+              socket,
+              JSON.stringify({
+                ...info,
+                request: { command: "open", cwd: "/progress-raw", scope: { kind: "uncommitted" } },
+              }),
+            );
+            return [yield* next, yield* next, yield* next];
+          }),
+        );
+        expect(lines.slice(0, 2).map((line) => JSON.parse(line))).toEqual(
+          progress.map((event) => ({ progress: event })),
+        );
+        expect(decodeReply(lines[2]!).ok).toBe(true);
+
+        const client = yield* DaemonClient;
+        const heard: unknown[] = [];
+        const opened = (yield* client.request(
+          { command: "open", cwd: "/progress-client", scope: { kind: "uncommitted" } },
+          (event) => Effect.sync(() => void heard.push(event)),
+        )) as { session: { id: string } };
+        expect(heard).toEqual(progress);
+        // Without a handler the interim lines are skipped and the reply still decodes.
+        const refreshed = (yield* client.request({
+          command: "refresh",
+          session: opened.session.id,
+        })) as { session: { id: string } };
+        expect(refreshed.session.id).toBe(opened.session.id);
+        // A reuse captures nothing, so it reports nothing.
+        heard.length = 0;
+        yield* client.request(
+          { command: "open", cwd: "/progress-client", scope: { kind: "uncommitted" } },
+          (event) => Effect.sync(() => void heard.push(event)),
+        );
+        expect(heard).toEqual([]);
+        yield* Fiber.interrupt(running);
+      }).pipe(
+        Effect.provide(
+          Layer.merge(
+            serverLayer,
+            DaemonClient.layer.pipe(Layer.provide(paths), Layer.provide(NodeServices.layer)),
+          ),
+        ),
+      ),
+    );
+  }, 10_000);
+
+  it("finishes and publishes a capture whose client disconnected between progress reports", async () => {
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        const server = yield* DaemonServer;
+        const running = yield* Effect.forkChild(server.run);
+        const hello = yield* exchange({ command: "daemon.info" }).pipe(
+          Effect.retry({ schedule: Schedule.spaced("10 millis"), times: 100 }),
+        );
+        if (!hello.ok) throw new Error("handshake failed");
+        const info = Schema.decodeUnknownSync(DaemonInfoSchema)(hello.value);
+        const gate = yield* Deferred.make<void>();
+        progressGate = gate;
+        // Read the first report, then hang up while the capture is held.
+        yield* Effect.scoped(
+          Effect.gen(function* () {
+            const socket = yield* NodeSocket.makeNet({ path: socketPath });
+            const next = lineReader(yield* Socket.readerBytes(socket));
+            yield* writeLine(
+              socket,
+              JSON.stringify({
+                ...info,
+                request: { command: "open", cwd: "/disconnected", scope: { kind: "uncommitted" } },
+              }),
+            );
+            expect(JSON.parse(yield* next)).toHaveProperty("progress");
+          }),
+        );
+        progressGate = undefined;
+        yield* Effect.sleep("50 millis");
+        yield* Deferred.succeed(gate, undefined);
+        const published = () =>
+          [...files.values()].some((session) => session.repoRoot === "/disconnected");
+        yield* Effect.sync(published).pipe(
+          Effect.repeat({ until: (done) => done, schedule: Schedule.spaced("10 millis") }),
+          Effect.timeout("2 seconds"),
+        );
+        // The source lock was released: the next capture runs and reports to its own client.
+        const reply = yield* open("/after-disconnect").pipe(Effect.timeout("2 seconds"));
+        expect(reply.ok).toBe(true);
+        yield* Fiber.interrupt(running);
+      }).pipe(Effect.provide(serverLayer)),
+    );
+  }, 10_000);
+
+  it("lets a client skip interim lines it does not understand and still decode the reply", async () => {
+    const fakeSocket = join(dataDir, "interim.sock");
+    const peer = createServer((socket) => {
+      let buffered = "";
+      socket.setEncoding("utf8").on("data", (chunk: string) => {
+        buffered += chunk;
+        if (!buffered.includes("\n")) return;
+        const message = JSON.parse(buffered.slice(0, buffered.indexOf("\n")));
+        const lines =
+          message.command === "daemon.info"
+            ? [{ ok: true, value: { version: daemonVersion, instanceId: "interim" } }]
+            : [
+                { future: "a line kind this client predates" },
+                null,
+                "a future string line",
+                ["an", "array"],
+                { progress: { phase: "a later phase", done: 1 } },
+                { progress: { phase: "capture", done: 1, total: 2, bytes: 3 } },
+                { ok: true, value: { sessions: [] } },
+              ];
+        const framed = lines.map((line) => `${JSON.stringify(line)}\n`).join("");
+        socket.end(message.command === "daemon.info" ? framed : `not json {\n${framed}`);
+      });
+    });
+    await new Promise<void>((resolve) => peer.listen(fakeSocket, resolve));
+    try {
+      const heard: unknown[] = [];
+      const reply = await Effect.runPromise(
+        DaemonClient.use((client) =>
+          client.request({ command: "list" }, (event) => Effect.sync(() => void heard.push(event))),
+        ).pipe(
+          Effect.provide(
+            DaemonClient.layer.pipe(
+              Layer.provide(
+                Layer.succeed(Paths, {
+                  dataDir,
+                  socketPath: fakeSocket,
+                  pidPath: join(dataDir, "interim.pid"),
+                  deleteReceiptsPath: join(dataDir, "interim-receipts"),
+                  sessionFile: (id: string) => join(dataDir, `interim-${id}.json`),
+                }),
+              ),
+              Layer.provide(NodeServices.layer),
+            ),
+          ),
+        ),
+      );
+      expect(reply).toEqual({ sessions: [] });
+      expect(heard).toEqual([{ phase: "capture", done: 1, total: 2, bytes: 3 }]);
+    } finally {
+      await new Promise((resolve) => peer.close(resolve));
+    }
+  });
 
   it("releases the published socket when startup fails after the link", async () => {
     // A failing unlink of the private name must not leave `daemon.sock` behind: the release for the

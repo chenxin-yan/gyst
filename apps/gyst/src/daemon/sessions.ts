@@ -2,16 +2,22 @@ import {
   applyBatch,
   ApplyEnvelopeSchema,
   BadArgs,
+  type CaptureProgress,
+  type CodePayload,
   type DeletePayload,
+  type FilesPayload,
+  InternalError,
   type DiffPayload,
   type ListPayload,
   NoSession,
   type OpenPayload,
-  parseSnapshot,
+  pageBytes,
   refreshSession,
   type Request,
   type Scope,
   type Session,
+  type SnapshotManifest,
+  snapshotIdOf,
   StaleRevision,
   type SourceCheckPayload,
   type StatusPayload,
@@ -29,14 +35,14 @@ import {
   type PlatformError,
   Schema,
   Semaphore,
+  Stream,
 } from "effect";
-import { createHash } from "node:crypto";
+import { CapturedContent, codePage } from "./content.ts";
 import { Git } from "./git.ts";
 import { type DeleteReceipt, SessionStore } from "./store.ts";
-
-const snapshotIdOf = (patch: string) => createHash("sha256").update(patch).digest("hex");
 type SourceCheck = Omit<SourceCheckPayload, "sessionId" | "revision">;
 type Input<C extends Request["command"]> = Extract<Request, { readonly command: C }>;
+type OnProgress = (progress: CaptureProgress) => Effect.Effect<void>;
 
 const sameScope = (a: Scope, b: Scope) =>
   a.kind === "range" ? b.kind === "range" && a.range === b.range : a.kind === b.kind;
@@ -46,6 +52,24 @@ const opened = (session: Session, created: boolean): OpenPayload => ({
   created,
   launch: { argv: ["gyst", "--session", session.id] },
 });
+
+/**
+ * An equal manifest proves an unchanged source only where every side is identified. Commits
+ * identify both sides of a range and the old side of uncommitted work, but a working-tree side
+ * that was not captured (binary, undecodable, a link or a submodule) could have changed unseen.
+ */
+const uncaptured = (manifest: SnapshotManifest) => {
+  if (manifest.scope.kind !== "uncommitted") return undefined;
+  const sides = manifest.files.flatMap(({ path, new: side }) =>
+    side.kind === "unavailable" ? [{ path, reason: side.reason }] : [],
+  );
+  if (sides.length === 0) return undefined;
+  const reasons = [...new Set(sides.map(({ reason }) => reason))].sort().join(", ");
+  return {
+    state: "unavailable" as const,
+    message: `the working tree has ${reasons} inputs that gyst does not capture, so it cannot tell whether they changed (first: ${sides[0]!.path})`,
+  };
+};
 
 const decodeEnvelope = Schema.decodeUnknownEffect(Schema.fromJsonString(ApplyEnvelopeSchema), {
   onExcessProperty: "error",
@@ -58,13 +82,31 @@ export class Sessions extends Context.Service<
      * Returns the saved session for this repository and recorded scope as it is, else captures and
      * persists a new one. Opens are serialized, so concurrent opens of one scope return one session.
      */
-    open(request: Input<"open">): Effect.Effect<OpenPayload, BadArgs | NoSession>;
+    open(
+      request: Input<"open">,
+      onProgress?: OnProgress,
+    ): Effect.Effect<OpenPayload, BadArgs | NoSession | InternalError>;
     readonly list: Effect.Effect<ListPayload>;
     status(request: Input<"status">): Effect.Effect<StatusPayload, NoSession>;
     check(request: Input<"check">): Effect.Effect<SourceCheckPayload, NoSession>;
     diff(
       request: Input<"diff">,
     ): Effect.Effect<DiffPayload, BadArgs | NoSession | ValidationFailed>;
+    /**
+     * Reads name the session's current snapshot: another (older, retained or unknown) id is
+     * `stale_revision` carrying the current one. Everything is read from captured content, never a
+     * checkout, and a read that has selected its snapshot finishes against it even if a refresh
+     * replaces it meanwhile.
+     */
+    files(
+      request: Input<"files">,
+    ): Effect.Effect<FilesPayload, NoSession | StaleRevision | ValidationFailed | InternalError>;
+    code(
+      request: Input<"code">,
+    ): Effect.Effect<
+      CodePayload,
+      BadArgs | NoSession | StaleRevision | ValidationFailed | InternalError
+    >;
     /** One schema-validated `request.batch`: all ops or none, replays answered by receipt. */
     apply(
       request: Input<"apply">,
@@ -72,7 +114,8 @@ export class Sessions extends Context.Service<
     /** Re-captures the recorded scope; unchanged hunks keep their group and verdict. */
     refresh(
       request: Input<"refresh">,
-    ): Effect.Effect<StatusPayload, BadArgs | NoSession | ValidationFailed>;
+      onProgress?: OnProgress,
+    ): Effect.Effect<StatusPayload, BadArgs | NoSession | ValidationFailed | InternalError>;
     /**
      * Removes one saved session. A retry with the same `requestId` and session returns the recorded
      * result, even after a restart; the same `requestId` for another session fails.
@@ -96,6 +139,7 @@ export class Sessions extends Context.Service<
     Sessions,
     Effect.gen(function* () {
       const git = yield* Git;
+      const content = yield* CapturedContent;
       const store = yield* SessionStore;
       const { randomUUIDv4 } = yield* Crypto.Crypto;
       const sessions = new Map<string, Session>();
@@ -104,6 +148,19 @@ export class Sessions extends Context.Service<
       // Server handlers run concurrently; one permit keeps state changes from interleaving.
       const lock = yield* Semaphore.make(1);
       const idle = yield* Latch.make(false);
+
+      // The manifest and every blob it names are committed before any session points at it.
+      const publish = (manifest: SnapshotManifest) =>
+        content.putManifest(manifest).pipe(
+          Effect.mapError((error) =>
+            error._tag === "internal_error"
+              ? error
+              : new InternalError({
+                  message: "could not publish the captured snapshot",
+                  detail: error.message,
+                }),
+          ),
+        );
 
       const selected = Effect.fn("Sessions.selected")(function* (request: {
         readonly session: string;
@@ -114,41 +171,59 @@ export class Sessions extends Context.Service<
         return session;
       });
 
-      const open = Effect.fn("Sessions.open")(function* (request: Input<"open">) {
-        if (!("cwd" in request)) return opened(yield* selected(request), false);
+      // Capture and content staging run outside `lock`, so other sessions stay readable and
+      // writable meanwhile; `sourceLock` keeps captures one at a time, which also dedups opens.
+      // Only the final publication takes `lock`, against the session as it is by then.
+      const sourceLock = yield* Semaphore.make(1);
+      const underLock = Semaphore.withPermit(lock);
+
+      const open = Effect.fn("Sessions.open")(function* (
+        request: Input<"open">,
+        onProgress?: OnProgress,
+      ) {
+        if (!("cwd" in request)) return opened(yield* underLock(selected(request)), false);
         const root = yield* git.repoRoot(request.cwd);
-        const saved = [...sessions.values()].find(
-          (session) => session.repoRoot === root && sameScope(session.scope, request.scope),
+        const saved = () =>
+          [...sessions.values()].find(
+            (session) => session.repoRoot === root && sameScope(session.scope, request.scope),
+          );
+        const reused = yield* underLock(Effect.sync(saved));
+        if (reused) return opened(reused, false);
+        const manifest = yield* git.capture(root, request.scope, onProgress);
+        const snapshotId = yield* publish(manifest);
+        return yield* underLock(
+          Effect.gen(function* () {
+            // A `load` during the capture may have brought this scope's session in.
+            const loaded = saved();
+            if (loaded) return opened(loaded, false);
+            const now = DateTime.formatIso(yield* DateTime.now);
+            // Like persistence, an id source that cannot produce randomness is an operational defect.
+            const id = yield* Effect.orDie(randomUUIDv4);
+            const session: Session = {
+              id,
+              repoRoot: root,
+              scope: request.scope,
+              snapshotId,
+              createdAt: now,
+              updatedAt: now,
+              revision: 0,
+              seq: 0,
+              cursor: { itemId: null, pane: "queue" },
+              hunks: manifest.hunks,
+              groups: [],
+              queue: [],
+              queueSet: false,
+              acceptHistory: [],
+              receiptNoteTexts: [],
+              applyReceipts: [],
+            };
+            yield* store.save(session).pipe(Effect.orDie);
+            sessions.set(session.id, session);
+            yield* idle.close;
+            return opened(session, true);
+          }),
         );
-        if (saved) return opened(saved, false);
-        const patch = yield* git.capture(root, request.scope);
-        const hunks = yield* Effect.fromResult(parseSnapshot(patch));
-        const now = DateTime.formatIso(yield* DateTime.now);
-        // Like persistence, an id source that cannot produce randomness is an operational defect.
-        const id = yield* Effect.orDie(randomUUIDv4);
-        const session: Session = {
-          id,
-          repoRoot: root,
-          scope: request.scope,
-          snapshotId: snapshotIdOf(patch),
-          createdAt: now,
-          updatedAt: now,
-          revision: 0,
-          seq: 0,
-          cursor: { itemId: null, pane: "queue" },
-          hunks,
-          groups: [],
-          queue: [],
-          queueSet: false,
-          acceptHistory: [],
-          receiptNoteTexts: [],
-          applyReceipts: [],
-        };
-        yield* store.save(session).pipe(Effect.orDie);
-        sessions.set(session.id, session);
-        yield* idle.close;
-        return opened(session, true);
-      }, Semaphore.withPermit(lock));
+      }, Semaphore.withPermit(sourceLock));
 
       const list = Effect.sync(() => ({
         sessions: [...sessions.values()]
@@ -170,12 +245,12 @@ export class Sessions extends Context.Service<
               Effect.gen(function* () {
                 const result = yield* git.capture(repoRoot, scope).pipe(
                   Effect.timeout("2 seconds"),
-                  Effect.map((patch) => ({
-                    state:
-                      snapshotIdOf(patch) === snapshotId
-                        ? ("unchanged" as const)
-                        : ("changed" as const),
-                  })),
+                  // Every captured input counts, so a changed helper is a changed source.
+                  Effect.map((manifest) =>
+                    snapshotIdOf(manifest) !== snapshotId
+                      ? { state: "changed" as const }
+                      : (uncaptured(manifest) ?? { state: "unchanged" as const }),
+                  ),
                   Effect.catch((error) =>
                     Effect.succeed({ state: "unavailable" as const, message: error.message }),
                   ),
@@ -189,7 +264,8 @@ export class Sessions extends Context.Service<
           return { session, cached };
         }).pipe(Semaphore.withPermit(lock));
         // Slow Git reads share a cached computation, outside the review-state lock.
-        // ponytail: replay the full scoped patch; use cheaper fingerprints if large-scope checks become costly.
+        // ponytail: re-captures every input (committing new blobs, publishing no manifest) within the
+        // two-second bound; cheaper fingerprints if large scopes then report unavailable.
         return {
           sessionId: target.session.id,
           revision: target.session.revision,
@@ -219,10 +295,100 @@ export class Sessions extends Context.Service<
           return yield* new ValidationFailed({ message: "diff selector matched nothing" });
         return {
           sessionId: session.id,
+          snapshotId: session.snapshotId,
           revision: session.revision,
           hunks,
         } satisfies DiffPayload;
       }, Semaphore.withPermit(lock));
+
+      // Manifests are immutable, so the last one read serves every page of a browsing session.
+      // ponytail: one entry; key more if several sessions are read at once and reloads show up.
+      let lastManifest: { readonly id: string; readonly manifest: SnapshotManifest } | undefined;
+      /** The named current snapshot, selected once: nothing after this reads the session again. */
+      const currentSnapshot = Effect.fn("Sessions.currentSnapshot")(function* (request: {
+        readonly session: string;
+        readonly snapshotId: string;
+      }) {
+        const session = yield* underLock(selected(request));
+        if (session.snapshotId !== request.snapshotId)
+          return yield* new StaleRevision({
+            message: `snapshot ${request.snapshotId} is not the current snapshot of session ${session.id}; read the session again`,
+            detail: { snapshotId: session.snapshotId },
+          });
+        let manifest = lastManifest?.id === session.snapshotId ? lastManifest.manifest : undefined;
+        if (!manifest) {
+          manifest = yield* content.loadManifest(session.snapshotId).pipe(
+            Effect.mapError((error) =>
+              error._tag === "internal_error"
+                ? error
+                : new InternalError({
+                    message: "the session's captured snapshot is unreadable",
+                    detail: error.message,
+                  }),
+            ),
+          );
+          lastManifest = { id: session.snapshotId, manifest };
+        }
+        return { sessionId: session.id, snapshotId: session.snapshotId, manifest };
+      });
+
+      const files = Effect.fn("Sessions.files")(function* (request: Input<"files">) {
+        const { sessionId, snapshotId, manifest } = yield* currentSnapshot(request);
+        let first = 0;
+        if (request.after !== undefined) {
+          const index = manifest.files.findIndex(({ path }) => path === request.after);
+          if (index === -1)
+            return yield* new ValidationFailed({
+              message: "the files cursor names no file in this snapshot",
+              detail: { after: request.after },
+            });
+          first = index + 1;
+        }
+        const page = [];
+        let bytes = 0;
+        for (let index = first; index < manifest.files.length; index++) {
+          const file = manifest.files[index]!;
+          bytes += Buffer.byteLength(JSON.stringify(file));
+          if (page.length > 0 && bytes > pageBytes) break;
+          page.push(file);
+        }
+        const last = first + page.length;
+        return {
+          sessionId,
+          snapshotId,
+          total: manifest.files.length,
+          files: page,
+          next: last < manifest.files.length ? page.at(-1)!.path : null,
+        } satisfies FilesPayload;
+      });
+
+      const code = Effect.fn("Sessions.code")(function* (request: Input<"code">) {
+        const { sessionId, snapshotId, manifest } = yield* currentSnapshot(request);
+        // Membership is the manifest's, so unchanged supporting files are readable too.
+        const file = manifest.files.find(({ path }) => path === request.file);
+        if (!file)
+          return yield* new ValidationFailed({
+            message: "file is not in this snapshot",
+            detail: { file: request.file },
+          });
+        const side = file[request.side];
+        const identity = { sessionId, snapshotId, file: file.path, side: request.side };
+        if (side.kind !== "text") return { ...identity, content: side } satisfies CodePayload;
+        const bytes = content.readBlob(side.blob, { offset: 0, length: side.size }).pipe(
+          Stream.mapError(
+            (error) =>
+              new InternalError({
+                message: "the snapshot's captured content is unreadable",
+                detail: error.message,
+              }),
+          ),
+        );
+        const page = yield* codePage(bytes, side.size, request);
+        return {
+          ...identity,
+          content: { kind: "text", size: side.size, ...page },
+        } satisfies CodePayload;
+      });
 
       const load = Effect.gen(function* () {
         const receipts = yield* store.loadDeleteReceipts;
@@ -259,19 +425,30 @@ export class Sessions extends Context.Service<
         return outcome.status;
       }, Semaphore.withPermit(lock));
 
-      const refresh = Effect.fn("Sessions.refresh")(function* (request: Input<"refresh">) {
-        const session = yield* selected(request);
-        const patch = yield* git.capture(session.repoRoot, session.scope);
-        const refreshed = refreshSession(
-          { ...session, snapshotId: snapshotIdOf(patch) },
-          yield* Effect.fromResult(parseSnapshot(patch)),
-          DateTime.formatIso(yield* DateTime.now),
+      const refresh = Effect.fn("Sessions.refresh")(function* (
+        request: Input<"refresh">,
+        onProgress?: OnProgress,
+      ) {
+        const { repoRoot, scope } = yield* underLock(selected(request));
+        const manifest = yield* git.capture(repoRoot, scope, onProgress);
+        const snapshotId = yield* publish(manifest);
+        return yield* underLock(
+          Effect.gen(function* () {
+            // Reconcile the session as it is now: work saved during the capture survives, and a
+            // deletion during it wins (the published manifest stays, unreferenced, until #93).
+            const session = yield* selected(request);
+            const refreshed = refreshSession(
+              { ...session, snapshotId },
+              manifest.hunks,
+              DateTime.formatIso(yield* DateTime.now),
+            );
+            yield* store.save(refreshed).pipe(Effect.orDie);
+            sessions.set(session.id, refreshed);
+            sourceChecks.delete(session.id);
+            return statusOf(refreshed);
+          }),
         );
-        yield* store.save(refreshed).pipe(Effect.orDie);
-        sessions.set(session.id, refreshed);
-        sourceChecks.delete(session.id);
-        return statusOf(refreshed);
-      }, Semaphore.withPermit(lock));
+      }, Semaphore.withPermit(sourceLock));
 
       const remove = Effect.fn("Sessions.delete")(function* (request: Input<"delete">) {
         const { requestId } = request;
@@ -316,6 +493,8 @@ export class Sessions extends Context.Service<
         status,
         check,
         diff,
+        files,
+        code,
         apply,
         refresh,
         delete: remove,
