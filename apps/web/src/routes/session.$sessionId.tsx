@@ -1,11 +1,11 @@
+import type { ContentSide, DaemonError, FilesPayload, Hunk, SessionSummary } from "@gyst/core/wire";
 import type {
-  CodePayload,
-  ContentSide,
-  DaemonError,
-  FilesPayload,
-  Hunk,
-  ManifestFile,
-} from "@gyst/core/wire";
+  CodeViewItem,
+  FileDiffContentsLoader,
+  FileDiffMetadata,
+  SelectionSide,
+} from "@pierre/diffs";
+import { CodeView, type CodeViewHandle, type CodeViewReactOptions } from "@pierre/diffs/react";
 import * as stylex from "@stylexjs/stylex";
 import {
   createFileRoute,
@@ -15,7 +15,7 @@ import {
   useParams,
   useRouter,
 } from "@tanstack/react-router";
-import { useEffect, useState } from "react";
+import { useCallback, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { isExpectedFailure, operation } from "../api.ts";
 import {
   AllSessionsLink,
@@ -27,6 +27,20 @@ import {
   Title,
   useMounted,
 } from "../components.tsx";
+import {
+  capturedFilesLoader,
+  changedFiles,
+  fileDiffOf,
+  isUnder,
+  type LayoutMode,
+  layoutOf,
+  lineStats,
+  type ReaderFile,
+  statusOf,
+  type TreeNode,
+  treeKey,
+  treeOf,
+} from "../reader.ts";
 import { media, theme } from "../tokens.stylex.ts";
 
 export const Route = createFileRoute("/session/$sessionId")({
@@ -53,16 +67,103 @@ const isDaemonError = (error: unknown, tag: DaemonError["_tag"]) =>
   typeof error === "object" && error !== null && "_tag" in error && error._tag === tag;
 
 function SessionPage() {
-  const { session, hunks, snapshotId, files: captured } = Route.useLoaderData();
+  const { session, hunks, snapshotId, files } = Route.useLoaderData();
+  // Keyed: another session or snapshot starts its own selection, pages and reading position.
+  return (
+    <SessionReader
+      key={`${session.id}:${snapshotId}`}
+      session={session}
+      hunks={hunks}
+      snapshotId={snapshotId}
+      firstPage={files}
+    />
+  );
+}
+
+/** A file's captured sides being read for its first expansion, or why that read failed. */
+type FileLoad = "loading" | { failure: unknown };
+
+/** Where the reader is: a file and, inside its diff, the side and line at the top of the panel. */
+type ReadingPosition = { file: string; side: SelectionSide | undefined; line: number | undefined };
+
+function SessionReader(props: {
+  session: SessionSummary;
+  hunks: readonly Hunk[];
+  snapshotId: string;
+  firstPage: FilesPayload;
+}) {
+  const { session, hunks, snapshotId } = props;
   const navigate = useNavigate();
-  const files = [...Map.groupBy(hunks, (hunk) => hunk.file)];
-  const jump = (index: number) => {
-    const heading = document.getElementById(`file-${index}`);
-    heading?.scrollIntoView({ block: "start" });
-    heading?.focus({ preventScroll: true });
-  };
+  const [pages, setPages] = useState([props.firstPage]);
+  const [selection, setSelection] = useState("");
+  const [mode, setMode] = useState<LayoutMode>("auto");
+  const [width, setWidth] = useState(0);
+  const [loads, setLoads] = useState<ReadonlyMap<string, FileLoad>>(new Map());
+  const mounted = useMounted();
+
+  const manifest = useMemo(() => pages.flatMap((page) => page.files), [pages]);
+  const files = useMemo(() => changedFiles(hunks, manifest), [hunks, manifest]);
+  const byPath = useMemo(() => new Map(files.map((file) => [file.path, file])), [files]);
+  // One metadata object per file for the snapshot's life: the renderer hydrates it in place.
+  const diffs = useMemo(
+    () =>
+      new Map(
+        [...Map.groupBy(hunks, (hunk) => hunk.file)].map(([path, fileHunks]) => [
+          path,
+          fileDiffOf(path, fileHunks),
+        ]),
+      ),
+    [hunks],
+  );
+  // Memoized: a new list makes the renderer reconcile its items and restore the reading position.
+  const shown = useMemo(
+    () => files.filter((file) => isUnder(file.path, selection)),
+    [files, selection],
+  );
+  const layout = layoutOf(mode, width);
+
+  const loadFiles = useMemo(
+    () =>
+      capturedFilesLoader((file, side, offset) =>
+        operation({ command: "code", session: session.id, snapshotId, file, side, offset }),
+      ),
+    [session.id, snapshotId],
+  );
+  const loadDiffFiles = useCallback(
+    async (fileDiff: FileDiffMetadata) => {
+      const path = fileDiff.name;
+      const setLoad = (load: FileLoad | undefined) =>
+        mounted.current &&
+        setLoads((before) => {
+          const next = new Map(before);
+          if (load === undefined) next.delete(path);
+          else next.set(path, load);
+          return next;
+        });
+      // A retry replaces the last failure at once.
+      setLoad("loading");
+      try {
+        const loaded = await loadFiles(path);
+        setLoad(undefined);
+        return loaded;
+      } catch (error) {
+        // The renderer logs the rejection itself; the file header explains it.
+        setLoad({ failure: error });
+        throw error;
+      }
+    },
+    [loadFiles, mounted],
+  );
+
+  const tree = useMemo(
+    () => treeOf([...manifest.map((file) => file.path), ...files.map((file) => file.path)]),
+    [manifest, files],
+  );
+  const hunkCount = shown.reduce((count, file) => count + file.hunks.length, 0);
+
   return (
     <Frame
+      fill
       top={
         <>
           <Crumb session={session} />
@@ -79,30 +180,26 @@ function SessionPage() {
       }
       side={
         <>
-          <p {...stylex.props(styles.sideHead)}>
-            Changed files <span {...stylex.props(styles.muted)}>{files.length}</span>
+          <p {...stylex.props(styles.sideHead)}>Walkthrough</p>
+          <p {...stylex.props(styles.sideNote)}>No walkthrough for this session yet.</p>
+          <p {...stylex.props(styles.sideHead, styles.filesHead)}>
+            Files <span {...stylex.props(styles.muted)}>{files.length} changed</span>
           </p>
-          <ul>
-            {files.map(([file], index) => (
-              <li key={file}>
-                <button
-                  type="button"
-                  {...stylex.props(styles.fileLink)}
-                  onClick={() => jump(index)}
-                >
-                  {file}
-                </button>
-              </li>
-            ))}
-          </ul>
+          <FileTree nodes={tree} files={byPath} selection={selection} onSelect={setSelection} />
+          <MoreFiles
+            sessionId={session.id}
+            snapshotId={snapshotId}
+            pages={pages}
+            onPage={(page) => setPages((loaded) => [...loaded, page])}
+          />
         </>
       }
       status={
         <>
-          <span {...stylex.props(styles.mode)}>Plain diff</span>
+          <LayoutSwitch mode={mode} auto={layoutOf("auto", width)} onMode={setMode} />
           <span>
-            {hunks.length} {hunks.length === 1 ? "hunk" : "hunks"} in {files.length}{" "}
-            {files.length === 1 ? "file" : "files"}
+            {hunkCount} {hunkCount === 1 ? "hunk" : "hunks"} in {shown.length}{" "}
+            {shown.length === 1 ? "file" : "files"}
           </span>
           <span {...stylex.props(styles.grow)} />
           <span>
@@ -111,21 +208,27 @@ function SessionPage() {
         </>
       }
     >
-      {files.length === 0 ? (
-        <p {...stylex.props(styles.muted)}>This session's snapshot has no changes.</p>
+      {shown.length === 0 ? (
+        <p {...stylex.props(styles.empty)}>
+          {files.length === 0 ? (
+            "This session's snapshot has no changes."
+          ) : (
+            <>
+              No captured changes under <code>{selection}</code>.
+            </>
+          )}
+        </p>
       ) : (
-        // ponytail: renders every hunk at once; window/virtualize with the richer reader.
-        files.map(([file, fileHunks], index) => (
-          <FileDiff key={file} id={`file-${index}`} file={file} hunks={fileHunks} />
-        ))
+        <ContinuousDiff
+          files={shown}
+          byPath={byPath}
+          diffs={diffs}
+          layout={layout}
+          loadDiffFiles={loadDiffFiles}
+          loads={loads}
+          onWidth={setWidth}
+        />
       )}
-      {/* Keyed: another snapshot starts its own listing and code views. */}
-      <CapturedFiles
-        key={snapshotId}
-        sessionId={session.id}
-        snapshotId={snapshotId}
-        first={captured}
-      />
     </Frame>
   );
 }
@@ -141,217 +244,543 @@ const styles = stylex.create({
     fontWeight: 500,
     color: theme.muted,
   },
-  fileLink: {
-    display: "block",
-    width: "100%",
-    padding: "4px 10px",
-    borderRadius: "6px",
-    color: { default: theme.muted, ":hover": theme.ink },
-    backgroundColor: { default: null, ":hover": theme.select },
-    overflow: "hidden",
-    textOverflow: "ellipsis",
-    whiteSpace: "nowrap",
-    direction: "rtl",
-    textAlign: "left",
-  },
-  mode: {
-    display: "inline-flex",
-    alignItems: "center",
-    gap: "6px",
-    color: theme.ink,
-    fontWeight: 500,
-    "::before": {
-      content: '""',
-      width: "7px",
-      height: "7px",
-      borderRadius: "50%",
-      backgroundColor: theme["--accent"],
-    },
-  },
+  filesHead: { marginTop: "14px" },
+  sideNote: { padding: "0 10px", fontSize: "12px", color: theme.faint },
+  empty: { padding: { default: "24px 32px", [media.narrow]: "16px 12px" }, color: theme.muted },
 });
 
-function FileDiff(props: { id: string; file: string; hunks: readonly Hunk[] }) {
-  const slash = props.file.lastIndexOf("/");
-  const lines = props.hunks.flatMap((hunk) => hunk.patch.split("\n").slice(1));
-  const added = lines.filter((line) => line.startsWith("+")).length;
-  const removed = lines.filter((line) => line.startsWith("-")).length;
+// ─── continuous diff ─────────────────────────────────────────────────────
+
+/**
+ * The selected files' captured changes as one virtualized, continuous reading surface. Each file
+ * reads as one diff over its captured full contents: hidden ranges show their counts and expand
+ * independently, loading the captured sides on first expansion. The reading position is logical
+ * (file, side, line), so layout switches and selection changes restore it instead of a pixel offset.
+ */
+function ContinuousDiff(props: {
+  files: readonly ReaderFile[];
+  byPath: ReadonlyMap<string, ReaderFile>;
+  diffs: ReadonlyMap<string, FileDiffMetadata>;
+  layout: "split" | "stacked";
+  loadDiffFiles: FileDiffContentsLoader;
+  loads: ReadonlyMap<string, FileLoad>;
+  onWidth: (width: number) => void;
+}) {
+  const { byPath, diffs, layout, loads, onWidth } = props;
+  const view = useRef<CodeViewHandle<undefined, undefined>>(null);
+  const position = useRef<ReadingPosition>(undefined);
+  // While a restoration is in flight, and while the reader stays where it put them, the renderer's
+  // own scrolls and re-renders must not replace the position being restored.
+  const restoring = useRef(false);
+  const restoredTop = useRef<number>(undefined);
+  // Bumped by every restore or abandon, so an older restoration's frame cannot reinstate its marker.
+  const generation = useRef(0);
+
+  /** Reads the file, side and line at the top of the panel from the renderer's current window. */
+  const capture = useCallback(() => {
+    const viewer = view.current?.getInstance();
+    if (viewer === undefined || restoring.current) return;
+    const scrollTop = viewer.getScrollTop();
+    if (scrollTop === restoredTop.current) return;
+    restoredTop.current = undefined;
+    // The first line below the sticky file header is the one a reader sees at the top.
+    const seen = scrollTop + headerHeight;
+    for (const { id, type, instance } of viewer.getRenderedItems()) {
+      const top = viewer.getTopForItem(id);
+      if (top === undefined || seen < top || seen >= top + instance.height) continue;
+      const anchor = type === "diff" ? instance.getNumericScrollAnchor(seen - top) : undefined;
+      position.current = { file: id, side: anchor?.side, line: anchor?.lineNumber };
+      return;
+    }
+  }, []);
+
+  const items = useMemo(
+    () =>
+      props.files.map((file): CodeViewItem<undefined> => {
+        const fileDiff = diffs.get(file.path);
+        return fileDiff
+          ? { id: file.path, type: "diff", fileDiff }
+          : // No captured text to show: the header alone says why.
+            {
+              id: file.path,
+              type: "file",
+              file: { name: file.path, contents: "" },
+              collapsed: true,
+            };
+      }),
+    [props.files, diffs],
+  );
+
+  const options = useMemo(
+    (): CodeViewReactOptions<undefined, undefined> => ({
+      theme: "catppuccin-mocha",
+      themeType: "dark",
+      diffStyle: layout === "split" ? "split" : "unified",
+      overflow: "wrap",
+      diffIndicators: "bars",
+      lineDiffType: "word",
+      hunkSeparators: "line-info",
+      expansionLineCount: 20,
+      loadDiffFiles: props.loadDiffFiles,
+      stickyHeaders: true,
+      itemMetrics: { diffHeaderHeight: headerHeight, lineHeight: 20 },
+      layout: { paddingTop: 24, paddingBottom: 120, gap: 10 },
+      unsafeCSS: fileBoxCSS,
+      // The renderer notifies scrolls before it moves its window, and renders items synchronously
+      // inside its frame; reading once the frame is done sees the window a jump landed in.
+      onPostRender: () => queueMicrotask(capture),
+    }),
+    [layout, props.loadDiffFiles, capture],
+  );
+
+  // The panel's content width decides auto layout; the viewport's never does.
+  const observer = useRef<ResizeObserver>(undefined);
+  const containerRef = useCallback(
+    (node: HTMLDivElement | null) => {
+      observer.current?.disconnect();
+      observer.current = undefined;
+      if (node === null) return;
+      onWidth(node.clientWidth - horizontalPadding(node));
+      observer.current = new ResizeObserver(([entry]) => onWidth(entry!.contentRect.width));
+      observer.current.observe(node);
+    },
+    [onWidth],
+  );
+
+  // Restore the logical position after a layout switch or a new selection that still holds it.
+  // A layout effect: it reads the position before any capture from the renderer's own re-render.
+  useLayoutEffect(() => {
+    const at = position.current;
+    const current = ++generation.current;
+    if (at === undefined || !items.some((item) => item.id === at.file)) {
+      // Nothing to restore: the new selection's own top becomes the position.
+      position.current = undefined;
+      restoring.current = false;
+      restoredTop.current = undefined;
+      view.current?.scrollTo({ type: "position", position: 0 });
+      return;
+    }
+    restoring.current = true;
+    view.current?.scrollTo(
+      at.line === undefined
+        ? { type: "item", id: at.file, align: "start" }
+        : {
+            type: "line",
+            id: at.file,
+            lineNumber: at.line,
+            ...(at.side && { side: at.side }),
+            align: "start",
+          },
+    );
+    // Queued after the renderer's frame for that scroll, so its post-render captures are skipped.
+    requestAnimationFrame(() => {
+      if (current !== generation.current) return;
+      restoring.current = false;
+      restoredTop.current = view.current?.getInstance()?.getScrollTop();
+    });
+  }, [layout, items]);
+
   return (
-    <section {...stylex.props(fileStyles.box)} aria-labelledby={props.id}>
-      <h2 {...stylex.props(fileStyles.head)} id={props.id} tabIndex={-1}>
-        <span {...stylex.props(fileStyles.name)}>{props.file.slice(slash + 1)}</span>
-        {slash >= 0 && (
-          <span {...stylex.props(fileStyles.dir)}>{props.file.slice(0, slash + 1)}</span>
-        )}
-        <span {...stylex.props(styles.grow)} />
-        <span {...stylex.props(fileStyles.stat)}>
-          <span {...stylex.props(fileStyles.add)}>+{added}</span>{" "}
-          <span {...stylex.props(fileStyles.del)}>−{removed}</span>
-        </span>
-      </h2>
-      {props.hunks.map((hunk) => (
-        <HunkDiff key={hunk.id} hunk={hunk} />
-      ))}
-    </section>
+    <CodeView
+      ref={view}
+      {...stylex.props(diffStyles.view)}
+      containerRef={containerRef}
+      items={items}
+      options={options}
+      onScroll={capture}
+      renderCustomHeader={(item) => (
+        <FileHeader file={byPath.get(item.id)!} load={loads.get(item.id)} />
+      )}
+    />
   );
 }
 
-const fileStyles = stylex.create({
-  box: {
-    borderRadius: "6px",
-    boxShadow: `0 0 0 1px ${theme.line}`,
-    // Spaces files apart; they are the pane's first sections.
-    marginTop: { default: "10px", ":first-of-type": 0 },
+/** The file header bar's height, which FileHeader's style repeats. */
+const headerHeight = 34;
+
+const horizontalPadding = (node: HTMLElement) => {
+  const style = getComputedStyle(node);
+  return Number.parseFloat(style.paddingLeft) + Number.parseFloat(style.paddingRight);
+};
+
+// The renderer styles its own shadow roots; `unsafeCSS` is its documented hook for the item box.
+// It sits in the renderer's last cascade layer inside each item, never in the page's cascade.
+const fileBoxCSS = `:host{border-radius:6px;box-shadow:0 0 0 1px ${theme.line};overflow:clip}`;
+
+// The renderer's documented custom properties, fed from our tokens; they inherit into its shadow
+// roots. Colours follow the Catppuccin guide's Diff & Merge roles, as in the accepted prototype.
+const diffStyles = stylex.create({
+  view: {
+    height: "100%",
+    overflow: "auto",
+    paddingInline: { default: "32px", [media.narrow]: "12px" },
+    "--diffs-font-family": theme["--mono"],
+    "--diffs-header-font-family": theme.sans,
+    "--diffs-font-size": "12.5px",
+    "--diffs-line-height": "20px",
+    "--diffs-addition-color-override": theme.add,
+    "--diffs-deletion-color-override": theme.del,
+    "--diffs-bg-context-override": theme.panelBg,
+    "--diffs-bg-buffer-override": theme.surface,
+    "--diffs-bg-separator-override": theme.surface,
+    "--diffs-bg-addition-override": theme.add,
+    "--diffs-bg-addition-number-override": theme.add,
+    "--diffs-bg-addition-emphasis-override": `color-mix(in srgb, ${theme.add} 18%, transparent)`,
+    "--diffs-bg-deletion-override": theme.del,
+    "--diffs-bg-deletion-number-override": theme.del,
+    "--diffs-bg-deletion-emphasis-override": `color-mix(in srgb, ${theme.del} 18%, transparent)`,
+    "--diffs-fg-number-override": theme.faint,
+    "--diffs-bg-selection-override": theme.select,
   },
-  head: {
-    position: "sticky",
-    top: { default: "-24px", [media.narrow]: "-16px" },
-    zIndex: 3,
+});
+
+// Short, so the reason fits the header bar even at narrow widths.
+const notCaptured = {
+  binary: "binary",
+  "unsupported-encoding": "not UTF-8 text",
+  symlink: "symbolic link",
+  submodule: "submodule",
+} satisfies Record<Extract<ContentSide, { kind: "unavailable" }>["reason"], string>;
+
+/** What a file's header says besides its name: sides without text, renames and mode changes. */
+function fileNotes({ manifest }: ReaderFile): string[] {
+  if (manifest === undefined) return [];
+  const notes = (["old", "new"] as const).flatMap((side) => {
+    const content = manifest[side];
+    return content.kind === "unavailable"
+      ? [`${side === "old" ? "Old" : "New"} side not captured: ${notCaptured[content.reason]}.`]
+      : [];
+  });
+  if (manifest.renamedFrom !== undefined)
+    notes.push(`Renamed from ${manifest.renamedFrom}; not reviewed.`);
+  if (manifest.modeChange !== undefined)
+    notes.push(`Mode ${manifest.modeChange.old} → ${manifest.modeChange.new}; not reviewed.`);
+  return notes;
+}
+
+/** The compact inset bar above each file's diff: name, folder, notes and line counts. */
+function FileHeader(props: { file: ReaderFile; load: FileLoad | undefined }) {
+  const { file, load } = props;
+  const failure = typeof load === "object" ? load.failure : undefined;
+  const router = useRouter();
+  const slash = file.path.lastIndexOf("/");
+  const notes = fileNotes(file);
+  const stats = file.hunks.length > 0 ? lineStats(file.hunks) : undefined;
+  const stale = isDaemonError(failure, "stale_revision");
+  return (
+    <div {...stylex.props(headerStyles.bar)}>
+      <h2 {...stylex.props(headerStyles.title)} aria-label={file.path}>
+        <span {...stylex.props(headerStyles.name)}>{file.path.slice(slash + 1)}</span>
+        {slash >= 0 && (
+          <span {...stylex.props(headerStyles.dir)}>{file.path.slice(0, slash + 1)}</span>
+        )}
+      </h2>
+      {notes.length > 0 && (
+        <span {...stylex.props(headerStyles.note)} title={notes.join(" ")}>
+          {notes.join(" ")}
+        </span>
+      )}
+      {load === "loading" && (
+        <span role="status" {...stylex.props(headerStyles.note)}>
+          Loading the captured file…
+        </span>
+      )}
+      {typeof load === "object" && (
+        <span role="alert" {...stylex.props(headerStyles.failure)}>
+          {stale ? (
+            <PillButton onClick={() => void router.invalidate()}>Reload session</PillButton>
+          ) : (
+            <>
+              Couldn't load the captured file
+              {failure instanceof Error ? `: ${failure.message}` : ""}. Expand again to retry.
+            </>
+          )}
+        </span>
+      )}
+      <span {...stylex.props(styles.grow)} />
+      {stats && (
+        <span {...stylex.props(headerStyles.stat)}>
+          <span {...stylex.props(headerStyles.add)}>+{stats.added}</span>{" "}
+          <span {...stylex.props(headerStyles.del)}>−{stats.removed}</span>
+        </span>
+      )}
+    </div>
+  );
+}
+
+const headerStyles = stylex.create({
+  bar: {
     display: "flex",
     alignItems: "center",
     gap: "10px",
     height: "34px",
     padding: "0 10px",
+    overflow: "hidden",
     backgroundColor: theme.surface,
     borderBottomWidth: "1px",
     borderBottomStyle: "solid",
     borderBottomColor: theme.line,
-    borderRadius: "6px 6px 0 0",
+    color: theme.ink,
+    fontFamily: theme.sans,
+    fontSize: "13px",
+    lineHeight: 1.5,
+    whiteSpace: "nowrap",
+  },
+  title: {
+    display: "flex",
+    alignItems: "baseline",
+    gap: "8px",
+    minWidth: 0,
+    overflow: "hidden",
     fontSize: "13px",
     fontWeight: 400,
-    scrollMarginTop: "24px",
   },
-  name: { fontWeight: 500, whiteSpace: "nowrap" },
+  name: { flexShrink: 0, fontWeight: 500 },
   dir: {
     minWidth: 0,
     overflow: "hidden",
     textOverflow: "ellipsis",
-    whiteSpace: "nowrap",
     color: theme.faint,
     fontSize: "12px",
   },
-  stat: {
-    fontFamily: theme["--mono"],
-    fontSize: "11.5px",
-    lineHeight: "normal",
-    whiteSpace: "nowrap",
+  note: {
+    flexShrink: 100,
+    minWidth: 0,
+    overflow: "hidden",
+    textOverflow: "ellipsis",
+    color: theme.muted,
+    fontSize: "12px",
   },
+  failure: { minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", color: theme.del },
+  stat: { fontFamily: theme["--mono"], fontSize: "11.5px", lineHeight: "normal" },
   add: { color: theme.add },
   del: { color: theme.del },
 });
 
-const lineKind = (line: string) =>
-  line.startsWith("+")
-    ? "add"
-    : line.startsWith("-")
-      ? "del"
-      : line.startsWith("\\")
-        ? "meta"
-        : "context";
+// ─── layout switch ───────────────────────────────────────────────────────
 
-/**
- * The captured `Hunk.patch`, rendered as text (React escapes it): a table whose rows are its lines,
- * each an old number, a new number and a code cell.
- */
-function HunkDiff({ hunk }: { hunk: Hunk }) {
-  const [header = "", ...body] = hunk.patch.split("\n");
-  const start = /^@@ -(\d+)(?:,\d+)? \+(\d+)/.exec(header);
-  let oldLine = Number(start?.[1] ?? 0);
-  let newLine = Number(start?.[2] ?? 0);
+const layoutNames = { split: "Split", stacked: "Stacked", auto: "Auto" } as const;
+
+/** Split, stacked or auto, with the layout auto picks at the current width in its label. */
+function LayoutSwitch(props: {
+  mode: LayoutMode;
+  auto: "split" | "stacked";
+  onMode: (mode: LayoutMode) => void;
+}) {
   return (
-    <div role="table" {...stylex.props(hunkStyles.hunk)}>
-      <div role="row" {...lineProps.header}>
-        <span role="cell" {...stylex.props(hunkStyles.num)} />
-        <span role="cell" {...stylex.props(hunkStyles.num)} />
-        <span role="cell" {...stylex.props(hunkStyles.code)}>
-          {header}
-        </span>
-      </div>
-      {body.map((line, index) => {
-        const kind = lineKind(line);
-        const oldNumber = kind === "context" || kind === "del" ? oldLine++ : undefined;
-        const newNumber = kind === "context" || kind === "add" ? newLine++ : undefined;
-        return (
-          // Index keys: the lines of one frozen patch never reorder.
-          <div key={index} role="row" {...lineProps[kind]}>
-            <span role="cell" {...stylex.props(hunkStyles.num)}>
-              {oldNumber}
-            </span>
-            <span role="cell" {...stylex.props(hunkStyles.num)}>
-              {newNumber}
-            </span>
-            <span role="cell" {...stylex.props(hunkStyles.code)}>
-              {line}
-            </span>
-          </div>
-        );
-      })}
+    <div role="radiogroup" aria-label="Diff layout" {...stylex.props(switchStyles.group)}>
+      {(["split", "stacked", "auto"] as const).map((mode) => (
+        <label
+          key={mode}
+          {...stylex.props(switchStyles.option, props.mode === mode && switchStyles.checked)}
+        >
+          <input
+            type="radio"
+            name="diff-layout"
+            checked={props.mode === mode}
+            onChange={() => props.onMode(mode)}
+            {...stylex.props(switchStyles.input)}
+          />
+          {mode === "auto" ? `Auto (${props.auto})` : layoutNames[mode]}
+        </label>
+      ))}
     </div>
   );
 }
 
-const hunkStyles = stylex.create({
-  hunk: {
-    overflowX: "auto",
-    fontFamily: theme["--mono"],
-    fontSize: "12px",
-    lineHeight: 1.6,
-    // A rule between hunks; the first follows the file header's own rule.
-    borderTopWidth: { default: "1px", ":first-of-type": 0 },
-    borderTopStyle: "solid",
-    borderTopColor: theme.line,
-  },
-  line: { display: "grid", gridTemplateColumns: "5ch 5ch minmax(max-content, 1fr)" },
-  header: {
-    color: theme.hunkHeader,
-    backgroundColor: `color-mix(in srgb, ${theme.hunkHeader} 6%, transparent)`,
-  },
-  add: {
-    color: theme.add,
-    backgroundColor: `color-mix(in srgb, ${theme.add} 12%, transparent)`,
-  },
-  del: {
-    color: theme.del,
-    backgroundColor: `color-mix(in srgb, ${theme.del} 12%, transparent)`,
-  },
-  meta: { color: theme.faint },
-  num: { paddingRight: "1ch", textAlign: "right", color: theme.faint, userSelect: "none" },
-  code: { padding: "0 12px 0 1ch", whiteSpace: "pre" },
+const switchStyles = stylex.create({
+  group: { display: "flex", gap: "10px" },
+  option: { display: "inline-flex", alignItems: "center", gap: "4px", cursor: "pointer" },
+  checked: { color: theme.ink },
+  input: { margin: 0, accentColor: theme["--accent"] },
 });
 
-// Precomputed so each line kind compiles to a static class name.
-const lineProps = {
-  header: stylex.props(hunkStyles.line, hunkStyles.header),
-  context: stylex.props(hunkStyles.line),
-  add: stylex.props(hunkStyles.line, hunkStyles.add),
-  del: stylex.props(hunkStyles.line, hunkStyles.del),
-  meta: stylex.props(hunkStyles.line, hunkStyles.meta),
-};
+// ─── file tree ───────────────────────────────────────────────────────────
 
-// ─── captured files ──────────────────────────────────────────────────────
+const statusNames = { A: "added", D: "deleted", M: "modified", R: "renamed" } as const;
 
-const notCaptured = {
-  binary: "binary content is not captured",
-  "unsupported-encoding": "content that is not UTF-8 text is not captured",
-  symlink: "a symbolic link; its target is not captured",
-  submodule: "a submodule; its contents are not captured",
-} satisfies Record<Extract<ContentSide, { kind: "unavailable" }>["reason"], string>;
+/**
+ * The snapshot-wide file tree: every loaded captured path, changed or not. Selecting the root, a
+ * folder or a file shows all captured changes under it. Folders holding changes start open.
+ */
+function FileTree(props: {
+  nodes: readonly TreeNode[];
+  files: ReadonlyMap<string, ReaderFile>;
+  selection: string;
+  onSelect: (path: string) => void;
+}) {
+  const [toggled, setToggled] = useState<ReadonlySet<string>>(new Set());
+  const changedFolders = useMemo(() => {
+    const folders = new Set<string>();
+    for (const path of props.files.keys())
+      for (let slash = path.indexOf("/"); slash >= 0; slash = path.indexOf("/", slash + 1))
+        folders.add(path.slice(0, slash));
+    return folders;
+  }, [props.files]);
+  const isOpen = (path: string) => changedFolders.has(path) !== toggled.has(path);
+  const toggle = (path: string) =>
+    setToggled((before) => {
+      const next = new Set(before);
+      if (!next.delete(path)) next.add(path);
+      return next;
+    });
 
-const sideSummary = (side: ContentSide) =>
-  side.kind === "text"
-    ? `${side.size} ${side.size === 1 ? "byte" : "bytes"}`
-    : side.kind === "absent"
-      ? "absent"
-      : `unavailable (${side.reason})`;
+  const rows = (nodes: readonly TreeNode[], depth: number) =>
+    nodes.map((node) => {
+      const selected = props.selection === node.path;
+      if (node.kind === "folder") {
+        const open = isOpen(node.path);
+        return (
+          <li key={treeKey(node)}>
+            <div {...stylex.props(treeStyles.row, selected && treeStyles.selected)}>
+              <button
+                type="button"
+                {...stylex.props(treeStyles.chevron, treeStyles.indent(depth))}
+                aria-expanded={open}
+                aria-label={`${open ? "Collapse" : "Expand"} ${node.path}`}
+                onClick={() => toggle(node.path)}
+              >
+                <span {...stylex.props(treeStyles.mark, open && treeStyles.markOpen)} />
+              </button>
+              <button
+                type="button"
+                {...stylex.props(treeStyles.label)}
+                aria-label={`${node.path}/`}
+                aria-current={selected || undefined}
+                onClick={() => props.onSelect(node.path)}
+              >
+                {node.name}
+              </button>
+            </div>
+            {open && <ul>{rows(node.children, depth + 1)}</ul>}
+          </li>
+        );
+      }
+      const file = props.files.get(node.path);
+      const status = file && statusOf(file);
+      return (
+        <li key={treeKey(node)}>
+          <button
+            type="button"
+            {...stylex.props(
+              treeStyles.row,
+              treeStyles.file,
+              treeStyles.indent(depth + 1),
+              selected && treeStyles.selected,
+              file === undefined && treeStyles.unchanged,
+            )}
+            aria-label={status ? `${node.path} (${statusNames[status]})` : node.path}
+            aria-current={selected || undefined}
+            onClick={() => props.onSelect(node.path)}
+          >
+            <span {...stylex.props(treeStyles.fileName)}>{node.name}</span>
+            {status && (
+              <span
+                {...stylex.props(treeStyles.status, treeStyles[status])}
+                title={statusNames[status]}
+              >
+                {status}
+              </span>
+            )}
+          </button>
+        </li>
+      );
+    });
 
-/** The snapshot's captured files, supporting and unavailable ones included, a page at a time. */
-function CapturedFiles(props: { sessionId: string; snapshotId: string; first: FilesPayload }) {
+  return (
+    <div {...stylex.props(treeStyles.tree)}>
+      <button
+        type="button"
+        {...stylex.props(
+          treeStyles.row,
+          treeStyles.file,
+          treeStyles.indent(0),
+          props.selection === "" && treeStyles.selected,
+        )}
+        aria-current={props.selection === "" || undefined}
+        onClick={() => props.onSelect("")}
+      >
+        All changes
+      </button>
+      <ul aria-label="Snapshot files">{rows(props.nodes, 0)}</ul>
+    </div>
+  );
+}
+
+const treeStyles = stylex.create({
+  tree: {
+    display: "grid",
+    gridTemplateColumns: "minmax(0, 1fr)",
+    gap: "1px",
+    alignContent: "start",
+  },
+  row: {
+    display: "flex",
+    alignItems: "center",
+    width: "100%",
+    minHeight: "26px",
+    borderRadius: "6px",
+    color: { default: theme.muted, ":hover": theme.ink },
+    backgroundColor: { default: null, ":hover": theme.select },
+  },
+  selected: { color: theme.ink, backgroundColor: theme.select },
+  file: { gap: "8px", paddingRight: "10px", textAlign: "left" },
+  unchanged: { color: { default: theme.faint, ":hover": theme.ink } },
+  indent: (depth: number) => ({ paddingLeft: `${10 + depth * 14}px` }),
+  chevron: { display: "grid", placeItems: "center", alignSelf: "stretch", paddingRight: "4px" },
+  mark: {
+    width: "5px",
+    height: "5px",
+    borderRightWidth: "1.5px",
+    borderRightStyle: "solid",
+    borderRightColor: theme.faint,
+    borderBottomWidth: "1.5px",
+    borderBottomStyle: "solid",
+    borderBottomColor: theme.faint,
+    transform: "rotate(-45deg)",
+  },
+  markOpen: { transform: "rotate(45deg)" },
+  label: {
+    flex: "1",
+    minWidth: 0,
+    paddingRight: "10px",
+    overflow: "hidden",
+    textOverflow: "ellipsis",
+    whiteSpace: "nowrap",
+    alignSelf: "stretch",
+    textAlign: "left",
+  },
+  fileName: {
+    flex: "1",
+    minWidth: 0,
+    overflow: "hidden",
+    textOverflow: "ellipsis",
+    whiteSpace: "nowrap",
+  },
+  status: { fontFamily: theme["--mono"], fontSize: "11px", fontWeight: 500 },
+  A: { color: theme.add },
+  D: { color: theme.del },
+  M: { color: theme.changed },
+  R: { color: theme.changed },
+});
+
+/**
+ * Loads the snapshot's next files page into the tree. A refresh that replaced the snapshot makes
+ * the page cursor stale for good, so that failure offers a session reload instead of a retry.
+ */
+function MoreFiles(props: {
+  sessionId: string;
+  snapshotId: string;
+  pages: readonly FilesPayload[];
+  onPage: (page: FilesPayload) => void;
+}) {
   const router = useRouter();
-  const [pages, setPages] = useState([props.first]);
   const [pending, setPending] = useState(false);
   const [failure, setFailure] = useState<unknown>();
   const mounted = useMounted();
-  const files = pages.flatMap((page) => page.files);
-  const after = pages.at(-1)!.next;
+  const after = props.pages.at(-1)!.next;
+  const total = props.pages[0]!.total;
+  const shown = props.pages.reduce((count, page) => count + page.files.length, 0);
   const more = async (path: string) => {
     setPending(true);
     setFailure(undefined);
@@ -362,7 +791,7 @@ function CapturedFiles(props: { sessionId: string; snapshotId: string; first: Fi
         snapshotId: props.snapshotId,
         after: path,
       });
-      if (mounted.current) setPages((loaded) => [...loaded, page]);
+      if (mounted.current) props.onPage(page);
     } catch (error) {
       if (!isExpectedFailure(error)) console.error(error);
       if (mounted.current) setFailure(error);
@@ -370,26 +799,10 @@ function CapturedFiles(props: { sessionId: string; snapshotId: string; first: Fi
       if (mounted.current) setPending(false);
     }
   };
+  if (after === null && failure === undefined) return null;
   return (
-    <section {...stylex.props(capturedStyles.box)} aria-labelledby="captured-files">
-      <h2 {...stylex.props(capturedStyles.head)} id="captured-files">
-        Captured files <span {...stylex.props(styles.muted)}>{props.first.total}</span>
-      </h2>
-      <p {...stylex.props(styles.muted)}>
-        Exact text saved with this snapshot; it is read from gyst, never from the checkout.
-      </p>
-      <ul {...stylex.props(capturedStyles.list)} aria-label="Captured files">
-        {files.map((file) => (
-          <CapturedFileRow
-            key={file.path}
-            file={file}
-            sessionId={props.sessionId}
-            snapshotId={props.snapshotId}
-          />
-        ))}
-      </ul>
+    <div {...stylex.props(moreStyles.box)}>
       {failure !== undefined && <FailureNotice error={failure} />}
-      {/* A refresh replaced this snapshot: its cursor can never succeed again, so reload. */}
       {isDaemonError(failure, "stale_revision") ? (
         <PillButton onClick={() => void router.invalidate()}>Reload session</PillButton>
       ) : (
@@ -399,217 +812,15 @@ function CapturedFiles(props: { sessionId: string; snapshotId: string; first: Fi
               ? "Loading files…"
               : failure !== undefined
                 ? "Retry loading files"
-                : `Load more files (${files.length} of ${props.first.total} shown)`}
+                : `Load more files (${shown} of ${total} shown)`}
           </PillButton>
         )
       )}
-    </section>
-  );
-}
-
-function CapturedFileRow(props: { file: ManifestFile; sessionId: string; snapshotId: string }) {
-  const { file } = props;
-  const [shown, setShown] = useState<"old" | "new">();
-  return (
-    <li {...stylex.props(capturedStyles.file)}>
-      <div {...stylex.props(capturedStyles.row)}>
-        <code {...stylex.props(capturedStyles.path)}>{file.path}</code>
-        <span {...stylex.props(styles.muted)}>
-          old: {sideSummary(file.old)} · new: {sideSummary(file.new)}
-        </span>
-        {file.renamedFrom !== undefined && (
-          <span {...stylex.props(styles.muted)}>
-            renamed from <code>{file.renamedFrom}</code> (not reviewed)
-          </span>
-        )}
-        {file.modeChange !== undefined && (
-          <span {...stylex.props(styles.muted)}>
-            mode {file.modeChange.old} → {file.modeChange.new} (not reviewed)
-          </span>
-        )}
-        <span {...stylex.props(styles.grow)} />
-        {(["old", "new"] as const).map((side) => (
-          <PillButton
-            key={side}
-            aria-expanded={shown === side}
-            onClick={() => setShown(shown === side ? undefined : side)}
-          >
-            {shown === side ? `Hide ${side}` : `View ${side}`}
-          </PillButton>
-        ))}
-      </div>
-      {shown !== undefined && (
-        <CapturedCode
-          key={shown}
-          sessionId={props.sessionId}
-          snapshotId={props.snapshotId}
-          file={file.path}
-          side={shown}
-        />
-      )}
-    </li>
-  );
-}
-
-/**
- * One side of a captured file, fetched a page at a time on demand. A failed page keeps what was
- * already loaded and retries from where it stopped; a replaced snapshot asks for a reload.
- */
-function CapturedCode(props: {
-  sessionId: string;
-  snapshotId: string;
-  file: string;
-  side: "old" | "new";
-}) {
-  const router = useRouter();
-  const [text, setText] = useState("");
-  const [content, setContent] = useState<CodePayload["content"]>();
-  const [pending, setPending] = useState(false);
-  const [failure, setFailure] = useState<{ error: unknown; offset: number | undefined }>();
-  const mounted = useMounted();
-  const load = async (offset?: number) => {
-    setPending(true);
-    setFailure(undefined);
-    try {
-      const page = await operation({
-        command: "code",
-        session: props.sessionId,
-        snapshotId: props.snapshotId,
-        file: props.file,
-        side: props.side,
-        offset,
-      });
-      if (!mounted.current) return;
-      const loaded = page.content;
-      if (loaded.kind === "text")
-        setText((before) => (offset === undefined ? loaded.text : before + loaded.text));
-      setContent(loaded);
-    } catch (error) {
-      if (!isExpectedFailure(error)) console.error(error);
-      if (mounted.current) setFailure({ error, offset });
-    } finally {
-      if (mounted.current) setPending(false);
-    }
-  };
-  // The first page, once per mount: the caller keys this view by side.
-  useEffect(() => {
-    void load();
-  }, []);
-  const next = content?.kind === "text" ? content.next : null;
-  const stale = failure !== undefined && isDaemonError(failure.error, "stale_revision");
-  return (
-    <div
-      {...stylex.props(capturedStyles.code)}
-      role="region"
-      aria-label={`${props.file}, ${props.side} side`}
-    >
-      {content?.kind === "absent" && (
-        <p {...stylex.props(capturedStyles.inset, styles.muted)}>
-          This file does not exist on the {props.side} side.
-        </p>
-      )}
-      {content?.kind === "unavailable" && (
-        <p {...stylex.props(capturedStyles.inset, capturedStyles.notice)}>
-          Not captured: {notCaptured[content.reason]}.
-        </p>
-      )}
-      {content?.kind === "text" &&
-        (content.size === 0 ? (
-          <p {...stylex.props(capturedStyles.inset, styles.muted)}>Empty file.</p>
-        ) : (
-          <CodeLines text={text} partial={next !== null && !text.endsWith("\n")} />
-        ))}
-      {pending && (
-        <p role="status" {...stylex.props(capturedStyles.inset, styles.muted)}>
-          Loading…
-        </p>
-      )}
-      {failure !== undefined && (
-        <>
-          <div {...stylex.props(capturedStyles.inset)}>
-            <FailureNotice error={failure.error} />
-          </div>
-          <div {...stylex.props(capturedStyles.buttonInset)}>
-            <PillButton onClick={() => void (stale ? router.invalidate() : load(failure.offset))}>
-              {stale ? "Reload session" : "Retry"}
-            </PillButton>
-          </div>
-        </>
-      )}
-      {next !== null && !pending && failure === undefined && content?.kind === "text" && (
-        <div {...stylex.props(capturedStyles.buttonInset)}>
-          <PillButton onClick={() => void load(next.offset)}>
-            Load more ({next.offset} of {content.size} bytes shown)
-          </PillButton>
-        </div>
-      )}
     </div>
   );
 }
 
-const capturedStyles = stylex.create({
-  box: { marginTop: "24px" },
-  head: { fontSize: "14px", fontWeight: 500 },
-  list: { margin: "10px 0" },
-  file: {
-    borderTopWidth: { default: "1px", ":first-of-type": 0 },
-    borderTopStyle: "solid",
-    borderTopColor: theme.line,
-  },
-  row: {
-    display: "flex",
-    flexWrap: "wrap",
-    alignItems: "center",
-    gap: "4px 10px",
-    padding: "6px 0",
-    fontSize: "12.5px",
-  },
-  path: { overflowWrap: "anywhere" },
-  code: {
-    marginBottom: "8px",
-    borderRadius: "6px",
-    boxShadow: `0 0 0 1px ${theme.line}`,
-  },
-  inset: { margin: "8px 10px" },
-  // Padding, not margin: an inline button's margins never collapsed into the box's edge.
-  buttonInset: { padding: "8px 10px" },
-  notice: { maxWidth: "80ch" },
-});
-
-/**
- * Loaded captured text from line 1 (React escapes it): a table whose rows are its lines, each a
- * line number and a code cell. A cut-off last line says it continues.
- */
-function CodeLines({ text, partial }: { text: string; partial: boolean }) {
-  const lines = text.split("\n");
-  // A final LF ends the last line; it does not start another.
-  if (lines.at(-1) === "") lines.pop();
-  return (
-    // ponytail: renders every loaded line; window/virtualize with the richer reader.
-    <div role="table" {...stylex.props(codeStyles.table)}>
-      {lines.map((line, index) => (
-        // Index keys: loaded lines only ever append.
-        <div key={index} role="row" {...stylex.props(codeStyles.line)}>
-          <span role="cell" {...stylex.props(hunkStyles.num)}>
-            {index + 1}
-          </span>
-          <span role="cell" {...stylex.props(hunkStyles.code)}>
-            {line}
-            {partial && index === lines.length - 1 && (
-              <span {...stylex.props(styles.muted)}> … continues</span>
-            )}
-          </span>
-        </div>
-      ))}
-    </div>
-  );
-}
-
-// The hunk look without its rules between hunks, and one number column.
-const codeStyles = stylex.create({
-  table: { overflowX: "auto", fontFamily: theme["--mono"], fontSize: "12px", lineHeight: 1.6 },
-  line: { display: "grid", gridTemplateColumns: "6ch minmax(max-content, 1fr)" },
-});
+const moreStyles = stylex.create({ box: { padding: "8px 4px", fontSize: "12px" } });
 
 function SessionNotFound() {
   const { sessionId } = useParams({ strict: false });

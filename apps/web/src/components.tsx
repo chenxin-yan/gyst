@@ -11,6 +11,8 @@ export function Frame(props: {
   top: ReactNode;
   side?: ReactNode;
   status?: ReactNode;
+  /** The child fills the reading pane and scrolls itself, like the session reader. */
+  fill?: boolean;
   children: ReactNode;
 }) {
   return (
@@ -25,7 +27,7 @@ export function Frame(props: {
       </nav>
       <div {...stylex.props(frame.panel)}>
         <header {...stylex.props(frame.top)}>{props.top}</header>
-        <main {...stylex.props(frame.pane)}>{props.children}</main>
+        <main {...stylex.props(frame.pane, props.fill && frame.fill)}>{props.children}</main>
         <footer {...stylex.props(frame.status)}>{props.status}</footer>
       </div>
     </div>
@@ -98,6 +100,7 @@ const frame = stylex.create({
     overflow: "auto",
     padding: { default: "24px 32px 120px", [media.narrow]: "16px 12px 80px" },
   },
+  fill: { padding: 0, overflow: "hidden" },
   status: {
     display: "flex",
     alignItems: "center",
