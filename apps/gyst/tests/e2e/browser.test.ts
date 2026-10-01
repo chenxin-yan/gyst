@@ -44,6 +44,15 @@ type Launch = {
 };
 
 const hostile = '<img src=x onerror="window.injected=1">';
+/** src/long.ts: 300 numbered lines; the uncommitted edit doubles 100–110 and 114–180. */
+const longTs = (edited: boolean) =>
+  Array.from({ length: 300 }, (_, i) => i + 1)
+    .map((n) =>
+      edited && n >= 100 && n <= 180 && (n < 111 || n > 113)
+        ? `export const line${n} = ${n} * 2;\n`
+        : `export const line${n} = ${n};\n`,
+    )
+    .join("");
 const isOperationUrl = (url: URL) => url.pathname === "/api/operation";
 const operationOf = (request: PageRequest) =>
   request.method() === "POST" && isOperationUrl(new URL(request.url()))
@@ -186,6 +195,13 @@ const sessionRows = (page: Page) =>
 const crumbIs = (page: Page, text: string) =>
   page.waitForFunction((expected) => document.querySelector("h1")?.textContent === expected, text);
 
+/** The reader's file headers in order; each names its full path. */
+const fileHeadings = (page: Page) =>
+  page
+    .getByRole("main")
+    .getByRole("heading", { level: 2 })
+    .evaluateAll((headings) => headings.map((heading) => heading.getAttribute("aria-label")));
+
 /**
  * A raw request to a launch's listener with explicit headers, as a hostile client could send;
  * resolves its status.
@@ -255,11 +271,13 @@ describe("installed gyst in a sandboxed browser", () => {
       join(repo, "README.md"),
       Array.from({ length: 10 }, (_, i) => `line ${i + 1}\n`).join(""),
     );
+    await mkdir(join(repo, "src"));
+    await writeFile(join(repo, "src", "long.ts"), longTs(false));
     git("add", ".");
     git("commit", "-qm", "init");
-    // bulk...paged: the snapshot holds the whole tree (these 400 unchanged files, app.ts, README.md
-    // and paged.ts), more than one 64 KiB files page; paged~1 is another snapshot of the same files
-    // for a refresh between pages.
+    // bulk...paged: the snapshot holds the whole tree (these 400 unchanged files, app.ts, README.md,
+    // src/long.ts and paged.ts), more than one 64 KiB files page; paged~1 is another snapshot of the
+    // same files for a refresh between pages.
     git("switch", "-qc", "bulk");
     await mkdir(join(repo, "bulk"));
     for (let i = 0; i < 400; i++)
@@ -287,6 +305,7 @@ describe("installed gyst in a sandboxed browser", () => {
       join(repo, "README.md"),
       `${await readFile(join(repo, "README.md"), "utf8")}A new line`,
     );
+    await writeFile(join(repo, "src", "long.ts"), longTs(true));
     // Untracked binary: captured as an unavailable side, never as text.
     await writeFile(join(repo, "logo.bin"), new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0, 1]));
 
@@ -384,78 +403,232 @@ describe("installed gyst in a sandboxed browser", () => {
     ]);
     expect(await page.evaluate(() => document.cookie)).toBe("");
 
-    // The captured patch renders as escaped text with old/new line numbers.
+    // The captured hostile line renders as text in the continuous diff, never as markup.
     expect(await pane.getByText(hostile).count()).toBe(1);
     expect(await pane.locator("img").count()).toBe(0);
     expect(await page.evaluate(() => "injected" in window)).toBe(false);
-    // The changed files' headings; the captured files section has its own.
-    expect(
-      await pane
-        .getByRole("heading", { level: 2 })
-        .filter({ hasNotText: /^Captured files/ })
-        .count(),
-    ).toBe(2);
-    // A line is a row of old number, new number and code cells.
-    const numbers = (text: string) =>
-      pane
-        .getByRole("row")
-        .filter({ hasText: text })
-        .locator("[role=cell]:not(:last-child)")
-        .allTextContents();
-    expect(await numbers("onerror")).toEqual(["2", ""]);
-    expect(await numbers("uncommitted-edit")).toEqual(["", "2"]);
-    expect(await numbers("A new line")).toEqual(["", "11"]);
-    expect(await pane.getByRole("row").filter({ hasText: /^\\/ }).allTextContents()).toEqual([
-      "\\ No newline at end of file",
-    ]);
-    expect(await numbers("No newline at end of file")).toEqual(["", ""]);
+    // The whole snapshot's changes read by default, one compact header per file in path order; a
+    // change without captured text says why instead of showing content.
+    expect(await fileHeadings(page)).toEqual(["README.md", "app.ts", "logo.bin", "src/long.ts"]);
+    await pane.getByText("New side not captured: binary.").waitFor();
+    // The snapshot-wide tree lists the unchanged supporting file too; changes carry a status word.
+    const tree = page.getByRole("navigation", { name: "gyst" });
+    for (const name of ["app.ts (modified)", "logo.bin (added)", "feature.ts", "src/"])
+      await tree.getByRole("button", { name, exact: true }).waitFor();
   }, 30_000);
 
-  it("lists captured files and renders captured code, unchanged supporting files included, as escaped numbered text; an unavailable side shows its reason", async () => {
+  it("expands a hidden range into captured full contents on demand, each range on its own, with exact counts", async () => {
+    const page = await newPage();
+    const codes: any[] = [];
+    page.on("request", (request) => {
+      if (operationOf(request)?.command === "code") codes.push(operationOf(request));
+    });
+    let release = () => {};
+    const released = new Promise<void>((resolve) => (release = resolve));
+    await page.route(isOperationUrl, async (route) => {
+      if (route.request().postDataJSON()?.command === "code") await released;
+      await route.continue();
+    });
+    await page.goto(`${one.origin}${one.path}`);
+    const pane = page.getByRole("main");
+    // README.md's hunk starts at line 8; src/long.ts's at line 97. Both counts come from the hunks.
+    await pane.getByText("7 unmodified lines").first().waitFor();
+    await pane.getByText("96 unmodified lines").first().waitFor();
+    expect(codes).toEqual([]);
+    await pane.getByText("7 unmodified lines").first().click();
+    // While the captured sides are read, README.md's header says so; it clears once they arrive.
+    const loading = pane
+      .getByRole("heading", { name: "README.md", exact: true })
+      .locator("..")
+      .getByRole("status")
+      .filter({ hasText: "Loading the captured file…" });
+    try {
+      await loading.waitFor();
+    } finally {
+      release();
+    }
+    // Split shows a context line on both sides.
+    await pane.getByText("line 3", { exact: true }).first().waitFor();
+    for (const n of [1, 7]) await pane.getByText(`line ${n}`, { exact: true }).first().waitFor();
+    expect(await pane.getByText("7 unmodified lines").count()).toBe(0);
+    await loading.waitFor({ state: "detached" });
+    expect(await pane.getByRole("status").count()).toBe(0);
+    // Only README.md's sides were read, from the session's snapshot; the other range stays hidden.
+    const { snapshotId } = (await gyst("session", "list")).sessions[0];
+    const reads = codes.map(({ file, side, snapshotId: read }) => `${file} ${side} ${read}`);
+    expect(reads.sort((a, b) => a.localeCompare(b))).toEqual([
+      `README.md new ${snapshotId}`,
+      `README.md old ${snapshotId}`,
+    ]);
+    expect(await pane.getByText("96 unmodified lines").count()).toBeGreaterThan(0);
+  }, 30_000);
+
+  it("shows the captured changes under a selected file or folder, and the whole snapshot again", async () => {
     const page = await newPage();
     await page.goto(`${one.origin}${one.path}`);
     const pane = page.getByRole("main");
-    const capturedRow = (path: string) =>
-      pane
-        .getByRole("list", { name: "Captured files" })
-        .getByRole("listitem")
-        .filter({ hasText: path });
-    await capturedRow("app.ts").getByRole("button", { name: "View old" }).click();
-    const oldApp = pane.getByRole("region", { name: "app.ts, old side" });
-    await oldApp.getByText(hostile).waitFor();
-    // Each line is a row of its line number and code cells.
-    expect(
-      await oldApp.getByRole("row").locator("[role=cell]:not(:last-child)").allTextContents(),
-    ).toEqual(["1", "2", "3"]);
-    expect(await pane.locator("img").count()).toBe(0);
-    expect(await page.evaluate(() => "injected" in window)).toBe(false);
-    // The uncommitted scope's supporting file comes from the snapshot, not only its changed files.
-    await capturedRow("feature.ts").getByRole("button", { name: "View new" }).click();
-    await pane
-      .getByRole("region", { name: "feature.ts, new side" })
-      .getByText("range-only")
-      .waitFor();
-    expect(await capturedRow("logo.bin").innerText()).toMatch(/new: unavailable \(binary\)/);
-    await capturedRow("logo.bin").getByRole("button", { name: "View new" }).click();
-    await pane
-      .getByRole("region", { name: "logo.bin, new side" })
-      .getByText("Not captured: binary content is not captured.")
-      .waitFor();
-    for (const [path, side] of [
-      ["app.ts", "old"],
-      ["feature.ts", "new"],
-      ["logo.bin", "new"],
-    ] as const) {
-      await capturedRow(path)
-        .getByRole("button", { name: `Hide ${side}` })
-        .click();
-      await pane.getByRole("region", { name: `${path}, ${side} side` }).waitFor({
-        state: "detached",
+    const tree = page.getByRole("navigation", { name: "gyst" });
+    await pane.getByText("uncommitted-edit").waitFor();
+    const select = async (name: string) => {
+      const button = tree.getByRole("button", { name, exact: true });
+      await button.click();
+      expect(await button.getAttribute("aria-current")).toBe("true");
+    };
+    await select("src/");
+    await waitFor(
+      async () => JSON.stringify(await fileHeadings(page)) === '["src/long.ts"]',
+      "the folder's changes",
+    );
+    await select("app.ts (modified)");
+    await waitFor(
+      async () => JSON.stringify(await fileHeadings(page)) === '["app.ts"]',
+      "the file's changes",
+    );
+    expect(await pane.getByText(hostile).count()).toBe(1);
+    await select("feature.ts");
+    await pane.getByText("No captured changes under feature.ts.").waitFor();
+    await select("All changes");
+    await waitFor(async () => (await fileHeadings(page)).length === 4, "every changed file");
+  }, 30_000);
+
+  it("lays the diff out split or stacked by available width, fits a narrow page and keeps the reading position across layout switches", async () => {
+    const page = await newPage();
+    await page.setViewportSize({ width: 1280, height: 800 });
+    await page.goto(`${one.origin}${one.path}`);
+    const pane = page.getByRole("main");
+    const layout = page.getByRole("radiogroup", { name: "Diff layout" });
+    const auto = (shown: string) => layout.getByRole("radio", { name: `Auto (${shown})` });
+    await auto("split").waitFor();
+    expect(await auto("split").isChecked()).toBe(true);
+    // The renderer's documented layout attribute confirms what the control says.
+    await pane.locator("[data-diff-type=split]").first().waitFor();
+    // 1000px of viewport leaves the diff fewer than 120 columns once the sidebar takes its share.
+    await page.setViewportSize({ width: 1000, height: 800 });
+    await auto("stacked").waitFor();
+    expect(await pane.locator("[data-diff-type=split]").count()).toBe(0);
+    await page.setViewportSize({ width: 1280, height: 800 });
+    await auto("split").waitFor();
+
+    // Read from a context line inside src/long.ts's hunk, then switch layouts both ways.
+    await page.getByRole("button", { name: "src/", exact: true }).click();
+    const line = pane.getByText("export const line112 = 112;").first();
+    await line.evaluate((element) => element.scrollIntoView({ block: "start" }));
+    // Out from under the sticky file header, so the line is the first one in view.
+    await pane.hover();
+    await page.mouse.wheel(0, -48);
+    const nearTop = async () => {
+      const [box, panel] = [await line.boundingBox(), await pane.boundingBox()];
+      return box !== null && panel !== null && box.y >= panel.y + 30 && box.y < panel.y + 100;
+    };
+    await waitFor(nearTop, "the line at the top of the panel");
+    await layout.getByRole("radio", { name: "Stacked", exact: true }).check();
+    await waitFor(
+      async () => (await pane.locator("[data-diff-type=split]").count()) === 0,
+      "the stacked layout",
+    );
+    await waitFor(nearTop, "the same line at the top after stacking");
+    await layout.getByRole("radio", { name: "Split", exact: true }).check();
+    await pane.locator("[data-diff-type=split]").first().waitFor();
+    await waitFor(nearTop, "the same line at the top after splitting");
+
+    // A phone-width page stacks the diff and never scrolls sideways.
+    await layout.getByRole("radio", { name: /^Auto/ }).check();
+    await page.setViewportSize({ width: 390, height: 844 });
+    await auto("stacked").waitFor();
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(
+      true,
+    );
+  }, 30_000);
+
+  it("keeps the reading position across layout switches after one jump far past the rendered files", async () => {
+    // main...bulk adds 400 one-line files: far more than the renderer mounts at once.
+    const id = await openRange("main...bulk");
+    // Deleted even on failure: later tests count saved sessions.
+    onTestFinished(() =>
+      gyst("session", "delete", "--session", id, "--request-id", randomBytes(16).toString("hex")),
+    );
+    const page = await newPage();
+    await page.setViewportSize({ width: 1280, height: 800 });
+    await page.goto(`${one.origin}/session/${id}`);
+    const pane = page.getByRole("main");
+    await pane.getByRole("heading", { name: "bulk/000.txt", exact: true }).waitFor();
+    /** The file whose header is at the top of the panel. */
+    const topFile = () =>
+      pane.evaluate((main) => {
+        const panel = main.getBoundingClientRect().top;
+        const below = [...main.querySelectorAll("h2")]
+          .map((heading) => ({ heading, y: heading.getBoundingClientRect().top - panel }))
+          .filter(({ y }) => y >= -1)
+          .sort((a, b) => a.y - b.y)[0];
+        return below !== undefined && below.y < 40
+          ? below.heading.getAttribute("aria-label")
+          : null;
       });
+    const frames = () =>
+      page.evaluate(
+        () => new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done))),
+      );
+    // One step to the middle, as a scrollbar drag lands: no scroll event passes the files between.
+    await pane.evaluate((main) => {
+      const scroller = [...main.querySelectorAll("*")].find(
+        (element) => element.scrollHeight > element.clientHeight * 10,
+      )!;
+      scroller.scrollTop = scroller.scrollHeight / 2;
+    });
+    let destination: string | null = null;
+    await waitFor(async () => {
+      destination = await topFile();
+      return destination !== null && /^bulk\/[1-2]\d\d\.txt$/.test(destination);
+    }, "a file from the middle of the list at the top");
+    const layout = page.getByRole("radiogroup", { name: "Diff layout" });
+    for (const name of ["Stacked", "Split"]) {
+      await layout.getByRole("radio", { name, exact: true }).check();
+      await frames();
+      await waitFor(
+        async () => (await topFile()) === destination,
+        `${destination} still at the top after the switch to ${name}`,
+      );
     }
   }, 30_000);
 
-  it("pages captured files on demand and offers a session reload when a refresh replaced the snapshot between pages", async () => {
+  it("reads from the selection just shown, not a file restored before it, after short selections", async () => {
+    const page = await newPage();
+    await page.setViewportSize({ width: 1280, height: 800 });
+    await page.goto(`${one.origin}${one.path}`);
+    const pane = page.getByRole("main");
+    const tree = page.getByRole("navigation", { name: "gyst" });
+    await pane.getByText("uncommitted-edit").waitFor();
+    const select = async (name: string, headings: string[]) => {
+      await tree.getByRole("button", { name, exact: true }).click();
+      await waitFor(
+        async () => JSON.stringify(await fileHeadings(page)) === JSON.stringify(headings),
+        `${name} selected`,
+      );
+    };
+    const topFile = () =>
+      pane.evaluate((main) => {
+        const panel = main.getBoundingClientRect().top;
+        const below = [...main.querySelectorAll("h2")]
+          .map((heading) => ({ heading, y: heading.getBoundingClientRect().top - panel }))
+          .filter(({ y }) => y >= -1)
+          .sort((a, b) => a.y - b.y)[0];
+        return below !== undefined && below.y < 40
+          ? below.heading.getAttribute("aria-label")
+          : null;
+      });
+    // A layout switch on a file too short to scroll restores it at the very top.
+    await select("app.ts (modified)", ["app.ts"]);
+    await page
+      .getByRole("radiogroup", { name: "Diff layout" })
+      .getByRole("radio", { name: "Stacked", exact: true })
+      .check();
+    await select("README.md (modified)", ["README.md"]);
+    // README.md, now being read, is what the whole snapshot returns to, not the earlier app.ts.
+    await select("All changes", ["README.md", "app.ts", "logo.bin", "src/long.ts"]);
+    await waitFor(async () => (await topFile()) === "README.md", "README.md at the top");
+  }, 30_000);
+
+  it("pages the snapshot's files into the tree on demand and offers a session reload when a refresh replaced the snapshot between pages", async () => {
     const id = await openRange("bulk...paged");
     // Deleted even on failure: later tests count saved sessions.
     onTestFinished(() =>
@@ -473,7 +646,7 @@ describe("installed gyst in a sandboxed browser", () => {
     await page.goto(`${one.origin}/session/${id}`);
     await crumbIs(page, "demo/bulk...paged");
     // The first page's size depends on the daemon's page byte limit; only its presence matters.
-    const more = page.getByRole("button", { name: /^Load more files \(\d+ of 403 shown\)$/ });
+    const more = page.getByRole("button", { name: /^Load more files \(\d+ of 404 shown\)$/ });
     await more.waitFor();
     git("branch", "-f", "paged", "paged~1");
     await gyst("session", "refresh", "--session", id);
@@ -484,11 +657,11 @@ describe("installed gyst in a sandboxed browser", () => {
     expect(await page.getByRole("button", { name: "Retry loading files" }).count()).toBe(0);
     await page.getByRole("button", { name: "Reload session" }).click();
     await more.click();
-    await page
-      .getByRole("list", { name: "Captured files" })
-      .getByRole("listitem")
-      .filter({ hasText: "paged.ts" })
-      .waitFor();
+    // The last unchanged file arrives with the later page; the changed one was listed from the start.
+    const tree = page.getByRole("navigation", { name: "gyst" });
+    await tree.getByRole("button", { name: "Expand bulk" }).click();
+    await tree.getByRole("button", { name: "bulk/399.txt", exact: true }).waitFor();
+    await tree.getByRole("button", { name: "paged.ts (added)" }).waitFor();
     expect(await page.getByRole("alert").count()).toBe(0);
     expect(await page.getByRole("button", { name: /Load more files/ }).count()).toBe(0);
     expect(listings.at(-1)).toEqual({
@@ -843,16 +1016,6 @@ describe("installed gyst in a sandboxed browser", () => {
     await page.goto(`${one.origin}/session/${b}`);
     await page.getByRole("alert").getByText("Can't reach gyst").waitFor();
     await page.evaluate(() => new Promise((resolve) => setTimeout(resolve, 200)));
-  }, 30_000);
-
-  it("keeps the real hunk view within a narrow viewport", async () => {
-    const page = await newPage();
-    await page.setViewportSize({ width: 390, height: 844 });
-    await page.goto(`${one.origin}${one.path}`);
-    await page.getByRole("main").getByRole("table").first().waitFor();
-    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(
-      true,
-    );
   }, 30_000);
 
   it("returns to a fresh saved-session list after deleting from the session page", async () => {
