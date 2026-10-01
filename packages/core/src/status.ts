@@ -1,6 +1,9 @@
 import { Struct } from "effect";
 import { groupedIds } from "./draft.ts";
-import type { Session, StatusPayload } from "./session.ts";
+import type { Session, SessionSummary, StatusPayload } from "./session.ts";
+
+export const summaryOf = (session: Session): SessionSummary =>
+  Struct.pick(session, ["id", "repoRoot", "scope", "snapshotId", "createdAt", "updatedAt"]);
 
 export function statusOf(session: Session): StatusPayload {
   const counts = new Map<string, number>();
@@ -8,7 +11,7 @@ export function statusOf(session: Session): StatusPayload {
   const grouped = groupedIds(session);
   const inbox = session.hunks.filter((hunk) => !grouped.has(hunk.id));
   return {
-    session: Struct.pick(session, ["id", "repoRoot", "source", "createdAt", "updatedAt"]),
+    session: summaryOf(session),
     revision: session.revision,
     seq: session.seq,
     cursor: session.cursor,

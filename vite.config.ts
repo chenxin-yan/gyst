@@ -19,12 +19,20 @@ export default defineConfig({
   test: {
     // Unit-only runs must not build or install the CLI.
     projects: [
-      { extends: true, test: { name: "unit", include: ["{apps,packages}/*/src/**/*.test.ts"] } },
+      {
+        extends: true,
+        test: {
+          name: "unit",
+          include: ["{apps,packages}/*/src/**/*.test.ts", "packages/*/tests/**/*.test.ts"],
+        },
+      },
       {
         extends: true,
         test: {
           name: "e2e",
           include: ["apps/gyst/tests/**/*.test.ts"],
+          // Files share one private install, and session.test.ts counts that install's daemons.
+          fileParallelism: false,
           globalSetup: ["apps/gyst/tests/e2e/global-setup.ts"],
         },
       },
@@ -93,6 +101,17 @@ export default defineConfig({
         rules: {
           "eslint/no-shadow": "off",
           "typescript/await-thenable": "off",
+        },
+      },
+      {
+        files: ["apps/web/**"],
+        jsPlugins: ["@stylexjs/eslint-plugin"],
+        rules: {
+          // Vite loads stylesheets through side-effect imports.
+          "import/no-unassigned-import": ["error", { allow: ["**/*.css"] }],
+          // TypeScript accepts any key and value in stylex.create; only these rules check them.
+          "@stylexjs/valid-styles": "error",
+          "@stylexjs/no-unused": "error",
         },
       },
     ],

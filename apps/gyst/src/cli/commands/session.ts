@@ -1,12 +1,12 @@
 import { defineArg, defineCommand } from "@crustjs/core";
 import { handler, layer } from "@crustjs/effect";
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import type { Request } from "@gyst/core";
+import { BadArgs, type Request } from "@gyst/core";
 import { Effect, Layer, Stdio, Stream } from "effect";
 import { DaemonClient } from "../../daemon/client.ts";
 import { Paths } from "../../daemon/paths.ts";
 
-const daemonClient = layer(
+export const daemonClient = layer(
   "daemonClient",
   DaemonClient.layer.pipe(Layer.provide(Paths.layer), Layer.provideMerge(NodeServices.layer)),
 );
@@ -14,7 +14,8 @@ const daemonClient = layer(
 const sessionFlag = {
   name: "session",
   type: "string",
-  description: "Select an exact session id",
+  required: true,
+  description: "The exact session id returned by `gyst session open`",
 } as const;
 
 const call = Effect.fn("session.call")(function* (
@@ -29,61 +30,69 @@ const readStdin = Effect.flatMap(Stdio.Stdio, (stdio) =>
   stdio.stdin.pipe(Stream.decodeText(), Stream.mkString),
 );
 
-const create = defineCommand("create", { description: "Create a session" }, (command) =>
-  command
-    .use(daemonClient)
-    .flags({
-      name: "stdin",
-      type: "boolean",
-      description: "Read a unified diff with repository-root-relative paths from stdin",
-    })
-    .args(
-      defineArg("gitArgs", {
+const open = defineCommand(
+  "open",
+  {
+    description:
+      "Open the session for uncommitted changes or a Git range, creating it only if none is saved; prints its identity without launching a viewer",
+  },
+  (command) =>
+    command
+      .use(daemonClient)
+      .flags({
+        name: "session",
         type: "string",
-        variadic: true,
-        description: "Git revisions, then `--` and pathspecs; git options are rejected",
-      }),
-    )
-    .action(
-      handler(function* ({ args, flags, rawArgs, stdout }) {
-        const patch = flags.stdin ? yield* readStdin : undefined;
-        // Operands on either side of crust's `--` form one list; its own `--` starts the pathspecs.
-        const operands = [...args.gitArgs, ...rawArgs];
-        const separator = operands.indexOf("--");
-        yield* call(
-          {
-            command: "create",
-            cwd: process.cwd(),
-            revisions: separator === -1 ? operands : operands.slice(0, separator),
-            pathspecs: separator === -1 ? undefined : operands.slice(separator + 1),
-            patch,
-          },
-          stdout,
-        );
-      }),
-    ),
+        description: "Open this exact saved session id instead of selecting by scope",
+      })
+      .args(
+        defineArg("range", {
+          type: "string",
+          description: "A Git range such as main...feature; omitted, uncommitted changes",
+        }),
+      )
+      .action(
+        handler(function* ({ args, flags, rawArgs, stdout }) {
+          if (rawArgs.length > 0)
+            return yield* new BadArgs({ message: "session open takes at most one Git range" });
+          if (flags.session !== undefined) {
+            if (args.range !== undefined)
+              return yield* new BadArgs({ message: "choose a Git range or --session, not both" });
+            return yield* call({ command: "open", session: flags.session }, stdout);
+          }
+          yield* call(
+            {
+              command: "open",
+              cwd: process.cwd(),
+              scope:
+                args.range === undefined
+                  ? { kind: "uncommitted" }
+                  : { kind: "range", range: args.range },
+            },
+            stdout,
+          );
+        }),
+      ),
+);
+const list = defineCommand("list", { description: "List saved sessions" }, (command) =>
+  command.use(daemonClient).action(handler(({ stdout }) => call({ command: "list" }, stdout))),
 );
 const status = defineCommand("status", { description: "Read session status" }, (command) =>
   command
     .use(daemonClient)
     .flags(sessionFlag)
     .action(
-      handler(({ flags, stdout }) =>
-        call({ command: "status", cwd: process.cwd(), session: flags.session }, stdout),
-      ),
+      handler(({ flags, stdout }) => call({ command: "status", session: flags.session }, stdout)),
     ),
 );
 const check = defineCommand(
   "check",
-  { description: "Check the recorded source without refreshing (cached up to 5 seconds)" },
+  { description: "Check the recorded scope without refreshing (cached up to 5 seconds)" },
   (command) =>
     command
       .use(daemonClient)
       .flags(sessionFlag)
       .action(
-        handler(({ flags, stdout }) =>
-          call({ command: "check", cwd: process.cwd(), session: flags.session }, stdout),
-        ),
+        handler(({ flags, stdout }) => call({ command: "check", session: flags.session }, stdout)),
       ),
 );
 const diff = defineCommand("diff", { description: "Read snapshot hunks" }, (command) =>
@@ -100,7 +109,6 @@ const diff = defineCommand("diff", { description: "Read snapshot hunks" }, (comm
         call(
           {
             command: "diff",
-            cwd: process.cwd(),
             session: flags.session,
             hunk: flags.hunk,
             group: flags.group,
@@ -121,56 +129,58 @@ const apply = defineCommand(
       .action(
         handler(function* ({ flags, stdout }) {
           const batch = yield* readStdin;
-          yield* call(
-            { command: "apply", cwd: process.cwd(), session: flags.session, batch },
-            stdout,
-          );
+          yield* call({ command: "apply", session: flags.session, batch }, stdout);
         }),
       ),
 );
 const refresh = defineCommand(
   "refresh",
-  { description: "Refresh the session snapshot" },
+  { description: "Recapture the recorded scope into a new snapshot" },
+  (command) =>
+    command
+      .use(daemonClient)
+      .flags(sessionFlag)
+      .action(
+        handler(({ flags, stdout }) =>
+          call({ command: "refresh", session: flags.session }, stdout),
+        ),
+      ),
+);
+const remove = defineCommand(
+  "delete",
+  { description: "Delete one saved session and its review state" },
   (command) =>
     command
       .use(daemonClient)
       .flags(sessionFlag, {
-        name: "stdin",
-        type: "boolean",
-        description: "Read the replacement unified diff from stdin",
+        name: "request-id",
+        type: "string",
+        required: true,
+        description:
+          "A caller-chosen id for this deletion; reuse it with the same session to retry safely",
       })
       .action(
-        handler(function* ({ flags, stdout }) {
-          const patch = flags.stdin ? yield* readStdin : undefined;
-          yield* call(
-            { command: "refresh", cwd: process.cwd(), session: flags.session, patch },
+        handler(({ flags, stdout }) =>
+          call(
+            { command: "delete", session: flags.session, requestId: flags["request-id"] },
             stdout,
-          );
-        }),
+          ),
+        ),
       ),
-);
-const close = defineCommand("close", { description: "Close a session" }, (command) =>
-  command
-    .use(daemonClient)
-    .flags(sessionFlag)
-    .action(
-      handler(({ flags, stdout }) =>
-        call({ command: "close", cwd: process.cwd(), session: flags.session }, stdout),
-      ),
-    ),
 );
 
 export const session = defineCommand(
   "session",
-  { description: "Manage a co-review session" },
+  { description: "Manage co-review sessions" },
   (command) =>
     command
       .provide(daemonClient())
-      .add(create)
+      .add(open)
+      .add(list)
       .add(status)
       .add(check)
       .add(diff)
       .add(apply)
       .add(refresh)
-      .add(close),
+      .add(remove),
 );

@@ -130,8 +130,9 @@ export const commandLine = (pid: number) =>
   spawnSync("ps", ["-ww", "-o", "args=", "-p", String(pid)], { encoding: "utf8" }).stdout.trim();
 
 /**
- * Pids of every `daemon run` process launched from the private install. Only session.test.ts starts
- * daemons, one test at a time, so this is the current test's set.
+ * Pids of every `daemon run` process launched from the private install. E2E files run one at a
+ * time and session.test.ts starts its daemons one test at a time, so there this is the current
+ * test's set.
  */
 export function installedDaemons(): number[] {
   const prefix = installed.prefix.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -164,7 +165,7 @@ function signal(pid: number, name: NodeJS.Signals): boolean {
  * Stops the daemon a data dir names, if it is still running from the private install; a stale
  * `daemon.pid` may name a reused pid. SIGKILLs one that ignores SIGTERM, then reports it.
  */
-async function stopDaemon(dataDir: string): Promise<void> {
+export async function stopDaemon(dataDir: string): Promise<void> {
   const pid = await daemonPid(dataDir);
   if (Number.isNaN(pid) || !isAlive(pid)) return;
   const args = commandLine(pid);

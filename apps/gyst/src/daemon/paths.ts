@@ -7,6 +7,8 @@ export class Paths extends Context.Service<
     readonly dataDir: string;
     readonly socketPath: string;
     readonly pidPath: string;
+    /** Durable delete receipts; not `.json`, so it is never read as a session. */
+    readonly deleteReceiptsPath: string;
     sessionFile(id: string): string;
   }
 >()("gyst/daemon/Paths") {
@@ -25,6 +27,7 @@ export class Paths extends Context.Service<
         dataDir,
         socketPath: path.join(dataDir, "daemon.sock"),
         pidPath: path.join(dataDir, "daemon.pid"),
+        deleteReceiptsPath: path.join(dataDir, "delete-receipts"),
         sessionFile: (id) => path.join(dataDir, `${id}.json`),
       });
     }),

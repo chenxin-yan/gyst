@@ -1,8 +1,8 @@
 import { afterAll, beforeAll, describe, expect, it } from "vite-plus/test";
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import { parseSnapshot } from "@gyst/core";
-import { Effect, Layer, Result } from "effect";
+import { Effect, Layer } from "effect";
 import { execFileSync } from "node:child_process";
+import { existsSync } from "node:fs";
 import { mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -46,31 +46,30 @@ describe("Git", () => {
     await rm(outside, { recursive: true, force: true });
   });
 
-  it("diffs HEAD plus untracked files for the bare scope, ignoring presentation config", async () => {
-    const cwd = await repo("bare");
+  it("captures HEAD against the working tree plus untracked files, running no configured programs", async () => {
+    const cwd = await repo("uncommitted");
+    const marker = join(cwd, "..", "uncommitted-ran");
+    const script = join(root, "record.sh");
+    await writeFile(script, `#!/bin/sh\ntouch '${marker}'\ncat "$1"\n`, { mode: 0o755 });
     git(cwd, "config", "color.ui", "always");
-    git(cwd, "config", "diff.external", "/bin/false");
+    git(cwd, "config", "diff.external", script);
+    git(cwd, "config", "diff.recorded.textconv", script);
+    git(cwd, "config", "diff.relative", "true");
+    await writeFile(join(cwd, ".gitattributes"), "*.txt diff=recorded\n");
+    await mkdir(join(cwd, "sub"));
     await writeFile(join(cwd, "tracked.txt"), "colored\n");
     await writeFile(join(cwd, "untracked.txt"), "new\n");
-    const patch = await run(Git.use((g) => g.patch(cwd, cwd, [], true)));
-    expect(patch).toContain("@@ -1 +1 @@\n-one\n+colored\n");
-    expect(patch).toContain("+++ b/untracked.txt");
-    expect(patch).not.toContain("\u001b[");
-    const tracked = await run(Git.use((g) => g.patch(cwd, cwd, [], false)));
-    expect(tracked).not.toContain("untracked.txt");
-  });
-
-  it("runs the bare scope from the root so diff.relative cannot hide changes outside cwd", async () => {
-    const cwd = await repo("relative");
-    git(cwd, "config", "diff.relative", "true");
-    await mkdir(join(cwd, "sub"));
     await writeFile(join(cwd, "sub", "inner.txt"), "inner\n");
-    git(cwd, "add", ".");
-    git(cwd, "commit", "-qm", "sub");
-    await writeFile(join(cwd, "tracked.txt"), "changed at root\n");
-    await writeFile(join(cwd, "sub", "inner.txt"), "changed in sub\n");
-    const patch = await run(Git.use((g) => g.patch(cwd, join(cwd, "sub"), [], false)));
-    expect(patch.match(/^\+\+\+ (.*)$/gm)).toEqual(["+++ b/sub/inner.txt", "+++ b/tracked.txt"]);
+    const patch = await run(Git.use((g) => g.capture(cwd, { kind: "uncommitted" })));
+    expect(patch).toContain("@@ -1 +1 @@\n-one\n+colored\n");
+    expect(patch.match(/^\+\+\+ (.*)$/gm)).toEqual([
+      "+++ b/tracked.txt",
+      "+++ b/.gitattributes",
+      "+++ b/sub/inner.txt",
+      "+++ b/untracked.txt",
+    ]);
+    expect(patch).not.toContain("\u001b[");
+    expect(existsSync(marker)).toBe(false);
   });
 
   it("diffs against the empty tree in a repository without HEAD", async () => {
@@ -78,42 +77,56 @@ describe("Git", () => {
     await writeFile(join(cwd, "staged.txt"), "staged\n");
     git(cwd, "add", "staged.txt");
     await writeFile(join(cwd, "untracked.txt"), "untracked\n");
-    const patch = await run(Git.use((g) => g.patch(cwd, cwd, [], true)));
+    const patch = await run(Git.use((g) => g.capture(cwd, { kind: "uncommitted" })));
     expect(patch).toContain("+++ b/staged.txt");
     expect(patch).toContain("+++ b/untracked.txt");
   });
 
-  it("runs explicit revisions and pathspecs from the caller's directory", async () => {
-    const cwd = await repo("pathspec");
-    await mkdir(join(cwd, "sub"));
-    await writeFile(join(cwd, "same.txt"), "root\n");
-    await writeFile(join(cwd, "sub", "same.txt"), "sub\n");
+  it("resolves two- and three-dot ranges at capture, excluding the working tree", async () => {
+    const cwd = await repo("range");
+    git(cwd, "branch", "-M", "main");
+    git(cwd, "switch", "-qc", "feature");
+    await writeFile(join(cwd, "feature.txt"), "feature\n");
     git(cwd, "add", ".");
-    git(cwd, "commit", "-qm", "two files");
-    await writeFile(join(cwd, "same.txt"), "root changed\n");
-    await writeFile(join(cwd, "sub", "same.txt"), "sub changed\n");
-    const patch = await run(
-      Git.use((g) => g.patch(cwd, join(cwd, "sub"), ["HEAD", "--", "same.txt"], false)),
+    git(cwd, "commit", "-qm", "feature");
+    git(cwd, "switch", "-q", "main");
+    await writeFile(join(cwd, "tracked.txt"), "main moved\n");
+    git(cwd, "commit", "-qam", "main");
+    await writeFile(join(cwd, "tracked.txt"), "uncommitted\n");
+    const files = async (range: string) =>
+      (await run(Git.use((g) => g.capture(cwd, { kind: "range", range })))).match(
+        /^\+\+\+ (.*)$/gm,
+      );
+    expect(await files("main...feature")).toEqual(["+++ b/feature.txt"]);
+    expect(await files("main..feature")).toEqual(["+++ b/feature.txt", "+++ b/tracked.txt"]);
+    // An omitted endpoint is HEAD, as in Git.
+    expect(await files("feature...")).toEqual(["+++ b/tracked.txt"]);
+    git(cwd, "checkout", "--", "tracked.txt");
+    git(cwd, "switch", "-q", "feature");
+    await writeFile(join(cwd, "feature.txt"), "feature moved\n");
+    git(cwd, "commit", "-qam", "feature moved");
+    const moved = await run(
+      Git.use((g) => g.capture(cwd, { kind: "range", range: "main...feature" })),
     );
-    expect(patch.match(/^\+\+\+ (.*)$/gm)).toEqual(["+++ b/sub/same.txt"]);
-    const error = await run(Effect.flip(Git.use((g) => g.patch(cwd, cwd, ["no-such-rev"], false))));
-    expect(error._tag).toBe("bad_args");
-    expect(error.message).toContain("no-such-rev");
+    expect(moved).toContain("+feature moved");
   });
 
-  it("keeps explicit pathspec output root-relative under diff.relative", async () => {
-    const cwd = await repo("relative-pathspec");
-    git(cwd, "config", "diff.relative", "true");
-    await mkdir(join(cwd, "sub"));
-    await writeFile(join(cwd, "same.txt"), "root\n");
-    await writeFile(join(cwd, "sub", "same.txt"), "sub\n");
-    git(cwd, "add", ".");
-    git(cwd, "commit", "-qm", "two files");
-    await writeFile(join(cwd, "sub", "same.txt"), "sub changed\n");
-    const patch = await run(
-      Git.use((g) => g.patch(cwd, join(cwd, "sub"), ["HEAD", "--", "same.txt"], false)),
-    );
-    const [hunk] = Result.getOrThrow(parseSnapshot(patch));
-    expect(hunk?.file).toBe("sub/same.txt");
+  it("rejects ranges that are not ranges, name unknown revisions, or look like options", async () => {
+    const cwd = await repo("range-input");
+    const written = join(root, "range-output");
+    for (const [range, message] of [
+      ["HEAD", "expected a Git range"],
+      ["HEAD..HEAD -- tracked.txt", "expected a Git range"],
+      [`--output=${written}..HEAD`, "expected a Git range"],
+      [`HEAD..--output=${written}`, "expected a Git range"],
+      ["HEAD..no-such-rev", "unknown revision in range: no-such-rev"],
+      ["HEAD:tracked.txt..HEAD", "unknown revision in range: HEAD:tracked.txt"],
+    ] as const) {
+      const error = await run(
+        Effect.flip(Git.use((g) => g.capture(cwd, { kind: "range", range }))),
+      );
+      expect(error).toMatchObject({ _tag: "bad_args", message: expect.stringContaining(message) });
+    }
+    expect(existsSync(written)).toBe(false);
   });
 });

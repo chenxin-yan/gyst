@@ -14,7 +14,8 @@ const hunk = (id: string): Hunk => ({
 const ready: Session = {
   id: "session",
   repoRoot: "/repo",
-  source: { kind: "stdin" },
+  scope: { kind: "uncommitted" },
+  snapshotId: "snapshot",
   createdAt: LATER,
   updatedAt: LATER,
   revision: 3,

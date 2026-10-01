@@ -11,17 +11,17 @@ A **group** is one review question covering one or more hunks, with a short titl
 
 Resolve the requested scope; fetch remote refs when needed. Use the `gyst-cli` skill when command syntax is uncertain.
 
-- Working changes, including untracked files: `gyst session create`.
-- Git range: `gyst session create -- <revisions> [-- <pathspecs>]`. Git options are rejected; pathspecs are caller-relative.
-- Supplied patch: pipe to `gyst session create --stdin`; filenames must be repository-root-relative.
+- Working changes, including untracked files: `gyst session open`.
+- Git range: `gyst session open <range>`, such as `main...feature` or `main..feature`; the range is recorded as written and covers the whole repository.
+- A saved session the user names: `gyst session open --session <id>`.
 
-On `session_exists`, read `gyst session status` and reuse a matching snapshot. Ask before closing a session or changing its scope. For a requested snapshot update or regrouping, use `gyst-refresh`.
+Opening returns the saved session for this repository and scope unchanged when one exists (`created: false`); it never refreshes the snapshot or rewrites groups. Ask before changing scope. For a requested snapshot update or regrouping, use `gyst-refresh`.
 
-Record the session id; use `--session <id>` on subsequent commands to avoid targeting a replacement session.
+Record `session.id` from the reply; every later session command requires `--session <id>`.
 
 ## 2. Plan full coverage
 
-Read status, `gyst session diff`, surrounding code, callers and relevant tests. Narrow reads with `--file`, `--group` or `--hunk` as needed.
+Read status, `gyst session diff --session <id>`, surrounding code, callers and relevant tests. Narrow reads with `--file`, `--group` or `--hunk` as needed.
 
 Before publishing, assign **every snapshot hunk to exactly one planned group** and choose the complete order. Group by review question, not filename: an entry point, implementation and tests can belong together across files. Independent changes can be one-hunk groups. Include mechanical changes.
 
@@ -82,4 +82,4 @@ As soon as groups are published, tell the human they can run `gyst`; leave launc
 
 ## Source changes
 
-`gyst session check` reports freshness of the recorded scope without replacing the snapshot. Results are cached; `unavailable` and `stdin` do not establish freshness. A changed result is a notice, not authorization to refresh. Use `gyst-refresh` when the user requests an update.
+`gyst session check` reports freshness of the recorded scope without replacing the snapshot. Results are cached; `unavailable` does not establish freshness. A changed result is a notice, not authorization to refresh. Use `gyst-refresh` when the user requests an update.

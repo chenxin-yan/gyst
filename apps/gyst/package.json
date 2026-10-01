@@ -26,7 +26,10 @@
   },
   "crust": {
     "runtime": "node",
-    "artifact": "package"
+    "artifact": "package",
+    "include": [
+      "dist/web-ui"
+    ]
   },
   "dependencies": {
     "@crustjs/core": "0.5.0",
@@ -41,6 +44,8 @@
   },
   "devDependencies": {
     "@crustjs/crust": "0.5.0",
+    "@gyst/web": "workspace:*",
+    "playwright-core": "1.59.1",
     "vitest": "catalog:"
   }
 }

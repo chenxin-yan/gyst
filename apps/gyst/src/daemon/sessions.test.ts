@@ -5,13 +5,14 @@ import {
   applyHumanAction,
   BadArgs,
   type HumanAction,
+  type Scope,
   type Session,
 } from "@gyst/core";
 import { Crypto, Effect, Exit, Fiber, Layer, PlatformError, Result, Stream } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import { Git } from "./git.ts";
 import { Sessions } from "./sessions.ts";
-import { SessionStore } from "./store.ts";
+import { type DeleteReceipt, SessionStore } from "./store.ts";
 
 const root = "/repo";
 const otherRoot = "/other";
@@ -30,13 +31,10 @@ diff --git a/b.txt b/b.txt
 `;
 
 let files: Map<string, Session>;
-let patchCalls: Array<{
-  root: string;
-  cwd: string;
-  args: ReadonlyArray<string>;
-  includeUntracked: boolean;
-}>;
+let deleteReceipts: ReadonlyArray<DeleteReceipt>;
+let captureCalls: Array<{ root: string; scope: Scope }>;
 let saveFails: boolean;
+let removeFails: boolean;
 let nextId: number;
 let gitPatch: string;
 let patchEffect: Effect.Effect<string, BadArgs> | undefined;
@@ -55,35 +53,45 @@ const git = Layer.succeed(Git, {
     cwd.startsWith(root) || cwd.startsWith(otherRoot)
       ? Effect.succeed(cwd.startsWith(root) ? root : otherRoot)
       : Effect.fail(new BadArgs({ message: "current directory is not inside a git repository" })),
-  patch: (root, cwd, args, includeUntracked) =>
+  capture: (root, scope) =>
     Effect.suspend(() => {
-      patchCalls.push({ root, cwd, args, includeUntracked });
+      captureCalls.push({ root, scope });
       return patchEffect ?? Effect.succeed(gitPatch);
     }),
+});
+
+const writeFailure = PlatformError.systemError({
+  _tag: "PermissionDenied",
+  module: "FileSystem",
+  method: "writeFile",
 });
 
 const store = Layer.succeed(SessionStore, {
   loadAll: Effect.sync(() => [...files.values()]),
   save: (session) =>
     saveFails
-      ? Effect.fail(
-          PlatformError.systemError({
-            _tag: "PermissionDenied",
-            module: "FileSystem",
-            method: "writeFile",
-          }),
-        )
+      ? Effect.fail(writeFailure)
       : Effect.sync(() => {
           files.set(session.id, session);
         }),
   remove: (id) =>
-    Effect.sync(() => {
-      files.delete(id);
-    }),
+    removeFails
+      ? Effect.fail(writeFailure)
+      : Effect.sync(() => {
+          files.delete(id);
+        }),
+  loadDeleteReceipts: Effect.sync(() => deleteReceipts),
+  saveDeleteReceipts: (receipts) =>
+    saveFails
+      ? Effect.fail(writeFailure)
+      : Effect.sync(() => {
+          deleteReceipts = receipts;
+        }),
 });
 
 const sessionsLayer = Sessions.layer.pipe(Layer.provide(Layer.mergeAll(git, store, crypto)));
 // Like the daemon: persisted sessions are loaded once the service is built, not while building it.
+// Each `run` is a fresh daemon over the same persisted files and receipts.
 const run = <A, E>(effect: Effect.Effect<A, E, Sessions>) =>
   Effect.runPromise(
     Effect.provide(Sessions.use((s) => s.load).pipe(Effect.andThen(effect)), sessionsLayer),
@@ -101,7 +109,8 @@ const recordHumanAction = (sessionId: string, action: HumanAction) =>
 const persisted: Session = {
   id: "persisted",
   repoRoot: otherRoot,
-  source: { kind: "stdin" },
+  scope: { kind: "range", range: "main...feature" },
+  snapshotId: "persisted-snapshot",
   createdAt: "2026-01-01T00:00:00.000Z",
   updatedAt: "2026-01-01T00:00:00.000Z",
   revision: 3,
@@ -153,10 +162,16 @@ const persisted: Session = {
   applyReceipts: [],
 };
 
+const uncommitted = { kind: "uncommitted" } as const;
+const openScope = (scope: Scope = uncommitted, cwd = root) =>
+  Sessions.use((s) => s.open({ command: "open", cwd, scope }));
+
 beforeEach(() => {
   files = new Map([[persisted.id, persisted]]);
-  patchCalls = [];
+  deleteReceipts = [];
+  captureCalls = [];
   saveFails = false;
+  removeFails = false;
   nextId = 0;
   gitPatch = patch;
   patchEffect = undefined;
@@ -167,15 +182,11 @@ describe("Sessions.check", () => {
     await run(
       Sessions.use((sessions) =>
         Effect.gen(function* () {
-          const created = yield* sessions.create({
-            command: "create",
-            cwd: `${root}/nested`,
-            revisions: ["HEAD"],
-            pathspecs: ["a.txt"],
-          });
+          const { session } = yield* openScope(uncommitted, `${root}/nested`);
+          const created = yield* sessions.status({ command: "status", session: session.id });
           yield* sessions.apply({
             command: "apply",
-            cwd: root,
+            session: session.id,
             batch: JSON.stringify({
               revision: 0,
               idempotencyKey: "prepare",
@@ -197,14 +208,14 @@ describe("Sessions.check", () => {
             revision: 1,
             itemId: "step",
           });
-          const reviewed = yield* sessions.status({ command: "status", cwd: root });
+          const reviewed = yield* sessions.status({ command: "status", session: session.id });
           expect(reviewed).toMatchObject({ revision: 2, groups: [{ id: "step", accepted: true }] });
           const before = JSON.stringify([...files]);
           gitPatch = patch.replace("+two", "+changed");
           const checks = yield* Effect.all(
             [
-              sessions.check({ command: "check", cwd: root }),
-              sessions.check({ command: "check", cwd: root }),
+              sessions.check({ command: "check", session: session.id }),
+              sessions.check({ command: "check", session: session.id }),
             ],
             { concurrency: "unbounded" },
           );
@@ -214,21 +225,20 @@ describe("Sessions.check", () => {
             state: "changed",
           });
           expect(checks[1]).toEqual(checks[0]);
-          expect(patchCalls).toHaveLength(2);
-          expect(patchCalls[1]).toEqual({
-            root,
-            cwd: `${root}/nested`,
-            args: ["HEAD", "--", "a.txt"],
-            includeUntracked: false,
-          });
+          expect(captureCalls).toEqual([
+            { root, scope: uncommitted },
+            { root, scope: uncommitted },
+          ]);
           expect(JSON.stringify([...files])).toBe(before);
-          expect(yield* sessions.status({ command: "status", cwd: root })).toEqual(reviewed);
-          yield* sessions.refresh({ command: "refresh", cwd: root });
-          expect(yield* sessions.check({ command: "check", cwd: root })).toMatchObject({
+          expect(yield* sessions.status({ command: "status", session: session.id })).toEqual(
+            reviewed,
+          );
+          yield* sessions.refresh({ command: "refresh", session: session.id });
+          expect(yield* sessions.check({ command: "check", session: session.id })).toMatchObject({
             revision: 3,
             state: "unchanged",
           });
-          expect(patchCalls).toHaveLength(4);
+          expect(captureCalls).toHaveLength(4);
         }),
       ),
     );
@@ -274,32 +284,33 @@ describe("Sessions.check", () => {
       await run(
         Sessions.use((sessions) =>
           Effect.gen(function* () {
-            const created = yield* sessions.create({ command: "create", cwd: root, revisions: [] });
-            patchEffect = Git.use((g) =>
-              g.patch(process.cwd(), process.cwd(), ["HEAD"], false),
-            ).pipe(
+            const { session } = yield* openScope();
+            const created = yield* sessions.status({ command: "status", session: session.id });
+            patchEffect = Git.use((g) => g.capture(process.cwd(), uncommitted)).pipe(
               Effect.provide(
                 Git.layer.pipe(Layer.provide(Layer.merge(NodeServices.layer, spawner))),
               ),
             );
             const started = performance.now();
             const checking = yield* Effect.forkChild(
-              sessions.check({ command: "check", cwd: root }),
+              sessions.check({ command: "check", session: session.id }),
             );
             const pid = yield* Effect.promise(() => ready.promise);
             expect(
               yield* sessions
-                .status({ command: "status", cwd: root })
+                .status({ command: "status", session: session.id })
                 .pipe(Effect.timeout("1 second")),
             ).toEqual(created);
             expect(yield* Fiber.join(checking)).toMatchObject({ state: "unavailable" });
             // Two seconds for patch execution plus bounded termination, not the child's six-second exit.
             expect(performance.now() - started).toBeLessThan(4000);
             expect(() => process.kill(pid, 0)).toThrow("ESRCH");
-            expect(yield* sessions.status({ command: "status", cwd: root })).toEqual(created);
+            expect(yield* sessions.status({ command: "status", session: session.id })).toEqual(
+              created,
+            );
             patchEffect = undefined;
-            yield* sessions.refresh({ command: "refresh", cwd: root });
-            expect(yield* sessions.check({ command: "check", cwd: root })).toMatchObject({
+            yield* sessions.refresh({ command: "refresh", session: session.id });
+            expect(yield* sessions.check({ command: "check", session: session.id })).toMatchObject({
               state: "unchanged",
             });
           }),
@@ -313,41 +324,37 @@ describe("Sessions.check", () => {
     await run(
       Sessions.use((sessions) =>
         Effect.gen(function* () {
-          yield* sessions.create({ command: "create", cwd: root, revisions: [] });
+          const { session } = yield* openScope();
           gitPatch = patch + "\n";
-          expect(yield* sessions.check({ command: "check", cwd: root })).toMatchObject({
+          expect(yield* sessions.check({ command: "check", session: session.id })).toMatchObject({
             state: "changed",
           });
           gitPatch = patch;
-          expect(yield* sessions.check({ command: "check", cwd: root })).toMatchObject({
+          expect(yield* sessions.check({ command: "check", session: session.id })).toMatchObject({
             state: "changed",
           });
-          expect(patchCalls).toHaveLength(2);
+          expect(captureCalls).toHaveLength(2);
           yield* Effect.sleep("5100 millis");
-          expect(yield* sessions.check({ command: "check", cwd: root })).toMatchObject({
+          expect(yield* sessions.check({ command: "check", session: session.id })).toMatchObject({
             state: "unchanged",
           });
-          expect(patchCalls).toHaveLength(3);
+          expect(captureCalls).toHaveLength(3);
         }),
       ),
     );
   }, 10_000);
 
-  it("does not check stdin and reports an unreadable Git scope as unavailable", async () => {
+  it("reports an unreadable recorded scope as unavailable without changing saved state", async () => {
     await run(
       Sessions.use((sessions) =>
         Effect.gen(function* () {
-          expect(
-            yield* sessions.check({ command: "check", cwd: root, session: persisted.id }),
-          ).toMatchObject({ state: "stdin" });
-          expect(patchCalls).toHaveLength(0);
-          yield* sessions.create({ command: "create", cwd: root, revisions: [] });
           const before = JSON.stringify([...files]);
           patchEffect = Effect.fail(new BadArgs({ message: "recorded ref is unavailable" }));
-          expect(yield* sessions.check({ command: "check", cwd: root })).toMatchObject({
+          expect(yield* sessions.check({ command: "check", session: persisted.id })).toMatchObject({
             state: "unavailable",
+            message: "recorded ref is unavailable",
           });
-          expect(patchCalls[1]).toEqual({ root, cwd: root, args: [], includeUntracked: true });
+          expect(captureCalls).toEqual([{ root: otherRoot, scope: persisted.scope }]);
           expect(JSON.stringify([...files])).toBe(before);
         }),
       ),
@@ -355,108 +362,116 @@ describe("Sessions.check", () => {
   });
 });
 
-describe("Sessions.create", () => {
-  it("creates the bare scope from git with untracked files and persists it", async () => {
-    const status = await run(
-      Sessions.use((s) => s.create({ command: "create", cwd: `${root}/sub`, revisions: [] })),
-    );
+describe("Sessions.open", () => {
+  it("captures uncommitted changes of the caller's repository and returns identity and launch data", async () => {
+    const opened = await run(openScope(uncommitted, `${root}/sub`));
+    const id = "01010101-0101-4101-8101-010101010101";
+    expect(opened).toEqual({
+      session: {
+        id,
+        repoRoot: root,
+        scope: uncommitted,
+        snapshotId: expect.stringMatching(/^[0-9a-f]{64}$/),
+        createdAt: expect.any(String),
+        updatedAt: expect.any(String),
+      },
+      created: true,
+      launch: { argv: ["gyst", "--session", id] },
+    });
+    expect(captureCalls).toEqual([{ root, scope: uncommitted }]);
+    expect(files.get(id)?.hunks).toHaveLength(2);
+    const status = await run(Sessions.use((s) => s.status({ command: "status", session: id })));
+    expect(status).toMatchObject({ revision: 0, queue: [], queueSet: false, ready: false });
     expect(status.inbox.map((hunk) => hunk.file)).toEqual(["a.txt", "b.txt"]);
-    expect(status.session.source).toEqual({
-      kind: "git",
-      patchHash: expect.any(String),
-      args: ["HEAD"],
-      cwd: `${root}/sub`,
-      includeUntracked: true,
+  });
+
+  it("reuses a saved scope as it is after refs move, from any directory and after restart", async () => {
+    const first = await run(openScope(uncommitted, `${root}/sub`));
+    const saved = JSON.stringify([...files]);
+    gitPatch = patch.replace("+two", "+moved");
+    const again = await run(
+      Effect.gen(function* () {
+        const reused = yield* openScope(uncommitted, `${root}/elsewhere`);
+        expect(yield* openScope(uncommitted, root)).toEqual(reused);
+        return reused;
+      }),
+    );
+    expect(again).toEqual({ ...first, created: false });
+    expect(captureCalls).toHaveLength(1);
+    expect(JSON.stringify([...files])).toBe(saved);
+    // The persisted range session resumes by scope, and by its exact id, without a capture.
+    const byScope = await run(openScope(persisted.scope, otherRoot));
+    const byId = await run(Sessions.use((s) => s.open({ command: "open", session: persisted.id })));
+    expect(byScope).toEqual(byId);
+    expect(byId).toMatchObject({
+      created: false,
+      session: { id: persisted.id, snapshotId: persisted.snapshotId },
     });
-    expect(patchCalls).toEqual([{ root, cwd: `${root}/sub`, args: [], includeUntracked: true }]);
-    expect(status.session.id).toBe("01010101-0101-4101-8101-010101010101");
-    expect(files.get(status.session.id)?.hunks).toHaveLength(2);
-    expect(status.revision).toBe(0);
-    expect(status.queue).toEqual([]);
-    expect(status.queueSet).toBe(false);
-    expect(status.ready).toBe(false);
+    expect(captureCalls).toHaveLength(1);
+    expect(
+      (await failure(Sessions.use((s) => s.open({ command: "open", session: "nope" }))))._tag,
+    ).toBe("no_session");
   });
 
-  it("replays explicit revisions and pathspecs from the caller's directory", async () => {
-    const status = await run(
-      Sessions.use((s) =>
-        s.create({
-          command: "create",
-          cwd: root,
-          revisions: ["HEAD~1", "HEAD"],
-          pathspecs: ["a.txt"],
-        }),
-      ),
+  it("keeps differently recorded scopes apart even when their diffs are equal", async () => {
+    const scopes: Scope[] = [
+      uncommitted,
+      { kind: "range", range: "main...feature" },
+      { kind: "range", range: "main..feature" },
+    ];
+    const opened = await run(Effect.forEach(scopes, (scope) => openScope(scope)));
+    expect(new Set(opened.map(({ session }) => session.id)).size).toBe(3);
+    expect(new Set(opened.map(({ session }) => session.snapshotId)).size).toBe(1);
+    expect(opened.map(({ session }) => session.scope)).toEqual(scopes);
+    // Equal scope, other repository: the persisted session, not the one just opened.
+    expect((await run(openScope(scopes[1], otherRoot))).session.id).toBe(persisted.id);
+    const { sessions } = await run(Sessions.use((s) => s.list));
+    expect(sessions.map(({ id }) => id).sort()).toEqual(
+      [persisted.id, ...opened.map(({ session }) => session.id)].sort(),
     );
-    expect(status.session.source).toEqual({
-      kind: "git",
-      patchHash: expect.any(String),
-      args: ["HEAD~1", "HEAD", "--", "a.txt"],
-      cwd: root,
+    expect(sessions[0]).toEqual({
+      id: persisted.id,
+      repoRoot: otherRoot,
+      scope: persisted.scope,
+      snapshotId: persisted.snapshotId,
+      createdAt: persisted.createdAt,
+      updatedAt: persisted.updatedAt,
     });
-    expect(patchCalls[0]?.includeUntracked).toBe(false);
   });
 
-  it("reads a unified diff from stdin without touching git", async () => {
-    const status = await run(
-      Sessions.use((s) => s.create({ command: "create", cwd: root, revisions: [], patch })),
+  it("serializes concurrent opens so one scope gets exactly one session", async () => {
+    patchEffect = Effect.sleep("20 millis").pipe(Effect.as(patch));
+    const range = { kind: "range", range: "main..feature" } as const;
+    const results = await run(
+      Effect.all([openScope(), openScope(), openScope(range), openScope(range)], {
+        concurrency: "unbounded",
+      }),
     );
-    expect(status.session.source).toEqual({ kind: "stdin" });
-    expect(status.inbox).toHaveLength(2);
-    expect(patchCalls).toEqual([]);
+    const [a, b, c, d] = results.map(({ session }) => session.id);
+    expect(a).toBe(b);
+    expect(c).toBe(d);
+    expect(a).not.toBe(c);
+    expect(results.map(({ created }) => created)).toEqual([true, false, true, false]);
+    expect(captureCalls).toHaveLength(2);
+    expect(files.size).toBe(3);
   });
 
-  it("rejects git options, stdin mixed with arguments, and non-patch stdin", async () => {
-    const option = await failure(
-      Sessions.use((s) => s.create({ command: "create", cwd: root, revisions: ["--stat"] })),
-    );
-    expect(option._tag).toBe("bad_args");
-    expect(option.message).toContain("--stat");
-    for (const [revisions, pathspecs, rejected] of [
-      [["HEAD"], ["a.txt", "-p"], "-p"],
-      // A revision `--` would move the pathspec separator Git sees.
-      [["--", "HEAD"], ["a.txt"], "--"],
-    ] as const) {
-      const error = await failure(
-        Sessions.use((s) => s.create({ command: "create", cwd: root, revisions, pathspecs })),
-      );
-      expect(error).toMatchObject({
-        _tag: "bad_args",
-        message: `git options are not accepted: ${rejected}`,
-      });
-    }
-    for (const mixedArgs of [{ revisions: ["HEAD"] }, { revisions: [], pathspecs: [] }]) {
-      const mixed = await failure(
-        Sessions.use((s) => s.create({ command: "create", cwd: root, ...mixedArgs, patch })),
-      );
-      expect(mixed).toMatchObject({
-        _tag: "bad_args",
-        message: "--stdin cannot be combined with git arguments",
-      });
-    }
-    const text = await failure(
-      Sessions.use((s) =>
-        s.create({ command: "create", cwd: root, revisions: [], patch: "just text\n" }),
-      ),
-    );
-    expect(text._tag).toBe("bad_args");
-    expect(text.message).toBe("invalid unified diff");
-    const truncated = "--- a/a.txt\n+++ b/a.txt\n@@ -1 +1 @@\n-old\n";
-    const malformed = await failure(
-      Sessions.use((s) =>
-        s.create({ command: "create", cwd: root, revisions: [], patch: truncated }),
-      ),
-    );
-    expect(malformed._tag).toBe("bad_args");
-    expect(malformed.detail).toBe("parsePatchContent: hunk line count mismatch");
-    expect(patchCalls).toEqual([]);
-  });
-
-  it("refuses a second session for the same repository", async () => {
-    const error = await failure(
-      Sessions.use((s) => s.create({ command: "create", cwd: otherRoot, revisions: [] })),
-    );
-    expect(error._tag).toBe("session_exists");
+  it("rejects directories outside a repository and invalid captures without saving", async () => {
+    expect(await failure(openScope(uncommitted, "/elsewhere"))).toMatchObject({
+      _tag: "bad_args",
+      message: "current directory is not inside a git repository",
+    });
+    gitPatch = "just text\n";
+    expect(await failure(openScope())).toMatchObject({
+      _tag: "bad_args",
+      message: "invalid unified diff",
+    });
+    gitPatch = "--- a/a.txt\n+++ b/a.txt\n@@ -1 +1 @@\n-old\n";
+    expect(await failure(openScope())).toMatchObject({
+      _tag: "bad_args",
+      detail: "parsePatchContent: hunk line count mismatch",
+    });
+    expect([...files.keys()]).toEqual([persisted.id]);
   });
 
   it("keeps a session out of memory when persistence fails", async () => {
@@ -464,12 +479,8 @@ describe("Sessions.create", () => {
     await run(
       Effect.gen(function* () {
         const sessions = yield* Sessions;
-        const exit = yield* Effect.exit(
-          sessions.create({ command: "create", cwd: root, revisions: [] }),
-        );
-        expect(Exit.isFailure(exit)).toBe(true);
-        const status = yield* Effect.flip(sessions.status({ command: "status", cwd: root }));
-        expect(status._tag).toBe("no_session");
+        expect(Exit.isFailure(yield* Effect.exit(openScope()))).toBe(true);
+        expect((yield* sessions.list).sessions.map(({ id }) => id)).toEqual([persisted.id]);
         expect([...files.keys()]).toEqual([persisted.id]);
       }),
     );
@@ -483,16 +494,20 @@ describe("Sessions reads", () => {
       groups: [{ ...persisted.groups[0]!, hunkIds: ["h3", "h1"] }],
     });
     const value = await run(
-      Sessions.use((s) => s.diff({ command: "diff", cwd: otherRoot, group: "g1" })),
+      Sessions.use((s) => s.diff({ command: "diff", session: persisted.id, group: "g1" })),
     );
     expect(value.hunks.map(({ id }) => id)).toEqual(["h3", "h1"]);
   });
-  it("selects by repository or by exact --session id", async () => {
-    const byRepo = await run(Sessions.use((s) => s.status({ command: "status", cwd: otherRoot })));
-    expect(byRepo.session.id).toBe("persisted");
-    expect(byRepo.groups[0]?.count).toBe(1);
-    expect(byRepo.groups[0]?.accepted).toBe(true);
-    expect(byRepo.groups[1]).toEqual({
+
+  it("reads only the exact session id named", async () => {
+    const other = await run(openScope());
+    const byId = await run(
+      Sessions.use((s) => s.status({ command: "status", session: persisted.id })),
+    );
+    expect(byId.session.id).toBe("persisted");
+    expect(byId.groups[0]?.count).toBe(1);
+    expect(byId.groups[0]?.accepted).toBe(true);
+    expect(byId.groups[1]).toEqual({
       id: "g2",
       hunkIds: ["h2"],
       count: 1,
@@ -500,24 +515,20 @@ describe("Sessions reads", () => {
       notes: [{ hunkId: "h2", text: "intent and behavior" }],
       accepted: true,
     });
-    expect(byRepo.inbox).toEqual([{ id: "h3", file: "y.txt" }]);
-    const byId = await run(
-      Sessions.use((s) => s.status({ command: "status", cwd: "/elsewhere", session: "persisted" })),
+    expect(byId.inbox).toEqual([{ id: "h3", file: "y.txt" }]);
+    const otherStatus = await run(
+      Sessions.use((s) => s.status({ command: "status", session: other.session.id })),
     );
-    expect(byId.session.id).toBe("persisted");
-    const missing = await failure(Sessions.use((s) => s.status({ command: "status", cwd: root })));
-    expect(missing._tag).toBe("no_session");
+    expect(otherStatus.session).toEqual(other.session);
     const unknown = await failure(
-      Sessions.use((s) => s.status({ command: "status", cwd: root, session: "nope" })),
+      Sessions.use((s) => s.status({ command: "status", session: "nope" })),
     );
-    expect(unknown._tag).toBe("no_session");
+    expect(unknown).toMatchObject({ _tag: "no_session", message: "no session with id nope" });
   });
 
   it("filters diffs by hunk, group, or file and rejects bad selectors", async () => {
     const diff = (selector: { hunk?: string; group?: string; file?: string }) =>
-      Sessions.use((s) =>
-        s.diff({ command: "diff", cwd: root, session: "persisted", ...selector }),
-      );
+      Sessions.use((s) => s.diff({ command: "diff", session: "persisted", ...selector }));
     expect((await run(diff({}))).hunks.map((hunk) => hunk.id)).toEqual(["h1", "h2", "h3"]);
     expect((await run(diff({ hunk: "h2" }))).hunks.map((hunk) => hunk.id)).toEqual(["h2"]);
     expect((await run(diff({ group: "g1" }))).hunks.map((hunk) => hunk.id)).toEqual(["h1"]);
@@ -531,11 +542,11 @@ describe("Sessions reads", () => {
 });
 
 describe("Sessions.apply", () => {
-  const apply = (envelope: unknown, cwd = otherRoot) =>
+  const apply = (envelope: unknown) =>
     Sessions.use((s) =>
       s.apply({
         command: "apply",
-        cwd: cwd,
+        session: persisted.id,
         batch: typeof envelope === "string" ? envelope : JSON.stringify(envelope),
       }),
     );
@@ -622,7 +633,7 @@ describe("Sessions.apply", () => {
     expect(malformed.message).toBe("invalid apply envelope");
     expect(malformed.detail).toEqual([{ opIndex: -1, message: expect.any(String) }]);
     const missing = await failure(
-      Sessions.use((s) => s.apply({ command: "apply", cwd: otherRoot, batch: "" })),
+      Sessions.use((s) => s.apply({ command: "apply", session: persisted.id, batch: "" })),
     );
     expect(missing._tag).toBe("validation_failed");
     expect(files.get("persisted")).toEqual(persisted);
@@ -671,7 +682,7 @@ describe("Sessions.apply", () => {
           sessionId: "persisted",
           revision: 4,
         });
-        const verdict = yield* s.status({ command: "status", cwd: otherRoot });
+        const verdict = yield* s.status({ command: "status", session: persisted.id });
         const obsolete = yield* Effect.flip(apply({ ...envelope, revision: 4 }));
         expect(obsolete._tag).toBe("stale_revision");
         const second = yield* apply({
@@ -689,7 +700,7 @@ describe("Sessions.apply", () => {
           ],
         });
         expect(yield* apply(firstBatch)).toEqual(first);
-        expect((yield* s.status({ command: "status", cwd: otherRoot })).revision).toBe(
+        expect((yield* s.status({ command: "status", session: persisted.id })).revision).toBe(
           second.revision,
         );
         expect(files.get("persisted")?.revision).toBe(second.revision);
@@ -738,19 +749,16 @@ diff --git a/c.txt b/c.txt
 +six
 `;
 
-  it("re-reads a bare git session from its recorded source, keeping only unchanged work", async () => {
+  it("re-captures the recorded scope into a new snapshot, keeping only unchanged work", async () => {
     await run(
       Effect.gen(function* () {
         const sessions = yield* Sessions;
-        const created = yield* sessions.create({
-          command: "create",
-          cwd: `${root}/sub`,
-          revisions: [],
-        });
+        const { session } = yield* openScope(uncommitted, `${root}/sub`);
+        const created = yield* sessions.status({ command: "status", session: session.id });
         const [a, b] = created.inbox.map((hunk) => hunk.id);
         yield* sessions.apply({
           command: "apply",
-          cwd: root,
+          session: session.id,
           batch: JSON.stringify({
             revision: 0,
             idempotencyKey: "fold",
@@ -774,13 +782,9 @@ diff --git a/c.txt b/c.txt
           }),
         });
         gitPatch = changed;
-        const refreshed = yield* sessions.refresh({ command: "refresh", cwd: root });
-        expect(patchCalls[1]).toEqual({
-          root,
-          cwd: `${root}/sub`,
-          args: [],
-          includeUntracked: true,
-        });
+        const refreshed = yield* sessions.refresh({ command: "refresh", session: session.id });
+        expect(captureCalls[1]).toEqual({ root, scope: uncommitted });
+        expect(refreshed.session.snapshotId).not.toBe(session.snapshotId);
         expect(refreshed.revision).toBe(2);
         expect(refreshed.groups).toEqual([
           expect.objectContaining({ id: "g", hunkIds: [a], accepted: false }),
@@ -794,45 +798,14 @@ diff --git a/c.txt b/c.txt
     );
   });
 
-  it("replays explicit git arguments and refuses --stdin for git sessions", async () => {
-    await run(
-      Effect.gen(function* () {
-        const sessions = yield* Sessions;
-        yield* sessions.create({ command: "create", cwd: root, revisions: ["HEAD~1", "HEAD"] });
-        const refreshed = yield* sessions.refresh({ command: "refresh", cwd: `${root}/sub` });
-        expect(refreshed.revision).toBe(1);
-        expect(patchCalls[1]).toEqual({
-          root,
-          cwd: root,
-          args: ["HEAD~1", "HEAD"],
-          includeUntracked: false,
-        });
-        const piped = yield* Effect.flip(
-          sessions.refresh({ command: "refresh", cwd: root, patch }),
-        );
-        expect(piped._tag).toBe("bad_args");
-        expect(piped.message).toBe("git sessions refresh their recorded arguments");
-      }),
-    );
-  });
-
-  it("refreshes stdin sessions only from a new --stdin patch", async () => {
-    const withoutPipe = await failure(
-      Sessions.use((s) => s.refresh({ command: "refresh", cwd: otherRoot })),
-    );
-    expect(withoutPipe._tag).toBe("bad_args");
-    expect(withoutPipe.message).toBe("stdin sessions must be refreshed with --stdin");
-    const notAPatch = await failure(
-      Sessions.use((s) => s.refresh({ command: "refresh", cwd: otherRoot, patch: "text\n" })),
-    );
-    expect(notAPatch._tag).toBe("bad_args");
+  it("re-captures a range session's recorded range, not a resolved commit pair", async () => {
     const refreshed = await run(
-      Sessions.use((s) => s.refresh({ command: "refresh", cwd: otherRoot, patch })),
+      Sessions.use((s) => s.refresh({ command: "refresh", session: persisted.id })),
     );
+    expect(captureCalls).toEqual([{ root: otherRoot, scope: persisted.scope }]);
     expect(refreshed.revision).toBe(4);
-    expect(refreshed.groups).toEqual([]);
-    expect(refreshed.inbox.map((hunk) => hunk.file)).toEqual(["a.txt", "b.txt"]);
-    expect(patchCalls).toEqual([]);
+    expect(refreshed.session.scope).toEqual(persisted.scope);
+    expect(files.get(persisted.id)?.snapshotId).toBe(refreshed.session.snapshotId);
   });
 });
 
@@ -841,35 +814,174 @@ describe("Sessions.load", () => {
     await run(
       Effect.gen(function* () {
         const sessions = yield* Sessions;
-        // A rival daemon closed the persisted session and created another while we waited.
+        // A rival daemon deleted the persisted session and opened another while we waited.
         files.delete(persisted.id);
         files.set("fresh", { ...persisted, id: "fresh", repoRoot: root });
         yield* sessions.load;
-        const stale = yield* Effect.flip(sessions.status({ command: "status", cwd: otherRoot }));
+        const stale = yield* Effect.flip(
+          sessions.status({ command: "status", session: persisted.id }),
+        );
         expect(stale._tag).toBe("no_session");
-        expect((yield* sessions.status({ command: "status", cwd: root })).session.id).toBe("fresh");
+        expect((yield* sessions.list).sessions.map(({ id }) => id)).toEqual(["fresh"]);
       }),
     );
   });
 });
 
-describe("Sessions.close", () => {
-  it("removes the session and signals idle once the last one is gone", async () => {
+describe("Sessions.delete", () => {
+  const remove = (session: string, requestId: string) =>
+    Sessions.use((s) => s.delete({ command: "delete", session, requestId }));
+
+  it("removes only the named session and signals idle once the last one is gone", async () => {
     await run(
       Effect.gen(function* () {
         const sessions = yield* Sessions;
-        const created = yield* sessions.create({ command: "create", cwd: root, revisions: [] });
+        const { session } = yield* openScope();
+        const kept = files.get(persisted.id);
         yield* Effect.flip(Effect.timeout(sessions.idle, "10 millis"));
-        const closed = yield* sessions.close({ command: "close", cwd: root });
-        expect(closed).toEqual({ closed: true, sessionId: created.session.id });
-        expect(files.has(created.session.id)).toBe(false);
+        expect(yield* remove(session.id, "first")).toEqual({
+          deleted: true,
+          sessionId: session.id,
+        });
+        expect(files.has(session.id)).toBe(false);
+        expect(files.get(persisted.id)).toBe(kept);
+        expect(
+          (yield* sessions.status({ command: "status", session: persisted.id })).session.id,
+        ).toBe(persisted.id);
         expect(yield* sessions.isEmpty).toBe(false);
         yield* Effect.flip(Effect.timeout(sessions.idle, "10 millis"));
-        yield* sessions.close({ command: "close", cwd: otherRoot });
+        yield* remove(persisted.id, "second");
         expect(yield* sessions.isEmpty).toBe(true);
         yield* sessions.idle;
         expect(files.size).toBe(0);
+        expect(deleteReceipts).toEqual([
+          { requestId: "first", sessionId: session.id },
+          { requestId: "second", sessionId: persisted.id },
+        ]);
       }),
     );
+  });
+
+  it("replays the recorded result after restart and rejects the id for another session", async () => {
+    const { session: other } = await run(openScope());
+    const deleted = await run(remove(persisted.id, "retry-me"));
+    // A fresh daemon, after the session file is gone.
+    await run(
+      Effect.gen(function* () {
+        expect(yield* remove(persisted.id, "retry-me")).toEqual(deleted);
+        expect(yield* Effect.flip(remove(other.id, "retry-me"))).toMatchObject({
+          _tag: "validation_failed",
+          message: "request id reused with a different payload",
+        });
+        expect((yield* Effect.flip(remove(persisted.id, "a-new-request")))._tag).toBe("no_session");
+        // Another session remains, so a replay must not arm the idle shutdown.
+        yield* Effect.flip(
+          Effect.timeout(
+            Sessions.use((s) => s.idle),
+            "30 millis",
+          ),
+        );
+      }),
+    );
+    expect([...files.keys()]).toEqual([other.id]);
+    expect(deleteReceipts).toEqual([{ requestId: "retry-me", sessionId: persisted.id }]);
+    expect((await failure(remove(other.id, "")))._tag).toBe("bad_args");
+  });
+
+  it("arms idle when a replay after restart finds no sessions, until an open arrives", async () => {
+    const deleted = await run(remove(persisted.id, "last"));
+    // A fresh daemon starts empty but must not be idle before its first request.
+    await run(
+      Effect.gen(function* () {
+        const sessions = yield* Sessions;
+        yield* Effect.flip(Effect.timeout(sessions.idle, "30 millis"));
+        expect(yield* remove(persisted.id, "last")).toEqual(deleted);
+        yield* Effect.timeout(sessions.idle, "1 second");
+        expect(yield* sessions.isEmpty).toBe(true);
+      }),
+    );
+    // Racing an open, the replay answers the same and the opened session keeps the daemon busy.
+    await run(
+      Effect.gen(function* () {
+        const sessions = yield* Sessions;
+        const [replayed, opened] = yield* Effect.all([remove(persisted.id, "last"), openScope()], {
+          concurrency: "unbounded",
+        });
+        expect(replayed).toEqual(deleted);
+        expect(yield* sessions.isEmpty).toBe(false);
+        yield* Effect.flip(Effect.timeout(sessions.idle, "30 millis"));
+        expect(yield* remove(persisted.id, "last")).toEqual(deleted);
+        yield* Effect.flip(Effect.timeout(sessions.idle, "30 millis"));
+        yield* remove(opened.session.id, "opened");
+        yield* Effect.timeout(sessions.idle, "1 second");
+      }),
+    );
+    expect(deleteReceipts).toHaveLength(2);
+  });
+
+  it("keeps the session and every receipt when the receipt cannot be written", async () => {
+    await run(remove(persisted.id, "earlier").pipe(Effect.andThen(openScope())));
+    const saved = new Map(files);
+    const receipts = deleteReceipts;
+    saveFails = true;
+    const [openedId] = [...files.keys()];
+    await run(
+      Effect.gen(function* () {
+        expect(Exit.isFailure(yield* Effect.exit(remove(openedId!, "fails")))).toBe(true);
+        expect(
+          (yield* Sessions.use((s) => s.status({ command: "status", session: openedId! }))).session
+            .id,
+        ).toBe(openedId);
+      }),
+    );
+    expect(files).toEqual(saved);
+    expect(deleteReceipts).toBe(receipts);
+    saveFails = false;
+    // The failed request was never recorded, so its retry performs the deletion.
+    expect(await run(remove(openedId!, "fails"))).toEqual({ deleted: true, sessionId: openedId });
+  });
+
+  it("treats the durable receipt as the deletion when removing the file fails", async () => {
+    const { session } = await run(openScope());
+    removeFails = true;
+    await run(
+      Effect.gen(function* () {
+        expect(yield* remove(session.id, "committed")).toEqual({
+          deleted: true,
+          sessionId: session.id,
+        });
+        expect(
+          (yield* Effect.flip(
+            Sessions.use((s) => s.status({ command: "status", session: session.id })),
+          ))._tag,
+        ).toBe("no_session");
+      }),
+    );
+    expect(files.has(session.id)).toBe(true);
+    removeFails = false;
+    // Restart: the leftover file is not served again, and loading finishes its removal.
+    await run(
+      Effect.gen(function* () {
+        expect((yield* Sessions.use((s) => s.list)).sessions.map(({ id }) => id)).toEqual([
+          persisted.id,
+        ]);
+        expect(yield* remove(session.id, "committed")).toEqual({
+          deleted: true,
+          sessionId: session.id,
+        });
+      }),
+    );
+    expect(files.has(session.id)).toBe(false);
+    expect(files.has(persisted.id)).toBe(true);
+  });
+
+  it("answers concurrent retries of one deletion with one result and one receipt", async () => {
+    const results = await run(
+      Effect.all([remove(persisted.id, "twice"), remove(persisted.id, "twice")], {
+        concurrency: "unbounded",
+      }),
+    );
+    expect(results[0]).toEqual(results[1]);
+    expect(deleteReceipts).toEqual([{ requestId: "twice", sessionId: persisted.id }]);
   });
 });

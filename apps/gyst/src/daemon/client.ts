@@ -2,8 +2,10 @@ import * as NodeSocket from "@effect/platform-node/NodeSocket";
 import {
   type DaemonError,
   DaemonUnreachable,
-  ClosePayloadSchema,
+  DeletePayloadSchema,
   DiffPayloadSchema,
+  ListPayloadSchema,
+  OpenPayloadSchema,
   StatusPayloadSchema,
   SourceCheckPayloadSchema,
   ReplySchema,
@@ -221,14 +223,16 @@ export class DaemonClient extends Context.Service<
           ),
         );
         if (!reply.ok) return yield* reply.error;
-        const payload =
-          input.command === "check"
-            ? SourceCheckPayloadSchema
-            : input.command === "diff"
-              ? DiffPayloadSchema
-              : input.command === "close"
-                ? ClosePayloadSchema
-                : StatusPayloadSchema;
+        const payload = {
+          open: OpenPayloadSchema,
+          list: ListPayloadSchema,
+          status: StatusPayloadSchema,
+          check: SourceCheckPayloadSchema,
+          diff: DiffPayloadSchema,
+          apply: StatusPayloadSchema,
+          refresh: StatusPayloadSchema,
+          delete: DeletePayloadSchema,
+        }[input.command];
         return yield* Schema.decodeUnknownEffect(payload, { onExcessProperty: "error" })(
           reply.value,
         ).pipe(

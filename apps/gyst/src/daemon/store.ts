@@ -7,6 +7,14 @@ const decodeSessionFile = Schema.decodeUnknownEffect(Schema.fromJsonString(Sessi
   onExcessProperty: "error",
 });
 
+/** A committed deletion: the answer to every retry of `requestId`, kept after the session file is gone. */
+const DeleteReceiptSchema = Schema.Struct({ requestId: Schema.String, sessionId: Schema.String });
+export type DeleteReceipt = typeof DeleteReceiptSchema.Type;
+const DeleteReceiptsFileSchema = Schema.fromJsonString(Schema.Array(DeleteReceiptSchema));
+const decodeDeleteReceipts = Schema.decodeUnknownEffect(DeleteReceiptsFileSchema, {
+  onExcessProperty: "error",
+});
+
 // Compare the exact persisted bytes again after the old daemon stops admitting commands.
 export const inspectSavedSessions = Effect.gen(function* () {
   const fs = yield* FileSystem.FileSystem;
@@ -31,6 +39,15 @@ export class SessionStore extends Context.Service<
     readonly loadAll: Effect.Effect<Array<Session>, PlatformError.PlatformError>;
     save(session: Session): Effect.Effect<void, PlatformError.PlatformError>;
     remove(id: string): Effect.Effect<void, PlatformError.PlatformError>;
+    /** Empty until the first deletion; an unreadable receipt file is a defect, never an empty list. */
+    readonly loadDeleteReceipts: Effect.Effect<
+      ReadonlyArray<DeleteReceipt>,
+      PlatformError.PlatformError
+    >;
+    /** Replaces every receipt atomically, like a session save. */
+    saveDeleteReceipts(
+      receipts: ReadonlyArray<DeleteReceipt>,
+    ): Effect.Effect<void, PlatformError.PlatformError>;
   }
 >()("gyst/daemon/SessionStore") {
   static readonly layer = Layer.effect(
@@ -54,18 +71,33 @@ export class SessionStore extends Context.Service<
 
       // Temp + rename: a reader never sees a half-written session. The scope removes the temp
       // directory whether or not the file was renamed out of it, so a failed write leaves nothing.
-      const save = Effect.fn("SessionStore.save")(function* (session: Session) {
+      const writeAtomically = Effect.fn("SessionStore.writeAtomically")(function* (
+        path: string,
+        content: string,
+      ) {
         const temporary = yield* fs.makeTempFileScoped({ directory: paths.dataDir });
         yield* fs.chmod(temporary, 0o600);
-        yield* fs.writeFileString(temporary, `${JSON.stringify(session)}\n`);
-        yield* fs.rename(temporary, paths.sessionFile(session.id));
+        yield* fs.writeFileString(temporary, content);
+        yield* fs.rename(temporary, path);
       }, Effect.scoped);
+      const save = (session: Session) =>
+        writeAtomically(paths.sessionFile(session.id), `${JSON.stringify(session)}\n`);
 
       const remove = Effect.fn("SessionStore.remove")((id: string) =>
         fs.remove(paths.sessionFile(id), { force: true }),
       );
 
-      return SessionStore.of({ loadAll, save, remove });
+      const loadDeleteReceipts = Effect.gen(function* () {
+        if (!(yield* fs.exists(paths.deleteReceiptsPath))) return [];
+        const content = yield* fs.readFileString(paths.deleteReceiptsPath);
+        return yield* Effect.orDie(decodeDeleteReceipts(content));
+      }).pipe(Effect.withSpan("SessionStore.loadDeleteReceipts"));
+
+      // ponytail: rewrites every receipt per deletion; an append-only log if deletions number thousands.
+      const saveDeleteReceipts = (receipts: ReadonlyArray<DeleteReceipt>) =>
+        writeAtomically(paths.deleteReceiptsPath, `${JSON.stringify(receipts)}\n`);
+
+      return SessionStore.of({ loadAll, save, remove, loadDeleteReceipts, saveDeleteReceipts });
     }),
   );
 }

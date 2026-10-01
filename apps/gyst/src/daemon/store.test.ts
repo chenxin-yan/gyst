@@ -6,14 +6,15 @@ import { chmod, mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from "n
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Paths } from "./paths.ts";
-import { SessionStore } from "./store.ts";
+import { inspectSavedSessions, SessionStore } from "./store.ts";
 
 let dataDir: string;
 
 const session = (id: string): Session => ({
   id,
   repoRoot: "/repo",
-  source: { kind: "stdin" },
+  scope: { kind: "uncommitted" },
+  snapshotId: "snapshot",
   createdAt: "2026-01-01T00:00:00.000Z",
   updatedAt: "2026-01-01T00:00:00.000Z",
   revision: 0,
@@ -103,6 +104,32 @@ describe("SessionStore", () => {
     await run(SessionStore.use((s) => s.save(saved)));
     const loaded = await run(SessionStore.use((s) => s.loadAll));
     expect(loaded.find(({ id }) => id === "semantic")).toEqual(saved);
+  });
+
+  it("keeps delete receipts private, atomic and out of the session listing", async () => {
+    const empty = await run(SessionStore.use((s) => s.loadDeleteReceipts));
+    expect(empty).toEqual([]);
+    const receipts = [{ requestId: "r1", sessionId: "a" }];
+    await run(SessionStore.use((s) => s.saveDeleteReceipts(receipts)));
+    expect((await stat(join(dataDir, "delete-receipts"))).mode & 0o777).toBe(0o600);
+    expect(await run(SessionStore.use((s) => s.loadDeleteReceipts))).toEqual(receipts);
+    expect((await run(SessionStore.use((s) => s.loadAll))).map(({ id }) => id)).not.toContain(
+      "delete-receipts",
+    );
+    const inspected = await Effect.runPromise(
+      inspectSavedSessions.pipe(
+        Effect.provide(Paths.layer),
+        Effect.provide(NodeServices.layer),
+        Effect.provide(
+          ConfigProvider.layer(ConfigProvider.fromUnknown({ GYST_DATA_DIR: dataDir })),
+        ),
+      ),
+    );
+    expect(inspected.incompatible).not.toContain("delete-receipts");
+    // A receipt file that cannot be read back is a defect, never an empty history.
+    await writeFile(join(dataDir, "delete-receipts"), "[{");
+    await expect(run(SessionStore.use((s) => s.loadDeleteReceipts))).rejects.toThrow();
+    await rm(join(dataDir, "delete-receipts"));
   });
 
   it.skipIf(process.getuid?.() === 0)(

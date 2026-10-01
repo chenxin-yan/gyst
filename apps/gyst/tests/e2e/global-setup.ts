@@ -26,12 +26,17 @@ const packageDir = join(repoRoot, "apps", "gyst");
 
 // The npm shipped beside the Node running the tests, so the package is installed by the runtime
 // under test rather than whatever else is on PATH.
-const env = {
-  ...process.env,
-  PATH: `${dirname(process.execPath)}${delimiter}${process.env.PATH ?? ""}`,
-};
+const withTestedNpm = (env: NodeJS.ProcessEnv): NodeJS.ProcessEnv => ({
+  ...env,
+  PATH: `${dirname(process.execPath)}${delimiter}${env.PATH ?? ""}`,
+});
 
-function exec(command: string, cwd: string, args: string[]): Promise<string> {
+function exec(
+  command: string,
+  cwd: string,
+  args: string[],
+  env: NodeJS.ProcessEnv,
+): Promise<string> {
   return new Promise((resolve, reject) => {
     const child = spawn(command, args, { cwd, env, stdio: ["ignore", "pipe", "pipe"] });
     let stdout = "";
@@ -51,23 +56,21 @@ function exec(command: string, cwd: string, args: string[]): Promise<string> {
   });
 }
 
-export default async function setup(project: TestProject) {
+export default async function setup(project: Pick<TestProject, "provide">) {
+  const testedEnv = withTestedNpm(process.env);
   const root = await realpath(await mkdtemp(join(tmpdir(), "gyst-installed-")));
   const prefix = join(root, "prefix");
   try {
-    await exec("pnpm", packageDir, ["build"]);
+    await exec("pnpm", packageDir, ["build"], testedEnv);
     const packed = JSON.parse(
-      await exec("pnpm", packageDir, ["pack", "--pack-destination", root, "--json"]),
+      await exec("pnpm", packageDir, ["pack", "--pack-destination", root, "--json"], testedEnv),
     ) as { filename: string };
-    await exec("npm", root, [
-      "install",
-      "--global",
-      "--prefix",
-      prefix,
-      "--no-audit",
-      "--no-fund",
-      packed.filename,
-    ]);
+    await exec(
+      "npm",
+      root,
+      ["install", "--global", "--prefix", prefix, "--no-audit", "--no-fund", packed.filename],
+      testedEnv,
+    );
   } catch (error) {
     // Keep the scratch directory for diagnosis; it is named in the failure.
     throw new Error(

@@ -33,17 +33,58 @@ npm install -g @gyst/cli
    The agent plans coverage and order first, then publishes complete groups
    progressively into the session.
 
-This version ships the headless session CLI, background daemon and agent skills. The
-terminal review viewer has been removed and no replacement viewer is included yet, so
-review progress (verdicts and focus) cannot be recorded from this version.
+This version ships the headless session CLI, background daemon, agent skills and a
+browser viewer that shows each saved session's captured diff. The terminal review viewer
+has been removed; the browser viewer does not show agent guidance or record review
+progress (verdicts and focus) yet.
+
+## Review in the browser
+
+```sh
+gyst                   # uncommitted changes, including untracked files
+gyst main...feature    # a Git range
+gyst --session <id>    # a saved session
+```
+
+`gyst` opens the saved session for that scope (creating it only if there is none), starts a
+private viewer on this machine and opens it in your browser. When it cannot open a browser, it
+prints a private link instead; open that link yourself. It stays in the foreground: stop it
+with Ctrl-C when you are done. Closing the browser or stopping `gyst` keeps every saved session.
+
+The link is for you only. Do not paste it into an agent chat or share it. Its secret part
+expires 10 minutes after launch; once opened, that browser stays signed in (reloads, new tabs)
+until `gyst` stops. If the viewer says this browser is not signed in, run `gyst` again and open the
+new link. The viewer's home page lists saved sessions; deleting one there asks for confirmation
+and removes only that session.
+
+The viewer runs on a new `*.localhost` host name for each launch and has been tested with
+Chromium on Linux, directly and through a local-port SSH forward to the same machine; other
+browsers, platforms and a separate remote machine are untested.
+
+### Over SSH
+
+Run `gyst` on the remote machine and forward its port from your computer:
+
+```sh
+ssh -N -o ExitOnForwardFailure=yes -L 127.0.0.1:LOCAL:127.0.0.1:REMOTE user@remote
+```
+
+`REMOTE` is the port in the printed link and `LOCAL` is any free port on your computer. Open
+the printed link in your local browser with its port replaced by `LOCAL`, keeping the host name
+and the rest of the link unchanged. The viewer only listens on the remote machine's loopback
+address; there is no LAN or reverse-proxy mode.
 
 ## Sessions
 
-Snapshots stay fixed when files change. Refresh explicitly with `gyst session refresh`.
-`gyst session check` reports `unchanged`, `changed`, `unavailable`, or `stdin` without
-modifying review progress. Checks are
-periodic and cached, not a real-time guarantee. Stdin snapshots have no source to
-check; replace them explicitly with `gyst session refresh --stdin`.
+Agents open a session with `gyst session open` for uncommitted changes (including
+untracked files) or `gyst session open <range>` for a Git range such as `main...feature`.
+It prints the session id and snapshot identity as JSON without launching anything.
+Every other session command names that exact session with `--session <id>`.
+
+Snapshots stay fixed when files change. Refresh explicitly with
+`gyst session refresh --session <id>`. `gyst session check --session <id>` reports
+`unchanged`, `changed`, or `unavailable` without modifying review progress. Checks are
+periodic and cached, not a real-time guarantee.
 
 Use `/gyst-refresh` in your agent's chat to refresh the existing review and revise
 its affected groups and explanations while preserving unrelated review progress.
@@ -61,12 +102,19 @@ recovery with an explicit error. Keep using the old version, or inspect your sav
 reviews before manually restarting and recreating incompatible sessions. Gyst never
 kills an unverified PID, migrates a session, or deletes its file during recovery.
 
-There is one session per repository. When you are done, close it before starting a
-review with a different scope:
+Each repository and recorded scope has its own saved session, and different scopes
+coexist. Reopening a scope returns its saved session as it is, even after the refs it
+names move; only an explicit refresh recaptures it. Sessions are kept until you delete
+one:
 
 ```sh
-gyst session close
+gyst session list
+gyst session delete --session <id> --request-id <request-id>
 ```
+
+Choose the request id once for that deletion. If the reply is lost, retry with the same
+request id and session to get the recorded result; a request id already used for
+another session is rejected.
 
 For CLI options, run `gyst --help` or `gyst session --help`.
 

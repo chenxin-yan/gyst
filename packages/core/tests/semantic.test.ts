@@ -1,9 +1,9 @@
 import { expect, it } from "vite-plus/test";
 import { Result, Schema } from "effect";
-import { type ApplyEnvelope, ApplyEnvelopeSchema, applyBatch } from "./apply.ts";
-import { applyHumanAction } from "./human-action.ts";
-import { refreshSession } from "./refresh.ts";
-import { HunkSchema, SessionSchema, type StatusPayload } from "./session.ts";
+import { type ApplyEnvelope, ApplyEnvelopeSchema, applyBatch } from "../src/apply.ts";
+import { applyHumanAction } from "../src/human-action.ts";
+import { refreshSession } from "../src/refresh.ts";
+import { HunkSchema, SessionSchema, type StatusPayload } from "../src/session.ts";
 
 const decode = Schema.decodeUnknownSync(ApplyEnvelopeSchema, { onExcessProperty: "error" });
 const hunk = (id: string) => ({
@@ -17,7 +17,8 @@ const initial = () =>
   Schema.decodeUnknownSync(SessionSchema)({
     id: "session",
     repoRoot: "/repo",
-    source: { kind: "stdin" },
+    scope: { kind: "uncommitted" },
+    snapshotId: "snapshot",
     createdAt: "now",
     updatedAt: "now",
     revision: 0,

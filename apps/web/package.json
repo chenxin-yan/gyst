@@ -1,0 +1,26 @@
+{
+  "name": "@gyst/web",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vp dev --port 3000",
+    "build": "vp run build:task",
+    "preview": "vp preview"
+  },
+  "dependencies": {
+    "@gyst/core": "workspace:*",
+    "@stylexjs/stylex": "0.19.1",
+    "@tanstack/react-router": "1.170.40",
+    "effect": "catalog:",
+    "react": "19.3.0",
+    "react-dom": "19.3.0"
+  },
+  "devDependencies": {
+    "@stylexjs/unplugin": "0.19.1",
+    "@tanstack/router-plugin": "1.168.41",
+    "@types/react": "19.3.0",
+    "@types/react-dom": "19.3.0",
+    "@vitejs/plugin-react": "6.1.1",
+    "vite-plus": "catalog:"
+  }
+}
