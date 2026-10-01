@@ -95,8 +95,13 @@ the skills archive and the license. Do not bump versions or create release tags 
 For prereleases, use `pnpm exec changeset pre enter <tag>`; publication uses that npm
 dist-tag. The [release workflow](.github/workflows/release.yml) owns the automation.
 
+Every commit publishes a preview of the built CLI to [pkg.pr.new](https://pkg.pr.new)
+(`npx https://pkg.pr.new/@gyst/cli@<pr|sha|branch>`) and PRs get a comment with the command. The
+[preview workflow](.github/workflows/preview.yml) owns it; nothing reaches npm.
+
 ### Maintainer setup (once)
 
 - Enable **Allow GitHub Actions to create and approve pull requests** in repository settings.
 - Configure npm trusted publishing on `@gyst/cli`: repository `chenxin-yan/gyst`,
   workflow `release.yml`, no environment restriction, with direct publishing allowed.
+- Install the [pkg.pr.new GitHub App](https://github.com/apps/pkg-pr-new) on `chenxin-yan/gyst`.

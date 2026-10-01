@@ -27,6 +27,7 @@
     "@stylexjs/eslint-plugin": "0.19.1",
     "@types/node": "~24.11.2",
     "@types/semver": "7.8.0",
+    "pkg-pr-new": "^0.0.88",
     "typescript": "^7.0.2",
     "vite-plus": "catalog:"
   }

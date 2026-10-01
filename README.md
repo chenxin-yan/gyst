@@ -1,5 +1,7 @@
 # gyst
 
+[![pkg.pr.new](https://pkg.pr.new/badge/chenxin-yan/gyst)](https://pkg.pr.new/~/chenxin-yan/gyst)
+
 Review code changes with your coding agent.
 
 Your agent plans a top-to-bottom walkthrough of all changes, then publishes
