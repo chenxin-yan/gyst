@@ -1,0 +1,30 @@
+name: preview
+
+on:
+  pull_request:
+  push:
+    branches: ["**"]
+    tags: ["!**"]
+
+permissions: {}
+
+concurrency:
+  group: preview-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  publish:
+    if: ${{ !startsWith(github.head_ref || github.ref_name, 'changeset-release/') }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: jdx/mise-action@v4
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm build
+      # --pnpm: pack publishConfig.directory (.crust/root) and resolve catalog: deps.
+      # --previewVersion: 0.0.0-preview-<sha> so lockfiles never confuse it with an npm release.
+      - run: pnpm exec pkg-pr-new publish --pnpm --bin --previewVersion './apps/gyst'
