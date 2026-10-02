@@ -16,3 +16,4 @@ logs/
 .pi-subagents/
 .agent-sources/
 .vitest/
+.dev/
