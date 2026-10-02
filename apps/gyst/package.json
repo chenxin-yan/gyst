@@ -32,10 +32,10 @@
     ]
   },
   "dependencies": {
-    "@crustjs/core": "0.5.0",
-    "@crustjs/effect": "0.2.0",
-    "@crustjs/extensions": "0.5.0",
-    "@crustjs/skills": "0.5.0",
+    "@crustjs/core": "0.5.3",
+    "@crustjs/effect": "0.2.1",
+    "@crustjs/extensions": "0.5.3",
+    "@crustjs/skills": "0.5.3",
     "@effect/platform-node": "catalog:",
     "@effect/platform-node-shared": "catalog:",
     "@gyst/core": "workspace:*",
@@ -43,7 +43,7 @@
     "semver": "7.8.5"
   },
   "devDependencies": {
-    "@crustjs/crust": "0.5.0",
+    "@crustjs/crust": "0.5.3",
     "@gyst/web": "workspace:*",
     "playwright-core": "1.59.1",
     "vitest": "catalog:"
