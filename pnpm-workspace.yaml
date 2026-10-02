@@ -13,6 +13,22 @@ catalog:
   vite-plus: 1.0.0-rc.1
   vitest: 5.0.1
 
+# Crust 0.5.3, released within pnpm's minimum release age; remove once it has aged past it.
+minimumReleaseAgeExclude:
+  - "@crustjs/core@0.5.3"
+  - "@crustjs/crust-darwin-arm64@0.5.3"
+  - "@crustjs/crust-darwin-x64@0.5.3"
+  - "@crustjs/crust-linux-arm64-musl@0.5.3"
+  - "@crustjs/crust-linux-arm64@0.5.3"
+  - "@crustjs/crust-linux-x64-musl@0.5.3"
+  - "@crustjs/crust-linux-x64@0.5.3"
+  - "@crustjs/crust-windows-arm64@0.5.3"
+  - "@crustjs/crust-windows-x64@0.5.3"
+  - "@crustjs/crust@0.5.3"
+  - "@crustjs/extensions@0.5.3"
+  - "@crustjs/skills@0.5.3"
+  - "@crustjs/utils@0.2.2"
+
 overrides:
   vite@*: "catalog:"
   vitest@*: "catalog:"
