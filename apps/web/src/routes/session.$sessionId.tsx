@@ -247,6 +247,29 @@ function SessionReader(props: {
   const progress = useViewedProgress(session.id, snapshotId, props.status);
   const mounted = useMounted();
 
+  // A later page answers the cursor it was asked with; one already appended is dropped.
+  const addPage = useCallback((after: string, page: FilesPayload) => {
+    setPages((loaded) => (loaded.at(-1)!.next === after ? [...loaded, page] : loaded));
+  }, []);
+  // Files without hunks (binary, rename, mode) appear only once their page loads, so pages load
+  // in the background, one at a time. A failure stops here; the tree's button retries.
+  const nextPage = pages.at(-1)!.next;
+  const [pageFailure, setPageFailure] = useState<unknown>();
+  useEffect(() => {
+    if (nextPage === null || pageFailure !== undefined) return;
+    let current = true;
+    operation({ command: "files", session: session.id, snapshotId, after: nextPage }).then(
+      (page) => current && addPage(nextPage, page),
+      (error: unknown) => {
+        if (!isExpectedFailure(error)) console.error(error);
+        if (current) setPageFailure(error);
+      },
+    );
+    return () => {
+      current = false;
+    };
+  }, [nextPage, pageFailure, session.id, snapshotId, addPage]);
+
   const manifest = useMemo(() => pages.flatMap((page) => page.files), [pages]);
   const files = useMemo(() => changedFiles(hunks, manifest), [hunks, manifest]);
   const byPath = useMemo(() => new Map(files.map((file) => [file.path, file])), [files]);
@@ -640,7 +663,11 @@ function SessionReader(props: {
             sessionId={session.id}
             snapshotId={snapshotId}
             pages={pages}
-            onPage={(page) => setPages((loaded) => [...loaded, page])}
+            failure={pageFailure}
+            onPage={(after, page) => {
+              setPageFailure(undefined);
+              addPage(after, page);
+            }}
           />
         </>
       }
@@ -1744,22 +1771,23 @@ const treeStyles = stylex.create({
 });
 
 /**
- * Loads the snapshot's next files page into the tree. A refresh that replaced the snapshot makes
- * the page cursor stale for good, so that failure offers a session reload instead of a retry.
+ * Retries the background load of the snapshot's next files page after it failed. A refresh that
+ * replaced the snapshot makes the page cursor stale for good, so that failure offers a session
+ * reload instead of a retry.
  */
 function MoreFiles(props: {
   sessionId: string;
   snapshotId: string;
   pages: readonly FilesPayload[];
-  onPage: (page: FilesPayload) => void;
+  failure: unknown;
+  onPage: (after: string, page: FilesPayload) => void;
 }) {
   const router = useRouter();
   const [pending, setPending] = useState(false);
-  const [failure, setFailure] = useState<unknown>();
+  const [retryFailure, setFailure] = useState<unknown>();
+  const failure = retryFailure ?? props.failure;
   const mounted = useMounted();
   const after = props.pages.at(-1)!.next;
-  const total = props.pages[0]!.total;
-  const shown = props.pages.reduce((count, page) => count + page.files.length, 0);
   const more = async (path: string) => {
     setPending(true);
     setFailure(undefined);
@@ -1770,7 +1798,7 @@ function MoreFiles(props: {
         snapshotId: props.snapshotId,
         after: path,
       });
-      if (mounted.current) props.onPage(page);
+      if (mounted.current) props.onPage(path, page);
     } catch (error) {
       if (!isExpectedFailure(error)) console.error(error);
       if (mounted.current) setFailure(error);
@@ -1778,20 +1806,16 @@ function MoreFiles(props: {
       if (mounted.current) setPending(false);
     }
   };
-  if (after === null && failure === undefined) return null;
+  if (failure === undefined) return null;
   return (
     <div {...stylex.props(moreStyles.box)}>
-      {failure !== undefined && <FailureNotice error={failure} />}
+      <FailureNotice error={failure} />
       {isDaemonError(failure, "stale_revision") ? (
         <PillButton onClick={() => void router.invalidate()}>Reload session</PillButton>
       ) : (
         after !== null && (
           <PillButton disabled={pending} onClick={() => void more(after)}>
-            {pending
-              ? "Loading files…"
-              : failure !== undefined
-                ? "Retry loading files"
-                : `Load more files (${shown} of ${total} shown)`}
+            {pending ? "Loading files…" : "Retry loading files"}
           </PillButton>
         )
       )}

@@ -1095,7 +1095,7 @@ describe("installed gyst in a sandboxed browser", () => {
     await says(page, "README.md · hidden lines");
   }, 30_000);
 
-  it("pages the snapshot's files into the tree on demand and offers a session reload when a refresh replaced the snapshot between pages", async () => {
+  it("pages the snapshot's files into the tree in the background and offers a session reload when a refresh replaced the snapshot between pages", async () => {
     const id = await openRange("bulk...paged");
     // Deleted even on failure: later tests count saved sessions.
     onTestFinished(() =>
@@ -1110,27 +1110,35 @@ describe("installed gyst in a sandboxed browser", () => {
     page.on("request", (request) => {
       if (operationOf(request)?.command === "files") listings.push(operationOf(request));
     });
+    // Later pages wait until the snapshot is replaced, so the first background page goes stale.
+    let release = () => {};
+    const released = new Promise<void>((resolve) => (release = resolve));
+    await page.route(isOperationUrl, async (route) => {
+      const request = route.request().postDataJSON();
+      if (request?.command === "files" && request.snapshotId === captured && request.after)
+        await released;
+      await route.continue();
+    });
     await page.goto(`${one.origin}/session/${id}`);
     await crumbIs(page, "demo/bulk...paged");
-    // The first page's size depends on the daemon's page byte limit; only its presence matters.
-    const more = page.getByRole("button", { name: /^Load more files \(\d+ of 404 shown\)$/ });
-    await more.waitFor();
+    await expect.poll(() => listings.length).toBe(2);
     git("branch", "-f", "paged", "paged~1");
     await gyst("session", "refresh", "--session", id);
     const refreshed = await snapshotOf();
     expect(refreshed).not.toBe(captured);
-    await more.click();
+    release();
     await page.getByRole("alert").getByText("is not the current snapshot").waitFor();
     expect(await page.getByRole("button", { name: "Retry loading files" }).count()).toBe(0);
     await page.getByRole("button", { name: "Reload session" }).click();
-    await more.click();
     // The last unchanged file arrives with the later page; the changed one was listed from the start.
     const tree = page.getByRole("navigation", { name: "gyst" });
     await tree.getByRole("button", { name: "Expand bulk" }).click();
     await tree.getByRole("button", { name: "bulk/399.txt", exact: true }).waitFor();
     await tree.getByRole("button", { name: "paged.ts (added)" }).waitFor();
     expect(await page.getByRole("alert").count()).toBe(0);
-    expect(await page.getByRole("button", { name: /Load more files/ }).count()).toBe(0);
+    expect(
+      await page.getByRole("button", { name: /Retry loading files|Reload session/ }).count(),
+    ).toBe(0);
     expect(listings.at(-1)).toEqual({
       command: "files",
       session: id,
