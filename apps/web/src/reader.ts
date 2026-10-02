@@ -100,17 +100,23 @@ export function fileDiffOf(path: string, hunks: readonly Hunk[]): FileDiffMetada
   return diff;
 }
 
+/** Why a side stopped paging: its file left the reader's window. Not a failure to show. */
+export class PagingStopped extends Error {}
+
 /**
  * A captured side's full text, read a page at a time from the start: each page's text is the
- * exact bytes from its start, so the pages concatenate to the file. A side without captured text
+ * exact bytes from its start, so the pages concatenate to the file. One page is in flight at a
+ * time, and paging stops before the next page once `wanted` says no. A side without captured text
  * is an error here; callers only ask for sides that have hunks.
  */
 export async function capturedText(
   readPage: (offset: number | undefined) => Promise<CodePayload>,
+  wanted: () => boolean = () => true,
 ): Promise<string> {
   let text = "";
   let offset: number | undefined;
   do {
+    if (offset !== undefined && !wanted()) throw new PagingStopped("the file left the window");
     const { content } = await readPage(offset);
     if (content.kind !== "text") throw new Error(`the captured side is ${content.kind}`);
     text += content.text;
@@ -120,29 +126,24 @@ export async function capturedText(
 }
 
 /**
- * Loads both captured sides of a changed file, once per path; a failed load is forgotten so the
- * next call retries. This is the renderer's `loadDiffFiles` and the one hydration path.
+ * Both captured sides of a changed file, read side by side. It settles only once both sides have
+ * settled, a failed one included, so a file's reads all end before its load does.
  */
-export function capturedFilesLoader(
-  readPage: (path: string, side: "old" | "new", offset: number | undefined) => Promise<CodePayload>,
-) {
-  const loaded = new Map<string, Promise<FileDiffLoadedChangedFiles>>();
-  return (path: string) => {
-    let files = loaded.get(path);
-    if (files === undefined) {
-      const side = (which: "old" | "new") =>
-        capturedText((offset) => readPage(path, which, offset)).then((contents) => ({
-          name: path,
-          contents,
-        }));
-      files = Promise.all([side("old"), side("new")]).then(([oldFile, newFile]) => ({
-        oldFile,
-        newFile,
-      }));
-      loaded.set(path, files);
-      files.catch(() => loaded.delete(path));
-    }
-    return files;
+export async function capturedFiles(
+  path: string,
+  readPage: (side: "old" | "new", offset: number | undefined) => Promise<CodePayload>,
+  wanted: () => boolean = () => true,
+): Promise<FileDiffLoadedChangedFiles> {
+  const [oldSide, newSide] = await Promise.allSettled(
+    (["old", "new"] as const).map((side) =>
+      capturedText((offset) => readPage(side, offset), wanted),
+    ),
+  );
+  if (oldSide!.status === "rejected") throw oldSide!.reason;
+  if (newSide!.status === "rejected") throw newSide!.reason;
+  return {
+    oldFile: { name: path, contents: oldSide!.value },
+    newFile: { name: path, contents: newSide!.value },
   };
 }
 

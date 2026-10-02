@@ -1,6 +1,7 @@
 // Which changed files to load in full, and when: the window the reader sees plus a few items
 // around it, a bounded number of files at a time. No React or DOM here, so it is unit tested on
 // its own.
+import { PagingStopped } from "./reader.ts";
 
 /** Items past each edge of the visible ones that load too, so a short scroll finds them ready. */
 export const nearbyItems = 3;
@@ -34,51 +35,92 @@ export function hydrationWindow(
 }
 
 /**
- * Loads the wanted files, at most `concurrency` at a time, in the order last given to `want`. A
- * result reaches `onLoaded` only while its file is still wanted and the scheduler runs, so a file
- * that left the window, or a reader that went away, never takes it. A failed file is not retried
- * here; the reader retries it on demand.
+ * Every load of changed files' captured contents, eager and the renderer's alike: at most
+ * `concurrency` files read at once, each holding its slot until its read settles. A renderer
+ * `request` (a range the reader opened) takes the next free slot before any eager load; eager
+ * loads follow the order last given to `want`. A file pages on only while wanted or requested
+ * and until `stop`. Nothing is kept here: an eager result reaches `onLoaded` only while its file
+ * is still wanted, otherwise it is dropped, and a request's goes to its caller. An eagerly loaded
+ * or failed file is not loaded eagerly again (the reader retries a failure on demand). The
+ * renderer may adopt a request's result or drop it, so a requested file waits for the next `want`:
+ * one that still lists it (it was dropped) loads it eagerly once more.
  */
-export function hydrationScheduler<Loaded>(options: {
+export function contentLoader<Loaded>(options: {
   concurrency: number;
-  load: (path: string) => Promise<Loaded>;
+  /** Reads one file; `wanted` says whether to read its next page. */
+  read: (path: string, wanted: () => boolean) => Promise<Loaded>;
   onLoaded: (path: string, loaded: Loaded) => void;
 }) {
-  let wanted: readonly string[] = [];
+  let order: readonly string[] = [];
+  let wanted = new Set<string>();
   let stopped = false;
   const running = new Set<string>();
-  // Loaded or failed: not asked again until forgotten.
+  // The renderer's requests, oldest first, waiting for a slot or reading.
+  const requests = new Map<string, PromiseWithResolvers<Loaded>>();
+  // Eagerly loaded and failed files.
   const settled = new Set<string>();
-  const pump = () => {
-    for (const path of wanted) {
-      if (stopped || running.size >= options.concurrency) return;
-      if (running.has(path) || settled.has(path)) continue;
-      running.add(path);
-      const finish = (loaded?: { value: Loaded }) => {
-        running.delete(path);
-        if (stopped) return;
-        if (loaded === undefined || wanted.includes(path)) settled.add(path);
-        if (loaded !== undefined && wanted.includes(path)) options.onLoaded(path, loaded.value);
-        pump();
-      };
-      options.load(path).then(
+  const isWanted = (path: string) => !stopped && (wanted.has(path) || requests.has(path));
+  const start = (path: string) => {
+    running.add(path);
+    const finish = (result: { value: Loaded } | { error: unknown }) => {
+      running.delete(path);
+      const request = requests.get(path);
+      requests.delete(path);
+      if ("value" in result) request?.resolve(result.value);
+      else request?.reject(result.error);
+      if (stopped) return;
+      // The renderer adopts a request's result or drops it; the next `want` says which.
+      if (request !== undefined && "value" in result) wanted.delete(path);
+      else if (request !== undefined || wanted.has(path)) settled.add(path);
+      if (request === undefined && wanted.has(path) && "value" in result)
+        options.onLoaded(path, result.value);
+      pump();
+    };
+    options
+      .read(path, () => isWanted(path))
+      .then(
         (value) => finish({ value }),
-        () => finish(),
+        (error: unknown) => finish({ error }),
       );
+  };
+  const pump = () => {
+    if (stopped) return;
+    while (running.size < options.concurrency) {
+      const next =
+        [...requests.keys()].find((path) => !running.has(path)) ??
+        order.find((path) => wanted.has(path) && !running.has(path) && !settled.has(path));
+      if (next === undefined) return;
+      start(next);
     }
   };
   return {
     want(paths: readonly string[]) {
-      wanted = paths;
+      order = paths;
+      wanted = new Set(paths);
       pump();
     },
-    /** Lets a file load again, after its contents were dropped. */
-    forget(path: string) {
-      settled.delete(path);
+    /** The renderer's load of a file, which waits only for a free slot. */
+    request(path: string): Promise<Loaded> {
+      if (stopped) return Promise.reject(new PagingStopped("the reader went away"));
+      let request = requests.get(path);
+      if (request === undefined) {
+        request = Promise.withResolvers<Loaded>();
+        requests.set(path, request);
+        pump();
+      }
+      return request.promise;
     },
     inFlight: () => running.size,
+    /** Wants nothing more: reads stop after their current page, waiting requests fail. */
     stop() {
       stopped = true;
+      order = [];
+      wanted = new Set();
+      for (const [path, request] of requests)
+        if (!running.has(path)) {
+          requests.delete(path);
+          request.reject(new PagingStopped("the reader went away"));
+        }
     },
   };
 }

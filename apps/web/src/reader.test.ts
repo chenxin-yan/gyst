@@ -1,13 +1,14 @@
 import type { CodePayload, Hunk, ManifestFile } from "@gyst/core/wire";
 import { describe, expect, it, vi } from "vite-plus/test";
 import {
-  capturedFilesLoader,
+  capturedFiles,
   capturedText,
   changedFiles,
   fileDiffOf,
   isUnder,
   layoutOf,
   lineStats,
+  PagingStopped,
   splitMinWidth,
   statusOf,
   treeKey,
@@ -127,23 +128,42 @@ describe("capturedText", () => {
   });
 });
 
-describe("capturedFilesLoader", () => {
-  it("loads both sides once per path and retries a failed load", async () => {
-    let fail = true;
-    const read = vi.fn(async (_path: string, side: "old" | "new", _offset: number | undefined) => {
-      if (fail) throw new Error("offline");
-      return page(`${side}\n`, 0, null);
-    });
-    const load = capturedFilesLoader(read);
-    await expect(load("a.ts")).rejects.toThrow("offline");
-    fail = false;
-    const files = await load("a.ts");
-    expect(files).toEqual({
+describe("capturedFiles", () => {
+  it("reads both sides of a file", async () => {
+    const read = vi.fn(async (side: "old" | "new", _offset: number | undefined) =>
+      page(`${side}\n`, 0, null),
+    );
+    expect(await capturedFiles("a.ts", read)).toEqual({
       oldFile: { name: "a.ts", contents: "old\n" },
       newFile: { name: "a.ts", contents: "new\n" },
     });
-    expect(await load("a.ts")).toBe(files);
-    expect(read.mock.calls.filter(([, , offset]) => offset === undefined)).toHaveLength(4);
+  });
+
+  it("stops paging a file that left the window", async () => {
+    const read = vi.fn(async (_side: "old" | "new", offset: number | undefined) =>
+      offset === undefined ? page("one\n", 0, 4) : page("two\n", 4, null),
+    );
+    await expect(capturedFiles("a.ts", read, () => false)).rejects.toBeInstanceOf(PagingStopped);
+    // Only each side's first page was read; the second never was.
+    expect(read.mock.calls.map(([side, offset]) => `${side} ${offset}`).sort()).toEqual([
+      "new undefined",
+      "old undefined",
+    ]);
+  });
+
+  it("settles a one-sided failure only once the other side has settled", async () => {
+    let finish = () => {};
+    const read = (side: "old" | "new") =>
+      side === "old"
+        ? Promise.reject(new Error("offline"))
+        : new Promise<CodePayload>((resolve) => (finish = () => resolve(page("new\n", 0, null))));
+    let settled = false;
+    const files = capturedFiles("a.ts", read).finally(() => (settled = true));
+    files.catch(() => {});
+    await new Promise((resolve) => setTimeout(resolve));
+    expect(settled).toBe(false);
+    finish();
+    await expect(files).rejects.toThrow("offline");
   });
 });
 

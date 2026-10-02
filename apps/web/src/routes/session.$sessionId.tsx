@@ -64,16 +64,12 @@ import {
   stopsOf,
   switched,
 } from "../cursor.ts";
-import {
-  hydrationConcurrency,
-  hydrationScheduler,
-  hydrationWindow,
-  nearbyItems,
-} from "../hydration.ts";
+import { contentLoader, hydrationConcurrency, hydrationWindow, nearbyItems } from "../hydration.ts";
 import { type Command, type CommandId, keyOf, matchKey } from "../keymap.ts";
 import {
-  capturedFilesLoader,
+  capturedFiles,
   changedFiles,
+  PagingStopped,
   fileDiffOf,
   isUnder,
   type LayoutMode,
@@ -280,18 +276,6 @@ function SessionReader(props: {
   const manifest = useMemo(() => pages.flatMap((page) => page.files), [pages]);
   const files = useMemo(() => changedFiles(hunks, manifest), [hunks, manifest]);
   const byPath = useMemo(() => new Map(files.map((file) => [file.path, file])), [files]);
-  // One partial metadata object per file for the snapshot's life: the renderer hydrates it in
-  // place when a range opens before its file loaded eagerly.
-  const partialDiffs = useMemo(
-    () =>
-      new Map(
-        [...Map.groupBy(hunks, (hunk) => hunk.file)].map(([path, fileHunks]) => [
-          path,
-          fileDiffOf(path, fileHunks),
-        ]),
-      ),
-    [hunks],
-  );
   // Memoized: a new list makes the renderer reconcile its items and restore the reading position.
   const shown = useMemo(
     () => files.filter((file) => isUnder(file.path, selection)),
@@ -299,76 +283,110 @@ function SessionReader(props: {
   );
   const layout = layoutOf(mode, width);
 
-  const loadFiles = useMemo(
+  // The metadata each file shows, and the one place its full contents are kept: its partial
+  // shape, which the renderer hydrates in place when a range opens before the file loaded eagerly,
+  // or an eagerly loaded clone. Kept once loaded: the renderer retains the rendered diffs of the
+  // items it recycles, so dropping ours would not bound memory (#108).
+  const [diffs, setDiffs] = useState<ReadonlyMap<string, FileDiffMetadata>>(
     () =>
-      capturedFilesLoader((file, side, offset) =>
-        operation({ command: "code", session: session.id, snapshotId, file, side, offset }),
+      new Map(
+        [...Map.groupBy(hunks, (hunk) => hunk.file)].map(([path, fileHunks]) => [
+          path,
+          fileDiffOf(path, fileHunks),
+        ]),
       ),
-    [session.id, snapshotId],
-  );
-  const loadDiffFiles = useCallback(
-    async (fileDiff: FileDiffMetadata) => {
-      const path = fileDiff.name;
-      const setLoad = (load: FileLoad | undefined) =>
-        mounted.current &&
-        setLoads((before) => {
-          const next = new Map(before);
-          if (load === undefined) next.delete(path);
-          else next.set(path, load);
-          return next;
-        });
-      // A retry replaces the last failure at once.
-      setLoad("loading");
-      try {
-        const loaded = await loadFiles(path);
-        setLoad(undefined);
-        return loaded;
-      } catch (error) {
-        // The renderer logs the rejection itself; the file header explains it.
-        setLoad({ failure: error });
-        throw error;
-      }
-    },
-    [loadFiles, mounted],
   );
 
-  // Visible and nearby files load their captured sides eagerly, so every hidden range, the
-  // trailing one too, shows the renderer's exact count and the cursor stops on it.
-  const [hydrated, setHydrated] = useState<ReadonlyMap<string, FileDiffMetadata>>(new Map());
-  const diffs = useMemo(
-    () => new Map([...partialDiffs].map(([path, diff]) => [path, hydrated.get(path) ?? diff])),
-    [partialDiffs, hydrated],
-  );
-  const scheduler = useMemo(
-    () =>
-      hydrationScheduler({
-        concurrency: hydrationConcurrency,
-        load: (path) => loadDiffFiles(partialDiffs.get(path)!),
-        onLoaded: (path, loaded) => {
-          const partial = partialDiffs.get(path)!;
-          // The renderer may have hydrated it in place meanwhile (a range opened first).
-          if (!partial.isPartial || !mounted.current) return;
-          const diff = hydratePartialDiff("clone", partial, loaded);
-          setHydrated((before) => new Map(before).set(path, diff));
-        },
+  const setLoad = useCallback(
+    (path: string, load: FileLoad | undefined) =>
+      mounted.current &&
+      setLoads((before) => {
+        const next = new Map(before);
+        if (load === undefined) next.delete(path);
+        else next.set(path, load);
+        return next;
       }),
-    [partialDiffs, loadDiffFiles, mounted],
+    [mounted],
   );
-  useEffect(() => () => scheduler.stop(), [scheduler]);
+  // Every captured-content read, eager or the renderer's, goes through this one bounded loader.
+  // Visible and nearby files load eagerly, so every hidden range, the trailing one too, shows the
+  // renderer's exact count and the cursor stops on it.
+  const loader = useMemo(
+    () =>
+      contentLoader({
+        concurrency: hydrationConcurrency,
+        read: async (path, wanted) => {
+          setLoad(path, "loading");
+          try {
+            const loaded = await capturedFiles(
+              path,
+              (side, offset) =>
+                operation({
+                  command: "code",
+                  session: session.id,
+                  snapshotId,
+                  file: path,
+                  side,
+                  offset,
+                }),
+              wanted,
+            );
+            setLoad(path, undefined);
+            return loaded;
+          } catch (error) {
+            // The renderer logs its own rejections; the file header explains a failure. A file
+            // that left the window stopped on purpose and loads again on return.
+            setLoad(path, error instanceof PagingStopped ? undefined : { failure: error });
+            throw error;
+          }
+        },
+        onLoaded: (path, loaded) =>
+          mounted.current &&
+          setDiffs((before) => {
+            // The renderer may have hydrated the one it shows in place meanwhile (a range opened).
+            const diff = before.get(path)!;
+            if (!diff.isPartial) return before;
+            return new Map(before).set(path, hydratePartialDiff("clone", diff, loaded));
+          }),
+      }),
+    [session.id, snapshotId, setLoad, mounted],
+  );
+  useEffect(() => () => loader.stop(), [loader]);
+  const loadDiffFiles = useCallback(
+    (fileDiff: FileDiffMetadata) => {
+      // A retry replaces the last failure at once, while it waits for a free slot.
+      setLoad(fileDiff.name, "loading");
+      return loader.request(fileDiff.name);
+    },
+    [loader, setLoad],
+  );
+
   const hydratable = useMemo(
     () =>
       shown.flatMap((file) => {
-        const diff = partialDiffs.get(file.path);
-        return diff?.isPartial && (diff.type === "change" || diff.type === "rename-changed")
-          ? [file.path]
-          : [];
+        const type = diffs.get(file.path)?.type;
+        return type === "change" || type === "rename-changed" ? [file.path] : [];
       }),
-    [shown, partialDiffs],
+    [shown, diffs],
   );
+  // The files the panel showed last; the window follows them and the selection.
+  const visible = useRef<readonly string[]>([]);
+  const followWindow = useCallback(() => {
+    // Only files still partial: one the renderer hydrated in place (a range opened) is loaded,
+    // and one whose result it dropped loads again.
+    loader.want(
+      hydrationWindow(hydratable, visible.current, nearbyItems).filter(
+        (path) => diffs.get(path)!.isPartial,
+      ),
+    );
+  }, [loader, hydratable, diffs]);
+  useEffect(followWindow, [followWindow]);
   const onWindow = useCallback(
-    (visible: readonly string[]) =>
-      scheduler.want(hydrationWindow(hydratable, visible, nearbyItems)),
-    [scheduler, hydratable],
+    (shownNow: readonly string[]) => {
+      visible.current = shownNow;
+      followWindow();
+    },
+    [followWindow],
   );
 
   const tree = useMemo(
@@ -964,7 +982,7 @@ function ContinuousDiff(props: {
     const viewer = view.current?.getInstance();
     const node = root.current;
     if (viewer === undefined || node === null) return;
-    const top = node.scrollTop;
+    const top = viewer.getScrollTop();
     const bottom = top + node.clientHeight;
     const visible = viewer.getRenderedItems().flatMap(({ id, instance }) => {
       const itemTop = viewer.getTopForItem(id);
@@ -1162,37 +1180,40 @@ function ContinuousDiff(props: {
   }, []);
 
   // One item per file, reused while its fold and metadata are unchanged so the renderer keeps its
-  // state. A replaced item carries a new version: the renderer reads an item again only then.
+  // state. A replaced item carries a new version: the renderer reads an item again only then. Only
+  // the shown files' items stay cached, so an unselected file's contents are not kept here.
   const itemCache = useRef(new Map<string, CodeViewItem<undefined>>());
   const itemVersion = useRef(0);
-  const items = useMemo(
-    () =>
-      props.files.map((file): CodeViewItem<undefined> => {
-        const fileDiff = diffs.get(file.path);
-        const collapsed = fileDiff === undefined || props.folded.has(file.path);
-        const cached = itemCache.current.get(file.path);
-        if (
-          cached &&
-          cached.collapsed === collapsed &&
-          (cached.type !== "diff" || cached.fileDiff === fileDiff)
-        )
-          return cached;
-        const version = ++itemVersion.current;
-        const item: CodeViewItem<undefined> = fileDiff
-          ? { id: file.path, type: "diff", fileDiff, collapsed, version }
-          : // No captured text to show: the header alone says why.
-            {
-              id: file.path,
-              type: "file",
-              file: { name: file.path, contents: "" },
-              collapsed: true,
-              version,
-            };
-        itemCache.current.set(file.path, item);
-        return item;
-      }),
-    [props.files, diffs, props.folded],
-  );
+  const items = useMemo(() => {
+    const cache = itemCache.current;
+    itemCache.current = new Map();
+    return props.files.map((file): CodeViewItem<undefined> => {
+      const fileDiff = diffs.get(file.path);
+      const collapsed = fileDiff === undefined || props.folded.has(file.path);
+      const cached = cache.get(file.path);
+      if (
+        cached &&
+        cached.collapsed === collapsed &&
+        (cached.type !== "diff" || cached.fileDiff === fileDiff)
+      ) {
+        itemCache.current.set(file.path, cached);
+        return cached;
+      }
+      const version = ++itemVersion.current;
+      const item: CodeViewItem<undefined> = fileDiff
+        ? { id: file.path, type: "diff", fileDiff, collapsed, version }
+        : // No captured text to show: the header alone says why.
+          {
+            id: file.path,
+            type: "file",
+            file: { name: file.path, contents: "" },
+            collapsed: true,
+            version,
+          };
+      itemCache.current.set(file.path, item);
+      return item;
+    });
+  }, [props.files, diffs, props.folded]);
 
   const options = useMemo(
     (): CodeViewReactOptions<undefined, undefined> => ({
