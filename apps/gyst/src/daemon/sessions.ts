@@ -14,6 +14,7 @@ import {
   pageBytes,
   refreshSession,
   type Request,
+  setViewed,
   type Scope,
   type Session,
   type SnapshotManifest,
@@ -24,6 +25,7 @@ import {
   statusOf,
   summaryOf,
   ValidationFailed,
+  type ViewedPayload,
 } from "@gyst/core";
 import {
   Context,
@@ -111,7 +113,15 @@ export class Sessions extends Context.Service<
     apply(
       request: Input<"apply">,
     ): Effect.Effect<StatusPayload, NoSession | StaleRevision | ValidationFailed>;
-    /** Re-captures the recorded scope; unchanged hunks keep their group and verdict. */
+    /**
+     * Marks exactly `request.hunkIds` Viewed or not, all or none, against the observed snapshot and
+     * revision. The receipt is saved with the effect, so a retry with the same `requestId` returns
+     * the recorded result even after a restart; the same `requestId` with another payload fails.
+     */
+    viewed(
+      request: Input<"viewed">,
+    ): Effect.Effect<ViewedPayload, BadArgs | NoSession | StaleRevision | ValidationFailed>;
+    /** Re-captures the recorded scope; exactly matched hunks keep their group and Viewed. */
     refresh(
       request: Input<"refresh">,
       onProgress?: OnProgress,
@@ -207,15 +217,12 @@ export class Sessions extends Context.Service<
               createdAt: now,
               updatedAt: now,
               revision: 0,
-              seq: 0,
-              cursor: { itemId: null, pane: "queue" },
               hunks: manifest.hunks,
               groups: [],
-              queue: [],
-              queueSet: false,
-              acceptHistory: [],
+              viewedHunkIds: [],
               receiptNoteTexts: [],
               applyReceipts: [],
+              viewedReceipts: [],
             };
             yield* store.save(session).pipe(Effect.orDie);
             sessions.set(session.id, session);
@@ -425,6 +432,18 @@ export class Sessions extends Context.Service<
         return outcome.status;
       }, Semaphore.withPermit(lock));
 
+      const viewed = Effect.fn("Sessions.viewed")(function* (request: Input<"viewed">) {
+        const session = yield* selected(request);
+        const now = DateTime.formatIso(yield* DateTime.now);
+        const outcome = yield* Effect.fromResult(setViewed(session, request, now));
+        // Effect and receipt are one file: saved before memory changes, so a failed write leaves both.
+        if (outcome.session) {
+          yield* store.save(outcome.session).pipe(Effect.orDie);
+          sessions.set(session.id, outcome.session);
+        }
+        return outcome.result;
+      }, Semaphore.withPermit(lock));
+
       const refresh = Effect.fn("Sessions.refresh")(function* (
         request: Input<"refresh">,
         onProgress?: OnProgress,
@@ -496,6 +515,7 @@ export class Sessions extends Context.Service<
         files,
         code,
         apply,
+        viewed,
         refresh,
         delete: remove,
         load,

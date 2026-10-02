@@ -2,10 +2,8 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vite-plus
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import {
   type ApplyEnvelope,
-  applyHumanAction,
   BadArgs,
   type ByteRange,
-  type HumanAction,
   InternalError,
   type Scope,
   type Session,
@@ -24,7 +22,6 @@ import {
   Fiber,
   Layer,
   PlatformError,
-  Result,
   Stream,
 } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
@@ -80,6 +77,13 @@ const holdCaptures = Effect.gen(function* () {
   gate = held;
   return held;
 });
+/** When set, the next session save signals `started` and waits for `release` before writing. */
+let saveGate: { started: Deferred.Deferred<void>; release: Deferred.Deferred<void> } | undefined;
+const holdNextSave = Effect.gen(function* () {
+  const held = { started: yield* Deferred.make<void>(), release: yield* Deferred.make<void>() };
+  saveGate = held;
+  return held;
+});
 /** Content publications and session saves, in order. */
 let commits: string[];
 
@@ -130,12 +134,21 @@ const writeFailure = PlatformError.systemError({
 const store = Layer.succeed(SessionStore, {
   loadAll: Effect.sync(() => [...files.values()]),
   save: (session) =>
-    saveFails
-      ? Effect.fail(writeFailure)
-      : Effect.sync(() => {
-          commits.push(`session ${session.id}`);
-          files.set(session.id, session);
-        }),
+    Effect.suspend(() => {
+      if (saveFails) return Effect.fail(writeFailure);
+      const write = Effect.sync(() => {
+        commits.push(`session ${session.id}`);
+        files.set(session.id, session);
+      });
+      const held = saveGate;
+      saveGate = undefined;
+      return held
+        ? Deferred.succeed(held.started, undefined).pipe(
+            Effect.andThen(Deferred.await(held.release)),
+            Effect.andThen(write),
+          )
+        : write;
+    }),
   remove: (id) =>
     removeFails
       ? Effect.fail(writeFailure)
@@ -161,14 +174,23 @@ const run = <A, E>(effect: Effect.Effect<A, E, Sessions>) =>
     Effect.provide(Sessions.use((s) => s.load).pipe(Effect.andThen(effect)), sessionsLayer),
   );
 const failure = <A, E>(effect: Effect.Effect<A, E, Sessions>) => run(Effect.flip(effect));
-// No daemon operation carries human work any more, so tests persist it with the pure reducer and
-// reload, as a restarted daemon would read it.
-const recordHumanAction = (sessionId: string, action: HumanAction) =>
-  Effect.gen(function* () {
-    const saved = files.get(sessionId)!;
-    files.set(sessionId, Result.getOrThrow(applyHumanAction(saved, action, saved.updatedAt)));
-    yield* Sessions.use((s) => s.load);
-  });
+/** A browser's Viewed request against the session as it is now. */
+const viewedNow = (session: string, hunkIds: string[], requestId: string, viewed = true) =>
+  Sessions.use((s) =>
+    Effect.gen(function* () {
+      const { revision, session: summary } = yield* s.status({ command: "status", session });
+      const request: Input<"viewed"> = {
+        command: "viewed",
+        session,
+        snapshotId: summary.snapshotId,
+        revision,
+        requestId,
+        hunkIds,
+        viewed,
+      };
+      return { request, result: yield* s.viewed(request) };
+    }),
+  );
 
 const persisted: Session = {
   id: "persisted",
@@ -178,8 +200,6 @@ const persisted: Session = {
   createdAt: "2026-01-01T00:00:00.000Z",
   updatedAt: "2026-01-01T00:00:00.000Z",
   revision: 3,
-  seq: 1,
-  cursor: { itemId: null, pane: "queue" },
   hunks: [
     {
       id: "h1",
@@ -209,21 +229,18 @@ const persisted: Session = {
       title: "same edit",
       notes: [{ hunkId: "h1", text: "intent and behavior" }],
       hunkIds: ["h1"],
-      accepted: true,
     },
     {
       id: "g2",
       title: "read me",
       notes: [{ hunkId: "h2", text: "intent and behavior" }],
       hunkIds: ["h2"],
-      accepted: true,
     },
   ],
-  queue: ["g2", "g1", "h3"],
-  queueSet: false,
-  acceptHistory: ["g2", "g1"],
+  viewedHunkIds: ["h1"],
   receiptNoteTexts: [],
   applyReceipts: [],
+  viewedReceipts: [],
 };
 
 const uncommitted = { kind: "uncommitted" } as const;
@@ -244,6 +261,7 @@ beforeEach(() => {
   slowCapture = false;
   uncaptured = [];
   gate = undefined;
+  saveGate = undefined;
   commits = [];
 });
 
@@ -254,6 +272,9 @@ describe("Sessions.check", () => {
         Effect.gen(function* () {
           const { session } = yield* openScope(uncommitted, `${root}/nested`);
           const created = yield* sessions.status({ command: "status", session: session.id });
+          const ids = (yield* sessions.diff({ command: "diff", session: session.id })).hunks.map(
+            ({ id }) => id,
+          );
           yield* sessions.apply({
             command: "apply",
             session: session.id,
@@ -265,21 +286,15 @@ describe("Sessions.check", () => {
                   type: "group.create",
                   id: "step",
                   title: "Change both paths",
-                  notes: [{ hunkId: created.inbox[0]!.id, text: "Review both changes together." }],
-                  memberHunkIds: created.inbox.map(({ id }) => id),
+                  notes: [{ hunkId: ids[0]!, text: "Review both changes together." }],
+                  memberHunkIds: ids,
                 },
-                { type: "queue.set", itemIds: ["step"] },
               ],
             }),
           });
-          yield* recordHumanAction(created.session.id, {
-            type: "verdict.toggle",
-            sessionId: created.session.id,
-            revision: 1,
-            itemId: "step",
-          });
+          yield* viewedNow(session.id, ids, "read");
           const reviewed = yield* sessions.status({ command: "status", session: session.id });
-          expect(reviewed).toMatchObject({ revision: 2, groups: [{ id: "step", accepted: true }] });
+          expect(reviewed).toMatchObject({ revision: 2, viewedHunkIds: ids });
           const before = JSON.stringify([...files]);
           gitPatch = patch.replace("+two", "+changed");
           const checks = yield* Effect.all(
@@ -510,8 +525,15 @@ describe("Sessions.open", () => {
     expect(captureCalls).toEqual([{ root, scope: uncommitted }]);
     expect(files.get(id)?.hunks).toHaveLength(2);
     const status = await run(Sessions.use((s) => s.status({ command: "status", session: id })));
-    expect(status).toMatchObject({ revision: 0, queue: [], queueSet: false, ready: false });
-    expect(status.inbox.map((hunk) => hunk.file)).toEqual(["a.txt", "b.txt"]);
+    expect(status).toMatchObject({
+      revision: 0,
+      groups: [],
+      viewedHunkIds: [],
+      files: [
+        { path: "a.txt", hunkCount: 1, viewed: false },
+        { path: "b.txt", hunkCount: 1, viewed: false },
+      ],
+    });
   });
 
   it("reuses a saved scope as it is after refs move, from any directory and after restart", async () => {
@@ -664,7 +686,6 @@ describe("Sessions.open", () => {
                     title: "third",
                     notes: [{ hunkId: "h3", text: "third" }],
                   },
-                  { type: "queue.set", itemIds: ["g1", "g2", "g3"] },
                 ],
               }),
             })
@@ -699,16 +720,19 @@ describe("Sessions reads", () => {
     );
     expect(byId.session.id).toBe("persisted");
     expect(byId.groups[0]?.count).toBe(1);
-    expect(byId.groups[0]?.accepted).toBe(true);
     expect(byId.groups[1]).toEqual({
       id: "g2",
       hunkIds: ["h2"],
       count: 1,
       title: "read me",
       notes: [{ hunkId: "h2", text: "intent and behavior" }],
-      accepted: true,
     });
-    expect(byId.inbox).toEqual([{ id: "h3", file: "y.txt" }]);
+    // Ungrouped h3 stays readable under its file; file Viewed derives from its hunks.
+    expect(byId.viewedHunkIds).toEqual(["h1"]);
+    expect(byId.files).toEqual([
+      { path: "x.txt", hunkCount: 1, viewed: true },
+      { path: "y.txt", hunkCount: 2, viewed: false },
+    ]);
     const otherStatus = await run(
       Sessions.use((s) => s.status({ command: "status", session: other.session.id })),
     );
@@ -754,17 +778,13 @@ describe("Sessions.apply", () => {
         title: "third",
         notes: [{ hunkId: "h3", text: "third" }],
       },
-      { type: "queue.set", itemIds: ["g1", "g2", "g3"] },
     ],
   };
 
   it("applies a validated batch, bumps the revision, and persists a durable receipt", async () => {
     const status = await run(apply(envelope));
     expect(status.revision).toBe(4);
-    expect(status.seq).toBe(2);
-    expect(status.inbox).toEqual([]);
     expect(status.groups.map((group) => group.id)).toEqual(["g1", "g2", "g3"]);
-    expect(status).toMatchObject({ queue: ["g1", "g2", "g3"], queueSet: true, ready: true });
     const saved = files.get("persisted")!;
     // The receipt stores each distinct note text once; g1 and g2 share the same text.
     expect(saved.receiptNoteTexts).toEqual(["intent and behavior", "third"]);
@@ -788,7 +808,7 @@ describe("Sessions.apply", () => {
     expect(files.get("persisted")?.revision).toBe(4);
   });
 
-  it("rejects the whole batch on any invalid op, an incomplete queue, or a stale revision", async () => {
+  it("rejects the whole batch on any invalid op, a removed queue op, or a stale revision", async () => {
     const invalid = await failure(
       apply({
         revision: 3,
@@ -807,17 +827,15 @@ describe("Sessions.apply", () => {
     );
     expect(invalid._tag).toBe("validation_failed");
     expect(invalid.detail).toEqual([{ opIndex: 1, message: "group missing does not exist" }]);
-    const incomplete = await failure(
+    // The review queue is gone: its op is an invalid envelope, not an alias.
+    const queue = await failure(
       apply({
         revision: 3,
-        idempotencyKey: "incomplete",
-        ops: [{ type: "queue.set", itemIds: ["g1"] }],
+        idempotencyKey: "queue",
+        ops: [{ type: "queue.set", itemIds: ["g1", "g2"] }],
       }),
     );
-    expect(incomplete._tag).toBe("validation_failed");
-    expect((incomplete.detail as Array<{ message: string }>).at(-1)?.message).toContain(
-      "exactly once",
-    );
+    expect(queue).toMatchObject({ _tag: "validation_failed", message: "invalid apply envelope" });
     const stale = await failure(apply({ revision: 0, idempotencyKey: "stale", ops: [] }));
     expect(stale._tag).toBe("stale_revision");
     expect(stale.detail).toEqual([expect.objectContaining({ opIndex: -1 })]);
@@ -857,40 +875,26 @@ describe("Sessions.apply", () => {
     }
   });
 
-  it("publishes progressively around human work and replays historical receipts without rollback", async () => {
+  it("publishes progressively around human Viewed and replays historical receipts without rollback", async () => {
     await run(
       Effect.gen(function* () {
         const s = yield* Sessions;
         const firstBatch = {
           revision: 3,
           idempotencyKey: "partial",
-          ops: [{ type: "queue.set", itemIds: ["g2", "g1"] }],
+          ops: [{ type: "group.update", id: "g2", title: "read me first" }],
         };
         const first = yield* apply(firstBatch);
-        expect(first).toMatchObject({ ready: false, inbox: [{ id: "h3" }] });
-        yield* recordHumanAction("persisted", { type: "cursor.move", itemId: "g2" });
-        yield* recordHumanAction("persisted", {
-          type: "verdict.toggle",
-          itemId: "g2",
-          sessionId: "persisted",
-          revision: 4,
-        });
-        const verdict = yield* s.status({ command: "status", session: persisted.id });
+        expect(first.revision).toBe(4);
+        yield* viewedNow("persisted", ["h2"], "read-g2");
+        const viewed = yield* s.status({ command: "status", session: persisted.id });
+        // A human write moves the revision the agent must name.
         const obsolete = yield* Effect.flip(apply({ ...envelope, revision: 4 }));
         expect(obsolete._tag).toBe("stale_revision");
-        const second = yield* apply({
-          ...envelope,
-          revision: verdict.revision,
-          ops: [envelope.ops[0], { type: "queue.set", itemIds: ["g2", "g1", "g3"] }],
-        });
+        const second = yield* apply({ ...envelope, revision: viewed.revision });
         expect(second).toMatchObject({
-          queue: ["g2", "g1", "g3"],
-          cursor: verdict.cursor,
-          groups: [
-            { id: "g1", accepted: true },
-            { id: "g2", accepted: false },
-            { id: "g3", accepted: false },
-          ],
+          viewedHunkIds: ["h1", "h2"],
+          groups: [{ id: "g1" }, { id: "g2", title: "read me first" }, { id: "g3" }],
         });
         expect(yield* apply(firstBatch)).toEqual(first);
         expect((yield* s.status({ command: "status", session: persisted.id })).revision).toBe(
@@ -921,6 +925,128 @@ describe("Sessions.apply", () => {
   });
 });
 
+describe("Sessions.viewed", () => {
+  const request = (fields: Partial<Input<"viewed">> = {}): Input<"viewed"> => ({
+    command: "viewed",
+    session: persisted.id,
+    snapshotId: persisted.snapshotId,
+    revision: persisted.revision,
+    requestId: "r1",
+    hunkIds: ["h2", "h3"],
+    viewed: true,
+    ...fields,
+  });
+  const viewed = (fields?: Partial<Input<"viewed">>) =>
+    Sessions.use((s) => s.viewed(request(fields)));
+  const status = Sessions.use((s) => s.status({ command: "status", session: persisted.id }));
+  const sessionSaves = () => commits.filter((commit) => commit === `session ${persisted.id}`);
+
+  it("sets and clears exactly the named hunks, saving effect and receipt together", async () => {
+    const result = await run(viewed());
+    expect(result).toEqual({
+      sessionId: persisted.id,
+      snapshotId: persisted.snapshotId,
+      revision: 4,
+      hunkIds: ["h2", "h3"],
+      viewed: true,
+    });
+    // One save carries both the effect and the receipt that answers its retries.
+    expect(sessionSaves()).toHaveLength(1);
+    expect(files.get(persisted.id)).toMatchObject({
+      revision: 4,
+      viewedHunkIds: ["h1", "h2", "h3"],
+      viewedReceipts: [{ requestId: "r1", digest: expect.any(String), result }],
+    });
+    expect((await run(status)).files).toEqual([
+      { path: "x.txt", hunkCount: 1, viewed: true },
+      { path: "y.txt", hunkCount: 2, viewed: true },
+    ]);
+    await run(viewed({ requestId: "r2", revision: 4, hunkIds: ["h2"], viewed: false }));
+    const cleared = await run(status);
+    expect(cleared.viewedHunkIds).toEqual(["h1", "h3"]);
+    expect(cleared.files[1]).toEqual({ path: "y.txt", hunkCount: 2, viewed: false });
+    // Groups carry no verdict to change.
+    expect(files.get(persisted.id)?.groups).toEqual(persisted.groups);
+  });
+
+  it("answers an identical retry from its receipt after a restart, even once the state moved on", async () => {
+    const first = await run(viewed());
+    await run(viewed({ requestId: "r2", revision: 4, hunkIds: ["h1"], viewed: false }));
+    const saved = JSON.stringify([...files]);
+    // Each run is a fresh daemon over the persisted files.
+    expect(await run(viewed())).toEqual(first);
+    expect(JSON.stringify([...files])).toBe(saved);
+    expect(sessionSaves()).toHaveLength(2);
+  });
+
+  it("fails a reused request id with a changed payload without writing", async () => {
+    await run(viewed());
+    const saved = JSON.stringify([...files]);
+    for (const changed of [{ viewed: false }, { hunkIds: ["h2"] }, { revision: 4 }])
+      expect(await failure(viewed(changed))).toMatchObject({
+        _tag: "validation_failed",
+        message: "request id reused with a different payload",
+      });
+    expect(JSON.stringify([...files])).toBe(saved);
+  });
+
+  it("conflicts on a stale revision or snapshot instead of overwriting", async () => {
+    for (const stale of [{ revision: 2 }, { snapshotId: "b".repeat(64) }])
+      expect(await failure(viewed(stale))).toMatchObject({
+        _tag: "stale_revision",
+        detail: { snapshotId: persisted.snapshotId, revision: persisted.revision },
+      });
+    expect(files.get(persisted.id)).toEqual(persisted);
+    expect(commits).toEqual([]);
+  });
+
+  it("rejects unknown, duplicate or no hunk ids atomically", async () => {
+    for (const hunkIds of [["h2", "gone"], ["h2", "h2"], []])
+      expect((await failure(viewed({ hunkIds })))._tag).toBe("validation_failed");
+    expect((await failure(viewed({ requestId: "" })))._tag).toBe("bad_args");
+    expect((await failure(viewed({ session: "nope" })))._tag).toBe("no_session");
+    expect(files.get(persisted.id)).toEqual(persisted);
+    expect(commits).toEqual([]);
+  });
+
+  it("publishes nothing when persisting fails, so the same request can run again", async () => {
+    await run(
+      Effect.gen(function* () {
+        const before = yield* status;
+        saveFails = true;
+        expect(Exit.isFailure(yield* Effect.exit(viewed()))).toBe(true);
+        expect(yield* status).toEqual(before);
+        expect(files.get(persisted.id)).toEqual(persisted);
+        saveFails = false;
+        expect((yield* viewed()).revision).toBe(4);
+      }),
+    );
+  });
+
+  it("holds a second request behind a pending save, which then sees a stale revision", async () => {
+    await run(
+      Effect.gen(function* () {
+        const held = yield* holdNextSave;
+        const first = yield* Effect.forkChild(viewed());
+        yield* Deferred.await(held.started);
+        const second = yield* Effect.forkChild(Effect.flip(viewed({ requestId: "r2" })));
+        yield* Effect.sleep("20 millis");
+        expect(second.pollUnsafe()).toBeUndefined();
+        expect(sessionSaves()).toEqual([]);
+        yield* Deferred.succeed(held.release, undefined);
+        expect((yield* Fiber.join(first)).revision).toBe(4);
+        const stale = yield* Fiber.join(second);
+        expect([stale._tag, stale.detail]).toEqual([
+          "stale_revision",
+          { snapshotId: persisted.snapshotId, revision: 4 },
+        ]);
+      }),
+    );
+    expect(sessionSaves()).toHaveLength(1);
+    expect(files.get(persisted.id)?.viewedReceipts).toHaveLength(1);
+  });
+});
+
 describe("Sessions.refresh", () => {
   const changed = `diff --git a/a.txt b/a.txt
 --- a/a.txt
@@ -948,7 +1074,9 @@ diff --git a/c.txt b/c.txt
         const sessions = yield* Sessions;
         const { session } = yield* openScope(uncommitted, `${root}/sub`);
         const created = yield* sessions.status({ command: "status", session: session.id });
-        const [a, b] = created.inbox.map((hunk) => hunk.id);
+        const [a, b] = (yield* sessions.diff({ command: "diff", session: session.id })).hunks.map(
+          (hunk) => hunk.id,
+        );
         yield* sessions.apply({
           command: "apply",
           session: session.id,
@@ -970,23 +1098,24 @@ diff --git a/c.txt b/c.txt
                 title: "stale note",
                 notes: [{ hunkId: b, text: "stale note" }],
               },
-              { type: "queue.set", itemIds: ["g", "changed"] },
             ],
           }),
         });
+        yield* viewedNow(session.id, [a!, b!], "read-both");
         gitPatch = changed;
         const refreshed = yield* sessions.refresh({ command: "refresh", session: session.id });
         expect(captureCalls[1]).toEqual({ root, scope: uncommitted });
         expect(refreshed.session.snapshotId).not.toBe(session.snapshotId);
-        expect(refreshed.revision).toBe(2);
-        expect(refreshed.groups).toEqual([
-          expect.objectContaining({ id: "g", hunkIds: [a], accepted: false }),
+        expect(refreshed.revision).toBe(3);
+        expect(refreshed.groups).toEqual([expect.objectContaining({ id: "g", hunkIds: [a] })]);
+        // Only the identical (merely shifted) hunk keeps Viewed; changed and new hunks start unviewed.
+        expect(refreshed.viewedHunkIds).toEqual([a]);
+        expect(refreshed.files).toEqual([
+          { path: "a.txt", hunkCount: 1, viewed: true },
+          { path: "b.txt", hunkCount: 1, viewed: false },
+          { path: "c.txt", hunkCount: 1, viewed: false },
         ]);
-        expect(refreshed.inbox.map((hunk) => hunk.file)).toEqual(["b.txt", "c.txt"]);
-        expect(refreshed.inbox.map((hunk) => hunk.id)).not.toContain(b);
-        expect(refreshed.queue).toEqual(["g", ...refreshed.inbox.map((hunk) => hunk.id)]);
-        expect(refreshed).toMatchObject({ queueSet: false, ready: false });
-        expect(files.get(created.session.id)?.revision).toBe(2);
+        expect(files.get(created.session.id)?.revision).toBe(3);
       }),
     );
   });
@@ -1019,20 +1148,16 @@ diff --git a/c.txt b/c.txt
                 title: "third",
                 notes: [{ hunkId: "h3", text: "third" }],
               },
-              { type: "queue.set", itemIds: ["g1", "g2", "g3"] },
             ],
           }),
         });
-        yield* recordHumanAction(persisted.id, {
-          type: "verdict.toggle",
-          sessionId: persisted.id,
-          revision: persisted.revision + 1,
-          itemId: "g3",
-        });
+        yield* viewedNow(persisted.id, ["h3"], "read-h3");
         const before = JSON.stringify([...files]);
         const status = yield* sessions.status({ command: "status", session: persisted.id });
-        expect(status).toMatchObject({ revision: persisted.revision + 2 });
-        expect(status.groups.find(({ id }) => id === "g3")?.accepted).toBe(true);
+        expect(status).toMatchObject({
+          revision: persisted.revision + 2,
+          viewedHunkIds: ["h1", "h3"],
+        });
         const refresh = sessions.refresh({ command: "refresh", session: persisted.id });
         patchEffect = Effect.fail(new BadArgs({ message: "the working tree changed" }));
         expect(yield* Effect.flip(refresh)).toMatchObject({ _tag: "bad_args" });
@@ -1061,7 +1186,9 @@ diff --git a/c.txt b/c.txt
       Sessions.use((sessions) =>
         Effect.gen(function* () {
           const { session } = yield* openScope();
-          const created = yield* sessions.status({ command: "status", session: session.id });
+          const ids = (yield* sessions.diff({ command: "diff", session: session.id })).hunks.map(
+            ({ id }) => id,
+          );
           const held = yield* holdCaptures;
           const refreshing = yield* Effect.forkChild(
             sessions.refresh({ command: "refresh", session: session.id }),
@@ -1079,27 +1206,20 @@ diff --git a/c.txt b/c.txt
                     type: "group.create",
                     id: "late",
                     title: "Late guidance",
-                    notes: [{ hunkId: created.inbox[0]!.id, text: "Written during capture." }],
-                    memberHunkIds: created.inbox.map(({ id }) => id),
+                    notes: [{ hunkId: ids[0]!, text: "Written during capture." }],
+                    memberHunkIds: ids,
                   },
-                  { type: "queue.set", itemIds: ["late"] },
                 ],
               }),
             })
             .pipe(Effect.timeout("1 second"));
-          // A human verdict persisted by another process, then loaded, also during the capture.
-          yield* recordHumanAction(session.id, {
-            type: "verdict.toggle",
-            sessionId: session.id,
-            revision: 1,
-            itemId: "late",
-          }).pipe(Effect.timeout("1 second"));
+          // Human Viewed progress, also written during the capture.
+          yield* viewedNow(session.id, ids, "late-read").pipe(Effect.timeout("1 second"));
           yield* Deferred.succeed(held.release, undefined);
           const refreshed = yield* Fiber.join(refreshing);
           expect(refreshed.revision).toBe(3);
-          expect(refreshed.groups).toEqual([
-            expect.objectContaining({ id: "late", accepted: true }),
-          ]);
+          expect(refreshed.groups).toEqual([expect.objectContaining({ id: "late" })]);
+          expect(refreshed.viewedHunkIds).toEqual(ids);
           expect(files.get(session.id)?.revision).toBe(3);
         }),
       ),

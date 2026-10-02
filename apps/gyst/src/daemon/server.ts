@@ -154,6 +154,8 @@ export class DaemonServer extends Context.Service<
             return sessions.code(request);
           case "apply":
             return sessions.apply(request);
+          case "viewed":
+            return sessions.viewed(request);
           case "refresh":
             return sessions.refresh(request, onProgress);
           case "delete":

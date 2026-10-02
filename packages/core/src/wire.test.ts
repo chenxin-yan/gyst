@@ -52,6 +52,15 @@ describe("daemon wire envelopes", () => {
       { command: "open", session: "s1" },
       { command: "status", session: "s1" },
       { command: "delete", session: "s1", requestId: "r1" },
+      {
+        command: "viewed",
+        session: "s1",
+        snapshotId,
+        revision: 2,
+        requestId: "r1",
+        hunkIds: ["h1"],
+        viewed: true,
+      },
       { command: "files", session: "s1", snapshotId, after: "src/a.ts" },
       { command: "code", session: "s1", snapshotId, file: "src/a.ts", side: "new" },
       {
@@ -74,6 +83,22 @@ describe("daemon wire envelopes", () => {
       { command: "diff", session: "s1", executable: "/bin/sh" },
       { command: "apply", session: "s1", batch: "{}" },
       { command: "refresh", session: "s1" },
+      // Viewed names the observed snapshot and revision and a request id; never an author role.
+      { command: "viewed", session: "s1", snapshotId, requestId: "r1", hunkIds: [], viewed: true },
+      { command: "viewed", session: "s1", revision: 2, requestId: "r1", hunkIds: [], viewed: true },
+      { command: "viewed", session: "s1", snapshotId, revision: 2, hunkIds: [], viewed: true },
+      {
+        command: "viewed",
+        session: "s1",
+        snapshotId,
+        revision: 2,
+        requestId: "r1",
+        hunkIds: ["h1"],
+        viewed: true,
+        role: "agent",
+      },
+      // Group verdicts and the review queue are gone, not aliased.
+      { command: "verdict", session: "s1", itemId: "g1" },
       // Snapshot reads name a logical path in an exact snapshot, never a host path or blob.
       { command: "code", session: "s1", file: "a", side: "new" },
       { command: "code", session: "s1", snapshotId: "HEAD", file: "a", side: "new" },
@@ -123,6 +148,7 @@ describe("daemon wire envelopes", () => {
       "pageBytes",
       "SourceCheckPayloadSchema",
       "DeletePayloadSchema",
+      "ViewedPayloadSchema",
       "ReplySchema",
       "ScopeSchema",
       "SessionSummarySchema",
@@ -156,18 +182,17 @@ describe("daemon wire envelopes", () => {
     const status: publicWire.StatusPayload = {
       session: summary,
       revision: 0,
-      seq: 0,
-      cursor: { itemId: null, pane: "queue" },
       groups: [],
-      inbox: [],
-      queue: [],
-      queueSet: false,
-      ready: false,
-      files: [],
+      viewedHunkIds: [],
+      files: [{ path: "a.ts", hunkCount: 1, viewed: false }],
     };
     expect(Schema.decodeUnknownSync(publicWire.StatusPayloadSchema, strict)(status)).toEqual(
       status,
     );
+    for (const legacy of [{ seq: 0 }, { queue: [] }, { inbox: [] }, { ready: false }])
+      expect(() =>
+        Schema.decodeUnknownSync(publicWire.StatusPayloadSchema, strict)({ ...status, ...legacy }),
+      ).toThrow();
     const error: publicWire.ErrorPayload = { code: "no_session", message: "gone" };
     expect(Schema.decodeUnknownSync(publicWire.ErrorPayloadSchema)(error)).toBeInstanceOf(
       publicWire.NoSession,

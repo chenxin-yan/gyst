@@ -71,6 +71,15 @@ beats them. `pnpm check` runs StyleX's `valid-styles` and `no-unused` lint rules
 not check style keys or values. The browser tests find elements by role, text or structure,
 because StyleX class names are hashed.
 
+The session reader renders diffs with [`@pierre/diffs`](https://diffs.com) (its React `CodeView`).
+Its markup and stylesheet live in each file's open shadow root, in the renderer's own `base`,
+`theme`, `rendered` and `unsafe` layers, so none of its CSS enters the page cascade and the page's
+layer order stays `reset`, then StyleX's. Style it only through its documented inputs: the
+`--diffs-*` custom properties, set with StyleX on the `CodeView` root from our tokens (they
+inherit into the shadow roots), the `theme` options, and `unsafeCSS` for the file box's `:host`
+alone. Our file headers are slotted light DOM, styled with StyleX like any component. Never query
+or style inside its shadow roots, and use only its public API.
+
 `pnpm test` includes browser tests (`apps/gyst/tests/e2e/browser.test.ts`) that drive the
 installed package, its real launches, daemon and a private key-authenticated SSH local forward on
 127.0.0.1 from a sandboxed Chromium. They need Google Chrome (or

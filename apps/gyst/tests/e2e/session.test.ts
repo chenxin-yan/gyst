@@ -1,6 +1,6 @@
 import {
-  applyHumanAction,
   SessionSchema,
+  setViewed,
   SourceCheckPayloadSchema,
   StatusPayloadSchema,
   statusOf,
@@ -280,7 +280,7 @@ describe("gyst session CLI seam", () => {
     expect(twoDot.session.snapshotId).not.toBe(threeDot.session.snapshotId);
     expect(new Set([threeDot, twoDot, uncommitted].map(({ session }) => session.id)).size).toBe(3);
     const id = threeDot.session.id;
-    const hunkId = json(await gyst(cwd, ["session", "status", "--session", id])).inbox[0].id;
+    const hunkId = json(await gyst(cwd, ["session", "diff", "--session", id])).hunks[0].id;
     const prepared = json(
       await gyst(
         cwd,
@@ -296,7 +296,6 @@ describe("gyst session CLI seam", () => {
               title: "Add the feature",
               notes: [{ hunkId, text: "Guidance that reopening must keep." }],
             },
-            { type: "queue.set", itemIds: ["feature"] },
           ],
         }),
       ),
@@ -337,10 +336,10 @@ describe("gyst session CLI seam", () => {
     const status = Schema.decodeUnknownSync(StatusPayloadSchema)(
       json(await gyst(cwd, ["session", "status", ...pinned])),
     );
-    expect(status.inbox.length).toBe(2);
+    expect(status.files.map(({ hunkCount }) => hunkCount)).toEqual([1, 1]);
     expect(status.session).toEqual(session);
     expect(status.session.scope).toEqual({ kind: "uncommitted" });
-    const hunkId = status.inbox[0]!.id;
+    const hunkId = json(await gyst(cwd, ["session", "diff", ...pinned])).hunks[0].id;
 
     const pid = await killDaemon(data);
     // Seed review state on disk: the respawned daemon must serve it, not the pre-kill snapshot.
@@ -352,7 +351,6 @@ describe("gyst session CLI seam", () => {
         title: "same edit",
         notes: [{ hunkId, text: "intent and behavior" }],
         hunkIds: [hunkId],
-        accepted: false,
       },
     ];
     const independentHunk = state.hunks.find((hunk: { id: string }) => hunk.id !== hunkId);
@@ -361,7 +359,6 @@ describe("gyst session CLI seam", () => {
       hunkIds: [independentHunk.id],
       title: "needs human review",
       notes: [{ hunkId: independentHunk.id, text: "intent and behavior" }],
-      accepted: false,
     });
     await writeFile(statePath, JSON.stringify(state));
     await writeFile(join(data, "corrupt.json"), "not json");
@@ -374,9 +371,7 @@ describe("gyst session CLI seam", () => {
       count: 1,
       title: "needs human review",
       notes: [{ hunkId: independentHunk.id, text: "intent and behavior" }],
-      accepted: false,
     });
-    expect(restoredStatus.inbox).toEqual([]);
     const respawned = await daemonPid(data);
     expect(respawned).not.toBe(pid);
     // The CLI relaunched its own installed entry on the Node under test.
@@ -622,8 +617,7 @@ describe("gyst session CLI seam", () => {
     await writeFile(join(cwd, "other.txt"), "new\n");
     const { session } = json(await gyst(cwd, ["session", "open"]));
     const pinned = ["--session", session.id];
-    const created = json(await gyst(cwd, ["session", "status", ...pinned]));
-    const [first, second] = created.inbox;
+    const [first, second] = json(await gyst(cwd, ["session", "diff", ...pinned])).hunks;
 
     const invalidError = failed(
       await gyst(
@@ -667,24 +661,15 @@ describe("gyst session CLI seam", () => {
           title: "read this",
           notes: [{ hunkId: second.id, text: "read this" }],
         },
-        { type: "queue.set", itemIds: ["group-2", "group-1"] },
       ],
     };
     const status = Schema.decodeUnknownSync(StatusPayloadSchema)(
       json(await gyst(cwd, ["session", "apply", ...pinned], JSON.stringify(envelope))),
     );
     expect(status.revision).toBe(1);
-    expect(status.groups).toHaveLength(2);
-    expect(status.inbox).toEqual([]);
-    expect(status.queue).toEqual(["group-2", "group-1"]);
-    expect(status.queueSet).toBe(true);
-    expect(status.ready).toBe(true);
+    expect(status.groups.map(({ id }) => id)).toEqual(["group-1", "group-2"]);
 
     await killDaemon(data);
-    const statePath = join(data, `${status.session.id}.json`);
-    const persisted = JSON.parse(await readFile(statePath, "utf8"));
-    persisted.cursor = { itemId: "group-1", pane: "diff", hunkId: first.id };
-    await writeFile(statePath, JSON.stringify(persisted));
 
     const changed = json(
       await gyst(
@@ -700,7 +685,6 @@ describe("gyst session CLI seam", () => {
               title: "updated",
               notes: [{ hunkId: second.id, text: "updated" }],
             },
-            { type: "queue.set", itemIds: ["group-2", "group-1"] },
           ],
         }),
       ),
@@ -718,20 +702,13 @@ describe("gyst session CLI seam", () => {
         JSON.stringify({
           revision: 2,
           idempotencyKey: "dissolve",
-          ops: [
-            { type: "group.dissolve", id: "group-1" },
-            { type: "queue.set", itemIds: ["group-2"] },
-          ],
+          ops: [{ type: "group.dissolve", id: "group-1" }],
         }),
       ),
     );
     expect(dissolved).toEqual(
       expect.objectContaining({
         groups: [expect.objectContaining({ id: "group-2", hunkIds: [second.id] })],
-        queue: ["group-2"],
-        queueSet: true,
-        ready: false,
-        cursor: { itemId: null, pane: "queue" },
       }),
     );
     succeeded(await gyst(cwd, ["session", "delete", ...pinned, "--request-id", "cleanup"]));
@@ -744,15 +721,12 @@ describe("gyst session CLI seam", () => {
     await writeFile(join(cwd, "tracked.txt"), "one\ntwo\n");
     const { session } = json(await gyst(cwd, ["session", "open"]));
     const pinned = ["--session", session.id];
-    const hunkId = json(await gyst(cwd, ["session", "status", ...pinned])).inbox[0].id;
+    const hunkId = json(await gyst(cwd, ["session", "diff", ...pinned])).hunks[0].id;
     const batch = (idempotencyKey: string, title: string) =>
       JSON.stringify({
         revision: 0,
         idempotencyKey,
-        ops: [
-          { type: "group.create", id: "group-1", memberHunkIds: [hunkId], title, notes: [] },
-          { type: "queue.set", itemIds: ["group-1"] },
-        ],
+        ops: [{ type: "group.create", id: "group-1", memberHunkIds: [hunkId], title, notes: [] }],
       });
 
     const results = await Promise.all([
@@ -778,9 +752,9 @@ describe("gyst session CLI seam", () => {
     await writeFile(join(cwd, "second.txt"), "base\nfirst change\n");
     const { session } = json(await gyst(cwd, ["session", "open"]));
     const pinned = ["--session", session.id];
-    const created = json(await gyst(cwd, ["session", "status", ...pinned]));
-    const first = created.inbox.find((hunk: { file: string }) => hunk.file === "tracked.txt");
-    const second = created.inbox.find((hunk: { file: string }) => hunk.file === "second.txt");
+    const created = json(await gyst(cwd, ["session", "diff", ...pinned])).hunks;
+    const first = created.find((hunk: { file: string }) => hunk.file === "tracked.txt");
+    const second = created.find((hunk: { file: string }) => hunk.file === "second.txt");
     expect(first).toBeDefined();
     expect(second).toBeDefined();
     const applied = json(
@@ -805,7 +779,6 @@ describe("gyst session CLI seam", () => {
               title: "stale group",
               notes: [{ hunkId: second.id, text: "stale group" }],
             },
-            { type: "queue.set", itemIds: ["group-1", "group-2"] },
           ],
         }),
       ),
@@ -814,23 +787,20 @@ describe("gyst session CLI seam", () => {
     await killDaemon(data);
     const statePath = join(data, `${applied.session.id}.json`);
     const state = JSON.parse(await readFile(statePath, "utf8"));
-    state.groups[0].accepted = true;
+    // Human Viewed progress, seeded on disk: no CLI command marks hunks Viewed.
+    state.viewedHunkIds = [first.id, second.id];
     await writeFile(statePath, JSON.stringify(state));
 
     await writeFile(join(cwd, "second.txt"), "base\nreplacement change\n");
     await writeFile(join(cwd, "new.txt"), "brand new\n");
     const refreshed = json(await gyst(cwd, ["session", "refresh", ...pinned]));
     expect(refreshed.groups[0]).toEqual(
-      expect.objectContaining({ id: "group-1", accepted: true, hunkIds: [first.id] }),
+      expect.objectContaining({ id: "group-1", hunkIds: [first.id] }),
     );
     expect(refreshed.groups).toHaveLength(1);
-    expect(refreshed.inbox).toHaveLength(2);
-    expect(refreshed.queue).toEqual([
-      "group-1",
-      ...refreshed.inbox.map((hunk: { id: string }) => hunk.id),
-    ]);
-    expect(refreshed.queueSet).toBe(false);
-    expect(refreshed.ready).toBe(false);
+    // Only the unchanged hunk keeps Viewed; the replaced and the new hunk start unviewed.
+    expect(refreshed.viewedHunkIds).toEqual([first.id]);
+    expect(refreshed.files).toHaveLength(3);
 
     const updated = json(
       await gyst(
@@ -839,14 +809,11 @@ describe("gyst session CLI seam", () => {
         JSON.stringify({
           revision: refreshed.revision,
           idempotencyKey: "update-group",
-          ops: [
-            { type: "group.update", id: "group-1", title: "updated group" },
-            { type: "queue.set", itemIds: ["group-1"] },
-          ],
+          ops: [{ type: "group.update", id: "group-1", title: "updated group" }],
         }),
       ),
     );
-    expect(updated.groups[0].accepted).toBe(false);
+    expect(updated.groups[0].title).toBe("updated group");
     succeeded(await gyst(cwd, ["session", "delete", ...pinned, "--request-id", "cleanup"]));
   }, 20_000);
 
@@ -1018,8 +985,8 @@ describe("gyst session CLI seam", () => {
     await writeFile(join(cwd, "tracked.txt"), "changed\n");
     const { session: opened } = json(await gyst(cwd, ["session", "open"], undefined, ownData));
     const pinned = ["--session", opened.id];
-    const hunkId = json(await gyst(cwd, ["session", "status", ...pinned], undefined, ownData))
-      .inbox[0].id;
+    const hunkId = json(await gyst(cwd, ["session", "diff", ...pinned], undefined, ownData))
+      .hunks[0].id;
     const published = json(
       await gyst(
         cwd,
@@ -1035,7 +1002,6 @@ describe("gyst session CLI seam", () => {
               title: "Review",
               notes: [{ hunkId, text: "Keep this note." }],
             },
-            { type: "queue.set", itemIds: ["group"] },
           ],
         }),
         ownData,
@@ -1044,18 +1010,26 @@ describe("gyst session CLI seam", () => {
     const savedPath = join(ownData, `${published.session.id}.json`);
     await killDaemon(ownData, "SIGTERM");
     expect(existsSync(join(ownData, "daemon.pid"))).toBe(false);
-    // No command records human work any more: accept the group with the pure reducer and save it
-    // as the store does, so the upgrade must carry a non-default verdict and accept history.
+    // No CLI command marks Viewed: record it with the pure operation and save it as the store
+    // does, so the upgrade must carry non-default Viewed progress and its receipt.
     const session = decodeSession(await readFile(savedPath, "utf8"));
     const reviewed = Result.getOrThrow(
-      applyHumanAction(
+      setViewed(
         session,
-        { type: "verdict.toggle", itemId: "group", sessionId: session.id, revision: 1 },
+        {
+          command: "viewed",
+          session: session.id,
+          snapshotId: session.snapshotId,
+          revision: 1,
+          requestId: "read",
+          hunkIds: [hunkId],
+          viewed: true,
+        },
         new Date().toISOString(),
       ),
-    );
+    ).session!;
     const status = statusOf(reviewed);
-    expect(status.groups[0]!.accepted).toBe(true);
+    expect(status.viewedHunkIds).toEqual([hunkId]);
     const saved = `${JSON.stringify(reviewed)}\n`;
     await writeFile(savedPath, saved);
     const fake = await fakeDaemon(ownData, (message) => {

@@ -1,113 +1,76 @@
-import { Result, Schema } from "effect";
-import { draftOf, focusableHunkIds, visibleItemIds } from "./draft.ts";
-import { ValidationFailed } from "./errors.ts";
-import type { Session } from "./session.ts";
+import { Result } from "effect";
+import { draftOf } from "./draft.ts";
+import { BadArgs, StaleRevision, ValidationFailed } from "./errors.ts";
+import { hash } from "./hash.ts";
+import type { Session, ViewedPayload } from "./session.ts";
+import type { BrowserRequest } from "./wire.ts";
 
-// Verdicts and viewport observations name the snapshot they were based on.
-const frameFields = { sessionId: Schema.String, revision: Schema.Number };
-export const HumanActionSchema = Schema.Union([
-  Schema.Struct({ type: Schema.Literal("cursor.move"), itemId: Schema.String }),
-  Schema.Struct({
-    type: Schema.Literal("cursor.focus"),
-    itemId: Schema.String,
-    pane: Schema.Literals(["queue", "diff"]),
-    hunkId: Schema.String,
-  }),
-  Schema.Struct({
-    type: Schema.Literal("cursor.follow"),
-    itemId: Schema.String,
-    pane: Schema.Literal("diff"),
-    hunkId: Schema.String,
-    ...frameFields,
-    seq: Schema.Number,
-  }),
-  Schema.Struct({
-    type: Schema.Literal("verdict.toggle"),
-    itemId: Schema.String,
-    ...frameFields,
-  }),
-  Schema.Struct({ type: Schema.Literal("verdict.undo"), ...frameFields }),
-]);
-export type HumanAction = typeof HumanActionSchema.Type;
-/** Cursor focus bumps only `seq`; verdicts and their atomic navigation bump `revision` too. */
-export function applyHumanAction(
+export type ViewedRequest = Extract<BrowserRequest, { readonly command: "viewed" }>;
+/** A replayed request returns its recorded result and no session to persist. */
+export type ViewedOutcome = { readonly result: ViewedPayload; readonly session?: Session };
+
+/**
+ * Sets Viewed on exactly `request.hunkIds`: all of them or none. A recorded `requestId` answers
+ * first, so a retry after the state moved on still gets its original result.
+ */
+export function setViewed(
   session: Session,
-  action: HumanAction,
+  request: ViewedRequest,
   updatedAt: string,
-): Result.Result<Session, ValidationFailed> {
-  // Viewport observations are conditional; explicit human navigation remains unconditional.
-  if (
-    action.type === "cursor.follow" &&
-    (action.sessionId !== session.id ||
-      action.revision !== session.revision ||
-      action.seq !== session.seq)
-  )
-    return Result.succeed(session);
-  const inapplicable = Result.fail(
-    new ValidationFailed({ message: "TUI action does not apply to the current session" }),
-  );
-  const draft = draftOf(session);
-  const visibleIds = new Set(visibleItemIds(session));
-
-  if (action.type === "cursor.move") {
-    if (!visibleIds.has(action.itemId)) return inapplicable;
-    draft.cursor = {
-      itemId: action.itemId,
-      pane: "queue",
-      hunkId: focusableHunkIds(draft, action.itemId)[0]!,
-    };
-  } else if (action.type === "cursor.focus" || action.type === "cursor.follow") {
-    const { itemId, pane } = action;
-    if (!visibleIds.has(itemId)) return inapplicable;
-    if (focusableHunkIds(session, itemId).includes(action.hunkId))
-      draft.cursor = { itemId, pane, hunkId: action.hunkId };
-    else return inapplicable;
-  } else {
-    // Each publication sets the reviewable queue, even while inbox preparation continues.
-    if (!session.queueSet)
-      return Result.fail(new ValidationFailed({ message: "review queue is not set" }));
-    const itemId = action.type === "verdict.undo" ? draft.acceptHistory.at(-1) : action.itemId;
-    if (!itemId) return inapplicable;
-    const item = draft.groups.find(({ id }) => id === itemId);
-    if (!item || (action.type === "verdict.undo" && !item.accepted)) return inapplicable;
-    if (action.type === "verdict.undo") {
-      item.accepted = false;
-      draft.acceptHistory.pop();
-      draft.cursor = {
-        itemId,
-        pane: session.cursor.pane,
-        hunkId: focusableHunkIds(draft, itemId)[0]!,
-      };
-    } else {
-      item.accepted = !item.accepted;
-      draft.acceptHistory = draft.acceptHistory.filter((id) => id !== itemId);
-      if (item.accepted) {
-        draft.acceptHistory.push(itemId);
-        // Another TUI may have moved focus since this explicitly named verdict was sent.
-        if (session.cursor.itemId === itemId) {
-          const pending = new Set(
-            draft.groups
-              .filter((candidate) => !candidate.accepted)
-              .map((candidate) => candidate.id),
-          );
-          const start = draft.queue.indexOf(itemId);
-          for (let offset = 1; offset <= draft.queue.length; offset++) {
-            const destination = draft.queue[(start + offset) % draft.queue.length]!;
-            if (!pending.has(destination)) continue;
-            draft.cursor = {
-              itemId: destination,
-              pane: session.cursor.pane,
-              hunkId: focusableHunkIds(draft, destination)[0]!,
-            };
-            break;
-          }
-        }
-      }
-    }
-    draft.revision++;
+): Result.Result<ViewedOutcome, BadArgs | StaleRevision | ValidationFailed> {
+  const { requestId } = request;
+  if (!requestId) return Result.fail(new BadArgs({ message: "viewed needs a request id" }));
+  // Schema decoding already ordered the keys, so the JSON text is a canonical form of the request.
+  const digest = hash(JSON.stringify(request));
+  // ponytail: every request keeps a receipt, found by linear scan; prune or index if a session
+  // collects thousands.
+  const receipt = session.viewedReceipts.find((candidate) => candidate.requestId === requestId);
+  if (receipt) {
+    if (receipt.digest === digest) return Result.succeed({ result: receipt.result });
+    return Result.fail(
+      new ValidationFailed({
+        message: "request id reused with a different payload",
+        detail: { requestId },
+      }),
+    );
   }
+  if (request.snapshotId !== session.snapshotId || request.revision !== session.revision)
+    return Result.fail(
+      new StaleRevision({
+        message: "viewed was based on an older snapshot or revision; read the session again",
+        detail: { snapshotId: session.snapshotId, revision: session.revision },
+      }),
+    );
+  const current = new Set(session.hunks.map(({ id }) => id));
+  const unknown = request.hunkIds.filter((id) => !current.has(id));
+  if (
+    request.hunkIds.length === 0 ||
+    new Set(request.hunkIds).size !== request.hunkIds.length ||
+    unknown.length
+  )
+    return Result.fail(
+      new ValidationFailed({
+        message: "viewed needs distinct current hunk ids",
+        detail: { unknown },
+      }),
+    );
 
-  draft.seq++;
+  const draft = draftOf(session);
+  const viewed = new Set(session.viewedHunkIds);
+  for (const id of request.hunkIds) {
+    if (request.viewed) viewed.add(id);
+    else viewed.delete(id);
+  }
+  draft.viewedHunkIds = session.hunks.flatMap(({ id }) => (viewed.has(id) ? [id] : []));
+  draft.revision++;
   draft.updatedAt = updatedAt;
-  return Result.succeed(draft);
+  const result: ViewedPayload = {
+    sessionId: session.id,
+    snapshotId: session.snapshotId,
+    revision: draft.revision,
+    hunkIds: [...request.hunkIds],
+    viewed: request.viewed,
+  };
+  draft.viewedReceipts.push({ requestId, digest, result });
+  return Result.succeed({ session: draft, result });
 }
