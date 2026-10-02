@@ -7,6 +7,9 @@ and GitHub Actions' `mise-action` read the same pins. Use `mise ls --current` to
 
 `onFail: "ignore"` leaves tool installation to mise rather than
 [pnpm's runtime/package-manager management](https://pnpm.io/package_json#devenginesruntime).
+That is why pnpm is pinned in `devEngines.packageManager` rather than the top-level
+`packageManager` field: only `devEngines` carries that policy beside the version, and adding both
+would pin pnpm twice.
 Activate mise in your shell or prefix commands with `mise exec --`. Gyst runs on Node;
 Crust's build tool embeds Bun, so no separate Bun installation is needed.
 
@@ -26,6 +29,56 @@ checks (`pnpm exec vp check --fix` fixes formatting and lint issues) and is cach
 the code and is cached. `test:e2e` builds the CLI, packs it, installs it globally with npm into a
 temporary prefix and tests that install; it is never cached. Run both checks and tests before
 opening a PR.
+
+## Run gyst from source
+
+[`apps/gyst/dev/gyst`](apps/gyst/dev/gyst) is the checkout's `gyst`, run from source. Nothing is
+built for the CLI, the daemon or the viewer. Put its directory first on `PATH` in the terminal (or
+the agent session) you develop in:
+
+```sh
+export PATH="$PWD/apps/gyst/dev:$PATH"   # from the checkout root
+cd ~/some/repo
+gyst main...feature                      # or plain `gyst`, or `gyst --session <id>`
+```
+
+It takes the same arguments as `gyst` and reviews the repository you run it in.
+
+- **The viewer:** bare `gyst`, a range or `--session` starts the Vite dev server
+  ([`apps/web/dev.ts`](apps/web/dev.ts)) with a source launcher behind it, and prints one URL,
+  `  gyst  http://g-<hex>.localhost:3000/session/<id>#<secret>`. Open it; viewer edits apply with
+  Fast Refresh. `pnpm dev` does the same for this checkout's own uncommitted changes.
+- **Everything else** (`gyst session ...`, `gyst skills ...`, `--help`) runs the source CLI
+  directly. An agent whose `PATH` starts with this directory publishes through the source CLI, so
+  you can watch its groups arrive in the dev viewer.
+- **Skills:** `gyst skills` links agents to the built skills in `apps/gyst/.crust/root/skills/`,
+  which only `pnpm build` creates; the build also regenerates `gyst-cli` from the command
+  definitions. Run `pnpm build` once and after each skill or command change, then
+  `gyst skills install --scope project` in the repository you test in. `--scope project` keeps the
+  dev links out of your global agent directories, and later builds update them in place.
+- **Where state lives:** sessions and the daemon use `.dev/data` (`GYST_DATA_DIR`), never your own
+  gyst data. `rm -rf .dev` starts over.
+- **After changing `apps/gyst` or `packages/core`:** press `r` in the dev server. Vite reruns the
+  plugin, which replaces the daemon and the launcher with ones from the current source and prints
+  a new URL. The old URL then fails sign-in, since every launch has its own hostname and
+  credentials. The CLI needs nothing: each command runs the current source, and the daemon a
+  changed CLI talks to is replaced on the next `r`.
+- **Signing in again:** a launch URL signs in only within 10 minutes of its launch. Press `r` for a
+  new one. A tab that is already signed in keeps working.
+- **Stopping:** Ctrl-C stops Vite and the launcher. The daemon outlives them, as it does in
+  production; the next launch replaces it.
+
+How the viewer is wired: the dev-only plugin in [`apps/web/dev-launcher.ts`](apps/web/dev-launcher.ts)
+runs `node apps/gyst/src/index.ts` (Node runs the TypeScript directly) and proxies the bridge
+paths (`/bootstrap`, `/api/operation`) to it with their `Host` and `Origin` unchanged. The browser
+opens the launch's `g-<hex>.localhost` hostname on Vite's port, as it would behind an SSH forward,
+so sign-in, the cookie and the host and origin checks run as in production. Vite's own
+`http://localhost:3000/` links are not printed, because the launcher refuses them with 403. The
+source launcher needs an `index.html` where the package keeps the built viewer, so the plugin
+writes a placeholder to the git-ignored `apps/gyst/src/dist/web-ui/`.
+
+This is for trying changes by hand. It does not replace `pnpm test`, which tests the packed npm
+install.
 
 ## Build
 
@@ -58,8 +111,7 @@ SSR). Routes live in `apps/web/src/routes/`; the router plugin regenerates the c
 `src/routeTree.gen.ts` on `dev` and `build`. It imports browser-safe contracts only from
 `@gyst/core/wire` and the shared HTTP paths from `@gyst/core/web`. `@gyst/cli` ships only the
 built `dist/`, so the published package does not depend on React or the router. The launcher
-serves the installed `dist/web-ui/`. `pnpm --dir apps/web dev` serves the viewer with Fast
-Refresh but no daemon behind it, so its pages show the request error.
+serves the installed `dist/web-ui/`.
 
 Viewer styles use [StyleX](https://stylexjs.com/docs/learn/): each component calls
 `stylex.create` and `stylex.props` in its own file, and colours, fonts and the narrow-layout media
@@ -86,6 +138,16 @@ installed package, its real launches, daemon and a private key-authenticated SSH
 `CHROMIUM_PATH=/path/to/chromium`), git and OpenSSH (`sshd`, `ssh` and `ssh-keygen` on `PATH`, or
 `sshd` in `/usr/sbin`). Their scratch directory lives under `$HOME`, since sshd's `StrictModes`
 rejects a world-writable `/tmp` ancestor, and is removed after.
+
+The tests launch `CHROMIUM_PATH` if set, else the first of `google-chrome`,
+`google-chrome-stable`, `chromium` and `chromium-browser` on `PATH`, else Google Chrome's
+standard install location. CI uses the Chrome preinstalled on GitHub's `ubuntu-latest` image,
+which also has git and OpenSSH, so the workflow installs nothing. These are system prerequisites,
+not pinned tools: mise does not manage a browser. On NixOS, add them for one run:
+
+```sh
+nix shell nixpkgs#chromium nixpkgs#openssh --command pnpm test:e2e
+```
 
 To try the viewer over SSH, see the README's [Over SSH](README.md#over-ssh) section.
 
