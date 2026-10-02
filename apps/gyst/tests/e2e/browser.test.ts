@@ -329,6 +329,22 @@ describe("installed gyst in a sandboxed browser", () => {
       git("add", ".");
       git("commit", "-qm", version);
     }
+    // stress~1...stress modifies line 10 of the 400 bulk files, now 20 lines each: hundreds of
+    // files whose sides load eagerly, each with a leading and a trailing hidden range.
+    git("switch", "-q", "bulk");
+    git("switch", "-qc", "stress");
+    for (const edited of [false, true]) {
+      for (let i = 0; i < 400; i++)
+        await writeFile(
+          join(repo, "bulk", `${String(i).padStart(3, "0")}.txt`),
+          Array.from(
+            { length: 20 },
+            (_, n) => `bulk ${i} line ${n + 1}${edited && n === 9 ? " edited" : ""}\n`,
+          ).join(""),
+        );
+      git("add", ".");
+      git("commit", "-qm", edited ? "stress" : "stress base");
+    }
     git("switch", "-q", "main");
     git("switch", "-qc", "feature");
     await writeFile(join(repo, "feature.ts"), "export const feature = 'range-only';\n");
@@ -416,7 +432,9 @@ describe("installed gyst in a sandboxed browser", () => {
     expect(bootstrap.authorization === `Bearer ${one.secret}`).toBe(true);
     expect(bootstrap.origin).toBe(one.origin);
     const operations = requests.filter((r) => operationOf(r) !== undefined);
-    expect(operations.map(operationOf).sort((a, b) => a.command.localeCompare(b.command))).toEqual([
+    // Eager captured-content reads are bounded and checked in their own test.
+    const reads = operations.map(operationOf).filter((op) => op.command !== "code");
+    expect(reads.sort((a, b) => a.command.localeCompare(b.command))).toEqual([
       { command: "diff", session: one.id },
       { command: "files", session: one.id, snapshotId: sessions[0].snapshotId },
       { command: "open", session: one.id },
@@ -505,11 +523,10 @@ describe("installed gyst in a sandboxed browser", () => {
     // Each changed text file's two sides, read once, from the session's snapshot.
     const { snapshotId } = (await gyst("session", "list")).sessions[0];
     const reads = codes.map(({ file, side, snapshotId: read }) => `${file} ${side} ${read}`);
-    expect(reads.sort((a, b) => a.localeCompare(b))).toEqual(
-      ["README.md", "app.ts", "src/long.ts"].flatMap((file) => [
-        `${file} new ${snapshotId}`,
-        `${file} old ${snapshotId}`,
-      ]),
+    expect(reads.sort()).toEqual(
+      ["README.md", "app.ts", "src/long.ts"]
+        .flatMap((file) => [`${file} new ${snapshotId}`, `${file} old ${snapshotId}`])
+        .sort(),
     );
     expect(mostInFlight).toBeLessThanOrEqual(4);
     // A loaded range opens on a click without another read; the other ranges stay hidden.
@@ -520,6 +537,91 @@ describe("installed gyst in a sandboxed browser", () => {
     expect(await pane.getByText("7 unmodified lines").count()).toBe(0);
     expect(await pane.getByText("96 unmodified lines").count()).toBeGreaterThan(0);
     expect(codes.length).toBe(6);
+  }, 30_000);
+
+  it("opens a range in a third file within the same request bound while two files' reads are held", async () => {
+    const page = await newPage();
+    const codes: any[] = [];
+    let inFlight = 0;
+    let mostInFlight = 0;
+    const settle = (request: PageRequest) => {
+      if (operationOf(request)?.command === "code") inFlight--;
+    };
+    page.on("requestfinished", settle);
+    page.on("requestfailed", settle);
+    let release = () => {};
+    const released = new Promise<void>((resolve) => (release = resolve));
+    await page.route(isOperationUrl, async (route) => {
+      const operation = route.request().postDataJSON();
+      if (operation?.command === "code") {
+        codes.push(operation);
+        inFlight++;
+        mostInFlight = Math.max(mostInFlight, inFlight);
+        await released;
+      }
+      await route.continue();
+    });
+    await page.goto(`${one.origin}${one.path}`);
+    const pane = page.getByRole("main");
+    try {
+      await waitFor(async () => codes.length === 4, "two files' eager reads");
+      // src/long.ts's leading range opens while the reads are held: it waits for a free slot.
+      await pane.getByText("96 unmodified lines").first().click();
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      expect(mostInFlight).toBeLessThanOrEqual(4);
+    } finally {
+      release();
+    }
+    await waitFor(
+      async () => (await pane.getByText("96 unmodified lines").count()) === 0,
+      "src/long.ts's range to open",
+    );
+    expect(mostInFlight).toBeLessThanOrEqual(4);
+    // Each side read once: the opened file joined no duplicate read.
+    expect(codes.filter(({ file }) => file === "src/long.ts")).toHaveLength(2);
+  }, 30_000);
+
+  it("loads a file eagerly on return when its opened range's read landed after the reader left it", async () => {
+    const page = await newPage();
+    const codes: any[] = [];
+    let landed = 0;
+    page.on("requestfinished", (request) => {
+      const operation = operationOf(request);
+      if (operation?.command === "code" && operation.file === "src/long.ts") landed++;
+    });
+    let release = () => {};
+    const released = new Promise<void>((resolve) => (release = resolve));
+    await page.route(isOperationUrl, async (route) => {
+      const operation = route.request().postDataJSON();
+      if (operation?.command === "code") {
+        codes.push(operation);
+        if (operation.file === "src/long.ts") await released;
+      }
+      await route.continue();
+    });
+    await page.goto(`${one.origin}${one.path}`);
+    const pane = page.getByRole("main");
+    const tree = page.getByRole("navigation", { name: "gyst" });
+    const readsOf = (file: string) => codes.filter((code) => code.file === file).length;
+    try {
+      await waitFor(async () => readsOf("src/long.ts") === 2, "src/long.ts's eager reads");
+      // Its leading range opens while its read is held: the renderer's request joins that read.
+      await pane.getByText("96 unmodified lines").first().click();
+      // The reader leaves for an unchanged file before the read lands; the renderer drops it.
+      await tree.getByRole("button", { name: "feature.ts", exact: true }).click();
+      await pane.getByText("No captured changes under feature.ts.").waitFor();
+    } finally {
+      release();
+    }
+    await waitFor(async () => landed === 2, "src/long.ts's held reads to land");
+    await tree.getByRole("button", { name: "src/", exact: true }).click();
+    // Without a click it loads again.
+    await waitFor(async () => readsOf("src/long.ts") === 4, "src/long.ts read again");
+    // Its trailing range (lines 184-300), below the panel, shows its count once scrolled to.
+    await pane.hover();
+    await page.mouse.wheel(0, 1500);
+    await pane.getByText("117 unmodified lines").first().waitFor();
+    expect(readsOf("src/long.ts")).toBe(4);
   }, 30_000);
 
   it("shows the captured changes under a selected file or folder, and the whole snapshot again", async () => {
@@ -649,6 +751,81 @@ describe("installed gyst in a sandboxed browser", () => {
       );
     }
   }, 30_000);
+
+  it("loads hundreds of changed files a bounded few at a time, far scrolls included, and navigates loaded files without reads", async () => {
+    const id = await openRange("stress~1...stress");
+    onTestFinished(() =>
+      gyst("session", "delete", "--session", id, "--request-id", randomBytes(16).toString("hex")),
+    );
+    const page = await newPage();
+    await page.setViewportSize({ width: 1280, height: 800 });
+    const started = { code: 0, files: 0 };
+    const inFlight = { code: 0, files: 0 };
+    const most = { code: 0, files: 0 };
+    const settle = (request: PageRequest) => {
+      const command = operationOf(request)?.command;
+      if (command === "code" || command === "files") inFlight[command as "code" | "files"]--;
+    };
+    page.on("requestfinished", settle);
+    page.on("requestfailed", settle);
+    await page.route(isOperationUrl, async (route) => {
+      const command = route.request().postDataJSON()?.command;
+      if (command === "code" || command === "files") {
+        started[command as "code" | "files"]++;
+        const count = ++inFlight[command as "code" | "files"];
+        most[command as "code" | "files"] = Math.max(most[command as "code" | "files"], count);
+        // A little latency, so concurrent requests overlap and are counted.
+        await new Promise((resolve) => setTimeout(resolve, 30));
+      }
+      await route.continue();
+    });
+    await page.goto(`${one.origin}/session/${id}`);
+    const pane = page.getByRole("main");
+    await pane.getByRole("heading", { name: "bulk/000.txt", exact: true }).waitFor();
+    // First content shows long before the 400 files' 800 sides could have loaded.
+    expect(started.code).toBeLessThan(800);
+    // A loaded file's trailing range (lines 14-20) shows its count.
+    await pane.getByText("7 unmodified lines").first().waitFor();
+    const settled = async () => {
+      let last = -1;
+      await waitFor(async () => {
+        const quiet = inFlight.code === 0 && started.code === last;
+        last = started.code;
+        await new Promise((resolve) => setTimeout(resolve, 200));
+        return quiet;
+      }, "the eager loads to settle");
+    };
+    await settled();
+    // Only the window and a few nearby files loaded, not the whole session.
+    expect(started.code).toBeLessThan(100);
+
+    // Moving between loaded files reads nothing more.
+    const before = started.code;
+    const at = await statusLine(page).textContent();
+    await keys(page, "]", "f");
+    await waitFor(async () => (await statusLine(page).textContent()) !== at, "the next file");
+    await keys(page, "[", "f");
+    await waitFor(
+      async () => (await statusLine(page).textContent()) === at,
+      "the first file again",
+    );
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    expect(started.code).toBe(before);
+
+    // A far jump loads the files it lands on, still within the bounds.
+    await pane.evaluate((main) => {
+      const scroller = [...main.querySelectorAll("*")].find(
+        (element) => element.scrollHeight > element.clientHeight * 10,
+      )!;
+      scroller.scrollTop = scroller.scrollHeight / 2;
+    });
+    await waitFor(async () => started.code > before, "reads for the files landed on");
+    await settled();
+    await pane.getByText("7 unmodified lines").first().waitFor();
+    expect(started.code).toBeLessThan(before + 100);
+    expect(most.code).toBeLessThanOrEqual(4);
+    expect(most.files).toBeLessThanOrEqual(1);
+  }, 60_000);
 
   it("reads from the selection just shown, not a file restored before it, after short selections", async () => {
     const page = await newPage();
@@ -1184,8 +1361,12 @@ describe("installed gyst in a sandboxed browser", () => {
     await page.getByRole("heading", { name: "Saved sessions" }).waitFor();
     // The launch cookie authorizes the deep link and the reload; no page here sent a secret.
     expect(bootstraps).toBe(0);
+    // Each view's lazily split route chunks finish loading first, so the test's own next
+    // navigation never aborts one and reads as a failed request.
+    await page.waitForLoadState("networkidle");
     await page.goto(`${one.origin}/session/does-not-exist`);
     await page.getByRole("heading", { name: "Session not found" }).waitFor();
+    await page.waitForLoadState("networkidle");
     await page.goto(`${one.origin}/deliberately/unknown`);
     await page.getByRole("heading", { name: "Page not found" }).waitFor();
     const host = `${one.hostname}:${one.port}`;
@@ -1217,7 +1398,15 @@ describe("installed gyst in a sandboxed browser", () => {
     await page.getByRole("main").getByText("uncommitted-edit").waitFor();
     expect(reply.status()).toBe(200);
     expect((await reply.json()).ok).toBe(true);
-    expect(await page.getByRole("status").count()).toBe(0);
+    // The page's loading state is gone; eager captured-file loads may still settle afterwards.
+    await page
+      .getByRole("status")
+      .getByText("Loading…", { exact: true })
+      .waitFor({ state: "detached" });
+    await waitFor(
+      async () => (await page.getByRole("status").count()) === 0,
+      "every loading status settled",
+    );
   }, 30_000);
 
   it("runs a concurrent range launch in the same profile on its own host and cookie", async () => {
@@ -1612,6 +1801,8 @@ describe("installed gyst in a sandboxed browser", () => {
     expect(new URL(page.url()).port).toBe(String(forward));
     expect(sshd.log()).toContain("Accepted publickey");
     expect(client.log()).toContain("is known and matches the ED25519 host key");
+    // Eager captured-file reads settle first, so stopping the launcher doesn't fail one mid-flight.
+    await page.waitForLoadState("networkidle");
     expect(await stop(four.proc, "SIGINT")).toBe(130);
   }, 30_000);
 });
