@@ -39,7 +39,7 @@ export function hydrationWindow(
  * `concurrency` files read at once, each holding its slot until its read settles. A renderer
  * `request` (a range the reader opened) takes the next free slot before any eager load; eager
  * loads follow the order last given to `want`. A file pages on only while wanted or requested
- * and until `stop`. Nothing is kept here: an eager result reaches `onLoaded` only while its file
+ * and not stopped. Nothing is kept here: an eager result reaches `onLoaded` only while its file
  * is still wanted, otherwise it is dropped, and a request's goes to its caller. An eagerly loaded
  * or failed file is not loaded eagerly again (the reader retries a failure on demand). The
  * renderer may adopt a request's result or drop it, so a requested file waits for the next `want`:
@@ -59,6 +59,8 @@ export function contentLoader<Loaded>(options: {
   const requests = new Map<string, PromiseWithResolvers<Loaded>>();
   // Eagerly loaded and failed files.
   const settled = new Set<string>();
+  const isStopped = (result: { value: Loaded } | { error: unknown }) =>
+    "error" in result && result.error instanceof PagingStopped;
   const isWanted = (path: string) => !stopped && (wanted.has(path) || requests.has(path));
   const start = (path: string) => {
     running.add(path);
@@ -70,8 +72,9 @@ export function contentLoader<Loaded>(options: {
       else request?.reject(result.error);
       if (stopped) return;
       // The renderer adopts a request's result or drops it; the next `want` says which.
+      // A read stopped on purpose is not a failure: it loads again once wanted.
       if (request !== undefined && "value" in result) wanted.delete(path);
-      else if (request !== undefined || wanted.has(path)) settled.add(path);
+      else if ((request !== undefined || wanted.has(path)) && !isStopped(result)) settled.add(path);
       if (request === undefined && wanted.has(path) && "value" in result)
         options.onLoaded(path, result.value);
       pump();
@@ -111,7 +114,15 @@ export function contentLoader<Loaded>(options: {
       return request.promise;
     },
     inFlight: () => running.size,
-    /** Wants nothing more: reads stop after their current page, waiting requests fail. */
+    /**
+     * Loads again after a `stop`, as React replays an effect. Reads still in flight keep their
+     * slots, and one wanted again pages on.
+     */
+    start() {
+      stopped = false;
+      pump();
+    },
+    /** Wants nothing more until `start`: reads stop after their current page, waiting requests fail. */
     stop() {
       stopped = true;
       order = [];

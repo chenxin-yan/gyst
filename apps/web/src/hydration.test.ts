@@ -17,7 +17,10 @@ describe("hydrationWindow", () => {
   });
 });
 
-/** A read per path that settles when the test says so; `paged` reads a second page if wanted. */
+/**
+ * A read per path that settles when the test says so; `paged` reads a second page if wanted, and
+ * otherwise stops as `capturedText` does.
+ */
 function deferredReads() {
   const pending = new Map<string, { resolve: (value: string) => void; reject: () => void }>();
   const started: string[] = [];
@@ -26,8 +29,12 @@ function deferredReads() {
       started.push(path);
       pending.set(path, {
         resolve: (value) => {
-          if (path.startsWith("paged") && wanted()) started.push(`${path} page 2`);
-          resolve(value);
+          if (!path.startsWith("paged")) resolve(value);
+          else if (!wanted()) reject(new PagingStopped("the file left the window"));
+          else {
+            started.push(`${path} page 2`);
+            resolve(value);
+          }
         },
         reject: () => reject(new Error("offline")),
       });
@@ -205,5 +212,54 @@ describe("contentLoader", () => {
     expect(started).toEqual(["paged"]);
     expect(loaded).toEqual([]);
     await expect(loader.request("c")).rejects.toBeInstanceOf(PagingStopped);
+  });
+
+  it("loads again after stop and start, keeping a read held across them within the bound", async () => {
+    const { pending, started, read } = deferredReads();
+    const loaded: string[] = [];
+    const loader = contentLoader<string>({
+      concurrency: 1,
+      read,
+      onLoaded: (path) => loaded.push(path),
+    });
+    loader.want(["paged"]);
+    // StrictMode's effect replay: the held read keeps its slot.
+    loader.stop();
+    loader.start();
+    loader.want(["paged", "b"]);
+    const requested = loader.request("c");
+    expect(started).toEqual(["paged"]);
+    expect(loader.inFlight()).toBe(1);
+    // Wanted again, the held read pages on.
+    pending.get("paged")!.resolve("A");
+    await tick();
+    expect(loaded).toEqual(["paged"]);
+    expect(started).toEqual(["paged", "paged page 2", "c"]);
+    expect(loader.inFlight()).toBe(1);
+    pending.get("c")!.resolve("C");
+    expect(await requested).toBe("C");
+    await tick();
+    expect(started).toEqual(["paged", "paged page 2", "c", "b"]);
+  });
+
+  it("reads a file a stop cancelled again once started and wanted, not as a failure", async () => {
+    const { pending, started, read } = deferredReads();
+    const loaded: string[] = [];
+    const loader = contentLoader<string>({
+      concurrency: 1,
+      read,
+      onLoaded: (path) => loaded.push(path),
+    });
+    loader.want(["paged"]);
+    loader.stop();
+    // The first page lands while stopped, so the read stops; it drains after the restart.
+    pending.get("paged")!.resolve("A");
+    loader.start();
+    loader.want(["paged"]);
+    await tick();
+    expect(started).toEqual(["paged", "paged"]);
+    pending.get("paged")!.resolve("A");
+    await tick();
+    expect(loaded).toEqual(["paged"]);
   });
 });

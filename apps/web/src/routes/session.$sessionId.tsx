@@ -357,7 +357,11 @@ function SessionReader(props: {
       }),
     [session.id, snapshotId, setLoad, mounted],
   );
-  useEffect(() => () => loader.stop(), [loader]);
+  // Resumed as well as stopped here: StrictMode replays this effect on the same memoized loader.
+  useEffect(() => {
+    loader.start();
+    return () => loader.stop();
+  }, [loader]);
   const loadDiffFiles = useCallback(
     (fileDiff: FileDiffMetadata) => {
       // A retry replaces the last failure at once, while it waits for a free slot.
