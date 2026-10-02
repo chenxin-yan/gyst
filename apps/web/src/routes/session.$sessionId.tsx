@@ -1416,7 +1416,7 @@ function ViewedToggle({ path, box }: { path: string; box: ViewedBox }) {
         <span role="alert" {...stylex.props(headerStyles.failure)}>
           <span {...stylex.props(headerStyles.failureText)}>
             Couldn't save Viewed
-            {box.failure instanceof Error ? `: ${box.failure.message}` : ""}.
+            {box.failure instanceof Error ? `: ${box.failure.message.replace(/\.$/, "")}` : ""}.
           </span>
           <PillButton onClick={box.onToggle}>Retry</PillButton>
         </span>
