@@ -27,6 +27,56 @@ the code and is cached. `test:e2e` builds the CLI, packs it, installs it globall
 temporary prefix and tests that install; it is never cached. Run both checks and tests before
 opening a PR.
 
+## Run gyst from source
+
+[`apps/gyst/dev/gyst`](apps/gyst/dev/gyst) is the checkout's `gyst`, run from source. Nothing is
+built for the CLI, the daemon or the viewer. Put its directory first on `PATH` in the terminal (or
+the agent session) you develop in:
+
+```sh
+export PATH="$PWD/apps/gyst/dev:$PATH"   # from the checkout root
+cd ~/some/repo
+gyst main...feature                      # or plain `gyst`, or `gyst --session <id>`
+```
+
+It takes the same arguments as `gyst` and reviews the repository you run it in.
+
+- **The viewer:** bare `gyst`, a range or `--session` starts the Vite dev server
+  ([`apps/web/dev.ts`](apps/web/dev.ts)) with a source launcher behind it, and prints one URL,
+  `  gyst  http://g-<hex>.localhost:3000/session/<id>#<secret>`. Open it; viewer edits apply with
+  Fast Refresh. `pnpm dev` does the same for this checkout's own uncommitted changes.
+- **Everything else** (`gyst session ...`, `gyst skills ...`, `--help`) runs the source CLI
+  directly. An agent whose `PATH` starts with this directory publishes through the source CLI, so
+  you can watch its groups arrive in the dev viewer.
+- **Skills:** `gyst skills` links agents to the built skills in `apps/gyst/.crust/root/skills/`,
+  which only `pnpm build` creates; the build also regenerates `gyst-cli` from the command
+  definitions. Run `pnpm build` once and after each skill or command change, then
+  `gyst skills install --scope project` in the repository you test in. `--scope project` keeps the
+  dev links out of your global agent directories, and later builds update them in place.
+- **Where state lives:** sessions and the daemon use `.dev/data` (`GYST_DATA_DIR`), never your own
+  gyst data. `rm -rf .dev` starts over.
+- **After changing `apps/gyst` or `packages/core`:** press `r` in the dev server. Vite reruns the
+  plugin, which replaces the daemon and the launcher with ones from the current source and prints
+  a new URL. The old URL then fails sign-in, since every launch has its own hostname and
+  credentials. The CLI needs nothing: each command runs the current source, and the daemon a
+  changed CLI talks to is replaced on the next `r`.
+- **Signing in again:** a launch URL signs in only within 10 minutes of its launch. Press `r` for a
+  new one. A tab that is already signed in keeps working.
+- **Stopping:** Ctrl-C stops Vite and the launcher. The daemon outlives them, as it does in
+  production; the next launch replaces it.
+
+How the viewer is wired: the dev-only plugin in [`apps/web/dev-launcher.ts`](apps/web/dev-launcher.ts)
+runs `node apps/gyst/src/index.ts` (Node runs the TypeScript directly) and proxies the bridge
+paths (`/bootstrap`, `/api/operation`) to it with their `Host` and `Origin` unchanged. The browser
+opens the launch's `g-<hex>.localhost` hostname on Vite's port, as it would behind an SSH forward,
+so sign-in, the cookie and the host and origin checks run as in production. Vite's own
+`http://localhost:3000/` links are not printed, because the launcher refuses them with 403. The
+source launcher needs an `index.html` where the package keeps the built viewer, so the plugin
+writes a placeholder to the git-ignored `apps/gyst/src/dist/web-ui/`.
+
+This is for trying changes by hand. It does not replace `pnpm test`, which tests the packed npm
+install.
+
 ## Build
 
 ```sh
@@ -59,51 +109,6 @@ SSR). Routes live in `apps/web/src/routes/`; the router plugin regenerates the c
 `@gyst/core/wire` and the shared HTTP paths from `@gyst/core/web`. `@gyst/cli` ships only the
 built `dist/`, so the published package does not depend on React or the router. The launcher
 serves the installed `dist/web-ui/`.
-
-### Run it from source
-
-```sh
-pnpm dev
-```
-
-This starts the Vite dev server with a real gyst launcher and daemon running from source behind it.
-Nothing is built. It prints one URL:
-
-```
-  gyst  http://g-<hex>.localhost:3000/session/<id>#<secret>
-```
-
-Open that URL. Vite's own `http://localhost:3000/` links are deliberately not printed: the
-launcher refuses any host but its launch hostname, so they only return 403.
-
-How it works: the dev-only plugin in [`apps/web/dev-launcher.ts`](apps/web/dev-launcher.ts) runs
-`node apps/gyst/src/index.ts` (Node runs the TypeScript directly) and proxies the bridge paths
-(`/bootstrap`, `/api/operation`) to it with their `Host` and `Origin` unchanged. The browser
-opens the launch's `g-<hex>.localhost` hostname on Vite's port, just as it would behind an SSH
-forward, so sign-in, the cookie and the host and origin checks run as in production. Vite serves
-everything else, so viewer edits apply with Fast Refresh. The launcher starts the daemon as usual.
-
-- **What it reviews:** by default, the uncommitted changes of a demo repository built in
-  `.dev/demo` from [`apps/gyst/tests/demo-repo.ts`](apps/gyst/tests/demo-repo.ts), the same
-  fixture the browser tests use. Set `GYST_DEV_RANGE` to review a range of it, such as
-  `GYST_DEV_RANGE=stress~1...stress pnpm dev` (400 changed files) or `main...feature`. Set
-  `GYST_DEV_REPO=/path/to/repo` to review another repository.
-- **Where state lives:** sessions are saved in `.dev/data` (`GYST_DATA_DIR`), never your own
-  gyst data, and persist across runs. `rm -rf .dev` starts over and rebuilds the demo.
-- **After changing `apps/gyst` or `packages/core`:** press `r` in the dev server. Vite reruns the
-  plugin, which replaces the daemon and launcher with ones from the current source and prints a
-  new URL. The old URL then fails sign-in, because every launch has its own hostname and
-  credentials. A changed `vite.config.ts` or `dev-launcher.ts` restarts it the same way.
-- **Signing in again:** a launch URL signs in only within 10 minutes of its launch. After that,
-  press `r` for a new one. Reloading an already signed-in tab keeps working.
-- **Stopping:** Ctrl-C stops Vite and the launcher. The daemon outlives them, as it does in
-  production, and the next `pnpm dev` replaces it.
-- **Placeholder viewer:** the source launcher needs an `index.html` where the package keeps the
-  built viewer, so the plugin writes a placeholder to the git-ignored
-  `apps/gyst/src/dist/web-ui/`. Vite serves the real viewer.
-
-This checks behaviour by hand. It is not a substitute for `pnpm test`, which tests the packed
-npm install.
 
 Viewer styles use [StyleX](https://stylexjs.com/docs/learn/): each component calls
 `stylex.create` and `stylex.props` in its own file, and colours, fonts and the narrow-layout media

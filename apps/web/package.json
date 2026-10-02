@@ -3,7 +3,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "vp dev --port 3000",
+    "dev": "node dev.ts",
     "build": "vp run build:task",
     "preview": "vp preview"
   },
