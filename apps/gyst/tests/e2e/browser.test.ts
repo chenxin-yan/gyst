@@ -1887,9 +1887,13 @@ describe("installed gyst in a sandboxed browser", () => {
     });
     await page.goto(`${one.origin}/session/${b}`);
     await page.getByRole("alert").getByText("can't read").waitFor();
+    // The error shows before the session route's chunk finishes loading; navigating again would
+    // abort that fetch.
+    await page.waitForLoadState("networkidle");
     fault = "internal";
     await page.goto(`${one.origin}/session/${b}`);
     await page.getByRole("alert").getByText("injected internal failure").waitFor();
+    await page.waitForLoadState("networkidle");
     fault = "outage";
     await page.goto(`${one.origin}/session/${b}`);
     await page.getByRole("alert").getByText("Can't reach gyst").waitFor();
