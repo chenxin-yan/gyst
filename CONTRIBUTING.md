@@ -7,6 +7,9 @@ and GitHub Actions' `mise-action` read the same pins. Use `mise ls --current` to
 
 `onFail: "ignore"` leaves tool installation to mise rather than
 [pnpm's runtime/package-manager management](https://pnpm.io/package_json#devenginesruntime).
+That is why pnpm is pinned in `devEngines.packageManager` rather than the top-level
+`packageManager` field: only `devEngines` carries that policy beside the version, and adding both
+would pin pnpm twice.
 Activate mise in your shell or prefix commands with `mise exec --`. Gyst runs on Node;
 Crust's build tool embeds Bun, so no separate Bun installation is needed.
 
@@ -136,12 +139,14 @@ installed package, its real launches, daemon and a private key-authenticated SSH
 `sshd` in `/usr/sbin`). Their scratch directory lives under `$HOME`, since sshd's `StrictModes`
 rejects a world-writable `/tmp` ancestor, and is removed after.
 
-CI runs them with the Google Chrome preinstalled on GitHub's `ubuntu-latest` runner image, which
-also has git and OpenSSH, so the workflow installs nothing extra. mise does not manage a browser.
-Where Chrome isn't installed, point `CHROMIUM_PATH` at any Chromium. On Nix, for example:
+The tests launch `CHROMIUM_PATH` if set, else the first of `google-chrome`,
+`google-chrome-stable`, `chromium` and `chromium-browser` on `PATH`, else Google Chrome's
+standard install location. CI uses the Chrome preinstalled on GitHub's `ubuntu-latest` image,
+which also has git and OpenSSH, so the workflow installs nothing. These are system prerequisites,
+not pinned tools: mise does not manage a browser. On NixOS, add them for one run:
 
 ```sh
-CHROMIUM_PATH="$(nix build --no-link --print-out-paths nixpkgs#chromium)/bin/chromium" pnpm test:e2e
+nix shell nixpkgs#chromium nixpkgs#openssh --command pnpm test:e2e
 ```
 
 To try the viewer over SSH, see the README's [Over SSH](README.md#over-ssh) section.
