@@ -34,9 +34,17 @@ export type CommandId =
 
 /**
  * A command, its key sequences and its label. A sequence is the keys pressed one after another, in
- * TanStack Hotkeys' names: letters match either case, so a capital is `Shift+G`.
+ * TanStack Hotkeys' names: letters match either case, so a capital is `Shift+G`. A `vimOnly`
+ * command acts at the cursor, which Mouse mode has none of.
  */
-export type Command = { id: CommandId; keys: readonly (readonly Hotkey[])[]; label: string };
+export type Command = {
+  id: CommandId;
+  keys: readonly (readonly Hotkey[])[];
+  label: string;
+  vimOnly?: true;
+};
+
+export type InputMode = "vim" | "mouse";
 
 export const commands: readonly Command[] = [
   { id: "down", keys: [["J"]], label: "Cursor down (Mouse mode: scroll down)" },
@@ -45,12 +53,13 @@ export const commands: readonly Command[] = [
   { id: "halfUp", keys: [["Control+U"]], label: "Half a page up" },
   { id: "top", keys: [["G", "G"]], label: "Top" },
   { id: "bottom", keys: [["Shift+G"]], label: "Bottom" },
-  { id: "oldSide", keys: [["H"]], label: "Old side of a split diff" },
-  { id: "newSide", keys: [["L"]], label: "New side of a split diff" },
+  { id: "oldSide", keys: [["H"]], label: "Old side of a split diff", vimOnly: true },
+  { id: "newSide", keys: [["L"]], label: "New side of a split diff", vimOnly: true },
   {
     id: "select",
     keys: [["Shift+V"], ["V"]],
     label: "Select lines from the cursor, or stop selecting",
+    vimOnly: true,
   },
   { id: "nextChange", keys: [["]", "C"]], label: "Next change" },
   { id: "previousChange", keys: [["[", "C"]], label: "Previous change" },
@@ -60,6 +69,7 @@ export const commands: readonly Command[] = [
     id: "open",
     keys: [["Enter"]],
     label: "Open the hidden lines at the cursor; on a file header, fold or unfold the file",
+    vimOnly: true,
   },
   {
     id: "unfold",
@@ -83,6 +93,10 @@ export const commands: readonly Command[] = [
   { id: "menu", keys: [["Meta+K"], ["Control+K"]], label: "Command menu" },
   { id: "help", keys: [["?"]], label: "Keyboard shortcuts" },
 ];
+
+/** The commands an input mode runs, for its keys, its menu and its help alike. */
+export const commandsFor = (mode: InputMode) =>
+  mode === "vim" ? commands : commands.filter((command) => !command.vimOnly);
 
 /** Letters print as typed, Vim-style: `j`, `g g`, `Shift+g`. */
 export const keyLabels = Object.fromEntries(

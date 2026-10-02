@@ -71,7 +71,7 @@ import {
   switched,
 } from "../cursor.ts";
 import { contentLoader, hydrationConcurrency, hydrationWindow, nearbyItems } from "../hydration.ts";
-import { type Command, type CommandId, commands, typed } from "../keymap.ts";
+import { type Command, type CommandId, commandsFor, type InputMode, typed } from "../keymap.ts";
 import {
   capturedFiles,
   changedFiles,
@@ -147,8 +147,6 @@ type FileLoad = "loading" | { failure: unknown };
 
 /** Where the reader is: a file and, inside its diff, the side and line at the top of the panel. */
 type ReadingPosition = { file: string; side: Side | undefined; line: number | undefined };
-
-type InputMode = "vim" | "mouse";
 
 /**
  * What the cursor overlay marks: a line on one split column or across the diff, a hidden range
@@ -703,6 +701,7 @@ function SessionReader(props: {
       runRef.current(id);
     };
   const bindingOptions = { ignoreInputs: false, preventDefault: false, stopPropagation: false };
+  const commands = commandsFor(inputMode);
   const bindings = commands.flatMap((command) =>
     command.keys.map((keys) => ({ ...command, keys })),
   );
@@ -902,6 +901,7 @@ function SessionReader(props: {
       )}
       {dialog === "menu" && (
         <CommandMenu
+          commands={commands}
           labelOf={labelOf}
           onRun={run}
           // Each dialog clears only itself: the menu's queued close can land after help opened.
@@ -910,6 +910,7 @@ function SessionReader(props: {
       )}
       {dialog === "help" && (
         <KeyHelp
+          commands={commands}
           labelOf={labelOf}
           onClose={() => setDialog((open) => (open === "help" ? undefined : open))}
         />

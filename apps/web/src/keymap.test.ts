@@ -5,7 +5,7 @@ import {
   validateHotkey,
 } from "@tanstack/react-hotkeys";
 import { describe, expect, it } from "vite-plus/test";
-import { commands, keyLabels, typed } from "./keymap.ts";
+import { commands, commandsFor, keyLabels, typed } from "./keymap.ts";
 
 const bindings = commands.flatMap((command) => command.keys.map((keys) => ({ ...command, keys })));
 const singles = bindings.filter(({ keys }) => keys.length === 1).map(({ keys }) => keys[0]!);
@@ -70,6 +70,19 @@ describe("commands", () => {
       ["⇧ g"],
       ["⌘ k", "⌃ k"],
       ["g g"],
+    ]);
+  });
+
+  // Mouse mode has no cursor: a command that acts at it is neither bound, listed nor offered there.
+  it("leaves cursor-only commands, such as Open, to Vim mode", () => {
+    const ids = (mode: "vim" | "mouse") => commandsFor(mode).map(({ id }) => id);
+    expect(ids("vim")).toEqual(commands.map(({ id }) => id));
+    expect(commandsFor("vim").find(({ id }) => id === "open")?.keys).toEqual([["Enter"]]);
+    expect(commands.filter(({ id }) => !ids("mouse").includes(id)).map(({ id }) => id)).toEqual([
+      "oldSide",
+      "newSide",
+      "select",
+      "open",
     ]);
   });
 

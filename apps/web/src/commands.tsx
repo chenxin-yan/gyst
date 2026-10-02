@@ -1,7 +1,7 @@
 import * as stylex from "@stylexjs/stylex";
 import { formatForDisplay } from "@tanstack/react-hotkeys";
 import { Fragment, type ReactNode, useEffect, useId, useRef, useState } from "react";
-import { type Command, type CommandId, commands, keyLabels } from "./keymap.ts";
+import { type Command, type CommandId, keyLabels } from "./keymap.ts";
 import { theme } from "./tokens.stylex.ts";
 
 /** A command's keys as the help prints them: sequences joined, alternatives separated. */
@@ -45,8 +45,9 @@ function Dialog(props: { label: string; onClose: () => void; children: ReactNode
   );
 }
 
-/** ⌘K: every command, filtered as you type; ↑/↓ choose, Enter runs, Escape closes. */
+/** ⌘K: every command of the input mode, filtered as you type; ↑/↓ choose, Enter runs, Escape closes. */
 export function CommandMenu(props: {
+  commands: readonly Command[];
   labelOf: (command: Command) => string;
   onRun: (id: CommandId) => void;
   onClose: () => void;
@@ -54,7 +55,7 @@ export function CommandMenu(props: {
   const [query, setQuery] = useState("");
   const [active, setActive] = useState(0);
   const listId = useId();
-  const shown = commands.filter(
+  const shown = props.commands.filter(
     (command) =>
       command.id !== "menu" &&
       props.labelOf(command).toLowerCase().includes(query.trim().toLowerCase()),
@@ -119,8 +120,12 @@ export function CommandMenu(props: {
   );
 }
 
-/** ?: the keys this reader implements, from the same table the keyboard reads. */
-export function KeyHelp(props: { labelOf: (command: Command) => string; onClose: () => void }) {
+/** ?: the keys the input mode implements, from the same list the keyboard reads. */
+export function KeyHelp(props: {
+  commands: readonly Command[];
+  labelOf: (command: Command) => string;
+  onClose: () => void;
+}) {
   return (
     <Dialog label="Keyboard shortcuts" onClose={props.onClose}>
       <div {...stylex.props(styles.help)}>
@@ -131,7 +136,7 @@ export function KeyHelp(props: { labelOf: (command: Command) => string; onClose:
           </button>
         </div>
         <dl {...stylex.props(styles.table)}>
-          {commands
+          {props.commands
             .filter((command) => command.keys.length > 0)
             .map((command) => (
               <div key={command.id} {...stylex.props(styles.row)}>
