@@ -8,6 +8,7 @@ import {
   changedFiles,
   fileDiffOf,
   isUnder,
+  lateWholeFiles,
   layoutOf,
   lineStats,
   PagingStopped,
@@ -27,6 +28,10 @@ const hunk = (file: string, patch: string): Hunk => ({
 });
 const blob = (n: number) => String(n).repeat(64).slice(0, 64);
 const text = (n: number) => ({ kind: "text", blob: blob(n), size: 1 }) as const;
+const sides = (oldText: string, newText: string) => ({
+  oldFile: { name: "a.ts", contents: oldText },
+  newFile: { name: "a.ts", contents: newText },
+});
 
 describe("fileDiffOf", () => {
   it("keeps exact numbers and between-hunk hidden counts, and stays partial for loadDiffFiles", () => {
@@ -66,10 +71,6 @@ describe("fileDiffOf", () => {
   });
 
   it("keeps a zero-context edit at the top of a nonempty file a change that loads its tail", () => {
-    const sides = (oldText: string, newText: string) => ({
-      oldFile: { name: "a.ts", contents: oldText },
-      newFile: { name: "a.ts", contents: newText },
-    });
     const inserted = diffOf("@@ -0,0 +1 @@\n+inserted", sized(1, 8), sized(2, 17));
     expect(inserted.type).toBe("change");
     const insertedLoaded = hydratePartialDiff(
@@ -92,15 +93,70 @@ describe("fileDiffOf", () => {
     expect(hiddenRanges(deletedLoaded)).toEqual([{ index: 1, old: 2, new: 1, size: 2 }]);
   });
 
-  it("reads a file as a change until a files page has its entry", () => {
-    const hunks = [hunk("n.ts", "@@ -0,0 +1,2 @@\n+a\n+b")];
-    const entry: ManifestFile = { path: "n.ts", old: { kind: "absent" }, new: text(1) };
-    const [before] = changedFiles(hunks, []);
-    expect(wholeFileType(before!.manifest)).toBeUndefined();
-    expect(fileDiffOf(before!).type).toBe("change");
-    const [after] = changedFiles(hunks, [entry]);
-    expect(wholeFileType(after!.manifest)).toBe("new");
-    expect(fileDiffOf(after!).type).toBe("new");
+  it("reads a file as a change until a files page has its entry, then builds it again", () => {
+    const hunks = [
+      hunk("m.ts", "@@ -1 +1 @@\n-a\n+b"),
+      hunk("n.ts", "@@ -0,0 +1,2 @@\n+a\n+b"),
+      hunk("x.ts", "@@ -1,2 +0,0 @@\n-a\n-b"),
+    ];
+    const entries: ManifestFile[] = [
+      { path: "m.ts", old: text(1), new: text(2) },
+      { path: "n.ts", old: { kind: "absent" }, new: text(1) },
+      { path: "x.ts", old: text(1), new: { kind: "absent" } },
+    ];
+    const before = changedFiles(hunks, []);
+    expect(before.map((file) => wholeFileType(file.manifest))).toEqual([
+      undefined,
+      undefined,
+      undefined,
+    ]);
+    const diffs = new Map(before.map((file) => [file.path, fileDiffOf(file)]));
+    expect([...diffs.values()].map((diff) => diff.type)).toEqual(["change", "change", "change"]);
+    // A diff the renderer already hydrated as a change is rebuilt too.
+    diffs.set("x.ts", hydratePartialDiff("clone", diffs.get("x.ts")!, sides("a\nb\n", "")));
+    const after = changedFiles(hunks, entries);
+    expect(lateWholeFiles(before, diffs)).toEqual([]);
+    const late = lateWholeFiles(after, diffs);
+    expect(late.map((file) => file.path)).toEqual(["n.ts", "x.ts"]);
+    for (const file of late) diffs.set(file.path, fileDiffOf(file));
+    expect([...diffs.values()].map((diff) => diff.type)).toEqual(["change", "new", "deleted"]);
+    expect(lateWholeFiles(after, diffs)).toEqual([]);
+  });
+
+  it("loads a new or deleted file shown as a change before its files page with an empty side", async () => {
+    const read = (absent: "old" | "new") => async (side: "old" | "new") =>
+      side === absent
+        ? { ...page("", 0, null), content: { kind: "absent" } as const }
+        : page("a\nb\n", 0, null);
+    const added = fileDiffOf({
+      path: "a.ts",
+      hunks: [hunk("a.ts", "@@ -0,0 +1,2 @@\n+a\n+b")],
+      manifest: undefined,
+    });
+    expect(added.type).toBe("change");
+    const addedLoaded = hydratePartialDiff(
+      "clone",
+      added,
+      await capturedFiles("a.ts", read("old")),
+    );
+    expect([addedLoaded.deletionLines, addedLoaded.additionLines]).toEqual([[], ["a\n", "b\n"]]);
+    expect(hiddenRanges(addedLoaded)).toEqual([]);
+    const deleted = fileDiffOf({
+      path: "a.ts",
+      hunks: [hunk("a.ts", "@@ -1,2 +0,0 @@\n-a\n-b")],
+      manifest: undefined,
+    });
+    expect(deleted.type).toBe("change");
+    const deletedLoaded = hydratePartialDiff(
+      "clone",
+      deleted,
+      await capturedFiles("a.ts", read("new")),
+    );
+    expect([deletedLoaded.deletionLines, deletedLoaded.additionLines]).toEqual([
+      ["a\n", "b\n"],
+      [],
+    ]);
+    expect(hiddenRanges(deletedLoaded)).toEqual([]);
   });
 });
 
@@ -184,6 +240,11 @@ describe("capturedText", () => {
     } as const;
     await expect(capturedText(async () => unavailable)).rejects.toThrow("unavailable");
   });
+
+  it("reads an absent side as empty", async () => {
+    const absent = { ...page("", 0, null), content: { kind: "absent" } } as const;
+    expect(await capturedText(async () => absent)).toBe("");
+  });
 });
 
 describe("capturedFiles", () => {
@@ -195,6 +256,25 @@ describe("capturedFiles", () => {
       oldFile: { name: "a.ts", contents: "old\n" },
       newFile: { name: "a.ts", contents: "new\n" },
     });
+  });
+
+  it("reads an absent side as empty and still refuses an unavailable one", async () => {
+    const absent = { ...page("", 0, null), content: { kind: "absent" } } as const;
+    const unavailable = {
+      ...page("", 0, null),
+      content: { kind: "unavailable", reason: "binary" },
+    } as const;
+    expect(
+      await capturedFiles("a.ts", async (side) =>
+        side === "old" ? absent : page("new\n", 0, null),
+      ),
+    ).toEqual({
+      oldFile: { name: "a.ts", contents: "" },
+      newFile: { name: "a.ts", contents: "new\n" },
+    });
+    await expect(
+      capturedFiles("a.ts", async (side) => (side === "old" ? absent : unavailable)),
+    ).rejects.toThrow("unavailable");
   });
 
   it("stops paging a file that left the window", async () => {

@@ -95,6 +95,18 @@ export const wholeFileType = (manifest: ManifestFile | undefined) =>
         : undefined;
 
 /**
+ * The files whose diff was built as a change before a files page brought the entry that says a
+ * whole side has no lines. Each needs its diff built again.
+ */
+export const lateWholeFiles = (
+  files: readonly ReaderFile[],
+  diffs: ReadonlyMap<string, FileDiffMetadata>,
+) =>
+  files.filter(
+    (file) => wholeFileType(file.manifest) !== undefined && diffs.get(file.path)?.type === "change",
+  );
+
+/**
  * One file's captured hunks as partial @pierre/diffs metadata: exact line numbers and hidden-range
  * counts between hunks, with full contents loaded later through `loadDiffFiles`. New or deleted
  * only by `wholeFileType`, otherwise a change. Build it once per snapshot and manifest entry: the
@@ -119,8 +131,9 @@ export class PagingStopped extends Error {}
 /**
  * A captured side's full text, read a page at a time from the start: each page's text is the
  * exact bytes from its start, so the pages concatenate to the file. One page is in flight at a
- * time, and paging stops before the next page once `wanted` says no. A side without captured text
- * is an error here; callers only ask for sides that have hunks.
+ * time, and paging stops before the next page once `wanted` says no. An absent side reads as
+ * empty: a file added or deleted reads as a change until its files page arrives. Any other side
+ * without captured text is an error.
  */
 export async function capturedText(
   readPage: (offset: number | undefined) => Promise<CodePayload>,
@@ -131,6 +144,7 @@ export async function capturedText(
   do {
     if (offset !== undefined && !wanted()) throw new PagingStopped("the file left the window");
     const { content } = await readPage(offset);
+    if (content.kind === "absent") return "";
     if (content.kind !== "text") throw new Error(`the captured side is ${content.kind}`);
     text += content.text;
     offset = content.next?.offset;

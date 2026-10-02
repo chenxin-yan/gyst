@@ -78,6 +78,7 @@ import {
   PagingStopped,
   fileDiffOf,
   isUnder,
+  lateWholeFiles,
   type LayoutMode,
   layoutOf,
   lineStats,
@@ -350,7 +351,9 @@ function SessionReader(props: {
           setDiffs((before) => {
             // The renderer may have hydrated the one it shows in place meanwhile (a range opened).
             const diff = before.get(path)!;
-            if (!diff.isPartial) return before;
+            // A late files page may have rebuilt it as new or deleted, which nothing hydrates.
+            if (!diff.isPartial || (diff.type !== "change" && diff.type !== "rename-changed"))
+              return before;
             return new Map(before).set(path, hydratePartialDiff("clone", diff, loaded));
           }),
       }),
@@ -367,6 +370,9 @@ function SessionReader(props: {
       setLoad(fileDiff.name, "loading");
       // Rejected, not resolved empty, so the renderer hydrates nothing and the range can open
       // again. A request withdrawn before it read never reached `read`, which clears the status.
+      // The renderer logs every rejection with console.error, a cancellation included:
+      // `loadDiffFiles` has no abort contract, and its `disableErrorHandling` only rethrows into a
+      // promise nobody observes.
       return loader.request(fileDiff.name).catch((error: unknown) => {
         if (error instanceof PagingStopped) setLoad(fileDiff.name, undefined);
         throw error;
@@ -378,10 +384,7 @@ function SessionReader(props: {
   // A files page can bring a file's entry after its diff was built without one, and only the
   // entry says a whole side has no lines. A load that failed meanwhile no longer applies.
   useEffect(() => {
-    const late = files.filter(
-      (file) =>
-        wholeFileType(file.manifest) !== undefined && diffs.get(file.path)?.type === "change",
-    );
+    const late = lateWholeFiles(files, diffs);
     if (late.length === 0) return;
     for (const file of late) setLoad(file.path, undefined);
     setDiffs((before) => {
@@ -395,9 +398,9 @@ function SessionReader(props: {
     () =>
       shown.flatMap((file) => {
         const type = diffs.get(file.path)?.type;
-        // Loaded eagerly only once a files page has the entry that says both sides have lines.
-        return file.manifest !== undefined &&
-          wholeFileType(file.manifest) === undefined &&
+        // Until a files page has the entry, a new or deleted file loads as a change with an empty
+        // side; one known to be whole-side empty needs no load.
+        return wholeFileType(file.manifest) === undefined &&
           (type === "change" || type === "rename-changed")
           ? [file.path]
           : [];
