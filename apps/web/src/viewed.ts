@@ -47,6 +47,23 @@ export type ViewedEvent =
 /** What a status read says about Viewed progress. */
 export type StatusRead = { snapshotId: string; revision: number; viewedHunkIds: readonly string[] };
 
+/**
+ * A reader's first reads, all of one snapshot. Diff and status are separate reads, so a refresh
+ * between them can pair the shown hunks with another snapshot's progress, which no write could
+ * then match. Such a pair is read once more, then refused rather than shown.
+ */
+export async function readOneSnapshot<
+  T extends { snapshotId: string; status: { session: { snapshotId: string } } },
+>(read: () => Promise<T>): Promise<T> {
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const loaded = await read();
+    if (loaded.status.session.snapshotId === loaded.snapshotId) return loaded;
+  }
+  throw new Error(
+    "This session was refreshed while it loaded, so its diff and Viewed progress disagree. Try again.",
+  );
+}
+
 export const initialViewed = (status: StatusRead): ViewedState => ({
   snapshotId: status.snapshotId,
   viewed: new Set(status.viewedHunkIds),

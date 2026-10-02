@@ -3,6 +3,7 @@ import {
   checkboxOf,
   initialViewed,
   intentFor,
+  readOneSnapshot,
   sectionViewed,
   type ViewedState,
   viewedReducer,
@@ -173,5 +174,31 @@ describe("Viewed writes", () => {
       ["c1"],
     ]);
     expect(intentFor(reloaded, change, mint)).toMatchObject({ revision: 7, attempts: 1 });
+  });
+});
+
+describe("readOneSnapshot", () => {
+  const [a, b] = ["a".repeat(64), "b".repeat(64)];
+  // A loader read: the diff's snapshot, and status naming its own snapshot and progress.
+  const loaded = (diff: string, status: string) => ({
+    snapshotId: diff,
+    status: { session: { snapshotId: status }, revision: 2, viewedHunkIds: ["h1"] },
+  });
+  const reads = (...results: ReturnType<typeof loaded>[]) => {
+    let next = 0;
+    return async () => results[next++]!;
+  };
+
+  it("refuses status of one snapshot beside the diff of another, after one more read", async () => {
+    await expect(readOneSnapshot(reads(loaded(b, a), loaded(b, a)))).rejects.toThrow(/Try again/);
+    // The second read agreeing is the load.
+    expect(await readOneSnapshot(reads(loaded(b, a), loaded(b, b)))).toEqual(loaded(b, b));
+  });
+
+  it("starts writable progress from a consistent load", async () => {
+    const { status } = await readOneSnapshot(reads(loaded(b, b)));
+    const state = initialViewed({ ...status, snapshotId: status.session.snapshotId });
+    expect(state).toMatchObject({ snapshotId: b, revision: 2 });
+    expect(intentFor(state, change, mint)).toMatchObject({ revision: 2, attempts: 1 });
   });
 });

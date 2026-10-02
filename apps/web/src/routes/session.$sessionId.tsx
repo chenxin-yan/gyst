@@ -93,6 +93,7 @@ import {
   checkboxOf,
   initialViewed,
   intentFor,
+  readOneSnapshot,
   sectionViewed,
   type StatusRead,
   type ViewedEvent,
@@ -103,15 +104,17 @@ import {
 export const Route = createFileRoute("/session/$sessionId")({
   loader: async ({ params: { sessionId } }) => {
     try {
-      const [opened, diff, status] = await Promise.all([
-        operation({ command: "open", session: sessionId }),
-        operation({ command: "diff", session: sessionId }),
-        operation({ command: "status", session: sessionId }),
-      ]);
-      // Captured reads name the snapshot the hunks came from.
-      const { snapshotId } = diff;
-      const files = await operation({ command: "files", session: sessionId, snapshotId });
-      return { session: opened.session, hunks: diff.hunks, snapshotId, files, status };
+      return await readOneSnapshot(async () => {
+        const [opened, diff, status] = await Promise.all([
+          operation({ command: "open", session: sessionId }),
+          operation({ command: "diff", session: sessionId }),
+          operation({ command: "status", session: sessionId }),
+        ]);
+        // Captured reads name the snapshot the hunks came from.
+        const { snapshotId } = diff;
+        const files = await operation({ command: "files", session: sessionId, snapshotId });
+        return { session: opened.session, hunks: diff.hunks, snapshotId, files, status };
+      });
     } catch (error) {
       if (isDaemonError(error, "no_session")) throw notFound();
       throw error;
