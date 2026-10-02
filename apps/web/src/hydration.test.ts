@@ -262,4 +262,75 @@ describe("contentLoader", () => {
     await tick();
     expect(loaded).toEqual(["paged"]);
   });
+
+  it("stops a requested file that left the selection before its next page, then frees its slot", async () => {
+    const { pending, started, read } = deferredReads();
+    const loader = contentLoader<string>({ concurrency: 1, read, onLoaded: () => {} });
+    loader.select(["paged", "b"]);
+    loader.want(["paged"]);
+    const requested = loader.request("paged");
+    loader.select(["b"]);
+    loader.want(["b"]);
+    // The old read keeps its slot until its first page lands.
+    expect(started).toEqual(["paged"]);
+    pending.get("paged")!.resolve("A");
+    await expect(requested).rejects.toBeInstanceOf(PagingStopped);
+    await tick();
+    expect(started).toEqual(["paged", "b"]);
+  });
+
+  it("withdraws a waiting request whose file left the selection, and refuses one outside it", async () => {
+    const { pending, started, read } = deferredReads();
+    const loader = contentLoader<string>({ concurrency: 1, read, onLoaded: () => {} });
+    loader.select(["a", "b"]);
+    loader.want(["a"]);
+    const waiting = loader.request("b");
+    loader.select(["a"]);
+    await expect(waiting).rejects.toBeInstanceOf(PagingStopped);
+    await expect(loader.request("b")).rejects.toBeInstanceOf(PagingStopped);
+    pending.get("a")!.resolve("A");
+    await tick();
+    expect(started).toEqual(["a"]);
+    expect(loader.inFlight()).toBe(0);
+  });
+
+  it("completes a selected file's request outside the window", async () => {
+    const { pending, started, read } = deferredReads();
+    const loader = contentLoader<string>({ concurrency: 1, read, onLoaded: () => {} });
+    loader.select(["paged", "b"]);
+    loader.want(["paged"]);
+    const requested = loader.request("paged");
+    loader.want(["b"]);
+    pending.get("paged")!.resolve("A");
+    expect(await requested).toBe("A");
+    await tick();
+    expect(started).toEqual(["paged", "paged page 2", "b"]);
+  });
+
+  it("loads a file whose request the selection cancelled again once it is selected", async () => {
+    const { pending, started, read } = deferredReads();
+    const loaded: string[] = [];
+    const loader = contentLoader<string>({
+      concurrency: 1,
+      read,
+      onLoaded: (path) => loaded.push(path),
+    });
+    loader.select(["paged"]);
+    const cancelled = loader.request("paged");
+    loader.select([]);
+    pending.get("paged")!.resolve("A");
+    await expect(cancelled).rejects.toBeInstanceOf(PagingStopped);
+    await tick();
+    // Selected again: neither eager loading nor the renderer's retry treats it as failed.
+    loader.select(["paged"]);
+    loader.want(["paged"]);
+    expect(started).toEqual(["paged", "paged"]);
+    pending.get("paged")!.resolve("A");
+    await tick();
+    expect(loaded).toEqual(["paged"]);
+    loader.want([]);
+    const retried = loader.request("paged");
+    pending.get("paged")!.resolve("B");
+    expect(await retried).toBe("B");
+  });
 });

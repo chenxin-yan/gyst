@@ -38,12 +38,14 @@ export function hydrationWindow(
  * Every load of changed files' captured contents, eager and the renderer's alike: at most
  * `concurrency` files read at once, each holding its slot until its read settles. A renderer
  * `request` (a range the reader opened) takes the next free slot before any eager load; eager
- * loads follow the order last given to `want`. A file pages on only while wanted or requested
- * and not stopped. Nothing is kept here: an eager result reaches `onLoaded` only while its file
- * is still wanted, otherwise it is dropped, and a request's goes to its caller. An eagerly loaded
- * or failed file is not loaded eagerly again (the reader retries a failure on demand). The
- * renderer may adopt a request's result or drop it, so a requested file waits for the next `want`:
- * one that still lists it (it was dropped) loads it eagerly once more.
+ * loads follow the order last given to `want`. A file pages on only while wanted, or requested and
+ * under the selection last given to `select`, and not stopped: a request whose file leaves the
+ * selection fails with `PagingStopped` before its next page, or at once if it is still waiting,
+ * and loads again on a later request or `want`. Nothing is kept here: an eager result reaches
+ * `onLoaded` only while its file is still wanted, otherwise it is dropped, and a request's goes to
+ * its caller. An eagerly loaded or failed file is not loaded eagerly again (the reader retries a
+ * failure on demand). The renderer may adopt a request's result or drop it, so a requested file
+ * waits for the next `want`: one that still lists it (it was dropped) loads it eagerly once more.
  */
 export function contentLoader<Loaded>(options: {
   concurrency: number;
@@ -54,6 +56,8 @@ export function contentLoader<Loaded>(options: {
   let order: readonly string[] = [];
   let wanted = new Set<string>();
   let stopped = false;
+  // The files under the reader's selection; every file until the first `select`.
+  let selected: ReadonlySet<string> | undefined;
   const running = new Set<string>();
   // The renderer's requests, oldest first, waiting for a slot or reading.
   const requests = new Map<string, PromiseWithResolvers<Loaded>>();
@@ -61,7 +65,17 @@ export function contentLoader<Loaded>(options: {
   const settled = new Set<string>();
   const isStopped = (result: { value: Loaded } | { error: unknown }) =>
     "error" in result && result.error instanceof PagingStopped;
-  const isWanted = (path: string) => !stopped && (wanted.has(path) || requests.has(path));
+  const isSelected = (path: string) => selected === undefined || selected.has(path);
+  const isWanted = (path: string) =>
+    !stopped && (wanted.has(path) || (requests.has(path) && isSelected(path)));
+  // Fails the waiting requests `drop` names; reading ones fail at their next page.
+  const withdraw = (drop: (path: string) => boolean, why: string) => {
+    for (const [path, request] of requests)
+      if (!running.has(path) && drop(path)) {
+        requests.delete(path);
+        request.reject(new PagingStopped(why));
+      }
+  };
   const start = (path: string) => {
     running.add(path);
     const finish = (result: { value: Loaded } | { error: unknown }) => {
@@ -102,9 +116,16 @@ export function contentLoader<Loaded>(options: {
       wanted = new Set(paths);
       pump();
     },
+    /** The files under the reader's selection, the only ones whose requests read on. */
+    select(paths: readonly string[]) {
+      selected = new Set(paths);
+      withdraw((path) => !isSelected(path), "the file left the selection");
+    },
     /** The renderer's load of a file, which waits only for a free slot. */
     request(path: string): Promise<Loaded> {
       if (stopped) return Promise.reject(new PagingStopped("the reader went away"));
+      if (!isSelected(path))
+        return Promise.reject(new PagingStopped("the file left the selection"));
       let request = requests.get(path);
       if (request === undefined) {
         request = Promise.withResolvers<Loaded>();
@@ -127,11 +148,7 @@ export function contentLoader<Loaded>(options: {
       stopped = true;
       order = [];
       wanted = new Set();
-      for (const [path, request] of requests)
-        if (!running.has(path)) {
-          requests.delete(path);
-          request.reject(new PagingStopped("the reader went away"));
-        }
+      withdraw(() => true, "the reader went away");
     },
   };
 }

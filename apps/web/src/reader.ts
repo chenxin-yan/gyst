@@ -100,7 +100,7 @@ export function fileDiffOf(path: string, hunks: readonly Hunk[]): FileDiffMetada
   return diff;
 }
 
-/** Why a side stopped paging: its file left the reader's window. Not a failure to show. */
+/** Why a side stopped paging: its file left the reader's window or selection. Not a failure to show. */
 export class PagingStopped extends Error {}
 
 /**

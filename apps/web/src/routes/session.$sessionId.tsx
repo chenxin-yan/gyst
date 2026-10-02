@@ -366,7 +366,12 @@ function SessionReader(props: {
     (fileDiff: FileDiffMetadata) => {
       // A retry replaces the last failure at once, while it waits for a free slot.
       setLoad(fileDiff.name, "loading");
-      return loader.request(fileDiff.name);
+      // Rejected, not resolved empty, so the renderer hydrates nothing and the range can open
+      // again. A request withdrawn before it read never reached `read`, which clears the status.
+      return loader.request(fileDiff.name).catch((error: unknown) => {
+        if (error instanceof PagingStopped) setLoad(fileDiff.name, undefined);
+        throw error;
+      });
     },
     [loader, setLoad],
   );
@@ -379,6 +384,8 @@ function SessionReader(props: {
       }),
     [shown, diffs],
   );
+  // A renderer request reads on while its file is selected, even outside the window, and no longer.
+  useEffect(() => loader.select(shown.map((file) => file.path)), [loader, shown]);
   // The files the panel showed last; the window follows them and the selection.
   const visible = useRef<readonly string[]>([]);
   const followWindow = useCallback(() => {
