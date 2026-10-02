@@ -1,5 +1,7 @@
 import type { CodePayload, Hunk, ManifestFile } from "@gyst/core/wire";
+import { hydratePartialDiff } from "@pierre/diffs";
 import { describe, expect, it, vi } from "vite-plus/test";
+import { hiddenRanges } from "./cursor.ts";
 import {
   capturedFiles,
   capturedText,
@@ -13,6 +15,7 @@ import {
   statusOf,
   treeKey,
   treeOf,
+  wholeFileType,
 } from "./reader.ts";
 
 const hunk = (file: string, patch: string): Hunk => ({
@@ -27,10 +30,14 @@ const text = (n: number) => ({ kind: "text", blob: blob(n), size: 1 }) as const;
 
 describe("fileDiffOf", () => {
   it("keeps exact numbers and between-hunk hidden counts, and stays partial for loadDiffFiles", () => {
-    const diff = fileDiffOf("src/a b.ts", [
-      hunk("src/a b.ts", "@@ -2,3 +2,3 @@ fn\n one\n-two\n+TWO\n three"),
-      hunk("src/a b.ts", "@@ -20,2 +20,3 @@\n x\n+y\n z"),
-    ]);
+    const diff = fileDiffOf({
+      path: "src/a b.ts",
+      hunks: [
+        hunk("src/a b.ts", "@@ -2,3 +2,3 @@ fn\n one\n-two\n+TWO\n three"),
+        hunk("src/a b.ts", "@@ -20,2 +20,3 @@\n x\n+y\n z"),
+      ],
+      manifest: undefined,
+    });
     expect(diff.name).toBe("src/a b.ts");
     expect(diff.type).toBe("change");
     expect(diff.isPartial).toBe(true);
@@ -40,9 +47,60 @@ describe("fileDiffOf", () => {
     ]);
   });
 
-  it("reads a side with no lines as a new or deleted file, which has nothing hidden to load", () => {
-    expect(fileDiffOf("n.ts", [hunk("n.ts", "@@ -0,0 +1,2 @@\n+a\n+b")]).type).toBe("new");
-    expect(fileDiffOf("d.ts", [hunk("d.ts", "@@ -1,2 +0,0 @@\n-a\n-b")]).type).toBe("deleted");
+  const sized = (n: number, size: number) => ({ kind: "text", blob: blob(n), size }) as const;
+  const diffOf = (patch: string, old: ManifestFile["old"], current: ManifestFile["new"]) =>
+    fileDiffOf({
+      path: "a.ts",
+      hunks: [hunk("a.ts", patch)],
+      manifest: { path: "a.ts", old, new: current },
+    });
+
+  it("reads a side the manifest records with no lines as a new or deleted file", () => {
+    const added = "@@ -0,0 +1,2 @@\n+a\n+b";
+    const removed = "@@ -1,2 +0,0 @@\n-a\n-b";
+    expect(diffOf(added, { kind: "absent" }, sized(1, 4)).type).toBe("new");
+    expect(diffOf(removed, sized(1, 4), { kind: "absent" }).type).toBe("deleted");
+    // An existing file filled or emptied has no lines on that side either.
+    expect(diffOf(added, sized(0, 0), sized(1, 4)).type).toBe("new");
+    expect(diffOf(removed, sized(1, 4), sized(0, 0)).type).toBe("deleted");
+  });
+
+  it("keeps a zero-context edit at the top of a nonempty file a change that loads its tail", () => {
+    const sides = (oldText: string, newText: string) => ({
+      oldFile: { name: "a.ts", contents: oldText },
+      newFile: { name: "a.ts", contents: newText },
+    });
+    const inserted = diffOf("@@ -0,0 +1 @@\n+inserted", sized(1, 8), sized(2, 17));
+    expect(inserted.type).toBe("change");
+    const insertedLoaded = hydratePartialDiff(
+      "clone",
+      inserted,
+      sides("one\ntwo\n", "inserted\none\ntwo\n"),
+    );
+    expect(insertedLoaded.additionLines).toEqual(["inserted\n", "one\n", "two\n"]);
+    expect(insertedLoaded.deletionLines).toEqual(["one\n", "two\n"]);
+    expect(hiddenRanges(insertedLoaded)).toEqual([{ index: 1, old: 1, new: 2, size: 2 }]);
+    const deleted = diffOf("@@ -1 +0,0 @@\n-removed", sized(1, 16), sized(2, 8));
+    expect(deleted.type).toBe("change");
+    const deletedLoaded = hydratePartialDiff(
+      "clone",
+      deleted,
+      sides("removed\none\ntwo\n", "one\ntwo\n"),
+    );
+    expect(deletedLoaded.deletionLines).toEqual(["removed\n", "one\n", "two\n"]);
+    expect(deletedLoaded.additionLines).toEqual(["one\n", "two\n"]);
+    expect(hiddenRanges(deletedLoaded)).toEqual([{ index: 1, old: 2, new: 1, size: 2 }]);
+  });
+
+  it("reads a file as a change until a files page has its entry", () => {
+    const hunks = [hunk("n.ts", "@@ -0,0 +1,2 @@\n+a\n+b")];
+    const entry: ManifestFile = { path: "n.ts", old: { kind: "absent" }, new: text(1) };
+    const [before] = changedFiles(hunks, []);
+    expect(wholeFileType(before!.manifest)).toBeUndefined();
+    expect(fileDiffOf(before!).type).toBe("change");
+    const [after] = changedFiles(hunks, [entry]);
+    expect(wholeFileType(after!.manifest)).toBe("new");
+    expect(fileDiffOf(after!).type).toBe("new");
   });
 });
 

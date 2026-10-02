@@ -77,13 +77,30 @@ export function lineStats(hunks: readonly Hunk[]) {
 
 // ─── renderer input ──────────────────────────────────────────────────────
 
+const isEmptySide = (side: ContentSide) =>
+  side.kind === "absent" || (side.kind === "text" && side.size === 0);
+
+/**
+ * "new" or "deleted" when a file's manifest entry records a side with no lines (absent or empty),
+ * which leaves no hidden context to load. Hunks cannot say so: a zero-context insertion at the top
+ * of a nonempty file is `@@ -0,0 +1 @@` too. Without the entry, nothing is known.
+ */
+export const wholeFileType = (manifest: ManifestFile | undefined) =>
+  manifest === undefined
+    ? undefined
+    : isEmptySide(manifest.old)
+      ? "new"
+      : isEmptySide(manifest.new)
+        ? "deleted"
+        : undefined;
+
 /**
  * One file's captured hunks as partial @pierre/diffs metadata: exact line numbers and hidden-range
- * counts between hunks, with full contents loaded later through `loadDiffFiles`. A side with no
- * lines (absent or empty) makes the file new or deleted, which has no hidden context to load.
- * Build it once per snapshot: the renderer keys its hydration to this object's identity.
+ * counts between hunks, with full contents loaded later through `loadDiffFiles`. New or deleted
+ * only by `wholeFileType`, otherwise a change. Build it once per snapshot and manifest entry: the
+ * renderer keys its hydration to this object's identity.
  */
-export function fileDiffOf(path: string, hunks: readonly Hunk[]): FileDiffMetadata {
+export function fileDiffOf({ path, hunks, manifest }: ReaderFile): FileDiffMetadata {
   // processFile reads its first section as file headers, so a placeholder pair precedes the hunks;
   // the real path is set afterwards, since Git quoting or spaces could confuse header parsing.
   const diff = processFile(`--- file\n+++ file\n${hunks.map((hunk) => hunk.patch).join("\n")}\n`, {
@@ -92,11 +109,7 @@ export function fileDiffOf(path: string, hunks: readonly Hunk[]): FileDiffMetada
   });
   if (diff === undefined) throw new Error(`no diff for ${path}`);
   diff.name = path;
-  const [first] = diff.hunks;
-  if (diff.hunks.length === 1 && first!.deletionStart === 0 && first!.deletionCount === 0)
-    diff.type = "new";
-  else if (diff.hunks.length === 1 && first!.additionStart === 0 && first!.additionCount === 0)
-    diff.type = "deleted";
+  diff.type = wholeFileType(manifest) ?? diff.type;
   return diff;
 }
 

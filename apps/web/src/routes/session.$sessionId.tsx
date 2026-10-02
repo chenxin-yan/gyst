@@ -86,6 +86,7 @@ import {
   type TreeNode,
   treeKey,
   treeOf,
+  wholeFileType,
 } from "../reader.ts";
 import { media, theme } from "../tokens.stylex.ts";
 import {
@@ -296,10 +297,7 @@ function SessionReader(props: {
   const [diffs, setDiffs] = useState<ReadonlyMap<string, FileDiffMetadata>>(
     () =>
       new Map(
-        [...Map.groupBy(hunks, (hunk) => hunk.file)].map(([path, fileHunks]) => [
-          path,
-          fileDiffOf(path, fileHunks),
-        ]),
+        files.flatMap((file) => (file.hunks.length > 0 ? [[file.path, fileDiffOf(file)]] : [])),
       ),
   );
 
@@ -376,11 +374,32 @@ function SessionReader(props: {
     [loader, setLoad],
   );
 
+  // A files page can bring a file's entry after its diff was built without one, and only the
+  // entry says a whole side has no lines. A load that failed meanwhile no longer applies.
+  useEffect(() => {
+    const late = files.filter(
+      (file) =>
+        wholeFileType(file.manifest) !== undefined && diffs.get(file.path)?.type === "change",
+    );
+    if (late.length === 0) return;
+    for (const file of late) setLoad(file.path, undefined);
+    setDiffs((before) => {
+      const next = new Map(before);
+      for (const file of late) next.set(file.path, fileDiffOf(file));
+      return next;
+    });
+  }, [files, diffs, setLoad]);
+
   const hydratable = useMemo(
     () =>
       shown.flatMap((file) => {
         const type = diffs.get(file.path)?.type;
-        return type === "change" || type === "rename-changed" ? [file.path] : [];
+        // Loaded eagerly only once a files page has the entry that says both sides have lines.
+        return file.manifest !== undefined &&
+          wholeFileType(file.manifest) === undefined &&
+          (type === "change" || type === "rename-changed")
+          ? [file.path]
+          : [];
       }),
     [shown, diffs],
   );

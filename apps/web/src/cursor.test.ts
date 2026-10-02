@@ -38,10 +38,11 @@ const oldText = lines(1, 30)
   .join("");
 const newText = oldText.replace("l5\n", "L5\n").replace("l20\n", "l20\nnew\n");
 const partial = () =>
-  fileDiffOf(
-    "a.ts",
-    patches.map((patch) => hunk("a.ts", patch)),
-  );
+  fileDiffOf({
+    path: "a.ts",
+    hunks: patches.map((patch) => hunk("a.ts", patch)),
+    manifest: undefined,
+  });
 const loaded = () =>
   hydratePartialDiff("clone", partial(), {
     oldFile: { name: "a.ts", contents: oldText },
@@ -113,7 +114,14 @@ describe("rowsOf", () => {
 const model = (layout: "split" | "stacked", folded: string[] = []): Model => {
   const diffs = new Map([
     ["a.ts", partial()],
-    ["b.ts", fileDiffOf("b.ts", [hunk("b.ts", "@@ -1,2 +1,2 @@\n-x\n+y\n z")])],
+    [
+      "b.ts",
+      fileDiffOf({
+        path: "b.ts",
+        hunks: [hunk("b.ts", "@@ -1,2 +1,2 @@\n-x\n+y\n z")],
+        manifest: undefined,
+      }),
+    ],
   ]);
   const rows = (file: string) => (folded.includes(file) ? [] : rowsOf(diffs.get(file)!, new Map()));
   return {
