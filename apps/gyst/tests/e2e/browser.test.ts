@@ -1535,6 +1535,37 @@ describe("installed gyst in a sandboxed browser", () => {
       expect(await pane.getByRole("status").count()).toBe(0);
       expect(await pane.getByText("More unchanged context may be available").count()).toBe(0);
     }
+
+    // The files page lands first and rebuilds paged.ts as added; its eager reads then fail. The
+    // failure no longer applies to a file with nothing to load, so no alert offers a retry.
+    const page = await newPage(context, {
+      responses: ["/api/operation 503", "/api/operation 503"],
+    });
+    let held = 0;
+    const release = Promise.withResolvers<void>();
+    const files = Promise.withResolvers<void>();
+    await page.route(isOperationUrl, async (route) => {
+      const operation = route.request().postDataJSON();
+      if (operation?.command === "code" && operation.file === "paged.ts") {
+        held++;
+        await release.promise;
+        return route.fulfill({ status: 503, body: "" });
+      }
+      if (operation?.command === "files" && operation.after) await files.promise;
+      await route.continue();
+    });
+    await page.goto(`${one.origin}/session/${id}`);
+    await waitFor(async () => held === 2, "paged.ts's eager reads");
+    files.resolve();
+    await page
+      .getByRole("navigation", { name: "gyst" })
+      .getByRole("button", { name: "paged.ts (added)" })
+      .waitFor();
+    release.resolve();
+    await page.waitForLoadState("networkidle");
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    expect(await page.getByRole("alert").count()).toBe(0);
+    expect(await page.getByRole("main").getByRole("status").count()).toBe(0);
   }, 60_000);
 
   it("keeps the session across client navigation, cookie reload and a new tab; shows not-found views", async () => {

@@ -884,7 +884,9 @@ function SessionReader(props: {
             return (
               <FileHeader
                 file={file}
-                load={loads.get(path)}
+                // A file a late files page found whole-side empty needs no captured contents, so a
+                // read that failed after it was rebuilt no longer applies.
+                load={wholeFileType(file.manifest) === undefined ? loads.get(path) : undefined}
                 cursor={vim && here?.kind === "header" && here.file === path}
                 folded={diffs.has(path) ? folded.has(path) : undefined}
                 onFold={() => setFolds([path], !folded.has(path))}
