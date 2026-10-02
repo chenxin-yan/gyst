@@ -58,10 +58,10 @@ describe("SessionStore", () => {
     await writeFile(join(dataDir, "corrupt.json"), "{not json");
     await writeFile(join(dataDir, "wrong-shape.json"), JSON.stringify({ id: "x" }));
     // The schema is the contract: a session saved with group verdicts and a review queue is not
-    // migrated, it is skipped.
-    const { viewedHunkIds: _, viewedReceipts: __, ...oldFields } = session("older");
+    // migrated, it is skipped. The fixture keeps every required field, so only the legacy extras
+    // can reject it.
     const older = JSON.stringify({
-      ...oldFields,
+      ...session("older"),
       seq: 0,
       cursor: { itemId: null, pane: "queue" },
       groups: [{ id: "g", title: "old", notes: [], hunkIds: ["h"], accepted: false }],

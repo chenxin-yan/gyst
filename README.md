@@ -37,7 +37,7 @@ npm install -g @gyst/cli
 
 This version ships the headless session CLI, background daemon, agent skills and a
 browser viewer that shows each saved session's captured diff. The terminal review viewer
-has been removed; the browser viewer does not show agent guidance or Viewed progress yet.
+has been removed; the browser viewer does not show agent guidance yet.
 
 ## Review in the browser
 
