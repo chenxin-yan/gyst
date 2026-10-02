@@ -4,6 +4,7 @@
   "type": "module",
   "scripts": {
     "build": "vp run -r build",
+    "dev": "pnpm --dir apps/web dev",
     "check": "vp run check:task",
     "test": "pnpm run /^test:/",
     "test:e2e": "vp run test:e2e:task",

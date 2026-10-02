@@ -58,8 +58,52 @@ SSR). Routes live in `apps/web/src/routes/`; the router plugin regenerates the c
 `src/routeTree.gen.ts` on `dev` and `build`. It imports browser-safe contracts only from
 `@gyst/core/wire` and the shared HTTP paths from `@gyst/core/web`. `@gyst/cli` ships only the
 built `dist/`, so the published package does not depend on React or the router. The launcher
-serves the installed `dist/web-ui/`. `pnpm --dir apps/web dev` serves the viewer with Fast
-Refresh but no daemon behind it, so its pages show the request error.
+serves the installed `dist/web-ui/`.
+
+### Run it from source
+
+```sh
+pnpm dev
+```
+
+This starts the Vite dev server with a real gyst launcher and daemon running from source behind it.
+Nothing is built. It prints one URL:
+
+```
+  gyst  http://g-<hex>.localhost:3000/session/<id>#<secret>
+```
+
+Open that URL. Vite's own `http://localhost:3000/` links are deliberately not printed: the
+launcher refuses any host but its launch hostname, so they only return 403.
+
+How it works: the dev-only plugin in [`apps/web/dev-launcher.ts`](apps/web/dev-launcher.ts) runs
+`node apps/gyst/src/index.ts` (Node runs the TypeScript directly) and proxies the bridge paths
+(`/bootstrap`, `/api/operation`) to it with their `Host` and `Origin` unchanged. The browser
+opens the launch's `g-<hex>.localhost` hostname on Vite's port, just as it would behind an SSH
+forward, so sign-in, the cookie and the host and origin checks run as in production. Vite serves
+everything else, so viewer edits apply with Fast Refresh. The launcher starts the daemon as usual.
+
+- **What it reviews:** by default, the uncommitted changes of a demo repository built in
+  `.dev/demo` from [`apps/gyst/tests/demo-repo.ts`](apps/gyst/tests/demo-repo.ts), the same
+  fixture the browser tests use. Set `GYST_DEV_RANGE` to review a range of it, such as
+  `GYST_DEV_RANGE=stress~1...stress pnpm dev` (400 changed files) or `main...feature`. Set
+  `GYST_DEV_REPO=/path/to/repo` to review another repository.
+- **Where state lives:** sessions are saved in `.dev/data` (`GYST_DATA_DIR`), never your own
+  gyst data, and persist across runs. `rm -rf .dev` starts over and rebuilds the demo.
+- **After changing `apps/gyst` or `packages/core`:** press `r` in the dev server. Vite reruns the
+  plugin, which replaces the daemon and launcher with ones from the current source and prints a
+  new URL. The old URL then fails sign-in, because every launch has its own hostname and
+  credentials. A changed `vite.config.ts` or `dev-launcher.ts` restarts it the same way.
+- **Signing in again:** a launch URL signs in only within 10 minutes of its launch. After that,
+  press `r` for a new one. Reloading an already signed-in tab keeps working.
+- **Stopping:** Ctrl-C stops Vite and the launcher. The daemon outlives them, as it does in
+  production, and the next `pnpm dev` replaces it.
+- **Placeholder viewer:** the source launcher needs an `index.html` where the package keeps the
+  built viewer, so the plugin writes a placeholder to the git-ignored
+  `apps/gyst/src/dist/web-ui/`. Vite serves the real viewer.
+
+This checks behaviour by hand. It is not a substitute for `pnpm test`, which tests the packed
+npm install.
 
 Viewer styles use [StyleX](https://stylexjs.com/docs/learn/): each component calls
 `stylex.create` and `stylex.props` in its own file, and colours, fonts and the narrow-layout media
@@ -86,6 +130,14 @@ installed package, its real launches, daemon and a private key-authenticated SSH
 `CHROMIUM_PATH=/path/to/chromium`), git and OpenSSH (`sshd`, `ssh` and `ssh-keygen` on `PATH`, or
 `sshd` in `/usr/sbin`). Their scratch directory lives under `$HOME`, since sshd's `StrictModes`
 rejects a world-writable `/tmp` ancestor, and is removed after.
+
+CI runs them with the Google Chrome preinstalled on GitHub's `ubuntu-latest` runner image, which
+also has git and OpenSSH, so the workflow installs nothing extra. mise does not manage a browser.
+Where Chrome isn't installed, point `CHROMIUM_PATH` at any Chromium. On Nix, for example:
+
+```sh
+CHROMIUM_PATH="$(nix build --no-link --print-out-paths nixpkgs#chromium)/bin/chromium" pnpm test:e2e
+```
 
 To try the viewer over SSH, see the README's [Over SSH](README.md#over-ssh) section.
 
