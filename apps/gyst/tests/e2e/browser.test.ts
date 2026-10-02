@@ -699,6 +699,38 @@ describe("installed gyst in a sandboxed browser", () => {
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(
       true,
     );
+    // The footer wraps rather than clips: each control lies whole inside it and the page.
+    const footer = statusLine(page);
+    const controls = [
+      layout.getByText("Split", { exact: true }),
+      layout.getByText("Stacked", { exact: true }),
+      layout.getByText("Auto (stacked)", { exact: true }),
+      footer.getByText(/^\d+\/\d+ hunks? viewed in \d+ files?$/),
+      footer.getByRole("button", { name: /^Keys/ }),
+    ];
+    for (const [at, control] of controls.entries())
+      await waitFor(async () => {
+        const [box, bounds] = await Promise.all([control.boundingBox(), footer.boundingBox()]);
+        return (
+          box !== null &&
+          bounds !== null &&
+          box.x >= Math.max(bounds.x, 0) &&
+          box.y >= Math.max(bounds.y, 0) &&
+          box.x + box.width <= Math.min(bounds.x + bounds.width, 390) &&
+          box.y + box.height <= Math.min(bounds.y + bounds.height, 844)
+        );
+      }, `footer control ${at} inside the footer and the page`);
+    await layout.getByText("Stacked", { exact: true }).click();
+    expect(await layout.getByRole("radio", { name: "Stacked", exact: true }).isChecked()).toBe(
+      true,
+    );
+    await layout.getByText("Auto (stacked)", { exact: true }).click();
+    expect(await auto("stacked").isChecked()).toBe(true);
+    await footer.getByRole("button", { name: /^Keys/ }).click();
+    const help = page.getByRole("dialog", { name: "Keyboard shortcuts" });
+    await help.waitFor();
+    await page.keyboard.press("Escape");
+    await help.waitFor({ state: "detached" });
   }, 30_000);
 
   it("keeps the reading position across layout switches after one jump far past the rendered files", async () => {

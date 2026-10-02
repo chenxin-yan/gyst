@@ -78,7 +78,7 @@ const frame = stylex.create({
     position: "relative",
     minHeight: 0,
     display: "grid",
-    gridTemplateRows: "44px minmax(0, 1fr) 30px",
+    gridTemplateRows: "44px minmax(0, 1fr) minmax(30px, auto)",
     margin: { default: "8px 8px 8px 0", [media.narrow]: "0 8px 8px" },
     borderRadius: "10px",
     backgroundColor: theme.panelBg,
@@ -101,11 +101,13 @@ const frame = stylex.create({
     padding: { default: "24px 32px 120px", [media.narrow]: "16px 12px 80px" },
   },
   fill: { padding: 0, overflow: "hidden" },
+  // Wraps rather than clips: a narrow panel puts the footer's controls on more rows.
   status: {
     display: "flex",
+    flexWrap: "wrap",
     alignItems: "center",
-    gap: "14px",
-    padding: "0 14px 0 12px",
+    gap: "4px 14px",
+    padding: "5px 14px 5px 12px",
     borderTopWidth: "1px",
     borderTopStyle: "solid",
     borderTopColor: theme.line,
@@ -113,7 +115,7 @@ const frame = stylex.create({
     fontSize: "11.5px",
     lineHeight: "normal",
     color: theme.muted,
-    whiteSpace: "nowrap",
+    overflowWrap: "anywhere",
     overflow: "hidden",
   },
 });
