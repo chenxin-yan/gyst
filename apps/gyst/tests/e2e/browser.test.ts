@@ -345,6 +345,28 @@ describe("installed gyst in a sandboxed browser", () => {
       git("add", ".");
       git("commit", "-qm", edited ? "stress" : "stress base");
     }
+    // large~1...large edits line 1500 of big.ts's 3000, about 87 KiB a side (two code pages), and
+    // line 1 of small.ts's 10.
+    git("switch", "-q", "main");
+    git("switch", "-qc", "large");
+    for (const edited of [false, true]) {
+      await writeFile(
+        join(repo, "big.ts"),
+        Array.from(
+          { length: 3000 },
+          (_, i) => `export const big${i + 1} = ${i + 1}${edited && i === 1499 ? " * 2" : ""};\n`,
+        ).join(""),
+      );
+      await writeFile(
+        join(repo, "small.ts"),
+        Array.from(
+          { length: 10 },
+          (_, i) => `export const small${i + 1} = ${i + 1}${edited && i === 0 ? " * 2" : ""};\n`,
+        ).join(""),
+      );
+      git("add", ".");
+      git("commit", "-qm", edited ? "large" : "large base");
+    }
     git("switch", "-q", "main");
     git("switch", "-qc", "feature");
     await writeFile(join(repo, "feature.ts"), "export const feature = 'range-only';\n");
@@ -622,6 +644,75 @@ describe("installed gyst in a sandboxed browser", () => {
     await page.mouse.wheel(0, 1500);
     await pane.getByText("117 unmodified lines").first().waitFor();
     expect(readsOf("src/long.ts")).toBe(4);
+  }, 30_000);
+
+  it("stops a multi-page file's opened range read before its next page once the reader selects another file, and loads it again on return", async () => {
+    const id = await openRange("large~1...large");
+    onTestFinished(() =>
+      gyst("session", "delete", "--session", id, "--request-id", randomBytes(16).toString("hex")),
+    );
+    // The renderer logs every `loadDiffFiles` rejection, this intentional cancellation included.
+    const page = await newPage(context, {
+      problems: [expect.stringMatching(/^console .*the file left the window/)],
+    });
+    const codes: any[] = [];
+    let landed = 0;
+    page.on("requestfinished", (request) => {
+      const operation = operationOf(request);
+      if (operation?.command === "code" && operation.file === "big.ts") landed++;
+    });
+    let release = () => {};
+    const released = new Promise<void>((resolve) => (release = resolve));
+    await page.route(isOperationUrl, async (route) => {
+      const operation = route.request().postDataJSON();
+      if (operation?.command === "code") {
+        codes.push(operation);
+        // big.ts's first pages are held, so its second pages are not asked for yet.
+        if (operation.file === "big.ts") await released;
+      }
+      await route.continue();
+    });
+    await page.goto(`${one.origin}/session/${id}`);
+    const pane = page.getByRole("main");
+    const tree = page.getByRole("navigation", { name: "gyst" });
+    const pagesOf = (file: string, later: boolean) =>
+      codes.filter((code) => code.file === file && (code.offset !== undefined) === later).length;
+    try {
+      await waitFor(async () => pagesOf("big.ts", false) === 2, "big.ts's first pages");
+      // Its leading range opens while they are held: the renderer's request joins that read.
+      await pane.getByText("1496 unmodified lines").first().click();
+      await tree.getByRole("button", { name: "small.ts (modified)", exact: true }).click();
+      await waitFor(
+        async () => JSON.stringify(await fileHeadings(page)) === '["small.ts"]',
+        "small.ts selected",
+      );
+    } finally {
+      release();
+    }
+    await waitFor(async () => landed === 2, "big.ts's held first pages to land");
+    // The selected file loads: its trailing range (lines 5-10) shows its count.
+    await pane.getByText("6 unmodified lines").first().waitFor();
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    expect(pagesOf("big.ts", true)).toBe(0);
+    expect(await page.getByRole("alert").count()).toBe(0);
+
+    await tree.getByRole("button", { name: "big.ts (modified)", exact: true }).click();
+    // Without a click it loads again, every page, and its trailing range (lines 1504-3000) shows
+    // its count.
+    await waitFor(async () => pagesOf("big.ts", true) === 2, "big.ts's second pages");
+    await pane.getByText("1497 unmodified lines").first().waitFor();
+    expect(pagesOf("big.ts", false)).toBe(4);
+    // Its leading range opens further on a click without another read, wherever the renderer kept
+    // its earlier expansion; the first such separator is the leading one.
+    const leading = pane.getByText(/^1\d{3} unmodified lines$/).first();
+    const before = await leading.textContent();
+    await leading.click();
+    await waitFor(
+      async () => (await pane.getByText(before!, { exact: true }).count()) === 0,
+      "big.ts's leading range to open",
+    );
+    expect(codes.filter((code) => code.file === "big.ts")).toHaveLength(6);
+    expect(await page.getByRole("alert").count()).toBe(0);
   }, 30_000);
 
   it("shows the captured changes under a selected file or folder, and the whole snapshot again", async () => {
@@ -1384,6 +1475,67 @@ describe("installed gyst in a sandboxed browser", () => {
       after: expect.stringMatching(/^bulk\/\d{3}\.txt$/),
     });
   }, 30_000);
+
+  it("loads an added file listed only on a later files page, its trailing range opened, whichever reply lands first", async () => {
+    // bulk...paged adds paged.ts; its manifest entry is on the second and last files page.
+    const id = await openRange("bulk...paged");
+    onTestFinished(() =>
+      gyst("session", "delete", "--session", id, "--request-id", randomBytes(16).toString("hex")),
+    );
+    for (const first of ["code", "files"] as const) {
+      const page = await newPage();
+      const held = { code: 0, files: 0 };
+      const finished = { code: 0, files: 0 };
+      const gateOf = (operation: any) =>
+        operation?.command === "code" && operation.file === "paged.ts"
+          ? "code"
+          : operation?.command === "files" && operation.after
+            ? "files"
+            : undefined;
+      page.on("requestfinished", (request) => {
+        const gate = gateOf(operationOf(request));
+        if (gate) finished[gate]++;
+      });
+      const gates = { code: Promise.withResolvers<void>(), files: Promise.withResolvers<void>() };
+      await page.route(isOperationUrl, async (route) => {
+        const gate = gateOf(route.request().postDataJSON());
+        if (gate) {
+          held[gate]++;
+          await gates[gate].promise;
+        }
+        await route.continue();
+      });
+      await page.goto(`${one.origin}/session/${id}`);
+      const pane = page.getByRole("main");
+      try {
+        // Until its entry lands, paged.ts reads as a change, so its sides load eagerly.
+        await waitFor(
+          async () => held.code === 2 && held.files === 1,
+          "paged.ts's reads and the later files page",
+        );
+        await pane.getByText("More unchanged context may be available").first().click();
+        gates[first].resolve();
+        await waitFor(async () => finished[first] === held[first], `the ${first} replies`);
+      } finally {
+        gates.code.resolve();
+        gates.files.resolve();
+      }
+      await waitFor(
+        async () => finished.code === 2 && finished.files === 1,
+        `every reply, ${first} first`,
+      );
+      // An earlier test moves `paged` back a commit, so either version may be captured.
+      await pane
+        .getByText(/^v[12]$/)
+        .first()
+        .waitFor();
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      // No false failure, no stale load status, and no range left to open.
+      expect(await page.getByRole("alert").count()).toBe(0);
+      expect(await pane.getByRole("status").count()).toBe(0);
+      expect(await pane.getByText("More unchanged context may be available").count()).toBe(0);
+    }
+  }, 60_000);
 
   it("keeps the session across client navigation, cookie reload and a new tab; shows not-found views", async () => {
     const page = await newPage();
