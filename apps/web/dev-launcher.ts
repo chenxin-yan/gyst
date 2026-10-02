@@ -1,37 +1,22 @@
-// `pnpm dev`: a source-run gyst launcher behind the Vite dev server. The browser opens the launch's
-// own `g-<hex>.localhost` hostname on Vite's port, so Vite serves the viewer with Fast Refresh and
-// proxies the bridge paths with their Host and Origin unchanged: the launcher authenticates them
-// exactly as it does a browser behind an SSH forward.
+// `pnpm dev` and `apps/gyst/dev/gyst`: a source-run gyst launcher behind the Vite dev server. The
+// browser opens the launch's own `g-<hex>.localhost` hostname on Vite's port, so Vite serves the
+// viewer with Fast Refresh and proxies the bridge paths with their Host and Origin unchanged: the
+// launcher authenticates them exactly as it does a browser behind an SSH forward.
 import { webPaths } from "@gyst/core/web";
 import { type ChildProcess, execFileSync, spawn } from "node:child_process";
 import { existsSync } from "node:fs";
-import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import type { AddressInfo } from "node:net";
 import { join, resolve } from "node:path";
 import type { Plugin } from "vite-plus";
-import { writeDemoRepo } from "../gyst/tests/demo-repo.ts";
 
 const checkout = resolve(import.meta.dirname, "../..");
-const dev = join(checkout, ".dev");
-const data = join(dev, "data");
-const demo = join(dev, "demo");
+// apps/gyst/dev/gyst sets the same directory for the source CLI, so both reach one dev daemon.
+const data = join(checkout, ".dev", "data");
 const entry = join(checkout, "apps/gyst/src/index.ts");
 // The source launcher resolves the packaged SPA beside its entry and refuses to start without an
 // index.html. Vite serves the real viewer, so a placeholder satisfies it; `dist/` is ignored.
 const webUiStub = join(checkout, "apps/gyst/src/dist/web-ui/index.html");
-
-async function ensureDemo() {
-  if (existsSync(demo)) return;
-  const partial = `${demo}.partial`;
-  await rm(partial, { recursive: true, force: true });
-  await mkdir(partial, { recursive: true });
-  // The user's Git config (signing, hooks, default branch) must not shape the fixture.
-  const env = { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1" };
-  await writeDemoRepo(partial, (...args) =>
-    execFileSync("git", args, { cwd: partial, env, stdio: "ignore" }),
-  );
-  await rename(partial, demo);
-}
 
 const isAlive = (pid: number) => {
   try {
@@ -60,10 +45,9 @@ async function stopStaleDaemon() {
 }
 
 /** Starts the launcher; resolves its private URL once printed. Its stderr shows capture progress. */
-function startLauncher(): Promise<{ launcher: ChildProcess; url: URL }> {
-  const range = process.env.GYST_DEV_RANGE;
-  const launcher = spawn(process.execPath, [entry, ...(range ? [range] : [])], {
-    cwd: process.env.GYST_DEV_REPO ?? demo,
+function startLauncher(launch: DevLaunch): Promise<{ launcher: ChildProcess; url: URL }> {
+  const launcher = spawn(process.execPath, [entry, ...launch.args], {
+    cwd: launch.cwd,
     env: { ...process.env, GYST_DATA_DIR: data },
     stdio: ["ignore", "pipe", "inherit"],
   });
@@ -81,20 +65,22 @@ function startLauncher(): Promise<{ launcher: ChildProcess; url: URL }> {
   });
 }
 
-export function devLauncher(): Plugin {
+/** What the launcher opens: `gyst`'s own arguments (a range or `--session <id>`), run in `cwd`. */
+export type DevLaunch = { readonly cwd: string; readonly args: ReadonlyArray<string> };
+
+export function devLauncher(launch: DevLaunch): Plugin {
   let started: Awaited<ReturnType<typeof startLauncher>>;
   return {
     name: "gyst-dev-launcher",
-    apply: (_, env) => env.command === "serve" && !env.isPreview,
     // Runs again on every server restart (`r`), relaunching from the current source.
     async config() {
       await mkdir(data, { recursive: true });
-      await Promise.all([ensureDemo(), stopStaleDaemon()]);
+      await stopStaleDaemon();
       if (!existsSync(webUiStub)) {
         await mkdir(join(webUiStub, ".."), { recursive: true });
         await writeFile(webUiStub, "<!doctype html><p>Served by Vite in development.</p>\n");
       }
-      started = await startLauncher();
+      started = await startLauncher(launch);
       // An object, not Vite's string shorthand, which would set changeOrigin and rewrite the Host.
       const bridge = { target: `http://127.0.0.1:${started.url.port}` };
       return { server: { proxy: { [webPaths.bootstrap]: bridge, [webPaths.operation]: bridge } } };

@@ -2,7 +2,6 @@ import stylex from "@stylexjs/unplugin/vite";
 import { tanstackRouter } from "@tanstack/router-plugin/vite";
 import viteReact from "@vitejs/plugin-react";
 import { defineConfig } from "vite-plus";
-import { devLauncher } from "./dev-launcher.ts";
 
 // `vp build` emits dist/, which @gyst/cli copies into its package as dist/web-ui/. Assets stay
 // root-relative so deep links such as /session/<id> load them.
@@ -27,6 +26,5 @@ export default defineConfig({
       unstable_moduleResolution: { type: "commonJS", rootDir: import.meta.dirname },
     }),
     viteReact(),
-    devLauncher(),
   ],
 });
