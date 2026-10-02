@@ -457,16 +457,26 @@ describe("installed gyst in a sandboxed browser", () => {
       await tree.getByRole("button", { name, exact: true }).waitFor();
   }, 30_000);
 
-  it("expands a hidden range into captured full contents on demand, each range on its own, with exact counts", async () => {
+  it("loads visible files' captured sides eagerly, a bounded few at a time, so every hidden range shows its exact count", async () => {
     const page = await newPage();
     const codes: any[] = [];
-    page.on("request", (request) => {
-      if (operationOf(request)?.command === "code") codes.push(operationOf(request));
-    });
+    let inFlight = 0;
+    let mostInFlight = 0;
+    const settle = (request: PageRequest) => {
+      if (operationOf(request)?.command === "code") inFlight--;
+    };
+    page.on("requestfinished", settle);
+    page.on("requestfailed", settle);
     let release = () => {};
     const released = new Promise<void>((resolve) => (release = resolve));
     await page.route(isOperationUrl, async (route) => {
-      if (route.request().postDataJSON()?.command === "code") await released;
+      const operation = route.request().postDataJSON();
+      if (operation?.command === "code") {
+        codes.push(operation);
+        inFlight++;
+        mostInFlight = Math.max(mostInFlight, inFlight);
+        await released;
+      }
       await route.continue();
     });
     await page.goto(`${one.origin}${one.path}`);
@@ -474,9 +484,7 @@ describe("installed gyst in a sandboxed browser", () => {
     // README.md's hunk starts at line 8; src/long.ts's at line 97. Both counts come from the hunks.
     await pane.getByText("7 unmodified lines").first().waitFor();
     await pane.getByText("96 unmodified lines").first().waitFor();
-    expect(codes).toEqual([]);
-    await pane.getByText("7 unmodified lines").first().click();
-    // While the captured sides are read, README.md's header says so; it clears once they arrive.
+    // Without a click, the visible files' sides are read: two files at a time, two sides each.
     const loading = pane
       .getByRole("heading", { name: "README.md", exact: true })
       .locator("..")
@@ -484,23 +492,34 @@ describe("installed gyst in a sandboxed browser", () => {
       .filter({ hasText: "Loading the captured file…" });
     try {
       await loading.waitFor();
+      await waitFor(async () => codes.length === 4, "four code reads");
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      expect(codes.length).toBe(4);
     } finally {
       release();
     }
+    // src/long.ts's trailing range (lines 184-300) shows the renderer's count once its sides load.
+    await pane.getByText("117 unmodified lines").first().waitFor();
+    await loading.waitFor({ state: "detached" });
+    expect(await pane.getByRole("status").count()).toBe(0);
+    // Each changed text file's two sides, read once, from the session's snapshot.
+    const { snapshotId } = (await gyst("session", "list")).sessions[0];
+    const reads = codes.map(({ file, side, snapshotId: read }) => `${file} ${side} ${read}`);
+    expect(reads.sort((a, b) => a.localeCompare(b))).toEqual(
+      ["README.md", "app.ts", "src/long.ts"].flatMap((file) => [
+        `${file} new ${snapshotId}`,
+        `${file} old ${snapshotId}`,
+      ]),
+    );
+    expect(mostInFlight).toBeLessThanOrEqual(4);
+    // A loaded range opens on a click without another read; the other ranges stay hidden.
+    await pane.getByText("7 unmodified lines").first().click();
     // Split shows a context line on both sides.
     await pane.getByText("line 3", { exact: true }).first().waitFor();
     for (const n of [1, 7]) await pane.getByText(`line ${n}`, { exact: true }).first().waitFor();
     expect(await pane.getByText("7 unmodified lines").count()).toBe(0);
-    await loading.waitFor({ state: "detached" });
-    expect(await pane.getByRole("status").count()).toBe(0);
-    // Only README.md's sides were read, from the session's snapshot; the other range stays hidden.
-    const { snapshotId } = (await gyst("session", "list")).sessions[0];
-    const reads = codes.map(({ file, side, snapshotId: read }) => `${file} ${side} ${read}`);
-    expect(reads.sort((a, b) => a.localeCompare(b))).toEqual([
-      `README.md new ${snapshotId}`,
-      `README.md old ${snapshotId}`,
-    ]);
     expect(await pane.getByText("96 unmodified lines").count()).toBeGreaterThan(0);
+    expect(codes.length).toBe(6);
   }, 30_000);
 
   it("shows the captured changes under a selected file or folder, and the whole snapshot again", async () => {

@@ -12,6 +12,7 @@ import {
   FileDiff,
   type FileDiffContentsLoader,
   type FileDiffMetadata,
+  hydratePartialDiff,
 } from "@pierre/diffs";
 import { CodeView, type CodeViewHandle, type CodeViewReactOptions } from "@pierre/diffs/react";
 import * as stylex from "@stylexjs/stylex";
@@ -63,6 +64,12 @@ import {
   stopsOf,
   switched,
 } from "../cursor.ts";
+import {
+  hydrationConcurrency,
+  hydrationScheduler,
+  hydrationWindow,
+  nearbyItems,
+} from "../hydration.ts";
 import { type Command, type CommandId, keyOf, matchKey } from "../keymap.ts";
 import {
   capturedFilesLoader,
@@ -273,8 +280,9 @@ function SessionReader(props: {
   const manifest = useMemo(() => pages.flatMap((page) => page.files), [pages]);
   const files = useMemo(() => changedFiles(hunks, manifest), [hunks, manifest]);
   const byPath = useMemo(() => new Map(files.map((file) => [file.path, file])), [files]);
-  // One metadata object per file for the snapshot's life: the renderer hydrates it in place.
-  const diffs = useMemo(
+  // One partial metadata object per file for the snapshot's life: the renderer hydrates it in
+  // place when a range opens before its file loaded eagerly.
+  const partialDiffs = useMemo(
     () =>
       new Map(
         [...Map.groupBy(hunks, (hunk) => hunk.file)].map(([path, fileHunks]) => [
@@ -322,6 +330,45 @@ function SessionReader(props: {
       }
     },
     [loadFiles, mounted],
+  );
+
+  // Visible and nearby files load their captured sides eagerly, so every hidden range, the
+  // trailing one too, shows the renderer's exact count and the cursor stops on it.
+  const [hydrated, setHydrated] = useState<ReadonlyMap<string, FileDiffMetadata>>(new Map());
+  const diffs = useMemo(
+    () => new Map([...partialDiffs].map(([path, diff]) => [path, hydrated.get(path) ?? diff])),
+    [partialDiffs, hydrated],
+  );
+  const scheduler = useMemo(
+    () =>
+      hydrationScheduler({
+        concurrency: hydrationConcurrency,
+        load: (path) => loadDiffFiles(partialDiffs.get(path)!),
+        onLoaded: (path, loaded) => {
+          const partial = partialDiffs.get(path)!;
+          // The renderer may have hydrated it in place meanwhile (a range opened first).
+          if (!partial.isPartial || !mounted.current) return;
+          const diff = hydratePartialDiff("clone", partial, loaded);
+          setHydrated((before) => new Map(before).set(path, diff));
+        },
+      }),
+    [partialDiffs, loadDiffFiles, mounted],
+  );
+  useEffect(() => () => scheduler.stop(), [scheduler]);
+  const hydratable = useMemo(
+    () =>
+      shown.flatMap((file) => {
+        const diff = partialDiffs.get(file.path);
+        return diff?.isPartial && (diff.type === "change" || diff.type === "rename-changed")
+          ? [file.path]
+          : [];
+      }),
+    [shown, partialDiffs],
+  );
+  const onWindow = useCallback(
+    (visible: readonly string[]) =>
+      scheduler.want(hydrationWindow(hydratable, visible, nearbyItems)),
+    [scheduler, hydratable],
   );
 
   const tree = useMemo(
@@ -743,6 +790,7 @@ function SessionReader(props: {
           mark={vim && here ? markOf(here) : undefined}
           lines={lines}
           loadDiffFiles={loadDiffFiles}
+          onWindow={onWindow}
           onWidth={setWidth}
           onOpened={() => setOpenedVersion((version) => version + 1)}
           onLineClick={(target) => vim && setCursor(target)}
@@ -869,6 +917,8 @@ function ContinuousDiff(props: {
   mark: Mark | undefined;
   lines: CodeViewLineSelection | null;
   loadDiffFiles: FileDiffContentsLoader;
+  /** The files the panel shows now, after each render and scroll. */
+  onWindow: (visible: readonly string[]) => void;
   onWidth: (width: number) => void;
   onOpened: () => void;
   onLineClick: (cursor: Cursor) => void;
@@ -906,6 +956,26 @@ function ContinuousDiff(props: {
       position.current = { file: id, side: anchor?.side, line: anchor?.lineNumber };
       return;
     }
+  }, []);
+
+  /** Tells the reader which files the panel shows now, once per change of that list. */
+  const lastWindow = useRef("");
+  const reportWindow = useCallback(() => {
+    const viewer = view.current?.getInstance();
+    const node = root.current;
+    if (viewer === undefined || node === null) return;
+    const top = node.scrollTop;
+    const bottom = top + node.clientHeight;
+    const visible = viewer.getRenderedItems().flatMap(({ id, instance }) => {
+      const itemTop = viewer.getTopForItem(id);
+      return itemTop !== undefined && itemTop < bottom && itemTop + instance.height > top
+        ? [id]
+        : [];
+    });
+    const key = visible.join("\n");
+    if (key === lastWindow.current) return;
+    lastWindow.current = key;
+    latest.current.onWindow(visible);
   }, []);
 
   /** A mark's box in the panel's scroll coordinates, while its file is rendered. */
@@ -1091,23 +1161,32 @@ function ContinuousDiff(props: {
     onOpened();
   }, []);
 
-  // One item per file, reused while its fold is unchanged so the renderer keeps its state.
+  // One item per file, reused while its fold and metadata are unchanged so the renderer keeps its
+  // state. A replaced item carries a new version: the renderer reads an item again only then.
   const itemCache = useRef(new Map<string, CodeViewItem<undefined>>());
+  const itemVersion = useRef(0);
   const items = useMemo(
     () =>
       props.files.map((file): CodeViewItem<undefined> => {
         const fileDiff = diffs.get(file.path);
         const collapsed = fileDiff === undefined || props.folded.has(file.path);
         const cached = itemCache.current.get(file.path);
-        if (cached && cached.collapsed === collapsed) return cached;
+        if (
+          cached &&
+          cached.collapsed === collapsed &&
+          (cached.type !== "diff" || cached.fileDiff === fileDiff)
+        )
+          return cached;
+        const version = ++itemVersion.current;
         const item: CodeViewItem<undefined> = fileDiff
-          ? { id: file.path, type: "diff", fileDiff, collapsed }
+          ? { id: file.path, type: "diff", fileDiff, collapsed, version }
           : // No captured text to show: the header alone says why.
             {
               id: file.path,
               type: "file",
               file: { name: file.path, contents: "" },
               collapsed: true,
+              version,
             };
         itemCache.current.set(file.path, item);
         return item;
@@ -1151,9 +1230,10 @@ function ContinuousDiff(props: {
           syncOpened(context.item.id, instance);
         queueMicrotask(capture);
         queueMicrotask(paint);
+        queueMicrotask(reportWindow);
       },
     }),
-    [layout, props.loadDiffFiles, props.inputMode, capture, paint, syncOpened],
+    [layout, props.loadDiffFiles, props.inputMode, capture, paint, syncOpened, reportWindow],
   );
 
   // The panel's content width decides auto layout; the viewport's never does. Scrolling by hand
@@ -1247,6 +1327,7 @@ function ContinuousDiff(props: {
       onScroll={() => {
         capture();
         paint();
+        reportWindow();
         if (performance.now() - manualAt.current < 1000) latest.current.onManualScroll();
       }}
       renderCodeViewHeader={() => <CursorOverlay ref={bar} />}
