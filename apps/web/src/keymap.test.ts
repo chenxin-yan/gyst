@@ -1,93 +1,87 @@
+import {
+  areHotkeysEqual,
+  formatForDisplay,
+  type Hotkey,
+  validateHotkey,
+} from "@tanstack/react-hotkeys";
 import { describe, expect, it } from "vite-plus/test";
-import { commands, keyLabel, keyOf, matchKey } from "./keymap.ts";
+import { commands, keyLabels, typed } from "./keymap.ts";
 
-const press = (...keys: string[]) => {
-  let pending: string[] = [];
-  const ran: string[] = [];
-  for (const key of keys) {
-    const step = matchKey(pending, key);
-    pending = step.pending;
-    if (step.command) ran.push(step.command);
-  }
-  return { ran, pending };
-};
+const bindings = commands.flatMap((command) => command.keys.map((keys) => ({ ...command, keys })));
+const singles = bindings.filter(({ keys }) => keys.length === 1).map(({ keys }) => keys[0]!);
+const sequences = bindings.filter(({ keys }) => keys.length > 1).map(({ keys }) => keys);
+const keysOf = (id: string) => commands.find((command) => command.id === id)!.keys;
 
-describe("matchKey", () => {
-  it("runs single keys and whole sequences, and waits on a prefix", () => {
-    expect(press("j", "k", "G", "m", "1", "2", "0", "?")).toEqual({
-      ran: ["down", "up", "bottom", "viewed", "split", "stacked", "auto", "help"],
-      pending: [],
-    });
-    expect(press("g")).toEqual({ ran: [], pending: ["g"] });
-    expect(press("g", "g").ran).toEqual(["top"]);
-    expect(press("]", "c", "[", "c", "]", "f", "[", "f").ran).toEqual([
-      "nextChange",
-      "previousChange",
-      "nextFile",
-      "previousFile",
+describe("commands", () => {
+  it("names every key as TanStack Hotkeys knows it", () => {
+    for (const { keys } of bindings)
+      for (const key of keys)
+        expect(validateHotkey(key), key).toMatchObject({ valid: true, warnings: [] });
+  });
+
+  it("binds no key sequence twice", () => {
+    for (const [at, { keys }] of bindings.entries())
+      for (const other of bindings.slice(at + 1))
+        expect(
+          other.keys.length === keys.length &&
+            keys.every((key, step) => areHotkeysEqual(key, other.keys[step]!)),
+          `${keys.join(" ")} / ${other.keys.join(" ")}`,
+        ).toBe(false);
+  });
+
+  // Single keys still run while a sequence is pending, so a single key that is also any step of a
+  // sequence would run with it.
+  it("binds no single key that is also a step of a sequence", () => {
+    for (const single of singles)
+      for (const sequence of sequences)
+        for (const step of sequence)
+          expect(areHotkeysEqual(single, step), `${single} in ${sequence.join(" ")}`).toBe(false);
+  });
+
+  it("has no keys of later tickets yet", () => {
+    for (const later of ["C", "R", "X", "N", "Shift+R"] satisfies Hotkey[])
+      expect(
+        singles.some((single) => areHotkeysEqual(single, later)),
+        later,
+      ).toBe(false);
+  });
+
+  it("prints keys for the help and the menu as the platform shows them", () => {
+    const label = (id: string, platform: "mac" | "linux") =>
+      keysOf(id).map((keys) =>
+        keys.map((key) => formatForDisplay(key, { platform, keyLabels })).join(" "),
+      );
+    expect(
+      ["down", "halfDown", "bottom", "unfoldAll", "menu", "open", "cancel", "help"].map((id) =>
+        label(id, "linux"),
+      ),
+    ).toEqual([
+      ["j"],
+      ["Ctrl+d"],
+      ["Shift+g"],
+      ["z Shift+r"],
+      ["Super+k", "Ctrl+k"],
+      ["↵"],
+      ["Esc"],
+      ["?"],
     ]);
-    expect(press("z", "o", "z", "c", "z", "a", "z", "R", "z", "M").ran).toEqual([
-      "unfold",
-      "fold",
-      "toggleFold",
-      "unfoldAll",
-      "foldAll",
-    ]);
-    expect(press("Enter", "Escape", "V", "v", "h", "l").ran).toEqual([
-      "open",
-      "cancel",
-      "select",
-      "select",
-      "oldSide",
-      "newSide",
-    ]);
-    expect(press("Ctrl-d", "Ctrl-u", "Meta-k", "Ctrl-k").ran).toEqual([
-      "halfDown",
-      "halfUp",
-      "menu",
-      "menu",
+    expect(["halfDown", "bottom", "menu", "top"].map((id) => label(id, "mac"))).toEqual([
+      ["⌃ d"],
+      ["⇧ g"],
+      ["⌘ k", "⌃ k"],
+      ["g g"],
     ]);
   });
 
-  it("starts over from a key that does not continue the sequence", () => {
-    expect(press("g", "j").ran).toEqual(["down"]);
-    expect(press("z", "z", "o").ran).toEqual(["unfold"]);
-    expect(press("]", "x")).toEqual({ ran: [], pending: [] });
-    // Keys of later tickets do nothing yet.
-    expect(press("c", "r", "x", "n", "R").ran).toEqual([]);
-  });
-
-  it("has no sequence that is another's prefix or listed twice", () => {
-    const sequences = commands.flatMap((command) => command.keys.map((keys) => keys.join(" ")));
-    expect(new Set(sequences).size).toBe(sequences.length);
-    for (const sequence of sequences)
-      for (const other of sequences)
-        if (other !== sequence) expect(other.startsWith(`${sequence} `)).toBe(false);
-  });
-});
-
-describe("keyOf and keyLabel", () => {
-  const event = (key: string, modifiers: Partial<KeyboardEvent> = {}) => ({
-    key,
-    ctrlKey: false,
-    metaKey: false,
-    altKey: false,
-    ...modifiers,
-  });
-  it("names chords and leaves Alt chords and bare modifiers out", () => {
-    expect(keyOf(event("d", { ctrlKey: true }))).toBe("Ctrl-d");
-    expect(keyOf(event("K", { metaKey: true }))).toBe("Meta-k");
-    expect(keyOf(event("G"))).toBe("G");
-    expect(keyOf(event("j", { altKey: true }))).toBeUndefined();
-    expect(keyOf(event("Shift"))).toBeUndefined();
-  });
-  it("prints keys as the help shows them", () => {
-    expect(["Ctrl-d", "Meta-k", "Enter", "Escape", "]"].map(keyLabel)).toEqual([
-      "⌃d",
-      "⌘K",
-      "↵",
-      "Esc",
-      "]",
-    ]);
+  // Caps Lock types `M` without Shift, and another layout types `ь` on the M key.
+  it("runs a key only for the character its binding names", () => {
+    const event = (key: string, init: Partial<KeyboardEvent> = {}) => ({ ...init, key });
+    expect(typed("M", event("m", { code: "KeyM" }))).toBe(true);
+    expect(typed("M", event("M", { code: "KeyM" }))).toBe(false);
+    expect(typed("Shift+M", event("M", { code: "KeyM", shiftKey: true }))).toBe(true);
+    expect(typed("Control+D", event("d", { code: "KeyD", ctrlKey: true }))).toBe(true);
+    expect(typed("Control+D", event("D", { code: "KeyD", ctrlKey: true }))).toBe(true);
+    expect(typed("?", event("?", { code: "Slash", shiftKey: true }))).toBe(true);
+    expect(typed("M", event("ь", { code: "KeyM" }))).toBe(false);
   });
 });

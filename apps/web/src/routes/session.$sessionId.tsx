@@ -17,6 +17,12 @@ import {
 import { CodeView, type CodeViewHandle, type CodeViewReactOptions } from "@pierre/diffs/react";
 import * as stylex from "@stylexjs/stylex";
 import {
+  type Hotkey,
+  type HotkeyCallback,
+  useHotkeySequences,
+  useHotkeys,
+} from "@tanstack/react-hotkeys";
+import {
   createFileRoute,
   Link,
   notFound,
@@ -65,7 +71,7 @@ import {
   switched,
 } from "../cursor.ts";
 import { contentLoader, hydrationConcurrency, hydrationWindow, nearbyItems } from "../hydration.ts";
-import { type Command, type CommandId, keyOf, matchKey } from "../keymap.ts";
+import { type Command, type CommandId, commands, typed } from "../keymap.ts";
 import {
   capturedFiles,
   changedFiles,
@@ -640,35 +646,47 @@ function SessionReader(props: {
     }
   };
 
-  // Review keys, from anywhere but text entry and the dialogs, which own their own keys.
+  // Review keys, from anywhere but text entry and the dialogs, which own their own keys. The
+  // library's input filter also skips checkboxes and radios, where these keys must still work, so
+  // every binding leaves the event alone and this guard decides. It reads the live DOM and `runRef`,
+  // not render state: a dialog closes before React renders it closed, and the library syncs
+  // callbacks after the render.
   const runRef = useRef(run);
   runRef.current = run;
-  useEffect(() => {
-    let pending: string[] = [];
-    let pendingAt = 0;
-    const onKey = (event: KeyboardEvent) => {
-      if (event.defaultPrevented || event.isComposing) return;
+  const reviewKey =
+    (id: CommandId, step: Hotkey): HotkeyCallback =>
+    (event) => {
+      if (event.defaultPrevented || event.isComposing || !typed(step, event)) return;
       const target = event.target instanceof Element ? event.target : null;
       if (target?.closest("dialog") || isTextEntry(target)) return;
-      const key = keyOf(event);
-      if (key === undefined) return;
+      if (document.querySelector("dialog[open]")) return;
       // A focused control keeps its own Enter and Space.
       if (
-        (key === "Enter" || key === " ") &&
+        (event.key === "Enter" || event.key === " ") &&
         target?.closest("button, a[href], input, select, summary")
       )
         return;
-      const now = performance.now();
-      const step = matchKey(now - pendingAt < 1000 ? pending : [], key);
-      pending = step.pending;
-      pendingAt = now;
-      if (step.command === undefined && step.pending.length === 0) return;
       event.preventDefault();
-      if (step.command) runRef.current(step.command);
+      runRef.current(id);
     };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, []);
+  const bindingOptions = { ignoreInputs: false, preventDefault: false, stopPropagation: false };
+  const bindings = commands.flatMap((command) =>
+    command.keys.map((keys) => ({ ...command, keys })),
+  );
+  useHotkeys(
+    bindings
+      .filter(({ keys }) => keys.length === 1)
+      .map(({ id, keys }) => ({ hotkey: keys[0]!, callback: reviewKey(id, keys[0]!) })),
+    bindingOptions,
+  );
+  // Disabled while a dialog is open, so keys typed in it can't start a sequence. `dialog` lags the
+  // DOM by a render, so a sequence's first key just after a dialog closes may be lost.
+  useHotkeySequences(
+    bindings
+      .filter(({ keys }) => keys.length > 1)
+      .map(({ id, keys }) => ({ sequence: [...keys], callback: reviewKey(id, keys.at(-1)!) })),
+    { ...bindingOptions, enabled: dialog === undefined },
+  );
 
   /** Scrolling by hand pulls a cursor that left the panel back onto its first or last line. */
   const pullBack = () => {
@@ -850,9 +868,19 @@ function SessionReader(props: {
         />
       )}
       {dialog === "menu" && (
-        <CommandMenu labelOf={labelOf} onRun={run} onClose={() => setDialog(undefined)} />
+        <CommandMenu
+          labelOf={labelOf}
+          onRun={run}
+          // Each dialog clears only itself: the menu's queued close can land after help opened.
+          onClose={() => setDialog((open) => (open === "menu" ? undefined : open))}
+        />
       )}
-      {dialog === "help" && <KeyHelp labelOf={labelOf} onClose={() => setDialog(undefined)} />}
+      {dialog === "help" && (
+        <KeyHelp
+          labelOf={labelOf}
+          onClose={() => setDialog((open) => (open === "help" ? undefined : open))}
+        />
+      )}
     </Frame>
   );
 }

@@ -11,6 +11,7 @@
     "@gyst/core": "workspace:*",
     "@pierre/diffs": "catalog:",
     "@stylexjs/stylex": "0.19.1",
+    "@tanstack/react-hotkeys": "0.12.1",
     "@tanstack/react-router": "1.170.40",
     "effect": "catalog:",
     "react": "19.3.0",

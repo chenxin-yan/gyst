@@ -1,6 +1,7 @@
 import * as stylex from "@stylexjs/stylex";
-import { type ReactNode, useEffect, useId, useRef, useState } from "react";
-import { type Command, type CommandId, commands, keyLabel } from "./keymap.ts";
+import { formatForDisplay } from "@tanstack/react-hotkeys";
+import { Fragment, type ReactNode, useEffect, useId, useRef, useState } from "react";
+import { type Command, type CommandId, commands, keyLabels } from "./keymap.ts";
 import { theme } from "./tokens.stylex.ts";
 
 /** A command's keys as the help prints them: sequences joined, alternatives separated. */
@@ -9,10 +10,11 @@ export function Keys({ command }: { command: Command }) {
     <span key={keys.join(" ")}>
       {index > 0 && <span {...stylex.props(styles.or)}> / </span>}
       {keys.map((key, at) => (
-        // Indexed: a sequence repeats keys (`g g`).
-        <kbd key={at} {...stylex.props(styles.kbd)}>
-          {keyLabel(key)}
-        </kbd>
+        // Indexed: a sequence repeats keys (`G G`). One kbd a step: a Mac chord has spaces (`⇧ R`).
+        <Fragment key={at}>
+          {at > 0 && " "}
+          <kbd {...stylex.props(styles.kbd)}>{formatForDisplay(key, { keyLabels })}</kbd>
+        </Fragment>
       ))}
     </span>
   ));

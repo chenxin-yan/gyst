@@ -1066,7 +1066,7 @@ describe("installed gyst in a sandboxed browser", () => {
     }, "the cursor clear of the bottom edge");
 
     // A selection and the cursor survive layout switches.
-    await keys(page, "V", "j", "j");
+    await keys(page, "Shift+V", "j", "j");
     await says(page, "3 lines selected");
     await keys(page, "2");
     await says(page, "long.ts:32");
@@ -1098,7 +1098,7 @@ describe("installed gyst in a sandboxed browser", () => {
 
     // A selecting cursor stays where a hand scroll leaves it; a layout switch then keeps the
     // reading position rather than scrolling back to it.
-    await keys(page, "V");
+    await keys(page, "Shift+V");
     await says(page, "1 line selected");
     await pane.hover();
     await page.mouse.wheel(0, 1500);
@@ -1150,16 +1150,26 @@ describe("installed gyst in a sandboxed browser", () => {
     await keys(page, "j", "z", "c");
     await waitFor(async () => (await expanded("README.md")) === "false", "zc folds");
     await says(page, "README.md · file");
-    await keys(page, "z", "M");
+    await keys(page, "z", "Shift+M");
     await allExpanded("false");
-    await keys(page, "z", "R");
+    await keys(page, "z", "Shift+R");
     await allExpanded("true");
+    // Caps Lock types `M` without Shift: neither Viewed nor a fold. Bottom still runs after it.
+    await keys(page, "M", "Shift+G");
+    await waitFor(
+      async () => /long\.ts/.test(await statusLine(page).innerText()),
+      "Shift+G at the bottom",
+    );
+    await allExpanded("true");
+    expect(await viewedBox(page, "README.md").isChecked()).toBe(false);
+    await keys(page, "g", "g");
+    await says(page, "README.md · file");
     // The header's toggle does the same by mouse.
     await foldToggle(page, "app.ts").click();
     await waitFor(async () => (await expanded("app.ts")) === "false", "app.ts folded by click");
 
     // A fold keeps the selection: it is there again when the file unfolds.
-    await keys(page, "g", "g", "]", "c", "V", "k");
+    await keys(page, "g", "g", "]", "c", "Shift+V", "k");
     await says(page, "2 lines selected");
     await foldToggle(page, "README.md").click();
     await waitFor(async () => (await expanded("README.md")) === "false", "README.md folded");
