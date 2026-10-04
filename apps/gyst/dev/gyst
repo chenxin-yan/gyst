@@ -4,7 +4,7 @@
 # `gyst --session <id>` open the viewer through the Vite dev server (apps/web/dev.ts); every other
 # command runs the source CLI.
 set -eu
-checkout=$(CDPATH= cd -- "$(dirname -- "$(readlink -f -- "$0")")/../../.." && pwd)
+checkout=$(CDPATH= cd -- "$(dirname -- "$0")/../../.." && pwd)
 # apps/web/dev-launcher.ts uses the same directory, so both reach one dev daemon.
 export GYST_DATA_DIR="$checkout/.dev/data"
 case "${1:-}" in
