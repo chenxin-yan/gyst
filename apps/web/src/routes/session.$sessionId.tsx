@@ -1019,8 +1019,6 @@ function ContinuousDiff(props: {
   // own scrolls and re-renders must not replace the position being restored.
   const restoring = useRef(false);
   const restoredTop = useRef<number>(undefined);
-  // Bumped by every restore or abandon, so an older restoration's frame cannot reinstate its marker.
-  const generation = useRef(0);
   // The latest callbacks and mark, for the renderer's callbacks and our listeners.
   const latest = useRef(props);
   latest.current = props;
@@ -1101,7 +1099,6 @@ function ContinuousDiff(props: {
     element.style.left = `${box.left}px`;
     element.style.width = `${box.width}px`;
     element.style.height = `${box.height}px`;
-    element.dataset.side = mark!.full ? "both" : mark!.side;
   }, [boxOf]);
 
   // ─── scrolling ───
@@ -1371,7 +1368,6 @@ function ContinuousDiff(props: {
   // A layout effect: it reads the position before any capture from the renderer's own re-render.
   useLayoutEffect(() => {
     const at = position.current;
-    const current = ++generation.current;
     pendingTop.current = undefined;
     manualAt.current = -Infinity;
     if (at === undefined || !props.files.some((file) => file.path === at.file)) {
@@ -1395,11 +1391,12 @@ function ContinuousDiff(props: {
           },
     );
     // Queued after the renderer's frame for that scroll, so its post-render captures are skipped.
-    requestAnimationFrame(() => {
-      if (current !== generation.current) return;
+    // Cancelled by the next restore or abandon, so an older frame cannot reinstate its marker.
+    const frame = requestAnimationFrame(() => {
       restoring.current = false;
       restoredTop.current = view.current?.getInstance()?.getScrollTop();
     });
+    return () => cancelAnimationFrame(frame);
   }, [layout, props.files]);
   useLayoutEffect(paint);
 

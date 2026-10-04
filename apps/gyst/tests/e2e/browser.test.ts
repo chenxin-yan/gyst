@@ -507,8 +507,7 @@ describe("installed gyst in a sandboxed browser", () => {
     };
     page.on("requestfinished", settle);
     page.on("requestfailed", settle);
-    let release = () => {};
-    const released = new Promise<void>((resolve) => (release = resolve));
+    const { promise: released, resolve: release } = Promise.withResolvers<void>();
     await page.route(isOperationUrl, async (route) => {
       const operation = route.request().postDataJSON();
       if (operation?.command === "code") {
@@ -571,8 +570,7 @@ describe("installed gyst in a sandboxed browser", () => {
     };
     page.on("requestfinished", settle);
     page.on("requestfailed", settle);
-    let release = () => {};
-    const released = new Promise<void>((resolve) => (release = resolve));
+    const { promise: released, resolve: release } = Promise.withResolvers<void>();
     await page.route(isOperationUrl, async (route) => {
       const operation = route.request().postDataJSON();
       if (operation?.command === "code") {
@@ -611,8 +609,7 @@ describe("installed gyst in a sandboxed browser", () => {
       const operation = operationOf(request);
       if (operation?.command === "code" && operation.file === "src/long.ts") landed++;
     });
-    let release = () => {};
-    const released = new Promise<void>((resolve) => (release = resolve));
+    const { promise: released, resolve: release } = Promise.withResolvers<void>();
     await page.route(isOperationUrl, async (route) => {
       const operation = route.request().postDataJSON();
       if (operation?.command === "code") {
@@ -661,8 +658,7 @@ describe("installed gyst in a sandboxed browser", () => {
       const operation = operationOf(request);
       if (operation?.command === "code" && operation.file === "big.ts") landed++;
     });
-    let release = () => {};
-    const released = new Promise<void>((resolve) => (release = resolve));
+    const { promise: released, resolve: release } = Promise.withResolvers<void>();
     await page.route(isOperationUrl, async (route) => {
       const operation = route.request().postDataJSON();
       if (operation?.command === "code") {
@@ -1440,8 +1436,7 @@ describe("installed gyst in a sandboxed browser", () => {
       if (operationOf(request)?.command === "files") listings.push(operationOf(request));
     });
     // Later pages wait until the snapshot is replaced, so the first background page goes stale.
-    let release = () => {};
-    const released = new Promise<void>((resolve) => (release = resolve));
+    const { promise: released, resolve: release } = Promise.withResolvers<void>();
     await page.route(isOperationUrl, async (route) => {
       const request = route.request().postDataJSON();
       if (request?.command === "files" && request.snapshotId === captured && request.after)
@@ -1600,8 +1595,7 @@ describe("installed gyst in a sandboxed browser", () => {
 
   it("shows Loading… while the session's real diff is held, then renders the bridge's reply", async () => {
     const page = await newPage();
-    let release = () => {};
-    const released = new Promise<void>((resolve) => (release = resolve));
+    const { promise: released, resolve: release } = Promise.withResolvers<void>();
     const held: string[] = [];
     await page.route(isOperationUrl, async (route) => {
       if (route.request().postDataJSON()?.command === "diff") {
@@ -1855,8 +1849,7 @@ describe("installed gyst in a sandboxed browser", () => {
     const b = await openRange("main...topic-b");
     const page = await newPage();
     const top = page.getByRole("banner");
-    let release = () => {};
-    const released = new Promise<void>((resolve) => (release = resolve));
+    const { promise: released, resolve: release } = Promise.withResolvers<void>();
     let held = false;
     await page.route(isOperationUrl, async (route) => {
       if (route.request().postDataJSON()?.command === "delete") {
