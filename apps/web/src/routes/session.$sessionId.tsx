@@ -172,10 +172,15 @@ const statusRead = (status: StatusPayload): StatusRead => ({
 });
 
 /**
- * The reader's live link: its state, and how a failed read of what it announced reports itself;
- * true when that ended the current connection.
+ * The reader's live link: its rendered state, its state as of now (a loss or connection not yet
+ * rendered included), and how a failed read of what it announced reports itself; true when that
+ * ended the current connection.
  */
-type LiveSession = { state: LiveState; lost: (generation: number, error: unknown) => boolean };
+type LiveSession = {
+  state: LiveState;
+  now: () => LiveState;
+  lost: (generation: number, error: unknown) => boolean;
+};
 
 /**
  * The reader's subscription to its session's committed state, for as long as it is mounted. A
@@ -235,7 +240,11 @@ function useLiveSession(sessionId: string): LiveSession {
       wake();
     };
   }, [sessionId]);
-  return { state, lost: (generation, error) => restart.current(generation, error) };
+  return {
+    state,
+    now: () => latest.current,
+    lost: (generation, error) => restart.current(generation, error),
+  };
 }
 
 /**
@@ -308,37 +317,46 @@ function useViewedProgress(
     send(intent);
     return true;
   };
+  // The connection whose status read is on the wire. A read for a connection since given up
+  // neither holds off the next connection's read nor applies.
+  const reading = useRef<number>(undefined);
   // At most one automatic resend per announced version, so a reply lost again waits for Retry or
   // the next announcement rather than looping.
-  const reading = useRef(false);
   const replayedAt = useRef<LiveState["known"]>(undefined);
   const sync = () => {
     const current = latest.current;
     const { state: now, lost } = linked.current;
-    if (!mounted.current || current.busy || reading.current || now.phase !== "live") return;
+    const { generation } = now;
+    if (!mounted.current || current.busy || reading.current === generation || now.phase !== "live")
+      return;
     const replay = replayOf(current);
     if (replay && replayedAt.current !== now.known) {
       replayedAt.current = now.known;
       return send(replay);
     }
     if (behind(now, current) !== "read") return;
-    reading.current = true;
+    reading.current = generation;
     let recovering = false;
     void operation({ command: "status", session: sessionId })
       .then(
         // A write sent meanwhile answers for itself; this read is checked again after it settles.
         (read) => {
-          if (mounted.current && latest.current.busy === undefined)
+          if (
+            mounted.current &&
+            linked.current.now().generation === generation &&
+            latest.current.busy === undefined
+          )
             apply({ type: "status", status: statusRead(read) });
         },
         // Not this file's failure: the link recovers, then reads again from its `ready`.
         (error: unknown) => {
           if (!isExpectedFailure(error)) console.error(error);
-          if (mounted.current) recovering = lost(now.generation, error);
+          if (mounted.current) recovering = lost(generation, error);
         },
       )
       .finally(() => {
-        reading.current = false;
+        if (reading.current !== generation) return;
+        reading.current = undefined;
         // The loss isn't rendered yet, so checking again now would read over the given-up link.
         if (!recovering) sync();
       });

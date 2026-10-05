@@ -2469,6 +2469,51 @@ describe("installed gyst in a sandboxed browser", () => {
     expect(await positionOf(page)).toEqual(position);
   }, 60_000);
 
+  it("reads status for the connection a daemon restart brought while a read for the connection it ended is still held", async () => {
+    const id = await freshSession();
+    const launched = await launchFor(id);
+    const [a, b] = [await newPage(), await newPage()];
+    for (const page of [a, b]) await page.setViewportSize({ width: 1280, height: 800 });
+    let reads = 0;
+    let armed = false;
+    let fetched = false;
+    const { promise: released, resolve: release } = Promise.withResolvers<void>();
+    await b.route(isOperationUrl, async (route) => {
+      if (!armed || route.request().postDataJSON()?.command !== "status") return route.continue();
+      if (++reads > 1) return route.continue();
+      // Read before the restart, answered only after B is live on the new daemon.
+      const response = await route.fetch();
+      fetched = true;
+      await released;
+      await route.fulfill({ response });
+    });
+    await go(a, launched.url);
+    await b.goto(`${launched.origin}${launched.path}`);
+    for (const page of [a, b]) {
+      await says(page, "Live");
+      await settled(page);
+    }
+    armed = true;
+    try {
+      await viewedBox(a, "README.md").check();
+      await says(a, "1/3 hunks viewed in 3 files");
+      await waitFor(() => fetched, "B's status read of the change");
+      const daemon = await killDaemon(data, "SIGTERM");
+      // B's resubscription is a new connection, whose own read catches it up.
+      await says(b, "1/3 hunks viewed in 3 files");
+      await says(b, "Live");
+      expect(await daemonPid(data)).not.toBe(daemon);
+      expect(reads).toBe(2);
+      expect(await viewedBox(b, "README.md").isChecked()).toBe(true);
+    } finally {
+      release();
+    }
+    await settled(b);
+    await viewedBox(a, "app.ts").check();
+    await says(b, "2/3 hunks viewed in 3 files");
+    expect(reads).toBe(3);
+  }, 60_000);
+
   it("resends a Viewed write whose reply was lost once, with the same request id and payload, then reads status", async () => {
     const id = await freshSession();
     const launched = await launchFor(id);
