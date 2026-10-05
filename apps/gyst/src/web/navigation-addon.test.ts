@@ -152,6 +152,18 @@ describe("discoverAddon", () => {
     for (const key of ["NODE_OPTIONS", "PATH", "HOME"]) expect(keys).not.toContain(key);
   });
 
+  it("runs the handshake in the add-on's own directory, never this process's", async () => {
+    // A deleted checkout as gyst's cwd must not stop the add-on's engine check from running.
+    const script = handshake({ engine: { ok: false, problem: "<cwd>" } }).replace(
+      '"<cwd>"',
+      "process.cwd()",
+    );
+    const result = await discover(await binRunning(script));
+    const cwd = result.kind === "unusable" ? result.reason : "";
+    expect(cwd).not.toBe(process.cwd());
+    expect(await readFile(join(cwd, "fake.js"), "utf8")).toBe(script);
+  });
+
   it("stops a handshake that never answers", async () => {
     const dir = await tempDir();
     const pidFile = join(dir, "pid");

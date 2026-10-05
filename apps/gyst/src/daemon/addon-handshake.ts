@@ -1,6 +1,7 @@
 import { type AddonDiscovery, AddonHandshakeSchema, navigationAddon } from "@gyst/core";
 import { Effect, Option, Schema, Stream } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
+import { dirname } from "node:path";
 
 const handshakeTimeout = "5 seconds";
 const handshakeBytes = 64 * 1024;
@@ -31,7 +32,10 @@ export const handshakeAddon = Effect.fn("handshakeAddon")(function* (
   const answer = yield* Effect.gen(function* () {
     const handle = yield* spawner.spawn(
       ChildProcess.make(process.execPath, [entry, "--version"], {
-        // Nothing from this shell (NODE_OPTIONS, PATH) reaches the handshake.
+        // Nothing from this shell (NODE_OPTIONS, PATH) reaches the handshake. The add-on's own
+        // directory exists whenever `entry` does, unlike gyst's cwd, which may be a deleted
+        // checkout; the native engine refuses to start without a working directory.
+        cwd: dirname(entry),
         env: {},
         stdin: "ignore",
         stderr: "ignore",
