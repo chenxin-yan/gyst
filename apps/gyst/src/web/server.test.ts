@@ -1,14 +1,28 @@
 import { afterAll, beforeAll, describe, expect, it, onTestFinished } from "vite-plus/test";
 import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
-import { type BrowserRequest, DaemonUnreachable, NoSession, type Request } from "@gyst/core";
-import { Clock, Effect, Exit, Scope, Stream } from "effect";
+import {
+  type BrowserRequest,
+  DaemonUnreachable,
+  NoSession,
+  type Request,
+  type SubscribeRequest,
+  type SubscriptionEvent,
+} from "@gyst/core";
+import { Clock, Effect, Exit, Schedule, Scope, Stream } from "effect";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { rm } from "node:fs/promises";
 import { DaemonClient } from "../daemon/client.ts";
 import { bootstrapLifetimeMillis, type Launch, makeLaunch } from "./auth.ts";
 import { browserApp, installedWebUiDir, loadWebAssets, type WebAssets } from "./server.ts";
-import { indexHtml, type RawResponse, secret, send, webUiFixture } from "../../tests/http.ts";
+import {
+  indexHtml,
+  openStream,
+  type RawResponse,
+  secret,
+  send,
+  webUiFixture,
+} from "../../tests/http.ts";
 
 const t0 = 1_000_000;
 const snapshotId = "0".repeat(64);
@@ -34,8 +48,35 @@ const daemon = DaemonClient.of({
       return Effect.fail(new NoSession({ message: `no session with id ${request.session}` }));
     return Effect.succeed({ sessions: [] });
   },
-  subscribe: () => Stream.empty,
+  subscribe: (request) => {
+    subscribed.push(request);
+    const ready: SubscriptionEvent = { kind: "ready", daemon: "d1", ...version(0) };
+    if (request.session === "gone")
+      return Stream.fail(new NoSession({ message: `no session with id ${request.session}` }));
+    if (request.session === "down")
+      return Stream.fail(new DaemonUnreachable({ message: "daemon did not become reachable" }));
+    if (request.session === "broken")
+      return Stream.concat(
+        Stream.succeed(ready),
+        Stream.fail(new DaemonUnreachable({ message: "daemon subscription failed" })),
+      );
+    if (request.session === "held")
+      return Stream.concat(Stream.succeed(ready), Stream.never).pipe(
+        Stream.ensuring(Effect.sync(() => void released++)),
+      );
+    return Stream.make(...liveEvents);
+  },
 });
+/** What the fake daemon was asked to subscribe to, and how many subscriptions it closed. */
+let subscribed: SubscribeRequest[] = [];
+let released = 0;
+const version = (revision: number) => ({ sessionId: "s1", snapshotId, revision });
+const liveEvents: SubscriptionEvent[] = [
+  { kind: "ready", daemon: "d1", ...version(0) },
+  { kind: "changed", ...version(1) },
+  { kind: "changed", sessionId: "s1", snapshotId: "1".repeat(64), revision: 2 },
+  { kind: "deleted", sessionId: "s1" },
+];
 
 let fixture: Awaited<ReturnType<typeof webUiFixture>>;
 let assets: WebAssets;
@@ -79,7 +120,10 @@ async function serve(launch: Launch = makeLaunch(t0)) {
     });
   const get = (target: string, method = "GET") =>
     send(port, { method, target, headers: [["host", host]] });
-  return { launch, port, host, origin, bootstrap, operation, get };
+  const authed = [["host", host], origin, ["cookie", `gyst_auth=${launch.cookie}`]] as const;
+  const events = (session: string) =>
+    openStream(port, { target: "/api/events", headers: authed, body: JSON.stringify({ session }) });
+  return { launch, port, host, origin, authed, bootstrap, operation, get, events };
 }
 
 // Secrets never go into assertion messages, so a failing run cannot print them.
@@ -508,6 +552,152 @@ describe("browserApp operation size", () => {
       [400, { ok: false, error: { code: "bad_args", message: "unreadable request body" } }],
     ]).toContainEqual(oversized);
     expect(forwarded).toEqual([]);
+  });
+});
+
+describe("browserApp events", () => {
+  /** The frames of a stream that the server ends, decoded. */
+  const collect = async (stream: Awaited<ReturnType<typeof openStream>>) => {
+    const frames: unknown[] = [];
+    for await (const frame of stream.frames()) frames.push(JSON.parse(frame));
+    return frames;
+  };
+
+  it("applies the operation route's Host, Origin and cookie rules before the daemon", async () => {
+    subscribed = [];
+    const { launch, port, host, origin, authed } = await serve();
+    const cookie = ["cookie", `gyst_auth=${launch.cookie}`] as const;
+    const attempt = (method: string, headers: ReadonlyArray<readonly [string, string]>) =>
+      send(port, { method, target: "/api/events", headers, body: '{"session":"s1"}' });
+
+    const get = await attempt("GET", authed);
+    expect([get.status, get.header("allow")]).toEqual([405, "POST"]);
+    expect((await attempt("PUT", authed)).status).toBe(405);
+    expect((await attempt("POST", [["host", `127.0.0.1:${port}`], origin, cookie])).status).toBe(
+      403,
+    );
+    for (const name of ["forwarded", "x-forwarded-host", "x-forwarded-for"])
+      expect([
+        name,
+        (await attempt("POST", [...authed, [name, "attacker.example"]])).status,
+      ]).toEqual([name, 403]);
+    for (const origins of [[], ["null"], ["http://attacker.example"], [`https://${host}`]])
+      expect(
+        (
+          await attempt("POST", [
+            ["host", host],
+            ...origins.map((value) => ["origin", value] as const),
+            cookie,
+          ])
+        ).status,
+      ).toBe(403);
+    for (const value of [
+      "",
+      "gyst_auth=wrong",
+      `gyst_auth=${launch.bootstrap}`,
+      `gyst_auth=${makeLaunch(t0).cookie}`,
+    ]) {
+      const response = await attempt("POST", [["host", host], origin, ["cookie", value]]);
+      expect(response.status).toBe(401);
+      expect(hasSecret(response, launch)).toBe(false);
+    }
+    expect(subscribed).toEqual([]);
+
+    // Behind an SSH forward the browser-visible port differs from the listener's.
+    const sshHost = `${launch.hostname}:48809`;
+    const forwarded = await openStream(port, {
+      target: "/api/events",
+      headers: [["host", sshHost], ["origin", `http://${sshHost}`], cookie],
+      body: '{"session":"s1"}',
+    });
+    expect(forwarded.status).toBe(200);
+    expect(await collect(forwarded)).toEqual(liveEvents);
+    expect(subscribed).toEqual([{ session: "s1" }]);
+  });
+
+  it("rejects an unreadable, malformed or non-subscription body with bad_args before the daemon", async () => {
+    subscribed = [];
+    const { port, authed } = await serve();
+    for (const body of [
+      "",
+      "{",
+      "[]",
+      "{}",
+      JSON.stringify({ session: 1 }),
+      JSON.stringify({ session: "s1", daemon: "d0" }),
+      JSON.stringify({ command: "status", session: "s1" }),
+    ]) {
+      const response = await send(port, {
+        method: "POST",
+        target: "/api/events",
+        headers: authed,
+        body,
+      });
+      expect([body, response.status]).toEqual([body, 400]);
+      expect(JSON.parse(response.body)).toEqual({
+        ok: false,
+        error: { code: "bad_args", message: "expected one session subscription as JSON" },
+      });
+    }
+    expect(subscribed).toEqual([]);
+  });
+
+  it("streams the daemon's frames verbatim and in order with safe headers and no secrets", async () => {
+    subscribed = [];
+    const { launch, events } = await serve();
+    const stream = await events("s1");
+    expect(stream.status).toBe(200);
+    expect(stream.header("content-type")).toBe("text/event-stream");
+    expect(stream.header("cache-control")).toBe("no-store");
+    expect(stream.header("referrer-policy")).toBe("no-referrer");
+    expect(stream.header("x-content-type-options")).toBe("nosniff");
+    expect(stream.header("access-control-allow-origin")).toBeUndefined();
+    expect(stream.header("set-cookie")).toBeUndefined();
+    const raw: string[] = [];
+    for await (const frame of stream.frames()) raw.push(frame);
+    expect(raw.map((frame) => JSON.parse(frame))).toEqual(liveEvents);
+    const texts = [...raw, ...stream.headers.map(([, value]) => value)];
+    expect(
+      texts.some((text) => text.includes(launch.cookie) || text.includes(launch.bootstrap)),
+    ).toBe(false);
+    expect(subscribed).toEqual([{ session: "s1" }]);
+  });
+
+  it("ends a refused or broken daemon subscription with exactly one failed frame", async () => {
+    const { events } = await serve();
+    expect(await collect(await events("gone"))).toEqual([
+      { kind: "failed", error: { code: "no_session", message: "no session with id gone" } },
+    ]);
+    expect(await collect(await events("down"))).toEqual([
+      {
+        kind: "failed",
+        error: { code: "daemon_unreachable", message: "daemon did not become reachable" },
+      },
+    ]);
+    expect(await collect(await events("broken"))).toEqual([
+      liveEvents[0],
+      {
+        kind: "failed",
+        error: { code: "daemon_unreachable", message: "daemon subscription failed" },
+      },
+    ]);
+  });
+
+  it("closes the daemon subscription when the browser hangs up", async () => {
+    released = 0;
+    const { events } = await serve();
+    const stream = await events("held");
+    const frames = stream.frames();
+    expect(JSON.parse((await frames.next()).value!)).toEqual(liveEvents[0]);
+    expect(released).toBe(0);
+    stream.close();
+    await Effect.runPromise(
+      Effect.sync(() => released).pipe(
+        Effect.repeat({ until: (count) => count === 1, schedule: Schedule.spaced("10 millis") }),
+        Effect.timeout("5 seconds"),
+      ),
+    );
+    expect(released).toBe(1);
   });
 });
 

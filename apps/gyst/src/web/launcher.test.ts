@@ -17,7 +17,7 @@ import { Sessions } from "../daemon/sessions.ts";
 import { SessionStore } from "../daemon/store.ts";
 import { readLine, writeLine } from "../daemon/wire.ts";
 import { browserOpener, serveViewer, type ViewerOpen } from "./launcher.ts";
-import { indexHtml, send, webUiFixture } from "../../tests/http.ts";
+import { indexHtml, openStream, type RawStream, send, webUiFixture } from "../../tests/http.ts";
 
 const patch = `diff --git a/a.txt b/a.txt
 --- a/a.txt
@@ -67,14 +67,19 @@ const crypto = Layer.succeed(
     digest: (_algorithm, data) => Effect.succeed(data),
   }),
 );
-const layer = Layer.mergeAll(
-  DaemonServer.layer.pipe(
-    Layer.provide(
-      Sessions.layer.pipe(Layer.provide(Layer.mergeAll(git, store, crypto, publishingContent()))),
-    ),
+/** One daemon generation: each build has its own instance id and loads the saved sessions anew. */
+const daemonLayer = DaemonServer.layer.pipe(
+  Layer.provide(
+    Sessions.layer.pipe(Layer.provide(Layer.mergeAll(git, store, crypto, publishingContent()))),
   ),
-  DaemonClient.layer,
-).pipe(Layer.provide(paths), Layer.provideMerge(NodeServices.layer));
+  Layer.provide(paths),
+  Layer.provide(NodeServices.layer),
+);
+const clientLayer = DaemonClient.layer.pipe(
+  Layer.provide(paths),
+  Layer.provideMerge(NodeServices.layer),
+);
+const layer = Layer.merge(daemonLayer, clientLayer);
 
 /** A raw socket probe, so the client never has to spawn a daemon while this one starts. */
 const daemonAnswers = Effect.gen(function* () {
@@ -129,9 +134,18 @@ const startViewer = (open: ViewerOpen, opener?: string) =>
           reply: JSON.parse(response.body || "null"),
         })),
       );
+    const events = (session: string) =>
+      Effect.promise(() =>
+        openStream(port, {
+          target: "/api/events",
+          headers: [...headers, origin, ["cookie", cookie]],
+          body: JSON.stringify({ session }),
+        }),
+      );
     return {
       fiber,
       printed,
+      events,
       match,
       port,
       host,
@@ -142,6 +156,33 @@ const startViewer = (open: ViewerOpen, opener?: string) =>
       get: (target: string) => Effect.promise(() => send(port, { target, headers })),
     };
   });
+
+/** Reads one bridge stream's frames in order; `undefined` once the bridge ends the response. */
+const framesOf = (stream: RawStream) => {
+  const frames = stream.frames();
+  return Effect.promise(() => frames.next()).pipe(
+    Effect.map((frame) => (frame.done ? undefined : JSON.parse(frame.value))),
+    Effect.timeout("5 seconds"),
+  );
+};
+
+/** A human Viewed toggle on the session's only hunk, against its saved snapshot and revision. */
+const toggleViewed = (id: string, requestId: string) => {
+  const session = files.get(id)!;
+  return {
+    command: "viewed",
+    session: id,
+    snapshotId: session.snapshotId,
+    revision: session.revision,
+    requestId,
+    hunkIds: [session.hunks[0]!.id],
+    viewed: session.viewedHunkIds.length === 0,
+  } as const;
+};
+const versionOf = (id: string) => {
+  const session = files.get(id)!;
+  return { sessionId: id, snapshotId: session.snapshotId, revision: session.revision };
+};
 
 const refused = (port: number, address = "127.0.0.1") =>
   new Promise<boolean>((resolve) => {
@@ -283,4 +324,114 @@ describe("serveViewer", () => {
       }).pipe(Effect.scoped, Effect.provide(layer)),
     );
   }, 20_000);
+  it("streams one session's committed changes to every launch until that launch or the daemon ends", async () => {
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        const client = yield* DaemonClient;
+        let firstDaemon = "";
+        const { b, id, saved } = yield* Effect.gen(function* () {
+          const server = yield* DaemonServer;
+          const daemon = yield* Effect.forkChild(server.run);
+          yield* Effect.retry(daemonAnswers, {
+            schedule: Schedule.spaced("10 millis"),
+            times: 200,
+          });
+          const a = yield* startViewer({
+            command: "open",
+            cwd: "/repo-live",
+            scope: { kind: "uncommitted" },
+          });
+          const id = decodeURIComponent(a.sessionPath!.slice("/session/".length));
+          // A second launch of the same saved session, as `gyst web --session` opens it.
+          const b = yield* startViewer({ command: "open", session: id });
+          expect(b.sessionPath).toBe(a.sessionPath);
+          expect((yield* a.bootstrap()).status).toBe(204);
+          expect((yield* b.bootstrap()).status).toBe(204);
+
+          // A stream opened without the launch cookie never reaches the daemon.
+          const anonymous = yield* Effect.promise(() =>
+            send(a.port, {
+              method: "POST",
+              target: "/api/events",
+              headers: [
+                ["host", a.host],
+                ["origin", a.match?.[1] ?? ""],
+              ],
+              body: JSON.stringify({ session: id }),
+            }),
+          );
+          expect(anonymous.status).toBe(401);
+
+          // Initial race: a commit between the stream's head and its first frame is not missed.
+          const raced = yield* a.events(id);
+          expect([raced.status, raced.header("content-type")]).toEqual([200, "text/event-stream"]);
+          const racedFrames = framesOf(raced);
+          expect((yield* a.operation(toggleViewed(id, "race"))).reply).toMatchObject({ ok: true });
+          const settled = versionOf(id);
+          const first = yield* racedFrames;
+          expect(first).toMatchObject({ kind: "ready", sessionId: id });
+          if (first.revision < settled.revision)
+            expect(yield* racedFrames).toEqual({ kind: "changed", ...settled });
+          else expect(first.revision).toBe(settled.revision);
+          raced.close();
+
+          const streamA = framesOf(yield* a.events(id));
+          const streamB = framesOf(yield* b.events(id));
+          firstDaemon = JSON.parse(yield* daemonAnswers).value.instanceId;
+          const ready = { kind: "ready", daemon: firstDaemon, ...versionOf(id) };
+          expect(yield* streamA).toEqual(ready);
+          expect(yield* streamB).toEqual(ready);
+          expect((yield* b.operation(toggleViewed(id, "both"))).reply).toMatchObject({ ok: true });
+          expect(yield* streamA).toEqual({ kind: "changed", ...versionOf(id) });
+          expect(yield* streamB).toEqual({ kind: "changed", ...versionOf(id) });
+
+          // Ctrl-C on A ends A's stream and listener only.
+          yield* Fiber.interrupt(a.fiber);
+          expect(yield* streamA).toBeUndefined();
+          expect(yield* Effect.promise(() => refused(a.port))).toBe(true);
+          const viaCli = yield* client.request(toggleViewed(id, "after-a"));
+          expect(viaCli).toMatchObject({ sessionId: id, revision: versionOf(id).revision });
+          expect(yield* streamB).toEqual({ kind: "changed", ...versionOf(id) });
+          expect(daemon.pollUnsafe()).toBeUndefined();
+          expect(yield* client.request({ command: "status", session: id })).toMatchObject({
+            session: { id },
+          });
+
+          // The daemon stopping ends B's stream; B's launch stays up.
+          yield* Fiber.interrupt(daemon);
+          expect(yield* streamB).toBeUndefined();
+          expect(b.fiber.pollUnsafe()).toBeUndefined();
+          return { b, id, saved: { count: files.size, version: versionOf(id) } };
+        }).pipe(Effect.provide(daemonLayer));
+
+        yield* Effect.gen(function* () {
+          const server = yield* DaemonServer;
+          const daemon = yield* Effect.forkChild(server.run);
+          yield* Effect.retry(daemonAnswers, {
+            schedule: Schedule.spaced("10 millis"),
+            times: 200,
+          });
+          const { instanceId } = JSON.parse(yield* daemonAnswers).value;
+          // Resubscribing reaches the new daemon generation with the same session and revision,
+          // and nothing is created anew.
+          const again = framesOf(yield* b.events(id));
+          const ready = yield* again;
+          expect(ready).toEqual({ kind: "ready", daemon: instanceId, ...saved.version });
+          expect(instanceId).not.toBe(firstDaemon);
+          expect(files.size).toBe(saved.count);
+          expect((yield* b.operation(toggleViewed(id, "next-daemon"))).reply).toMatchObject({
+            ok: true,
+          });
+          expect(yield* again).toEqual({ kind: "changed", ...versionOf(id) });
+
+          yield* Fiber.interrupt(b.fiber);
+          expect(yield* again).toBeUndefined();
+          expect(yield* Effect.promise(() => refused(b.port))).toBe(true);
+          expect(daemon.pollUnsafe()).toBeUndefined();
+          expect(files.get(id)?.revision).toBe(saved.version.revision + 1);
+          yield* Fiber.interrupt(daemon);
+        }).pipe(Effect.provide(daemonLayer));
+      }).pipe(Effect.scoped, Effect.provide(clientLayer)),
+    );
+  }, 30_000);
 });

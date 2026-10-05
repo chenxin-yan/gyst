@@ -66,6 +66,101 @@ export function send(
   });
 }
 
+export type RawStream = Omit<RawResponse, "body"> & {
+  /** Each SSE event's `data` payload in arrival order, ending when the server ends the response. */
+  frames(): AsyncGenerator<string, void>;
+  /** Hangs up, as a closed tab or a stopped browser would. */
+  close(): void;
+};
+
+/** A raw streaming POST that resolves on the response head, then reads chunked SSE frames. */
+export function openStream(
+  port: number,
+  request: {
+    readonly target: string;
+    readonly headers: ReadonlyArray<readonly [string, string]>;
+    readonly body: string;
+  },
+): Promise<RawStream> {
+  const lines = [
+    `POST ${request.target} HTTP/1.1`,
+    ...request.headers.map(([name, value]) => `${name}: ${value}`),
+    `content-length: ${Buffer.byteLength(request.body)}`,
+  ];
+  return new Promise((resolve, reject) => {
+    const socket = connect({ port, host: "127.0.0.1" });
+    const payloads: string[] = [];
+    const waiters: Array<() => void> = [];
+    let ended = false;
+    const wake = () => {
+      for (const waiter of waiters.splice(0)) waiter();
+    };
+    let raw = Buffer.alloc(0);
+    let body = Buffer.alloc(0);
+    let head = false;
+    const parseBody = () => {
+      for (;;) {
+        const end = raw.indexOf("\r\n");
+        if (end < 0) return;
+        const size = Number.parseInt(raw.subarray(0, end).toString(), 16);
+        if (size === 0) {
+          ended = true;
+          return;
+        }
+        if (raw.length < end + 2 + size + 2) return;
+        body = Buffer.concat([body, raw.subarray(end + 2, end + 2 + size)]);
+        raw = raw.subarray(end + 4 + size);
+      }
+    };
+    const parseEvents = () => {
+      for (let split = body.indexOf("\n\n"); split >= 0; split = body.indexOf("\n\n")) {
+        for (const line of body.subarray(0, split).toString("utf8").split("\n"))
+          if (line.startsWith("data: ")) payloads.push(line.slice("data: ".length));
+        body = body.subarray(split + 2);
+      }
+    };
+    socket.on("data", (chunk) => {
+      raw = Buffer.concat([raw, chunk]);
+      if (!head) {
+        const split = raw.indexOf("\r\n\r\n");
+        if (split < 0) return;
+        const [statusLine = "", ...headerLines] = raw.subarray(0, split).toString().split("\r\n");
+        raw = raw.subarray(split + 4);
+        head = true;
+        const headers = headerLines.map((line) => {
+          const colon = line.indexOf(":");
+          return [line.slice(0, colon).toLowerCase(), line.slice(colon + 1).trim()] as const;
+        });
+        resolve({
+          status: Number(statusLine.split(" ")[1]),
+          headers,
+          header: (name) => headers.find(([header]) => header === name)?.[1],
+          async *frames() {
+            for (;;) {
+              if (payloads.length > 0) yield payloads.shift()!;
+              else if (ended) return;
+              else await new Promise<void>((wakeUp) => waiters.push(wakeUp));
+            }
+          },
+          close: () => socket.destroy(),
+        });
+      }
+      parseBody();
+      parseEvents();
+      wake();
+    });
+    const finish = () => {
+      ended = true;
+      wake();
+    };
+    socket.once("error", (error) => (head ? finish() : reject(error)));
+    socket.once("close", () =>
+      head ? finish() : reject(new Error("closed before a response head")),
+    );
+    socket.write(`${lines.join("\r\n")}\r\n\r\n${request.body}`);
+  });
+}
+
 export const indexHtml =
   '<!doctype html><div id="root"></div><script src="/assets/app.js"></script>';
 export const secret = "outside the packaged SPA";
