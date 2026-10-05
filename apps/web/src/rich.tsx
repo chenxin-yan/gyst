@@ -17,16 +17,23 @@ import {
 } from "./rich.ts";
 import { theme } from "./tokens.stylex.ts";
 
-type MarkdownNode = { type: string; children?: MarkdownNode[] };
+type MarkdownNode = { type: string; value?: string; children?: MarkdownNode[] };
+
+// The Markdown nodes that hold blocks; raw HTML directly inside one is an HTML block.
+const blockParents = new Set(["root", "blockquote", "listItem", "footnoteDefinition"]);
 
 // react-markdown already prints raw HTML as text; doing it in the Markdown tree keeps that true
-// whatever later plugins see.
+// whatever later plugins see. An HTML block becomes a paragraph, so it doesn't run into its
+// neighbours as one line.
 const htmlAsText = () => (tree: MarkdownNode) => {
-  const visit = (node: MarkdownNode) => {
-    if (node.type === "html") node.type = "text";
-    node.children?.forEach(visit);
+  const visit = (node: MarkdownNode, parent: string | undefined) => {
+    if (node.type === "html" && parent !== undefined && blockParents.has(parent)) {
+      node.type = "paragraph";
+      node.children = [{ type: "text", value: node.value ?? "" }];
+    } else if (node.type === "html") node.type = "text";
+    node.children?.forEach((child) => visit(child, node.type));
   };
-  visit(tree);
+  visit(tree, undefined);
 };
 const remarkPlugins = [remarkGfm, htmlAsText];
 

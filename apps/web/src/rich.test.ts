@@ -48,7 +48,10 @@ describe("RichText", () => {
     );
     expect(out).not.toMatch(/<(img|script|a|b|iframe)[\s>]/);
     expect(out).toContain("&lt;img src=x onerror=&quot;alert(1)&quot;&gt;");
-    expect(out).toContain("&lt;script&gt;alert(1)&lt;/script&gt;");
+    // Each HTML block reads as its own paragraph; inline HTML stays in its paragraph.
+    expect(out).toContain("<p>&lt;script&gt;alert(1)&lt;/script&gt;</p>");
+    expect(out).toContain("<p>&lt;img src=x onerror=&quot;alert(1)&quot;&gt;</p>");
+    expect(out).toContain("<p>Inline &lt;a href=");
     expect(out).toContain("&lt;a href=&quot;javascript:alert(1)&quot;&gt;");
     expect(out).not.toMatch(/<[a-z][^>]*\son\w+=/);
   });
