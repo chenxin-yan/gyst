@@ -11,6 +11,7 @@ import {
   capturedTargetsOf,
 } from "./apply.ts";
 import type { CodeRange, Note } from "./guidance.ts";
+import { refreshSession } from "./refresh.ts";
 import { type Hunk, type Session, SessionSchema } from "./session.ts";
 import { statusOf } from "./status.ts";
 
@@ -445,6 +446,168 @@ describe("applyBatch", () => {
       { path: "a.ts", side: "old" },
     ]);
     expect(capturedSideKey("old", "a.ts")).toBe("old\0a.ts");
+  });
+
+  it("pins references in every written text to the batch's snapshot, unchanged files included", () => {
+    const markdown =
+      "Uses [the helper](gyst:new/support.ts#L2-L4) like [before](gyst:old/a.ts#L10), " +
+      "[again](gyst:new/support.ts#L2-L4) and [docs](https://example.com).";
+    const changed = applied([
+      { type: "walkthrough.update", overview: markdown },
+      { ...third, overview: markdown },
+      { type: "group.update", id: "g2", overview: markdown },
+      {
+        type: "note.create",
+        id: "n2",
+        group: "g2",
+        anchor: range("b.ts", "new", 1),
+        markdown,
+      },
+      { type: "note.update", id: "n1", markdown },
+    ]);
+    const references = [pin(range("support.ts", "new", 2, 4)), pin(range("a.ts", "old", 10))];
+    const texts = [
+      changed.overview,
+      ...changed.groups.flatMap((group) => [group.overview, ...group.notes]),
+    ];
+    // g1's untouched overview has none.
+    expect(texts.map((text) => text?.references)).toEqual([
+      references,
+      [],
+      references,
+      references,
+      references,
+      references,
+    ]);
+    // The pins travel in status and survive a reload.
+    expect(statusOf(changed).groups[1]?.notes[0]?.references).toEqual(references);
+    expect(Schema.decodeUnknownSync(SessionSchema)(JSON.parse(JSON.stringify(changed)))).toEqual(
+      changed,
+    );
+    expect(
+      capturedTargetsOf(
+        batch([
+          { type: "walkthrough.update", overview: markdown },
+          { type: "group.update", id: "g1", overview: "[x](gyst:new/b.ts#L1)" },
+          { type: "group.update", id: "g1", overview: null },
+          { type: "note.update", id: "n1", markdown: "[x](gyst:old/live.ts#L1)" },
+        ]),
+      ),
+    ).toEqual([
+      { path: "support.ts", side: "new" },
+      { path: "a.ts", side: "old" },
+      { path: "b.ts", side: "new" },
+      { path: "live.ts", side: "old" },
+    ]);
+  });
+
+  it("rejects references outside the captured snapshot and links the policy refuses", () => {
+    for (const [href, message] of [
+      ["gyst:new/live.ts#L1", "live.ts is not in the captured snapshot"],
+      ["gyst:new/unindexed.ts#L1", "unindexed.ts is not in the captured snapshot"],
+      ["gyst:old/added.ts#L1", "the old side of added.ts does not exist"],
+      ["gyst:new/image.png#L1", "the new side of image.png is binary, not captured text"],
+      [
+        "gyst:new/support.ts#L5-L6",
+        "lines 5-6 are outside the new side of support.ts, which has 5 lines",
+      ],
+    ] as const) {
+      const markdown = `See [this](${href}).`;
+      for (const op of [
+        { type: "walkthrough.update", overview: markdown },
+        { ...third, overview: markdown },
+        { type: "group.update", id: "g1", overview: markdown },
+        { type: "note.update", id: "n1", markdown },
+        { type: "note.create", id: "n", group: "g1", anchor: range("a.ts", "new", 2), markdown },
+      ] satisfies ApplyOp[]) {
+        const ops = op.type === "group.create" ? [op] : [third, op];
+        expect(rejected(ops).detail, `${op.type} ${href}`).toEqual([
+          { opIndex: ops.length - 1, message: `reference ${href}: ${message}` },
+        ]);
+      }
+    }
+    expect(
+      rejected([
+        { type: "walkthrough.update", overview: "![logo](https://example.com/x.png)" },
+        { type: "note.update", id: "n1", markdown: "[x](javascript:alert(1))" },
+        {
+          type: "group.update",
+          id: "g1",
+          overview: "Fine.\n\n```mermaid\n%%{init: {}}%%\ngraph TD\n```",
+        },
+      ]).detail,
+    ).toEqual([
+      { opIndex: 0, message: "line 1: images are not allowed" },
+      {
+        opIndex: 1,
+        message:
+          'line 1: link "javascript:alert(1)" must be an absolute http(s) URL or a gyst: reference',
+      },
+      { opIndex: 2, message: "line 3: Mermaid diagrams may not carry %%{ }%% directives" },
+    ]);
+  });
+
+  it("keeps the pins of untouched and rewritten-identical texts instead of rebinding them", () => {
+    const older = { snapshotId: "older", ...range("gone.ts", "new", 1) };
+    const pinned: Session = {
+      ...session,
+      overview: { markdown: "See [gone](gyst:new/gone.ts#L1).", references: [older] },
+      groups: session.groups.map((group, index) =>
+        index === 0
+          ? { ...group, overview: { markdown: "[g](gyst:new/gone.ts#L1)", references: [older] } }
+          : group,
+      ),
+    };
+    const edited = applied(
+      [
+        { type: "note.update", id: "n1", markdown: "[s](gyst:new/support.ts#L1)" },
+        { type: "walkthrough.update", overview: "See [gone](gyst:new/gone.ts#L1)." },
+        { type: "group.update", id: "g1", title: "Renamed" },
+      ],
+      pinned,
+    );
+    expect(edited.overview?.references).toEqual([older]);
+    expect(edited.groups[0]?.overview?.references).toEqual([older]);
+    expect(edited.groups[0]?.notes[0]?.references).toEqual([pin(range("support.ts", "new", 1))]);
+    // Rewriting that text re-derives its pins from the current snapshot, which lacks gone.ts.
+    expect(
+      rejected(
+        [{ type: "walkthrough.update", overview: "Now [gone](gyst:new/gone.ts#L1)!" }],
+        pinned,
+      ).detail,
+    ).toEqual([
+      {
+        opIndex: 0,
+        message: "reference gyst:new/gone.ts#L1: gone.ts is not in the captured snapshot",
+      },
+    ]);
+  });
+
+  it("keeps authoring pins through a refresh to a new snapshot and later unrelated edits", () => {
+    const markdown = "Read [the helper](gyst:new/support.ts#L1-L2) first.";
+    const published = applied([
+      { type: "walkthrough.update", overview: markdown },
+      { type: "group.update", id: "g1", overview: markdown },
+    ]);
+    const refreshed = refreshSession({ ...published, snapshotId: "next" }, hunks, LATER);
+    const authored = [pin(range("support.ts", "new", 1, 2))];
+    expect(refreshed.overview?.references).toEqual(authored);
+    expect(refreshed.groups[0]?.overview?.references).toEqual(authored);
+    const later = Result.getOrThrow(
+      applyBatch(
+        refreshed,
+        {
+          ...batch([{ type: "group.update", id: "g2", overview: "Second." }], "later"),
+          revision: refreshed.revision,
+          snapshotId: "next",
+        },
+        { snapshotId: "next", sides: new Map() },
+        LATER,
+      ),
+    ).session!;
+    expect(later.overview?.references).toEqual(authored);
+    expect(later.groups[0]?.overview?.references).toEqual(authored);
+    expect(later.groups[1]?.overview?.references).toEqual([]);
   });
 
   it("rejects a membership change that strands a retained note", () => {

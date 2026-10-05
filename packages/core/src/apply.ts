@@ -13,6 +13,7 @@ import {
   type Note,
 } from "./guidance.ts";
 import { hash } from "./hash.ts";
+import { inspectMarkdown } from "./markdown.ts";
 import { TitleSchema } from "./metadata.ts";
 import type { ReceiptStatus, Session, StatusPayload } from "./session.ts";
 import { statusOf } from "./status.ts";
@@ -103,17 +104,21 @@ export type CapturedIndex = {
 };
 export const capturedSideKey = (side: CodeSide, path: string) => `${side}\0${path}`;
 
-/** The file sides whose captured lines `applyBatch` needs for this envelope's written ranges. */
+/**
+ * The file sides whose captured lines `applyBatch` needs for this envelope's written ranges: note
+ * anchors and the references inside every Markdown text it writes.
+ */
 export function capturedTargetsOf(
   envelope: ApplyEnvelope,
 ): { readonly path: string; readonly side: CodeSide }[] {
   const targets = new Map<string, { path: string; side: CodeSide }>();
-  for (const op of envelope.ops)
-    if ((op.type === "note.create" || op.type === "note.update") && op.anchor)
-      targets.set(capturedSideKey(op.anchor.side, op.anchor.path), {
-        path: op.anchor.path,
-        side: op.anchor.side,
-      });
+  const target = ({ path, side }: CodeRange) =>
+    targets.set(capturedSideKey(side, path), { path, side });
+  for (const op of envelope.ops) {
+    if ((op.type === "note.create" || op.type === "note.update") && op.anchor) target(op.anchor);
+    const markdown = "markdown" in op ? op.markdown : "overview" in op ? op.overview : null;
+    if (typeof markdown === "string") inspectMarkdown(markdown).references.forEach(target);
+  }
   return [...targets.values()];
 }
 
@@ -150,9 +155,6 @@ function recordedStatusOf(session: Session, status: ReceiptStatus): StatusPayloa
   };
 }
 
-// Unchanged text keeps its stored form; changed text starts over.
-const guidanceText = (markdown: string, current: GuidanceText | null): GuidanceText =>
-  current?.markdown === markdown ? current : { markdown, references: [] };
 const sameRange = (a: CapturedRange, b: CapturedRange) =>
   a.snapshotId === b.snapshotId &&
   a.path === b.path &&
@@ -308,11 +310,36 @@ export function applyBatch(
   const touchedBy = (kind: "group" | "note", id: string) => touched.get(`${kind}\0${id}`);
   // Notes whose anchor this batch wrote; only those are checked against captured lines.
   const anchorsWritten = new Set<string>();
+  /**
+   * Every text the batch writes must pass the rich-content policy. Unchanged text keeps its stored
+   * pins, even to an older snapshot; changed text pins its references to this snapshot.
+   */
+  const guidanceText = (
+    opIndex: number,
+    markdown: string,
+    stored: GuidanceText | null,
+  ): GuidanceText => {
+    const { references, problems } = inspectMarkdown(markdown);
+    for (const problem of problems) fail(opIndex, problem);
+    if (stored?.markdown === markdown) return { markdown, references: stored.references };
+    for (const reference of references) {
+      const problem = capturedProblem(captured, reference);
+      if (!problem) continue;
+      const { side, path, startLine, endLine } = reference;
+      const lines = endLine === startLine ? `L${startLine}` : `L${startLine}-L${endLine}`;
+      fail(opIndex, `reference gyst:${side}/${path}#${lines}: ${problem}`);
+    }
+    return {
+      markdown,
+      references: references.map((reference) => ({ snapshotId: draft.snapshotId, ...reference })),
+    };
+  };
 
   for (const [opIndex, op] of envelope.ops.entries()) {
     if (op.type === "walkthrough.update") {
       if (op.overview !== undefined)
-        draft.overview = op.overview === null ? null : guidanceText(op.overview, draft.overview);
+        draft.overview =
+          op.overview === null ? null : guidanceText(opIndex, op.overview, draft.overview);
       if (op.groupOrder) {
         const order = op.groupOrder;
         if (
@@ -344,8 +371,7 @@ export function applyBatch(
       group.notes.push({
         id: op.id,
         anchor: { snapshotId: draft.snapshotId, ...op.anchor },
-        markdown: op.markdown,
-        references: [],
+        ...guidanceText(opIndex, op.markdown, null),
       });
       touch("note", op.id, opIndex);
       anchorsWritten.add(op.id);
@@ -366,7 +392,7 @@ export function applyBatch(
       const note = group.notes[index]!;
       group.notes[index] = {
         ...note,
-        ...(op.markdown === undefined ? {} : guidanceText(op.markdown, note)),
+        ...(op.markdown === undefined ? {} : guidanceText(opIndex, op.markdown, note)),
         ...(op.anchor && { anchor: { snapshotId: draft.snapshotId, ...op.anchor } }),
       };
       touch("note", op.id, opIndex);
@@ -390,7 +416,7 @@ export function applyBatch(
       draft.groups.push({
         id: op.id,
         title: op.title,
-        overview: guidanceText(op.overview, null),
+        overview: guidanceText(opIndex, op.overview, null),
         hunkIds: [...op.memberHunkIds],
         files: op.files ? [...op.files] : filesOf(op.memberHunkIds),
         notes: [],
@@ -424,7 +450,8 @@ export function applyBatch(
     if (op.files) group.files = [...op.files];
     if (op.title !== undefined) group.title = op.title;
     if (op.overview !== undefined)
-      group.overview = op.overview === null ? null : guidanceText(op.overview, group.overview);
+      group.overview =
+        op.overview === null ? null : guidanceText(opIndex, op.overview, group.overview);
     touch("group", op.id, opIndex);
   }
   if (errors.length)
