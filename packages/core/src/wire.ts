@@ -170,8 +170,6 @@ export const NavigationGapSchema = Schema.Union([
 ]);
 export type NavigationGap = typeof NavigationGapSchema.Type;
 
-const SideSchema = Schema.Literals(["old", "new"]);
-
 /** A place in one side's captured text; navigation never names anything outside the capture. */
 export const NavigationLocationSchema = Schema.Struct({
   file: LogicalPathSchema,
@@ -204,7 +202,7 @@ export type NavigationUnavailable = typeof NavigationUnavailableSchema.Type;
 export const NavigationResultPayloadSchema = Schema.Struct({
   sessionId: Schema.String,
   snapshotId: SnapshotIdSchema,
-  side: SideSchema,
+  side: CodeSideSchema,
   file: LogicalPathSchema,
   query: Schema.Literals(["definition", "references"]),
   position: TextPointSchema,
@@ -227,7 +225,7 @@ export type NavigationResultPayload = typeof NavigationResultPayloadSchema.Type;
 export const IdentifiersPayloadSchema = Schema.Struct({
   sessionId: Schema.String,
   snapshotId: SnapshotIdSchema,
-  side: SideSchema,
+  side: CodeSideSchema,
   file: LogicalPathSchema,
   line: LineNumberSchema,
   outcome: Schema.Union([
@@ -341,7 +339,7 @@ const exact = { session: Schema.String };
 const navigationTarget = {
   ...exact,
   snapshotId: SnapshotIdSchema,
-  side: SideSchema,
+  side: CodeSideSchema,
   file: LogicalPathSchema,
 };
 const navigationStatus = {

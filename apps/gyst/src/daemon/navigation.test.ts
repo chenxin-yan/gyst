@@ -469,6 +469,8 @@ describe("Navigation over real captures and the workspace add-on", () => {
       'import { schema } from "./generated/schema.js";\n' +
       'import { here } from "./present.js";\n' +
       'import pad from "left-pad";\n' +
+      "import { extra } from\n" +
+      '  "./generated/extra.js";\n' +
       '// import "./commented.js";\n' +
       "export const value = pad(schema + here);\n";
     const cwd = await repo("keywords", {
@@ -481,6 +483,7 @@ describe("Navigation over real captures and the workspace add-on", () => {
       "src/script.js": script,
       // Ignored, so never captured.
       "src/generated/schema.js": "export const schema = 1;\n",
+      "src/generated/extra.js": "export const extra = 1;\n",
     });
 
     await runReal(
@@ -531,7 +534,7 @@ describe("Navigation over real captures and the workspace add-on", () => {
 
         // Without checkJs the engine reports no unresolved import in JavaScript; each is named.
         const scriptResult = located(
-          yield* references(target("src/script.js"), at(script, 5, "schema")),
+          yield* references(target("src/script.js"), at(script, 7, "schema")),
         );
         expect(scriptResult.gaps).toEqual([
           {
@@ -543,6 +546,12 @@ describe("Navigation over real captures and the workspace add-on", () => {
             kind: "unresolved-import",
             file: "src/script.js",
             message: 'cannot resolve "left-pad"',
+          },
+          // A specifier on the line after its `from` is probed too.
+          {
+            kind: "unresolved-import",
+            file: "src/script.js",
+            message: 'cannot resolve "./generated/extra.js"',
           },
         ]);
       }),

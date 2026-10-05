@@ -861,17 +861,15 @@ export class Navigation extends Context.Service<
         }));
         if (!lspLanguageId(file)?.startsWith("javascript")) return gaps;
         const known = new Set(reported.map(({ quoted }) => quoted));
-        const specifiers = linesOf(text).flatMap((lineText, index) =>
-          [...lineText.matchAll(specifierPattern)].flatMap(({ 0: match, 1: quoted, index: at }) =>
-            quoted === undefined || known.has(quoted)
-              ? []
-              : [
-                  {
-                    quoted,
-                    point: { line: index + 1, character: at + match.length - quoted.length + 1 },
-                  },
-                ],
-          ),
+        // The whole text, not line by line: a specifier may follow its `from` on the next line.
+        const specifiers = [...text.matchAll(specifierPattern)].flatMap(
+          ({ 0: match, 1: quoted, index: at }) => {
+            if (quoted === undefined || known.has(quoted)) return [];
+            const inside = at + match.length - quoted.length + 1;
+            const lineStart = text.lastIndexOf("\n", inside - 1) + 1;
+            const line = text.slice(0, lineStart).split("\n").length;
+            return [{ quoted, point: { line, character: inside - lineStart } }];
+          },
         );
         const probed = yield* Effect.forEach(
           specifiers,
