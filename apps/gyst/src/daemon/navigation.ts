@@ -384,13 +384,7 @@ export class Navigation extends Context.Service<
 
       const readText = (file: string, blob: string, size: number) =>
         content.readBlob(blob, { offset: 0, length: size }).pipe(
-          Stream.runFold(
-            () => [] as Array<Uint8Array>,
-            (chunks, chunk) => {
-              chunks.push(chunk);
-              return chunks;
-            },
-          ),
+          Stream.runCollect,
           // `toString` keeps a BOM, which the engine counts as a code unit too.
           Effect.map((chunks) => Buffer.concat(chunks).toString("utf8")),
           Effect.mapError(
