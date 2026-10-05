@@ -14,8 +14,21 @@ import {
   ReplySchema,
   ViewedPayloadSchema,
   type Request,
+  type SubscribeRequest,
+  type SubscriptionEvent,
+  SubscriptionEventSchema,
 } from "@gyst/core";
-import { Context, Effect, FileSystem, Layer, Option, Schedule, Schema } from "effect";
+import {
+  Cause,
+  Context,
+  Effect,
+  FileSystem,
+  Layer,
+  Option,
+  Schedule,
+  Schema,
+  Stream,
+} from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import * as Socket from "effect/socket/Socket";
 import { compare } from "semver";
@@ -35,6 +48,23 @@ const decodeReply = Schema.decodeUnknownEffect(Schema.fromJsonString(ReplySchema
 const decodeProgress = Schema.decodeUnknownOption(ProgressLineSchema, {
   onExcessProperty: "error",
 });
+const decodeEvent = Schema.decodeUnknownEffect(Schema.fromJsonString(SubscriptionEventSchema), {
+  onExcessProperty: "error",
+});
+/** A subscription frame, or the daemon's refusal as a failure. */
+const eventOf = (line: string) =>
+  decodeEvent(line).pipe(
+    Effect.mapError(
+      (error) =>
+        new DaemonUnreachable({
+          message: "invalid daemon subscription frame",
+          detail: error.message,
+        }),
+    ),
+    Effect.flatMap((event) =>
+      event.kind === "failed" ? Effect.fail(event.error) : Effect.succeed(event),
+    ),
+  );
 
 /** A line's JSON value, or `undefined` for a line that is not JSON. */
 const jsonOf = (line: string): { readonly value: unknown } | undefined => {
@@ -74,6 +104,13 @@ export class DaemonClient extends Context.Service<
       request: Request,
       onProgress?: (progress: CaptureProgress) => Effect.Effect<void>,
     ): Effect.Effect<unknown, DaemonError>;
+    /**
+     * One live subscription: `ready` first, then committed changes until the daemon ends it
+     * (deleted, overflow, restart, exit). A daemon that refuses it fails the stream with its
+     * error. The stream owns its socket, so the consumer stopping closes it. Never retried here:
+     * the subscriber resubscribes and rereads.
+     */
+    subscribe(request: SubscribeRequest): Stream.Stream<SubscriptionEvent, DaemonError>;
   }
 >()("gyst/daemon/DaemonClient") {
   static readonly layer = Layer.effect(
@@ -298,7 +335,48 @@ export class DaemonClient extends Context.Service<
         );
       });
 
-      return DaemonClient.of({ request });
+      const subscribe = (input: SubscribeRequest) =>
+        Effect.gen(function* () {
+          const info = yield* negotiate;
+          const socket = yield* NodeSocket.makeNet({ path: paths.socketPath });
+          const next = lineReader(yield* Socket.readerBytes(socket));
+          yield* writeLine(
+            socket,
+            encodeMessage({
+              version: daemonVersion,
+              instanceId: info.instanceId,
+              subscribe: input,
+            }),
+          );
+          const ready = yield* next.pipe(Effect.flatMap(eventOf));
+          if (ready.kind !== "ready")
+            return yield* new DaemonUnreachable({
+              message: "invalid daemon subscription frame",
+              detail: `expected ready, got ${ready.kind}`,
+            });
+          // A clean end after `ready` ends the stream; the subscriber decides whether to resubscribe.
+          const later = next.pipe(
+            Effect.catchIf(
+              (error) => error.reason._tag === "SocketCloseError" && error.reason.code === 1000,
+              () => Cause.done(),
+            ),
+            Effect.flatMap(eventOf),
+          );
+          return Stream.concat(Stream.succeed(ready), Stream.fromEffectRepeat(later));
+        }).pipe(
+          Effect.withSpan("DaemonClient.subscribe"),
+          Stream.unwrap,
+          Stream.catchTag("SocketError", (error) =>
+            Stream.fail(
+              new DaemonUnreachable({
+                message: "daemon subscription failed",
+                detail: error.message,
+              }),
+            ),
+          ),
+        );
+
+      return DaemonClient.of({ request, subscribe });
     }),
   );
 }

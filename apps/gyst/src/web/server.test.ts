@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it, onTestFinished } from "vite-plus/test";
 import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
 import { type BrowserRequest, DaemonUnreachable, NoSession, type Request } from "@gyst/core";
-import { Clock, Effect, Exit, Scope } from "effect";
+import { Clock, Effect, Exit, Scope, Stream } from "effect";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { rm } from "node:fs/promises";
@@ -34,6 +34,7 @@ const daemon = DaemonClient.of({
       return Effect.fail(new NoSession({ message: `no session with id ${request.session}` }));
     return Effect.succeed({ sessions: [] });
   },
+  subscribe: () => Stream.empty,
 });
 
 let fixture: Awaited<ReturnType<typeof webUiFixture>>;
