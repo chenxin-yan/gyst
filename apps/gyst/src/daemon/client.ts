@@ -12,6 +12,7 @@ import {
   StatusPayloadSchema,
   SourceCheckPayloadSchema,
   ReplySchema,
+  ViewedPayloadSchema,
   type Request,
 } from "@gyst/core";
 import { Context, Effect, FileSystem, Layer, Option, Schedule, Schema } from "effect";
@@ -282,6 +283,7 @@ export class DaemonClient extends Context.Service<
           apply: StatusPayloadSchema,
           refresh: StatusPayloadSchema,
           delete: DeletePayloadSchema,
+          viewed: ViewedPayloadSchema,
         }[input.command];
         return yield* Schema.decodeUnknownEffect(payload, { onExcessProperty: "error" })(
           reply.value,

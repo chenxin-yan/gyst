@@ -8,7 +8,6 @@ export {
   GroupCreateSchema,
   GroupDissolveSchema,
   GroupUpdateSchema,
-  QueueSetSchema,
   type ValidationDetail,
 } from "./apply.ts";
 export {
@@ -42,7 +41,7 @@ export {
   StaleRevision,
   ValidationFailed,
 } from "./errors.ts";
-export { applyHumanAction, type HumanAction, HumanActionSchema } from "./human-action.ts";
+export { setViewed, type ViewedOutcome, type ViewedRequest } from "./human-action.ts";
 export { refreshSession } from "./refresh.ts";
 export {
   type Group,
@@ -57,6 +56,8 @@ export {
   SessionSummarySchema,
   type StatusPayload,
   StatusPayloadSchema,
+  type ViewedPayload,
+  ViewedPayloadSchema,
 } from "./session.ts";
 export {
   sanitizeTerminalText,

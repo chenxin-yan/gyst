@@ -32,6 +32,8 @@ export {
   SessionSummarySchema,
   type StatusPayload,
   StatusPayloadSchema,
+  type ViewedPayload,
+  ViewedPayloadSchema,
 } from "./session.ts";
 
 export const DiffPayloadSchema = Schema.Struct({
@@ -199,6 +201,20 @@ export const BrowserRequestSchema = Schema.Union([
    * so a lost reply cannot turn into a second operation.
    */
   Schema.Struct({ command: Schema.Literal("delete"), ...exact, requestId: Schema.String }),
+  /**
+   * The human marks exactly `hunkIds` Viewed (or not), against the snapshot and revision they
+   * observed. `requestId` is chosen before sending and reused for every retry, like `delete`.
+   * No CLI command sends it: agents cannot mark Viewed.
+   */
+  Schema.Struct({
+    command: Schema.Literal("viewed"),
+    ...exact,
+    snapshotId: SnapshotIdSchema,
+    revision: Schema.Number,
+    requestId: Schema.String,
+    hunkIds: Schema.Array(Schema.String),
+    viewed: Schema.Boolean,
+  }),
 ]);
 export type BrowserRequest = typeof BrowserRequestSchema.Type;
 

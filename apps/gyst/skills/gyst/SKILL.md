@@ -5,7 +5,7 @@ description: Use when the user requests a gyst walkthrough of a diff, range or P
 
 # Compose a walkthrough
 
-A **group** is one review question covering one or more hunks, with a short title and optional member-hunk notes. Ungrouped hunks form the **inbox**. Human acceptance means “done reviewing,” not correctness approval. Leave verdicts and cursor state to the human.
+A **group** is one review question covering one or more hunks, with a short title and optional member-hunk notes. Ungrouped hunks stay readable under their files. Leave Viewed progress to the human; it means read, not approved.
 
 ## 1. Select the snapshot
 
@@ -41,7 +41,7 @@ Titles are single-line plain text, 1–120 Unicode code points, without terminal
 
 ## 4. Publish atomically
 
-Read the current revision. Pipe a batch to `gyst session apply --session <id>`. Publish one complete group or a small consecutive batch; include `queue.set` with **every published group exactly once**, excluding inbox ids. Append planned groups in order.
+Read the current revision. Pipe a batch to `gyst session apply --session <id>`. Publish one complete group or a small consecutive batch. Append planned groups in order.
 
 Example first batch; replace the revision, key and hunk ids:
 
@@ -65,20 +65,19 @@ Example first batch; replace the revision, key and hunk ids:
         }
       ],
       "memberHunkIds": ["guard-hunk", "test-hunk"]
-    },
-    { "type": "queue.set", "itemIds": ["expiry"] }
+    }
   ]
 }
 ```
 
-Creation requires `notes`, including `[]` when no explanation is needed. An update may omit notes to retain them, replace the complete array, or clear it with `[]`. Validate retained anchors against any new membership; replace notes when an anchor would become invalid. Every group update resets that group's verdict and needs a complete `queue.set` in the batch.
+Creation requires `notes`, including `[]` when no explanation is needed. An update may omit notes to retain them, replace the complete array, or clear it with `[]`. Validate retained anchors against any new membership; replace notes when an anchor would become invalid.
 
 - Successful batch: use its returned revision for the next batch.
 - `stale_revision`: reread status and reconcile concurrent human work before rebuilding.
 - Identical retry: reuse the key, but its receipt is historical; reread status before continuing.
 - Changed content or corrected `validation_failed`: use a fresh key.
 
-As soon as groups are published, tell the human they can run `gyst`; leave launching it to them. Continue at complete-group boundaries. Finish when status has `ready: true` (empty inbox and set queue); otherwise report remaining work. Accepted groups with inbox hunks do not mean review completion.
+As soon as groups are published, tell the human they can run `gyst`; leave launching it to them. Continue at complete-group boundaries. Finish when every current hunk belongs to a group; otherwise report remaining work.
 
 ## Source changes
 

@@ -22,8 +22,6 @@ const session: Session = {
   createdAt: "2026-01-01T00:00:00.000Z",
   updatedAt: "2026-01-01T00:00:00.000Z",
   revision: 3,
-  seq: 3,
-  cursor: { itemId: null, pane: "queue" },
   hunks: [hunk("h1"), hunk("h2"), hunk("h3")],
   groups: [
     {
@@ -31,15 +29,13 @@ const session: Session = {
       title: "first",
       notes: [{ hunkId: "h1", text: "first" }],
       hunkIds: ["h1"],
-      accepted: true,
     },
-    { id: "g2", title: "second", notes: [], hunkIds: ["h2"], accepted: true },
+    { id: "g2", title: "second", notes: [], hunkIds: ["h2"] },
   ],
-  queue: ["g1", "g2", "h3"],
-  queueSet: false,
-  acceptHistory: ["g1", "g2"],
+  viewedHunkIds: ["h1"],
   receiptNoteTexts: [],
   applyReceipts: [],
+  viewedReceipts: [],
 };
 
 const batch = (ops: ApplyOp[], idempotencyKey = "key"): ApplyEnvelope => ({
@@ -64,22 +60,27 @@ const third: ApplyOp = {
 };
 
 describe("applyBatch", () => {
-  it("invalidates title, notes and membership edits without losing unrelated verdicts", () => {
-    for (const update of [
-      { title: "Reworded" },
-      { notes: [{ hunkId: "h1", text: "Updated context" }] },
-      { memberHunkIds: ["h1", "h3"] },
-    ]) {
-      const changed = applied([
-        { type: "group.update", id: "g1", ...update },
-        { type: "queue.set", itemIds: ["g1", "g2"] },
-      ]);
-      expect(changed.groups[0]?.accepted).toBe(false);
-      expect(changed.groups[1]?.accepted).toBe(true);
-      expect(changed.acceptHistory).toEqual(["g2"]);
-      expect(changed.queueSet).toBe(true);
-    }
-    expect(session.groups[0]?.accepted).toBe(true);
+  it("applies group edits as one batch with no queue to set", () => {
+    const changed = applied([
+      { type: "group.update", id: "g1", title: "Reworded", memberHunkIds: ["h1", "h3"] },
+      { type: "group.update", id: "g2", notes: [{ hunkId: "h2", text: "Updated context" }] },
+    ]);
+    expect(changed.groups).toEqual([
+      {
+        id: "g1",
+        title: "Reworded",
+        notes: [{ hunkId: "h1", text: "first" }],
+        hunkIds: ["h1", "h3"],
+      },
+      {
+        id: "g2",
+        title: "second",
+        notes: [{ hunkId: "h2", text: "Updated context" }],
+        hunkIds: ["h2"],
+      },
+    ]);
+    expect(changed.revision).toBe(4);
+    expect(session.groups[0]?.title).toBe("first");
   });
 
   it("rejects an empty group id and leaves the batch unapplied", () => {
@@ -100,19 +101,17 @@ describe("applyBatch", () => {
     ]);
   });
 
-  it("returns dissolved members to inbox without retaining review state", () => {
-    const dissolved = applied([
-      { type: "group.dissolve", id: "g1" },
-      { type: "queue.set", itemIds: ["g2"] },
-    ]);
-    expect(statusOf(dissolved).inbox.map(({ id }) => id)).toEqual(["h1", "h3"]);
+  it("leaves dissolved members ungrouped under their files", () => {
+    const dissolved = applied([{ type: "group.dissolve", id: "g1" }]);
+    expect(statusOf(dissolved).groups.map(({ id }) => id)).toEqual(["g2"]);
     expect(dissolved.hunks).toEqual(session.hunks);
-    expect(dissolved.acceptHistory).toEqual(["g2"]);
-    expect(dissolved.groups[0]?.accepted).toBe(true);
+    expect(rejected([{ type: "group.dissolve", id: "g9" }]).detail).toEqual([
+      { opIndex: 0, message: "group g9 does not exist" },
+    ]);
   });
 
   it("replays only an identical envelope under a reused idempotency key", () => {
-    const ops: ApplyOp[] = [third, { type: "queue.set", itemIds: ["g1", "g2", "g3"] }];
+    const ops: ApplyOp[] = [third];
     const first = Result.getOrThrow(applyBatch(session, batch(ops), LATER));
     const next = first.session!;
     expect(next.updatedAt).toBe(LATER);

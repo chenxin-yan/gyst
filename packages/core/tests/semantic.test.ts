@@ -1,9 +1,9 @@
 import { expect, it } from "vite-plus/test";
 import { Result, Schema } from "effect";
 import { type ApplyEnvelope, ApplyEnvelopeSchema, applyBatch } from "../src/apply.ts";
-import { applyHumanAction } from "../src/human-action.ts";
+import { setViewed, type ViewedRequest } from "../src/human-action.ts";
 import { refreshSession } from "../src/refresh.ts";
-import { HunkSchema, SessionSchema, type StatusPayload } from "../src/session.ts";
+import { HunkSchema, type Session, SessionSchema, type StatusPayload } from "../src/session.ts";
 
 const decode = Schema.decodeUnknownSync(ApplyEnvelopeSchema, { onExcessProperty: "error" });
 const hunk = (id: string) => ({
@@ -22,15 +22,12 @@ const initial = () =>
     createdAt: "now",
     updatedAt: "now",
     revision: 0,
-    seq: 0,
-    cursor: { itemId: null, pane: "queue" },
     hunks: [hunk("a"), hunk("b"), hunk("c")],
     groups: [],
-    queue: [],
-    queueSet: false,
-    acceptHistory: [],
+    viewedHunkIds: [],
     receiptNoteTexts: [],
     applyReceipts: [],
+    viewedReceipts: [],
   });
 const note = (hunkId: string, text = "Intent and evidence") => ({ hunkId, text });
 const group = {
@@ -40,22 +37,28 @@ const group = {
   notes: [note("b")],
   memberHunkIds: ["b", "a"],
 };
-const queue = { type: "queue.set", itemIds: ["g"] };
 const envelope = (ops: unknown[], revision = 0, idempotencyKey = "first") =>
   decode({ revision, idempotencyKey, ops });
+const view = (session: Session, hunkIds: string[], requestId: string) => {
+  const request: ViewedRequest = {
+    command: "viewed",
+    session: session.id,
+    snapshotId: session.snapshotId,
+    revision: session.revision,
+    requestId,
+    hunkIds,
+    viewed: true,
+  };
+  return Result.getOrThrow(setViewed(session, request, "later")).session!;
+};
 
-it("publishes groups progressively and preserves unrelated verdicts and exact replay", () => {
-  const firstBatch = envelope([group, queue]);
+it("publishes groups progressively beside per-hunk Viewed and replays exactly", () => {
+  const firstBatch = envelope([group]);
   const first = Result.getOrThrow(applyBatch(initial(), firstBatch, "later"));
-  expect(first.status.ready).toBe(false);
-  expect(first.status.inbox.map(({ id }) => id)).toEqual(["c"]);
-  const accepted = Result.getOrThrow(
-    applyHumanAction(
-      first.session!,
-      { type: "verdict.toggle", itemId: "g", sessionId: "session", revision: 1 },
-      "later",
-    ),
-  );
+  expect(first.status.groups.map(({ id }) => id)).toEqual(["g"]);
+  // Viewed is the human's per-hunk progress; it moves the one review revision.
+  const viewed = view(first.session!, ["b", "c"], "view");
+  expect(viewed.revision).toBe(2);
   const nextBatch = envelope(
     [
       {
@@ -65,20 +68,14 @@ it("publishes groups progressively and preserves unrelated verdicts and exact re
         title: "Independent fix",
         notes: [],
       },
-      { type: "queue.set", itemIds: ["g", "independent"] },
     ],
-    accepted.revision,
+    viewed.revision,
     "second",
   );
-  const next = Result.getOrThrow(applyBatch(accepted, nextBatch, "later"));
+  const next = Result.getOrThrow(applyBatch(viewed, nextBatch, "later"));
   expect(next.status).toMatchObject({
-    ready: true,
-    queue: ["g", "independent"],
-    cursor: accepted.cursor,
-    groups: [
-      { accepted: true, hunkIds: ["b", "a"] },
-      { accepted: false, hunkIds: ["c"] },
-    ],
+    viewedHunkIds: ["b", "c"],
+    groups: [{ hunkIds: ["b", "a"] }, { hunkIds: ["c"] }],
   });
   expect(
     Result.isFailure(
@@ -89,28 +86,21 @@ it("publishes groups progressively and preserves unrelated verdicts and exact re
     status: first.status,
   });
   const refreshed = refreshSession(next.session!, [hunk("b"), hunk("c")], "later");
-  expect(refreshed.groups[0]).toMatchObject({
-    title: group.title,
-    notes: [],
-    hunkIds: ["b"],
-    accepted: false,
-  });
+  expect(refreshed.groups[0]).toMatchObject({ title: group.title, notes: [], hunkIds: ["b"] });
   expect(refreshed.groups[1]).toEqual(next.session!.groups[1]);
-  expect(refreshed.acceptHistory).toEqual([]);
+  expect(refreshed.viewedHunkIds).toEqual(["b", "c"]);
 });
 
-it("interns note text once and replays exact historical notes, anchors and cursors after refresh", () => {
+it("interns note text once and replays exact historical notes and anchors after refresh", () => {
   const count = 50;
   const text = (index: number) => `note-${index}-`.padEnd(400, "x");
   let session = Schema.decodeUnknownSync(SessionSchema)({
     ...initial(),
     hunks: Array.from({ length: count }, (_, index) => hunk(`h${index}`)),
   });
-  const published: string[] = [];
   const envelopes: ApplyEnvelope[] = [];
   const statuses: StatusPayload[] = [];
   for (let index = 0; index < count; index++) {
-    published.push(`g${index}`);
     const batch = envelope(
       [
         {
@@ -120,7 +110,6 @@ it("interns note text once and replays exact historical notes, anchors and curso
           title: `item ${index}`,
           notes: [note(`h${index}`, text(index))],
         },
-        { type: "queue.set", itemIds: [...published] },
       ],
       session.revision,
       `publish-${index}`,
@@ -134,25 +123,13 @@ it("interns note text once and replays exact historical notes, anchors and curso
   for (let index = 0; index < count; index++)
     expect(json.split(`note-${index}-`).length - 1).toBe(2);
   expect(session.receiptNoteTexts).toHaveLength(count);
-  const moved = Result.getOrThrow(
-    applyHumanAction(session, { type: "cursor.move", itemId: "g3" }, "later"),
-  );
-  const accepted = Result.getOrThrow(
-    applyHumanAction(
-      moved,
-      { type: "verdict.toggle", itemId: "g3", sessionId: "session", revision: moved.revision },
-      "later",
-    ),
-  );
+  const viewed = view(session, ["h3"], "view");
   const edited = Result.getOrThrow(
     applyBatch(
-      accepted,
+      viewed,
       envelope(
-        [
-          { type: "group.update", id: "g0", notes: [note("h0", "rewritten")] },
-          { type: "queue.set", itemIds: [...published] },
-        ],
-        accepted.revision,
+        [{ type: "group.update", id: "g0", notes: [note("h0", "rewritten")] }],
+        viewed.revision,
         "edit",
       ),
       "later",
@@ -166,8 +143,7 @@ it("interns note text once and replays exact historical notes, anchors and curso
     );
   expect(statuses[count - 1]!.groups[0]?.notes).toEqual([note("h0", text(0))]);
   expect(edited.groups[0]?.notes).toEqual([note("h0", "rewritten")]);
-  expect(reloaded.groups.find(({ id }) => id === "g3")).toMatchObject({ accepted: true });
-  expect(reloaded.cursor).toEqual({ itemId: "g4", pane: "queue", hunkId: "h4" });
+  expect(reloaded.viewedHunkIds).toEqual(["h3"]);
   for (const invalid of ["", "x".repeat(401), "bad\ntext"])
     expect(() =>
       Schema.decodeUnknownSync(SessionSchema)({
@@ -229,6 +205,9 @@ it("validates bounded plain note text and rejects obsolete metadata strictly", (
     expect(() => envelope([{ type: "group.update", id: "g", [field]: "old" }])).toThrow();
     expect(() => envelope([{ ...group, [field]: "old" }])).toThrow();
   }
+  // Verdicts and the review queue are gone; their old fields and op are rejected, not translated.
+  expect(() => envelope([{ ...group, accepted: false }])).toThrow();
+  expect(() => envelope([{ type: "queue.set", itemIds: ["g"] }])).toThrow();
   const { notes: _, ...missing } = group;
   expect(() => envelope([missing])).toThrow();
   for (const metadata of [{ title: "only" }, { notes: [] }, { accepted: true }])
@@ -240,35 +219,21 @@ it("validates bounded plain note text and rejects obsolete metadata strictly", (
     ).toThrow();
 });
 
-it("rejects invalid anchors and queues atomically; update omission retains and empty notes clears", () => {
+it("rejects invalid anchors atomically; update omission retains and empty notes clears", () => {
   const before = initial();
   for (const ops of [
     [{ ...group, memberHunkIds: ["a", "a"] }],
-    [{ ...group, notes: [note("c")] }, queue],
-    [{ ...group, notes: [note("b"), note("b")] }, queue],
-    [group, { type: "queue.set", itemIds: [] }],
-    [group, { type: "group.update", id: "g", memberHunkIds: ["a"] }, queue],
+    [{ ...group, notes: [note("c")] }],
+    [{ ...group, notes: [note("b"), note("b")] }],
+    [group, { type: "group.update", id: "g", memberHunkIds: ["a"] }],
   ])
     expect(Result.isFailure(applyBatch(before, envelope(ops), "later"))).toBe(true);
   expect(before).toEqual(initial());
-  const first = Result.getOrThrow(applyBatch(before, envelope([group, queue]), "later")).session!;
-  expect(
-    Result.isFailure(
-      applyBatch(
-        first,
-        envelope([{ type: "group.update", id: "g", notes: [] }], first.revision, "missing-queue"),
-        "later",
-      ),
-    ),
-  ).toBe(true);
+  const first = Result.getOrThrow(applyBatch(before, envelope([group]), "later")).session!;
   const retained = Result.getOrThrow(
     applyBatch(
       first,
-      envelope(
-        [{ type: "group.update", id: "g", title: "New title" }, queue],
-        first.revision,
-        "retain",
-      ),
+      envelope([{ type: "group.update", id: "g", title: "New title" }], first.revision, "retain"),
       "later",
     ),
   ).session!;
@@ -277,7 +242,7 @@ it("rejects invalid anchors and queues atomically; update omission retains and e
     applyBatch(
       retained,
       envelope(
-        [{ type: "group.update", id: "g", notes: [], memberHunkIds: ["a"] }, queue],
+        [{ type: "group.update", id: "g", notes: [], memberHunkIds: ["a"] }],
         retained.revision,
         "clear",
       ),

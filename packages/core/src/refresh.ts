@@ -1,4 +1,4 @@
-import { draftOf, reconcileQueue } from "./draft.ts";
+import { draftOf } from "./draft.ts";
 import type { Hunk, Session } from "./session.ts";
 
 export function refreshSession(
@@ -48,15 +48,13 @@ export function refreshSession(
         ...group,
         hunkIds,
         notes: hunkIds.length === group.hunkIds.length ? group.notes : [],
-        // A verdict covers every member, not just the surviving ones.
-        accepted: hunkIds.length === group.hunkIds.length && group.accepted,
       },
     ];
   });
-  if (survivingIds.size !== freshHunks.length) draft.queueSet = false;
-  reconcileQueue(draft);
+  // Viewed survives only on an exactly matched hunk; changed, ambiguous and new hunks start
+  // unviewed. Full reconciliation (guidance-driven invalidation) is #91.
+  draft.viewedHunkIds = draft.viewedHunkIds.filter((id) => survivingIds.has(id));
   draft.revision++;
-  draft.seq++;
   draft.updatedAt = updatedAt;
   return draft;
 }

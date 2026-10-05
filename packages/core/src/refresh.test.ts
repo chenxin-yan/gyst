@@ -3,7 +3,6 @@ import { Result } from "effect";
 import { refreshSession } from "./refresh.ts";
 import type { Hunk, Session } from "./session.ts";
 import { parseSnapshot } from "./snapshot.ts";
-import { statusOf } from "./status.ts";
 
 const LATER = "2026-02-02T00:00:00.000Z";
 const snapshot = (patch: string) => Result.getOrThrow(parseSnapshot(patch));
@@ -24,8 +23,6 @@ function session(): Session {
     createdAt: "2026-01-01T00:00:00.000Z",
     updatedAt: "2026-01-01T00:00:00.000Z",
     revision: 4,
-    seq: 7,
-    cursor: { itemId: "group-1", pane: "queue", hunkId: "old-a" },
     hunks: [
       hunk("old-a", "a.ts", "same"),
       hunk("old-b", "b.ts", "changed"),
@@ -38,28 +35,25 @@ function session(): Session {
         title: "coherent change",
         notes: [{ hunkId: "old-a", text: "intent and behavior" }],
         hunkIds: ["old-a"],
-        accepted: true,
       },
-      { id: "group-b", title: "changed", notes: [], hunkIds: ["old-b"], accepted: true },
-      { id: "group-c", title: "gone", notes: [], hunkIds: ["old-c"], accepted: true },
+      { id: "group-b", title: "changed", notes: [], hunkIds: ["old-b"] },
+      { id: "group-c", title: "gone", notes: [], hunkIds: ["old-c"] },
       {
         id: "group-d",
         title: "stable",
         notes: [{ hunkId: "old-d", text: "keep" }],
         hunkIds: ["old-d"],
-        accepted: true,
       },
     ],
-    queue: ["group-b", "group-1", "group-c", "group-d"],
-    queueSet: true,
-    acceptHistory: ["group-1", "group-d"],
+    viewedHunkIds: ["old-a", "old-b", "old-c", "old-d"],
     receiptNoteTexts: [],
     applyReceipts: [],
+    viewedReceipts: [],
   };
 }
 
 describe("refreshSession", () => {
-  it("preserves unchanged groups and verdicts, drops stale groups, and appends new inbox hunks", () => {
+  it("keeps groups and Viewed only for exactly matched hunks; new hunks start ungrouped and unviewed", () => {
     const refreshed = refreshSession(
       session(),
       [
@@ -81,28 +75,19 @@ describe("refreshSession", () => {
       "fresh-cross-file",
     ]);
     expect(refreshed.groups).toEqual([
-      expect.objectContaining({ id: "group-1", hunkIds: ["old-a"], accepted: true }),
+      expect.objectContaining({ id: "group-1", hunkIds: ["old-a"] }),
       expect.objectContaining({
         id: "group-d",
         notes: [{ hunkId: "old-d", text: "keep" }],
         hunkIds: ["old-d"],
-        accepted: true,
       }),
     ]);
-    expect(refreshed.queue).toEqual([
-      "group-1",
-      "group-d",
-      "fresh-b",
-      "fresh-d",
-      "fresh-cross-file",
-    ]);
-    expect(refreshed.acceptHistory).toEqual(["group-1", "group-d"]);
-    expect(refreshed.queueSet).toBe(false);
+    // A changed body, a vanished hunk and a same body in another file keep no progress.
+    expect(refreshed.viewedHunkIds).toEqual(["old-a", "old-d"]);
     expect(refreshed.revision).toBe(5);
-    expect(refreshed.seq).toBe(8);
   });
 
-  it("drops vanished groups and unaccepts a group when any member disappears", () => {
+  it("clears a group's notes when any member disappears, keeping survivors' own Viewed", () => {
     const original: Session = {
       ...session(),
       groups: [
@@ -111,48 +96,18 @@ describe("refreshSession", () => {
           title: "coherent change",
           notes: [{ hunkId: "old-a", text: "intent and behavior" }],
           hunkIds: ["old-a", "old-c"],
-          accepted: true,
         },
       ],
-      queue: ["group-1", "old-b"],
-      acceptHistory: ["group-1"],
     };
     const refreshed = refreshSession(original, [hunk("fresh-a", "a.ts", "same")], LATER);
-    expect(refreshed.groups[0]).toEqual(
-      expect.objectContaining({
-        title: "coherent change",
-        notes: [],
-        hunkIds: ["old-a"],
-        accepted: false,
-      }),
-    );
-    expect(refreshed.acceptHistory).toEqual([]);
-    // Losing either member invalidates the verdict, regardless of position.
-    expect(
-      refreshSession(original, [hunk("fresh-c", "c.ts", "gone")], LATER).groups[0]?.accepted,
-    ).toBe(false);
-
-    expect(refreshed.queue).toEqual(["group-1"]);
-    expect(refreshed.queueSet).toBe(true);
-    expect(statusOf(refreshed).ready).toBe(true);
-    expect(
-      refreshSession({ ...original, queueSet: false }, [hunk("fresh-a", "a.ts", "same")], LATER)
-        .queueSet,
-    ).toBe(false);
+    expect(refreshed.groups).toEqual([
+      { id: "group-1", title: "coherent change", notes: [], hunkIds: ["old-a"] },
+    ]);
+    expect(refreshed.viewedHunkIds).toEqual(["old-a"]);
 
     const empty = refreshSession(original, [], LATER);
     expect(empty.groups).toEqual([]);
-    expect(empty.queue).toEqual([]);
-    expect(empty.acceptHistory).toEqual([]);
-    expect(empty.cursor).toEqual({ itemId: null, pane: "queue" });
-
-    // The focused member vanished; zoom and pane survive on the first remaining member.
-    const focused = refreshSession(
-      { ...original, cursor: { itemId: "group-1", pane: "diff", hunkId: "old-c" } },
-      [hunk("fresh-a", "a.ts", "same")],
-      LATER,
-    );
-    expect(focused.cursor).toEqual({ itemId: "group-1", pane: "diff", hunkId: "old-a" });
+    expect(empty.viewedHunkIds).toEqual([]);
   });
 
   it("preserves stable duplicate identities only when the whole duplicate set is unchanged", () => {
@@ -167,17 +122,13 @@ describe("refreshSession", () => {
         title: `note ${index}`,
         notes: [{ hunkId: hunk.id, text: `note ${index}` }],
         hunkIds: [hunk.id],
-        accepted: index === 0,
       })),
-      queue: ["duplicate-0", "duplicate-1"],
-      cursor: { itemId: "duplicate-0", pane: "queue", hunkId: fresh[0]!.id },
-      acceptHistory: ["duplicate-0"],
+      viewedHunkIds: [fresh[0]!.id],
     };
     const unchanged = refreshSession(original, snapshot(patch), LATER);
     expect(unchanged.hunks).toEqual(original.hunks);
     expect(unchanged.groups).toEqual(original.groups);
-    expect(unchanged.queue).toEqual(original.queue);
-    expect(statusOf(unchanged).ready).toBe(true);
+    expect(unchanged.viewedHunkIds).toEqual([fresh[0]!.id]);
 
     // A surviving ID alone does not prove which duplicate was removed or relocated.
     for (const changed of [
@@ -186,16 +137,13 @@ describe("refreshSession", () => {
     ]) {
       const refreshed = refreshSession(original, changed, LATER);
       expect(refreshed.groups).toEqual([]);
-      expect(refreshed.acceptHistory).toEqual([]);
-      expect(statusOf(refreshed).inbox).toHaveLength(changed.length);
-      expect(refreshed.queueSet).toBe(false);
+      expect(refreshed.viewedHunkIds).toEqual([]);
     }
   });
 
   it("does not transfer review state between ambiguous duplicate hunks", () => {
     const original: Session = {
       ...session(),
-      cursor: { itemId: null, pane: "queue" },
       hunks: [
         hunk("old-first", "same.ts", "duplicate"),
         hunk("old-second", "same.ts", "duplicate"),
@@ -206,17 +154,15 @@ describe("refreshSession", () => {
           title: "duplicate edits",
           notes: [],
           hunkIds: ["old-first", "old-second"],
-          accepted: true,
         },
       ],
-      queue: ["group-1"],
-      acceptHistory: ["group-1"],
+      viewedHunkIds: ["old-first", "old-second"],
     };
 
     const refreshed = refreshSession(original, [hunk("fresh-only", "same.ts", "duplicate")], LATER);
 
     expect(refreshed.hunks).toEqual([hunk("fresh-only", "same.ts", "duplicate")]);
     expect(refreshed.groups).toEqual([]);
-    expect(refreshed.acceptHistory).toEqual([]);
+    expect(refreshed.viewedHunkIds).toEqual([]);
   });
 });

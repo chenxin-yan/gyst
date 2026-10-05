@@ -5,9 +5,9 @@
 Review code changes with your coding agent.
 
 Your agent plans a top-to-bottom walkthrough of all changes, then publishes
-self-contained groups with short titles and concise notes attached to hunks. Each group contains one or more hunks, all shown for review. You decide
-what to accept. Accepting marks a group reviewed—it does not stage, commit, or
-modify your code.
+self-contained groups with short titles and concise notes attached to hunks. Each group contains one or more hunks, all shown for review. You mark
+hunks Viewed as you read them. Viewed means read, not approved—it does not stage,
+commit, or modify your code.
 
 ## Install
 
@@ -37,8 +37,7 @@ npm install -g @gyst/cli
 
 This version ships the headless session CLI, background daemon, agent skills and a
 browser viewer that shows each saved session's captured diff. The terminal review viewer
-has been removed; the browser viewer does not show agent guidance or record review
-progress (verdicts and focus) yet.
+has been removed; the browser viewer does not show agent guidance yet.
 
 ## Review in the browser
 
@@ -101,8 +100,9 @@ terminal, capturing (`gyst`, `open`, `refresh`) shows its progress on stderr.
 
 Use `/gyst-refresh` in your agent's chat to refresh the existing review and revise
 its affected groups and explanations while preserving unrelated review progress.
-Refresh retains notes and verdicts only for wholly surviving groups; losing any
-member clears that group's notes and verdict without changing unrelated groups.
+Refresh retains notes only for wholly surviving groups, and Viewed only for exactly
+matching hunks; losing any member clears that group's notes without changing
+unrelated groups.
 
 Installing a new CLI does not itself restart the background daemon. On the next
 command, gyst checks compatibility before sending review operations. It automatically

@@ -9,7 +9,7 @@ Load the `gyst` skill's planning, authoring and publication rules as reference; 
 
 ## 1. Choose the snapshot
 
-Take the session id from the conversation, or from `gyst session list` for this repository and the scope under discussion; ask if several match. Read `gyst session status --session <id>`; record the scope, revision, groups and acceptance. Pass `--session <id>` to every subsequent command. If no session exists, direct the user to `gyst` and stop. Ask before changing scope.
+Take the session id from the conversation, or from `gyst session list` for this repository and the scope under discussion; ask if several match. Read `gyst session status --session <id>`; record the scope, revision, groups and Viewed hunks. Pass `--session <id>` to every subsequent command. If no session exists, direct the user to `gyst` and stop. Ask before changing scope.
 
 | User request                                                              | Action                                                                                                   |
 | ------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------- |
@@ -20,10 +20,10 @@ A source-change notice alone calls for informing the user and asking whether to 
 
 ## 2. Reconcile and publish
 
-Reread status and `gyst session diff --session <id>`. Reassess affected code and tests. Refresh preserves notes and acceptance only when every member survives confident matching. Losing any member clears the surviving group's notes and verdict; reauthor that group's context rather than reattaching old notes by proximity. Plan coverage for every current hunk while preserving unrelated accepted groups and their order.
+Reread status and `gyst session diff --session <id>`. Reassess affected code and tests. Refresh preserves a group's notes only when every member survives confident matching, and a hunk's Viewed only when it matches exactly. Losing any member clears the surviving group's notes; reauthor that group's context rather than reattaching old notes by proximity. Plan coverage for every current hunk while preserving unrelated groups and their order.
 
-Revise affected groups with `group.update` (optional title, notes, memberHunkIds), or dissolve/create groups to split or merge them. Omitting notes retains them; supplying notes replaces the complete array, and `[]` clears it. Replace notes when new membership would invalidate an anchor. Follow `gyst`'s atomic queue and retry rules. Explain restructuring; avoid no-op updates because even a note-only update resets acceptance.
+Revise affected groups with `group.update` (optional title, notes, memberHunkIds), or dissolve/create groups to split or merge them. Omitting notes retains them; supplying notes replaces the complete array, and `[]` clears it. Replace notes when new membership would invalidate an anchor. Follow `gyst`'s atomic publication and retry rules. Explain restructuring; avoid no-op updates.
 
 ## 3. Hand back
 
-Verify current status is ready, or report the remaining inbox work or blocker. Summarize what refreshed, which groups changed, preserved progress and what needs re-review. The open TUI updates without restarting.
+Verify every current hunk belongs to a group, or report the remaining ungrouped hunks or blocker. Summarize what refreshed, which groups changed, preserved progress and what needs re-review. The open TUI updates without restarting.

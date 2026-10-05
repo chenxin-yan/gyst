@@ -12,6 +12,7 @@ import {
   ReplySchema,
   SourceCheckPayloadSchema,
   StatusPayloadSchema,
+  ViewedPayloadSchema,
 } from "@gyst/core/wire";
 import { Schema } from "effect";
 
@@ -91,6 +92,7 @@ const payloadSchemas = {
   files: FilesPayloadSchema,
   code: CodePayloadSchema,
   delete: DeletePayloadSchema,
+  viewed: ViewedPayloadSchema,
 } satisfies Record<BrowserRequest["command"], Schema.Top>;
 export type Payload<Command extends BrowserRequest["command"]> =
   (typeof payloadSchemas)[Command]["Type"];

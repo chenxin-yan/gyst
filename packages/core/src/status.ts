@@ -1,25 +1,24 @@
 import { Struct } from "effect";
-import { groupedIds } from "./draft.ts";
 import type { Session, SessionSummary, StatusPayload } from "./session.ts";
 
 export const summaryOf = (session: Session): SessionSummary =>
   Struct.pick(session, ["id", "repoRoot", "scope", "snapshotId", "createdAt", "updatedAt"]);
 
 export function statusOf(session: Session): StatusPayload {
-  const counts = new Map<string, number>();
-  for (const hunk of session.hunks) counts.set(hunk.file, (counts.get(hunk.file) ?? 0) + 1);
-  const grouped = groupedIds(session);
-  const inbox = session.hunks.filter((hunk) => !grouped.has(hunk.id));
+  const viewed = new Set(session.viewedHunkIds);
+  const files = new Map<string, { hunkCount: number; viewed: boolean }>();
+  for (const hunk of session.hunks) {
+    const file = files.get(hunk.file) ?? { hunkCount: 0, viewed: true };
+    files.set(hunk.file, {
+      hunkCount: file.hunkCount + 1,
+      viewed: file.viewed && viewed.has(hunk.id),
+    });
+  }
   return {
     session: summaryOf(session),
     revision: session.revision,
-    seq: session.seq,
-    cursor: session.cursor,
     groups: session.groups.map((group) => ({ ...group, count: group.hunkIds.length })),
-    inbox: inbox.map(({ id, file }) => ({ id, file })),
-    queue: [...session.queue],
-    queueSet: session.queueSet,
-    ready: inbox.length === 0 && session.queueSet,
-    files: [...counts].map(([path, hunkCount]) => ({ path, hunkCount })),
+    viewedHunkIds: [...session.viewedHunkIds],
+    files: [...files].map(([path, file]) => ({ path, ...file })),
   };
 }

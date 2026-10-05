@@ -18,15 +18,12 @@ const session = (id: string): Session => ({
   createdAt: "2026-01-01T00:00:00.000Z",
   updatedAt: "2026-01-01T00:00:00.000Z",
   revision: 0,
-  seq: 0,
-  cursor: { itemId: null, pane: "queue" },
   hunks: [],
   groups: [],
-  queue: [],
-  queueSet: false,
-  acceptHistory: [],
+  viewedHunkIds: [],
   receiptNoteTexts: [],
   applyReceipts: [],
+  viewedReceipts: [],
 });
 
 const run = <A, E>(effect: Effect.Effect<A, E, SessionStore>) =>
@@ -60,12 +57,17 @@ describe("SessionStore", () => {
   it("skips undecodable session files but keeps the valid ones", async () => {
     await writeFile(join(dataDir, "corrupt.json"), "{not json");
     await writeFile(join(dataDir, "wrong-shape.json"), JSON.stringify({ id: "x" }));
-    // The schema is the contract: a file missing a review field is not migrated, it is skipped.
-    const { receiptNoteTexts: _, ...oldFields } = session("older");
+    // The schema is the contract: a session saved with group verdicts and a review queue is not
+    // migrated, it is skipped. The fixture keeps every required field, so only the legacy extras
+    // can reject it.
     const older = JSON.stringify({
-      ...oldFields,
-      receiptOverviews: [],
-      groups: [{ id: "g", title: "old", overview: "old", hunkIds: ["h"], accepted: false }],
+      ...session("older"),
+      seq: 0,
+      cursor: { itemId: null, pane: "queue" },
+      groups: [{ id: "g", title: "old", notes: [], hunkIds: ["h"], accepted: false }],
+      queue: ["g"],
+      queueSet: true,
+      acceptHistory: [],
     });
     await writeFile(join(dataDir, "older.json"), older);
     const loaded = await run(SessionStore.use((s) => s.loadAll));
@@ -73,18 +75,19 @@ describe("SessionStore", () => {
     expect(await readFile(join(dataDir, "older.json"), "utf8")).toBe(older);
   });
 
-  it("round-trips semantic metadata inside persisted historical receipt snapshots", async () => {
+  it("round-trips semantic metadata, Viewed and their historical receipts", async () => {
     const prepared: Session = {
       ...session("semantic"),
+      hunks: [{ id: "h", file: "h.ts", header: "@@ -1 +1 @@", patch: "-a\n+b", contentHash: "h" }],
       groups: [
         {
           id: "g",
           title: "API and tests",
           notes: [{ hunkId: "h", text: "Different operations, one behavior." }],
           hunkIds: ["h"],
-          accepted: false,
         },
       ],
+      viewedHunkIds: ["h"],
     };
     const status = statusOf(prepared);
     const saved: Session = {
@@ -97,6 +100,19 @@ describe("SessionStore", () => {
           status: {
             ...status,
             groups: [{ ...status.groups[0]!, notes: [{ hunkId: "h", text: 0 }] }],
+          },
+        },
+      ],
+      viewedReceipts: [
+        {
+          requestId: "r1",
+          digest: "digest",
+          result: {
+            sessionId: "semantic",
+            snapshotId: "snapshot",
+            revision: 1,
+            hunkIds: ["h"],
+            viewed: true,
           },
         },
       ],

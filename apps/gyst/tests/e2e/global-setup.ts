@@ -61,7 +61,8 @@ export default async function setup(project: Pick<TestProject, "provide">) {
   const root = await realpath(await mkdtemp(join(tmpdir(), "gyst-installed-")));
   const prefix = join(root, "prefix");
   try {
-    await exec("pnpm", packageDir, ["build"], testedEnv);
+    // Vitest sets NODE_ENV=test, which would ship a React development build; test what npm users get.
+    await exec("pnpm", packageDir, ["build"], { ...testedEnv, NODE_ENV: "production" });
     const packed = JSON.parse(
       await exec("pnpm", packageDir, ["pack", "--pack-destination", root, "--json"], testedEnv),
     ) as { filename: string };

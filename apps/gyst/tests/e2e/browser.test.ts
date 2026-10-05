@@ -44,6 +44,15 @@ type Launch = {
 };
 
 const hostile = '<img src=x onerror="window.injected=1">';
+/** src/long.ts: 300 numbered lines; the uncommitted edit doubles 100–110 and 114–180. */
+const longTs = (edited: boolean) =>
+  Array.from({ length: 300 }, (_, i) => i + 1)
+    .map((n) =>
+      edited && n >= 100 && n <= 180 && (n < 111 || n > 113)
+        ? `export const line${n} = ${n} * 2;\n`
+        : `export const line${n} = ${n};\n`,
+    )
+    .join("");
 const isOperationUrl = (url: URL) => url.pathname === "/api/operation";
 const operationOf = (request: PageRequest) =>
   request.method() === "POST" && isOperationUrl(new URL(request.url()))
@@ -186,6 +195,52 @@ const sessionRows = (page: Page) =>
 const crumbIs = (page: Page, text: string) =>
   page.waitForFunction((expected) => document.querySelector("h1")?.textContent === expected, text);
 
+/** The reader's file headers in order; each names its full path. */
+const fileHeadings = (page: Page) =>
+  page
+    .getByRole("main")
+    .getByRole("heading", { level: 2 })
+    .evaluateAll((headings) => headings.map((heading) => heading.getAttribute("aria-label")));
+
+/** The status line, which names the Vim cursor's place, the selection and Viewed progress. */
+const statusLine = (page: Page) => page.getByRole("contentinfo");
+/** Waits for the status line to say exactly `text`, such as `long.ts:97 · new`. */
+const says = (page: Page, text: string) =>
+  statusLine(page).getByText(text, { exact: true }).waitFor();
+/** The Vim cursor's accent bar over a code line or hidden range. */
+const cursorBar = (page: Page) => page.getByRole("main").locator("[data-cursor][aria-hidden=true]");
+/** Presses keys in order, from the page rather than a focused control. */
+async function keys(page: Page, ...pressed: string[]) {
+  await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
+  for (const key of pressed) await page.keyboard.press(key);
+}
+/** Waits until the cursor bar covers a copy of the line `text`, on the bar's own column. */
+const barOn = (page: Page, text: string) =>
+  waitFor(async () => {
+    const bar = await cursorBar(page).boundingBox();
+    if (bar === null) return false;
+    for (const copy of await page.getByRole("main").getByText(text, { exact: true }).all()) {
+      const box = await copy.boundingBox();
+      if (box && Math.abs(box.y - bar.y) < 4 && box.x >= bar.x && box.x < bar.x + bar.width)
+        return true;
+    }
+    return false;
+  }, `the cursor bar on ${text}`);
+/** A file header's fold toggle, whichever way it points. */
+const foldToggle = (page: Page, path: string) =>
+  page
+    .getByRole("main")
+    .getByRole("button", { name: new RegExp(`^(Fold|Unfold) ${path.replace(/[.]/g, "\\.")}$`) });
+const viewedBox = (page: Page, path: string) =>
+  page.getByRole("main").getByRole("checkbox", { name: `${path} viewed`, exact: true });
+const viewedOf = (page: Page) => {
+  const writes: any[] = [];
+  page.on("request", (request) => {
+    if (operationOf(request)?.command === "viewed") writes.push(operationOf(request));
+  });
+  return writes;
+};
+
 /**
  * A raw request to a launch's listener with explicit headers, as a hostile client could send;
  * resolves its status.
@@ -255,11 +310,13 @@ describe("installed gyst in a sandboxed browser", () => {
       join(repo, "README.md"),
       Array.from({ length: 10 }, (_, i) => `line ${i + 1}\n`).join(""),
     );
+    await mkdir(join(repo, "src"));
+    await writeFile(join(repo, "src", "long.ts"), longTs(false));
     git("add", ".");
     git("commit", "-qm", "init");
-    // bulk...paged: the snapshot holds the whole tree (these 400 unchanged files, app.ts, README.md
-    // and paged.ts), more than one 64 KiB files page; paged~1 is another snapshot of the same files
-    // for a refresh between pages.
+    // bulk...paged: the snapshot holds the whole tree (these 400 unchanged files, app.ts, README.md,
+    // src/long.ts and paged.ts), more than one 64 KiB files page; paged~1 is another snapshot of the
+    // same files for a refresh between pages.
     git("switch", "-qc", "bulk");
     await mkdir(join(repo, "bulk"));
     for (let i = 0; i < 400; i++)
@@ -271,6 +328,44 @@ describe("installed gyst in a sandboxed browser", () => {
       await writeFile(join(repo, "paged.ts"), `${version}\n`);
       git("add", ".");
       git("commit", "-qm", version);
+    }
+    // stress~1...stress modifies line 10 of the 400 bulk files, now 20 lines each: hundreds of
+    // files whose sides load eagerly, each with a leading and a trailing hidden range.
+    git("switch", "-q", "bulk");
+    git("switch", "-qc", "stress");
+    for (const edited of [false, true]) {
+      for (let i = 0; i < 400; i++)
+        await writeFile(
+          join(repo, "bulk", `${String(i).padStart(3, "0")}.txt`),
+          Array.from(
+            { length: 20 },
+            (_, n) => `bulk ${i} line ${n + 1}${edited && n === 9 ? " edited" : ""}\n`,
+          ).join(""),
+        );
+      git("add", ".");
+      git("commit", "-qm", edited ? "stress" : "stress base");
+    }
+    // large~1...large edits line 1500 of big.ts's 3000, about 87 KiB a side (two code pages), and
+    // line 1 of small.ts's 10.
+    git("switch", "-q", "main");
+    git("switch", "-qc", "large");
+    for (const edited of [false, true]) {
+      await writeFile(
+        join(repo, "big.ts"),
+        Array.from(
+          { length: 3000 },
+          (_, i) => `export const big${i + 1} = ${i + 1}${edited && i === 1499 ? " * 2" : ""};\n`,
+        ).join(""),
+      );
+      await writeFile(
+        join(repo, "small.ts"),
+        Array.from(
+          { length: 10 },
+          (_, i) => `export const small${i + 1} = ${i + 1}${edited && i === 0 ? " * 2" : ""};\n`,
+        ).join(""),
+      );
+      git("add", ".");
+      git("commit", "-qm", edited ? "large" : "large base");
     }
     git("switch", "-q", "main");
     git("switch", "-qc", "feature");
@@ -287,6 +382,7 @@ describe("installed gyst in a sandboxed browser", () => {
       join(repo, "README.md"),
       `${await readFile(join(repo, "README.md"), "utf8")}A new line`,
     );
+    await writeFile(join(repo, "src", "long.ts"), longTs(true));
     // Untracked binary: captured as an unavailable side, never as text.
     await writeFile(join(repo, "logo.bin"), new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0, 1]));
 
@@ -358,10 +454,13 @@ describe("installed gyst in a sandboxed browser", () => {
     expect(bootstrap.authorization === `Bearer ${one.secret}`).toBe(true);
     expect(bootstrap.origin).toBe(one.origin);
     const operations = requests.filter((r) => operationOf(r) !== undefined);
-    expect(operations.map(operationOf).sort((a, b) => a.command.localeCompare(b.command))).toEqual([
+    // Eager captured-content reads are bounded and checked in their own test.
+    const reads = operations.map(operationOf).filter((op) => op.command !== "code");
+    expect(reads.sort((a, b) => a.command.localeCompare(b.command))).toEqual([
       { command: "diff", session: one.id },
       { command: "files", session: one.id, snapshotId: sessions[0].snapshotId },
       { command: "open", session: one.id },
+      { command: "status", session: one.id },
     ]);
     for (const request of operations) {
       const headers = await request.allHeaders();
@@ -384,78 +483,944 @@ describe("installed gyst in a sandboxed browser", () => {
     ]);
     expect(await page.evaluate(() => document.cookie)).toBe("");
 
-    // The captured patch renders as escaped text with old/new line numbers.
+    // The captured hostile line renders as text in the continuous diff, never as markup.
     expect(await pane.getByText(hostile).count()).toBe(1);
     expect(await pane.locator("img").count()).toBe(0);
     expect(await page.evaluate(() => "injected" in window)).toBe(false);
-    // The changed files' headings; the captured files section has its own.
-    expect(
-      await pane
-        .getByRole("heading", { level: 2 })
-        .filter({ hasNotText: /^Captured files/ })
-        .count(),
-    ).toBe(2);
-    // A line is a row of old number, new number and code cells.
-    const numbers = (text: string) =>
-      pane
-        .getByRole("row")
-        .filter({ hasText: text })
-        .locator("[role=cell]:not(:last-child)")
-        .allTextContents();
-    expect(await numbers("onerror")).toEqual(["2", ""]);
-    expect(await numbers("uncommitted-edit")).toEqual(["", "2"]);
-    expect(await numbers("A new line")).toEqual(["", "11"]);
-    expect(await pane.getByRole("row").filter({ hasText: /^\\/ }).allTextContents()).toEqual([
-      "\\ No newline at end of file",
-    ]);
-    expect(await numbers("No newline at end of file")).toEqual(["", ""]);
+    // The whole snapshot's changes read by default, one compact header per file in path order; a
+    // change without captured text says why instead of showing content.
+    expect(await fileHeadings(page)).toEqual(["README.md", "app.ts", "logo.bin", "src/long.ts"]);
+    await pane.getByText("New side not captured: binary.").waitFor();
+    // The snapshot-wide tree lists the unchanged supporting file too; changes carry a status word.
+    const tree = page.getByRole("navigation", { name: "gyst" });
+    for (const name of ["app.ts (modified)", "logo.bin (added)", "feature.ts", "src/"])
+      await tree.getByRole("button", { name, exact: true }).waitFor();
   }, 30_000);
 
-  it("lists captured files and renders captured code, unchanged supporting files included, as escaped numbered text; an unavailable side shows its reason", async () => {
+  it("loads visible files' captured sides eagerly, a bounded few at a time, so every hidden range shows its exact count", async () => {
+    const page = await newPage();
+    const codes: any[] = [];
+    let inFlight = 0;
+    let mostInFlight = 0;
+    const settle = (request: PageRequest) => {
+      if (operationOf(request)?.command === "code") inFlight--;
+    };
+    page.on("requestfinished", settle);
+    page.on("requestfailed", settle);
+    const { promise: released, resolve: release } = Promise.withResolvers<void>();
+    await page.route(isOperationUrl, async (route) => {
+      const operation = route.request().postDataJSON();
+      if (operation?.command === "code") {
+        codes.push(operation);
+        inFlight++;
+        mostInFlight = Math.max(mostInFlight, inFlight);
+        await released;
+      }
+      await route.continue();
+    });
+    await page.goto(`${one.origin}${one.path}`);
+    const pane = page.getByRole("main");
+    // README.md's hunk starts at line 8; src/long.ts's at line 97. Both counts come from the hunks.
+    await pane.getByText("7 unmodified lines").first().waitFor();
+    await pane.getByText("96 unmodified lines").first().waitFor();
+    // Without a click, the visible files' sides are read: two files at a time, two sides each.
+    const loading = pane
+      .getByRole("heading", { name: "README.md", exact: true })
+      .locator("..")
+      .getByRole("status")
+      .filter({ hasText: "Loading the captured file…" });
+    try {
+      await loading.waitFor();
+      await waitFor(async () => codes.length === 4, "four code reads");
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      expect(codes.length).toBe(4);
+    } finally {
+      release();
+    }
+    // src/long.ts's trailing range (lines 184-300) shows the renderer's count once its sides load.
+    await pane.getByText("117 unmodified lines").first().waitFor();
+    await loading.waitFor({ state: "detached" });
+    expect(await pane.getByRole("status").count()).toBe(0);
+    // Each changed text file's two sides, read once, from the session's snapshot.
+    const { snapshotId } = (await gyst("session", "list")).sessions[0];
+    const reads = codes.map(({ file, side, snapshotId: read }) => `${file} ${side} ${read}`);
+    expect(reads.sort()).toEqual(
+      ["README.md", "app.ts", "src/long.ts"]
+        .flatMap((file) => [`${file} new ${snapshotId}`, `${file} old ${snapshotId}`])
+        .sort(),
+    );
+    expect(mostInFlight).toBeLessThanOrEqual(4);
+    // A loaded range opens on a click without another read; the other ranges stay hidden.
+    await pane.getByText("7 unmodified lines").first().click();
+    // Split shows a context line on both sides.
+    await pane.getByText("line 3", { exact: true }).first().waitFor();
+    for (const n of [1, 7]) await pane.getByText(`line ${n}`, { exact: true }).first().waitFor();
+    expect(await pane.getByText("7 unmodified lines").count()).toBe(0);
+    expect(await pane.getByText("96 unmodified lines").count()).toBeGreaterThan(0);
+    expect(codes.length).toBe(6);
+  }, 30_000);
+
+  it("opens a range in a third file within the same request bound while two files' reads are held", async () => {
+    const page = await newPage();
+    const codes: any[] = [];
+    let inFlight = 0;
+    let mostInFlight = 0;
+    const settle = (request: PageRequest) => {
+      if (operationOf(request)?.command === "code") inFlight--;
+    };
+    page.on("requestfinished", settle);
+    page.on("requestfailed", settle);
+    const { promise: released, resolve: release } = Promise.withResolvers<void>();
+    await page.route(isOperationUrl, async (route) => {
+      const operation = route.request().postDataJSON();
+      if (operation?.command === "code") {
+        codes.push(operation);
+        inFlight++;
+        mostInFlight = Math.max(mostInFlight, inFlight);
+        await released;
+      }
+      await route.continue();
+    });
+    await page.goto(`${one.origin}${one.path}`);
+    const pane = page.getByRole("main");
+    try {
+      await waitFor(async () => codes.length === 4, "two files' eager reads");
+      // src/long.ts's leading range opens while the reads are held: it waits for a free slot.
+      await pane.getByText("96 unmodified lines").first().click();
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      expect(mostInFlight).toBeLessThanOrEqual(4);
+    } finally {
+      release();
+    }
+    await waitFor(
+      async () => (await pane.getByText("96 unmodified lines").count()) === 0,
+      "src/long.ts's range to open",
+    );
+    expect(mostInFlight).toBeLessThanOrEqual(4);
+    // Each side read once: the opened file joined no duplicate read.
+    expect(codes.filter(({ file }) => file === "src/long.ts")).toHaveLength(2);
+  }, 30_000);
+
+  it("loads a file eagerly on return when its opened range's read landed after the reader left it", async () => {
+    const page = await newPage();
+    const codes: any[] = [];
+    let landed = 0;
+    page.on("requestfinished", (request) => {
+      const operation = operationOf(request);
+      if (operation?.command === "code" && operation.file === "src/long.ts") landed++;
+    });
+    const { promise: released, resolve: release } = Promise.withResolvers<void>();
+    await page.route(isOperationUrl, async (route) => {
+      const operation = route.request().postDataJSON();
+      if (operation?.command === "code") {
+        codes.push(operation);
+        if (operation.file === "src/long.ts") await released;
+      }
+      await route.continue();
+    });
+    await page.goto(`${one.origin}${one.path}`);
+    const pane = page.getByRole("main");
+    const tree = page.getByRole("navigation", { name: "gyst" });
+    const readsOf = (file: string) => codes.filter((code) => code.file === file).length;
+    try {
+      await waitFor(async () => readsOf("src/long.ts") === 2, "src/long.ts's eager reads");
+      // Its leading range opens while its read is held: the renderer's request joins that read.
+      await pane.getByText("96 unmodified lines").first().click();
+      // The reader leaves for an unchanged file before the read lands; the renderer drops it.
+      await tree.getByRole("button", { name: "feature.ts", exact: true }).click();
+      await pane.getByText("No captured changes under feature.ts.").waitFor();
+    } finally {
+      release();
+    }
+    await waitFor(async () => landed === 2, "src/long.ts's held reads to land");
+    await tree.getByRole("button", { name: "src/", exact: true }).click();
+    // Without a click it loads again.
+    await waitFor(async () => readsOf("src/long.ts") === 4, "src/long.ts read again");
+    // Its trailing range (lines 184-300), below the panel, shows its count once scrolled to.
+    await pane.hover();
+    await page.mouse.wheel(0, 1500);
+    await pane.getByText("117 unmodified lines").first().waitFor();
+    expect(readsOf("src/long.ts")).toBe(4);
+  }, 30_000);
+
+  it("stops a multi-page file's opened range read before its next page once the reader selects another file, and loads it again on return", async () => {
+    const id = await openRange("large~1...large");
+    onTestFinished(() =>
+      gyst("session", "delete", "--session", id, "--request-id", randomBytes(16).toString("hex")),
+    );
+    // The renderer logs every `loadDiffFiles` rejection, this intentional cancellation included.
+    const page = await newPage(context, {
+      problems: [expect.stringMatching(/^console .*the file left the window/)],
+    });
+    const codes: any[] = [];
+    let landed = 0;
+    page.on("requestfinished", (request) => {
+      const operation = operationOf(request);
+      if (operation?.command === "code" && operation.file === "big.ts") landed++;
+    });
+    const { promise: released, resolve: release } = Promise.withResolvers<void>();
+    await page.route(isOperationUrl, async (route) => {
+      const operation = route.request().postDataJSON();
+      if (operation?.command === "code") {
+        codes.push(operation);
+        // big.ts's first pages are held, so its second pages are not asked for yet.
+        if (operation.file === "big.ts") await released;
+      }
+      await route.continue();
+    });
+    await page.goto(`${one.origin}/session/${id}`);
+    const pane = page.getByRole("main");
+    const tree = page.getByRole("navigation", { name: "gyst" });
+    const pagesOf = (file: string, later: boolean) =>
+      codes.filter((code) => code.file === file && (code.offset !== undefined) === later).length;
+    try {
+      await waitFor(async () => pagesOf("big.ts", false) === 2, "big.ts's first pages");
+      // Its leading range opens while they are held: the renderer's request joins that read.
+      await pane.getByText("1496 unmodified lines").first().click();
+      await tree.getByRole("button", { name: "small.ts (modified)", exact: true }).click();
+      await waitFor(
+        async () => JSON.stringify(await fileHeadings(page)) === '["small.ts"]',
+        "small.ts selected",
+      );
+    } finally {
+      release();
+    }
+    await waitFor(async () => landed === 2, "big.ts's held first pages to land");
+    // The selected file loads: its trailing range (lines 5-10) shows its count.
+    await pane.getByText("6 unmodified lines").first().waitFor();
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    expect(pagesOf("big.ts", true)).toBe(0);
+    expect(await page.getByRole("alert").count()).toBe(0);
+
+    await tree.getByRole("button", { name: "big.ts (modified)", exact: true }).click();
+    // Without a click it loads again, every page, and its trailing range (lines 1504-3000) shows
+    // its count.
+    await waitFor(async () => pagesOf("big.ts", true) === 2, "big.ts's second pages");
+    await pane.getByText("1497 unmodified lines").first().waitFor();
+    expect(pagesOf("big.ts", false)).toBe(4);
+    // Its leading range opens further on a click without another read, wherever the renderer kept
+    // its earlier expansion; the first such separator is the leading one.
+    const leading = pane.getByText(/^1\d{3} unmodified lines$/).first();
+    const before = await leading.textContent();
+    await leading.click();
+    await waitFor(
+      async () => (await pane.getByText(before!, { exact: true }).count()) === 0,
+      "big.ts's leading range to open",
+    );
+    expect(codes.filter((code) => code.file === "big.ts")).toHaveLength(6);
+    expect(await page.getByRole("alert").count()).toBe(0);
+  }, 30_000);
+
+  it("shows the captured changes under a selected file or folder, and the whole snapshot again", async () => {
     const page = await newPage();
     await page.goto(`${one.origin}${one.path}`);
     const pane = page.getByRole("main");
-    const capturedRow = (path: string) =>
-      pane
-        .getByRole("list", { name: "Captured files" })
-        .getByRole("listitem")
-        .filter({ hasText: path });
-    await capturedRow("app.ts").getByRole("button", { name: "View old" }).click();
-    const oldApp = pane.getByRole("region", { name: "app.ts, old side" });
-    await oldApp.getByText(hostile).waitFor();
-    // Each line is a row of its line number and code cells.
-    expect(
-      await oldApp.getByRole("row").locator("[role=cell]:not(:last-child)").allTextContents(),
-    ).toEqual(["1", "2", "3"]);
-    expect(await pane.locator("img").count()).toBe(0);
-    expect(await page.evaluate(() => "injected" in window)).toBe(false);
-    // The uncommitted scope's supporting file comes from the snapshot, not only its changed files.
-    await capturedRow("feature.ts").getByRole("button", { name: "View new" }).click();
-    await pane
-      .getByRole("region", { name: "feature.ts, new side" })
-      .getByText("range-only")
-      .waitFor();
-    expect(await capturedRow("logo.bin").innerText()).toMatch(/new: unavailable \(binary\)/);
-    await capturedRow("logo.bin").getByRole("button", { name: "View new" }).click();
-    await pane
-      .getByRole("region", { name: "logo.bin, new side" })
-      .getByText("Not captured: binary content is not captured.")
-      .waitFor();
-    for (const [path, side] of [
-      ["app.ts", "old"],
-      ["feature.ts", "new"],
-      ["logo.bin", "new"],
-    ] as const) {
-      await capturedRow(path)
-        .getByRole("button", { name: `Hide ${side}` })
-        .click();
-      await pane.getByRole("region", { name: `${path}, ${side} side` }).waitFor({
-        state: "detached",
+    const tree = page.getByRole("navigation", { name: "gyst" });
+    await pane.getByText("uncommitted-edit").waitFor();
+    const select = async (name: string) => {
+      const button = tree.getByRole("button", { name, exact: true });
+      await button.click();
+      expect(await button.getAttribute("aria-current")).toBe("true");
+    };
+    await select("src/");
+    await waitFor(
+      async () => JSON.stringify(await fileHeadings(page)) === '["src/long.ts"]',
+      "the folder's changes",
+    );
+    await select("app.ts (modified)");
+    await waitFor(
+      async () => JSON.stringify(await fileHeadings(page)) === '["app.ts"]',
+      "the file's changes",
+    );
+    expect(await pane.getByText(hostile).count()).toBe(1);
+    await select("feature.ts");
+    await pane.getByText("No captured changes under feature.ts.").waitFor();
+    await select("All changes");
+    await waitFor(async () => (await fileHeadings(page)).length === 4, "every changed file");
+  }, 30_000);
+
+  it("lays the diff out split or stacked by available width, fits a narrow page and keeps the reading position across layout switches", async () => {
+    const page = await newPage();
+    await page.setViewportSize({ width: 1280, height: 800 });
+    await page.goto(`${one.origin}${one.path}`);
+    const pane = page.getByRole("main");
+    const layout = page.getByRole("radiogroup", { name: "Diff layout" });
+    const auto = (shown: string) => layout.getByRole("radio", { name: `Auto (${shown})` });
+    await auto("split").waitFor();
+    expect(await auto("split").isChecked()).toBe(true);
+    // The renderer's documented layout attribute confirms what the control says.
+    await pane.locator("[data-diff-type=split]").first().waitFor();
+    // 1000px of viewport leaves the diff fewer than 120 columns once the sidebar takes its share.
+    await page.setViewportSize({ width: 1000, height: 800 });
+    await auto("stacked").waitFor();
+    expect(await pane.locator("[data-diff-type=split]").count()).toBe(0);
+    await page.setViewportSize({ width: 1280, height: 800 });
+    await auto("split").waitFor();
+
+    // Read from a context line inside src/long.ts's hunk, then switch layouts both ways.
+    await page.getByRole("button", { name: "src/", exact: true }).click();
+    const line = pane.getByText("export const line112 = 112;").first();
+    await line.evaluate((element) => element.scrollIntoView({ block: "start" }));
+    // Out from under the sticky file header, so the line is the first one in view.
+    await pane.hover();
+    await page.mouse.wheel(0, -48);
+    const nearTop = async () => {
+      const [box, panel] = [await line.boundingBox(), await pane.boundingBox()];
+      return box !== null && panel !== null && box.y >= panel.y + 30 && box.y < panel.y + 100;
+    };
+    await waitFor(nearTop, "the line at the top of the panel");
+    await layout.getByRole("radio", { name: "Stacked", exact: true }).check();
+    await waitFor(
+      async () => (await pane.locator("[data-diff-type=split]").count()) === 0,
+      "the stacked layout",
+    );
+    await waitFor(nearTop, "the same line at the top after stacking");
+    await layout.getByRole("radio", { name: "Split", exact: true }).check();
+    await pane.locator("[data-diff-type=split]").first().waitFor();
+    await waitFor(nearTop, "the same line at the top after splitting");
+
+    // A phone-width page stacks the diff and never scrolls sideways.
+    await layout.getByRole("radio", { name: /^Auto/ }).check();
+    await page.setViewportSize({ width: 390, height: 844 });
+    await auto("stacked").waitFor();
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(
+      true,
+    );
+    // The footer wraps rather than clips: each control lies whole inside it and the page.
+    const footer = statusLine(page);
+    const controls = [
+      layout.getByText("Split", { exact: true }),
+      layout.getByText("Stacked", { exact: true }),
+      layout.getByText("Auto (stacked)", { exact: true }),
+      footer.getByText(/^\d+\/\d+ hunks? viewed in \d+ files?$/),
+      footer.getByRole("button", { name: /^Keys/ }),
+    ];
+    for (const [at, control] of controls.entries())
+      await waitFor(async () => {
+        const [box, bounds] = await Promise.all([control.boundingBox(), footer.boundingBox()]);
+        return (
+          box !== null &&
+          bounds !== null &&
+          box.x >= Math.max(bounds.x, 0) &&
+          box.y >= Math.max(bounds.y, 0) &&
+          box.x + box.width <= Math.min(bounds.x + bounds.width, 390) &&
+          box.y + box.height <= Math.min(bounds.y + bounds.height, 844)
+        );
+      }, `footer control ${at} inside the footer and the page`);
+    await layout.getByText("Stacked", { exact: true }).click();
+    expect(await layout.getByRole("radio", { name: "Stacked", exact: true }).isChecked()).toBe(
+      true,
+    );
+    await layout.getByText("Auto (stacked)", { exact: true }).click();
+    expect(await auto("stacked").isChecked()).toBe(true);
+    await footer.getByRole("button", { name: /^Keys/ }).click();
+    const help = page.getByRole("dialog", { name: "Keyboard shortcuts" });
+    await help.waitFor();
+    await page.keyboard.press("Escape");
+    await help.waitFor({ state: "detached" });
+  }, 30_000);
+
+  it("keeps the reading position across layout switches after one jump far past the rendered files", async () => {
+    // main...bulk adds 400 one-line files: far more than the renderer mounts at once.
+    const id = await openRange("main...bulk");
+    // Deleted even on failure: later tests count saved sessions.
+    onTestFinished(() =>
+      gyst("session", "delete", "--session", id, "--request-id", randomBytes(16).toString("hex")),
+    );
+    const page = await newPage();
+    await page.setViewportSize({ width: 1280, height: 800 });
+    await page.goto(`${one.origin}/session/${id}`);
+    const pane = page.getByRole("main");
+    await pane.getByRole("heading", { name: "bulk/000.txt", exact: true }).waitFor();
+    /** The file whose header is at the top of the panel. */
+    const topFile = () =>
+      pane.evaluate((main) => {
+        const panel = main.getBoundingClientRect().top;
+        const below = [...main.querySelectorAll("h2")]
+          .map((heading) => ({ heading, y: heading.getBoundingClientRect().top - panel }))
+          .filter(({ y }) => y >= -1)
+          .sort((a, b) => a.y - b.y)[0];
+        return below !== undefined && below.y < 40
+          ? below.heading.getAttribute("aria-label")
+          : null;
       });
+    const frames = () =>
+      page.evaluate(
+        () => new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done))),
+      );
+    // One step to the middle, as a scrollbar drag lands: no scroll event passes the files between.
+    await pane.evaluate((main) => {
+      const scroller = [...main.querySelectorAll("*")].find(
+        (element) => element.scrollHeight > element.clientHeight * 10,
+      )!;
+      scroller.scrollTop = scroller.scrollHeight / 2;
+    });
+    let destination: string | null = null;
+    await waitFor(async () => {
+      destination = await topFile();
+      return destination !== null && /^bulk\/[1-2]\d\d\.txt$/.test(destination);
+    }, "a file from the middle of the list at the top");
+    const layout = page.getByRole("radiogroup", { name: "Diff layout" });
+    for (const name of ["Stacked", "Split"]) {
+      await layout.getByRole("radio", { name, exact: true }).check();
+      await frames();
+      await waitFor(
+        async () => (await topFile()) === destination,
+        `${destination} still at the top after the switch to ${name}`,
+      );
     }
   }, 30_000);
 
-  it("pages captured files on demand and offers a session reload when a refresh replaced the snapshot between pages", async () => {
+  it("loads hundreds of changed files a bounded few at a time, far scrolls included, and navigates loaded files without reads", async () => {
+    const id = await openRange("stress~1...stress");
+    onTestFinished(() =>
+      gyst("session", "delete", "--session", id, "--request-id", randomBytes(16).toString("hex")),
+    );
+    const page = await newPage();
+    await page.setViewportSize({ width: 1280, height: 800 });
+    const started = { code: 0, files: 0 };
+    const inFlight = { code: 0, files: 0 };
+    const most = { code: 0, files: 0 };
+    const settle = (request: PageRequest) => {
+      const command = operationOf(request)?.command;
+      if (command === "code" || command === "files") inFlight[command as "code" | "files"]--;
+    };
+    page.on("requestfinished", settle);
+    page.on("requestfailed", settle);
+    await page.route(isOperationUrl, async (route) => {
+      const command = route.request().postDataJSON()?.command;
+      if (command === "code" || command === "files") {
+        started[command as "code" | "files"]++;
+        const count = ++inFlight[command as "code" | "files"];
+        most[command as "code" | "files"] = Math.max(most[command as "code" | "files"], count);
+        // A little latency, so concurrent requests overlap and are counted.
+        await new Promise((resolve) => setTimeout(resolve, 30));
+      }
+      await route.continue();
+    });
+    await page.goto(`${one.origin}/session/${id}`);
+    const pane = page.getByRole("main");
+    await pane.getByRole("heading", { name: "bulk/000.txt", exact: true }).waitFor();
+    // First content shows long before the 400 files' 800 sides could have loaded.
+    expect(started.code).toBeLessThan(800);
+    // A loaded file's trailing range (lines 14-20) shows its count.
+    await pane.getByText("7 unmodified lines").first().waitFor();
+    const settled = async () => {
+      let last = -1;
+      await waitFor(async () => {
+        const quiet = inFlight.code === 0 && started.code === last;
+        last = started.code;
+        await new Promise((resolve) => setTimeout(resolve, 200));
+        return quiet;
+      }, "the eager loads to settle");
+    };
+    await settled();
+    // Only the window and a few nearby files loaded, not the whole session.
+    expect(started.code).toBeLessThan(100);
+
+    // Moving between loaded files reads nothing more.
+    const before = started.code;
+    const at = await statusLine(page).textContent();
+    await keys(page, "]", "f");
+    await waitFor(async () => (await statusLine(page).textContent()) !== at, "the next file");
+    await keys(page, "[", "f");
+    await waitFor(
+      async () => (await statusLine(page).textContent()) === at,
+      "the first file again",
+    );
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    expect(started.code).toBe(before);
+
+    // A far jump loads the files it lands on, still within the bounds.
+    await pane.evaluate((main) => {
+      const scroller = [...main.querySelectorAll("*")].find(
+        (element) => element.scrollHeight > element.clientHeight * 10,
+      )!;
+      scroller.scrollTop = scroller.scrollHeight / 2;
+    });
+    await waitFor(async () => started.code > before, "reads for the files landed on");
+    await settled();
+    await pane.getByText("7 unmodified lines").first().waitFor();
+    expect(started.code).toBeLessThan(before + 100);
+    expect(most.code).toBeLessThanOrEqual(4);
+    expect(most.files).toBeLessThanOrEqual(1);
+  }, 60_000);
+
+  it("reads from the selection just shown, not a file restored before it, after short selections", async () => {
+    const page = await newPage();
+    await page.setViewportSize({ width: 1280, height: 800 });
+    await page.goto(`${one.origin}${one.path}`);
+    const pane = page.getByRole("main");
+    const tree = page.getByRole("navigation", { name: "gyst" });
+    await pane.getByText("uncommitted-edit").waitFor();
+    const select = async (name: string, headings: string[]) => {
+      await tree.getByRole("button", { name, exact: true }).click();
+      await waitFor(
+        async () => JSON.stringify(await fileHeadings(page)) === JSON.stringify(headings),
+        `${name} selected`,
+      );
+    };
+    const topFile = () =>
+      pane.evaluate((main) => {
+        const panel = main.getBoundingClientRect().top;
+        const below = [...main.querySelectorAll("h2")]
+          .map((heading) => ({ heading, y: heading.getBoundingClientRect().top - panel }))
+          .filter(({ y }) => y >= -1)
+          .sort((a, b) => a.y - b.y)[0];
+        return below !== undefined && below.y < 40
+          ? below.heading.getAttribute("aria-label")
+          : null;
+      });
+    // A layout switch on a file too short to scroll restores it at the very top.
+    await select("app.ts (modified)", ["app.ts"]);
+    await page
+      .getByRole("radiogroup", { name: "Diff layout" })
+      .getByRole("radio", { name: "Stacked", exact: true })
+      .check();
+    await select("README.md (modified)", ["README.md"]);
+    // README.md, now being read, is what the whole snapshot returns to, not the earlier app.ts.
+    await select("All changes", ["README.md", "app.ts", "logo.bin", "src/long.ts"]);
+    await waitFor(async () => (await topFile()) === "README.md", "README.md at the top");
+  }, 30_000);
+
+  it("marks a file section Viewed from its header, shared by the snapshot and file views, folding and advancing, and keeps it across a reload", async () => {
+    const page = await newPage();
+    await page.setViewportSize({ width: 1280, height: 800 });
+    const writes = viewedOf(page);
+    await page.goto(`${one.origin}${one.path}`);
+    const tree = page.getByRole("navigation", { name: "gyst" });
+    await page.getByRole("main").getByText("uncommitted-edit").waitFor();
+    const { hunks, snapshotId } = await gyst("session", "diff", "--session", one.id);
+    const idsOf = (file: string) =>
+      hunks
+        .filter((hunk: { file: string }) => hunk.file === file)
+        .map(({ id }: { id: string }) => id);
+    await says(page, "0/3 hunks viewed in 4 files");
+
+    // Checking sends one write for exactly the file's hunks, folds it and moves to the next file.
+    await viewedBox(page, "README.md").check();
+    await says(page, "1/3 hunks viewed in 4 files");
+    expect(writes).toEqual([
+      {
+        command: "viewed",
+        session: one.id,
+        snapshotId,
+        revision: expect.any(Number),
+        requestId: expect.stringMatching(/^[0-9a-f]{32}$/),
+        hunkIds: idsOf("README.md"),
+        viewed: true,
+      },
+    ]);
+    expect(await foldToggle(page, "README.md").getAttribute("aria-expanded")).toBe("false");
+    await says(page, "app.ts · file");
+    expect((await gyst("session", "status", "--session", one.id)).viewedHunkIds).toEqual(
+      idsOf("README.md"),
+    );
+
+    // The file view reads the same Viewed hunks; unchecking there clears only that section.
+    await tree.getByRole("button", { name: "README.md (modified)", exact: true }).click();
+    expect(await viewedBox(page, "README.md").isChecked()).toBe(true);
+    await viewedBox(page, "README.md").uncheck();
+    await says(page, "0/1 hunk viewed in 1 file");
+    expect(writes[1]).toMatchObject({ hunkIds: idsOf("README.md"), viewed: false });
+    expect(writes[1].requestId).not.toBe(writes[0].requestId);
+    await tree.getByRole("button", { name: "All changes", exact: true }).click();
+    await says(page, "0/3 hunks viewed in 4 files");
+    expect(await viewedBox(page, "README.md").isChecked()).toBe(false);
+
+    // m marks the cursor's file and advances past files without hunks.
+    await keys(page, "g", "g", "]", "f");
+    await says(page, "app.ts · file");
+    await keys(page, "m");
+    await says(page, "1/3 hunks viewed in 4 files");
+    await says(page, "long.ts · file");
+    expect(writes[2]).toMatchObject({ hunkIds: idsOf("app.ts"), viewed: true });
+    // Moving never writes Viewed.
+    await keys(page, "j", "j", "k", "]", "c");
+    expect(writes).toHaveLength(3);
+
+    await page.reload();
+    await viewedBox(page, "app.ts").waitFor();
+    expect(await viewedBox(page, "app.ts").isChecked()).toBe(true);
+    expect(await viewedBox(page, "README.md").isChecked()).toBe(false);
+    await says(page, "1/3 hunks viewed in 4 files");
+  }, 30_000);
+
+  it("conflicts a stale Viewed write from another page without overwriting, and retries a lost reply with the same request id", async () => {
+    const [first, second] = [await newPage(), await newPage()];
+    for (const page of [first, second]) {
+      await page.setViewportSize({ width: 1280, height: 800 });
+      await page.goto(`${one.origin}${one.path}`);
+      await viewedBox(page, "src/long.ts").waitFor();
+    }
+    await viewedBox(first, "README.md").check();
+    await says(first, "2/3 hunks viewed in 4 files");
+    // The second page saw an older revision: its write conflicts, then it reads progress again,
+    // so the box goes back unchecked.
+    await viewedBox(second, "src/long.ts").click();
+    await second
+      .getByRole("main")
+      .getByText("Not saved: progress changed elsewhere and was read again.")
+      .waitFor();
+    await says(second, "2/3 hunks viewed in 4 files");
+    expect(await viewedBox(second, "src/long.ts").isChecked()).toBe(false);
+    expect((await gyst("session", "status", "--session", one.id)).viewedHunkIds).toHaveLength(2);
+    // Acting again is a new intent against what it read, and applies.
+    await viewedBox(second, "src/long.ts").check();
+    await says(second, "3/3 hunks viewed in 4 files");
+
+    const third = await newPage(context, { problems: ["requestfailed /api/operation"] });
+    await third.setViewportSize({ width: 1280, height: 800 });
+    const writes = viewedOf(third);
+    const commands: string[] = [];
+    third.on("request", (request) => {
+      const operation = operationOf(request);
+      if (operation) commands.push(operation.command);
+    });
+    let lost = false;
+    await third.route(isOperationUrl, async (route) => {
+      if (lost || route.request().postDataJSON()?.command !== "viewed") return route.continue();
+      lost = true;
+      await route.fetch();
+      await route.abort();
+    });
+    await third.goto(`${one.origin}${one.path}`);
+    // The lost reply leaves the box as the daemon last said, with the failure beside it.
+    await viewedBox(third, "src/long.ts").click();
+    const failure = third
+      .getByRole("main")
+      .getByRole("alert")
+      .filter({ hasText: "Couldn't save Viewed" });
+    await failure.waitFor();
+    // The daemon applied it; only the reply was lost.
+    expect((await gyst("session", "status", "--session", one.id)).viewedHunkIds).toHaveLength(2);
+    commands.length = 0;
+    await failure.getByRole("button", { name: "Retry" }).click();
+    await says(third, "2/3 hunks viewed in 4 files");
+    expect(writes).toHaveLength(2);
+    expect(writes[1]).toEqual(writes[0]);
+    // A retried answer may replay history, so status is read again before any new write.
+    await waitFor(async () => commands.join() === "viewed,status", "status read after the retry");
+    expect(await viewedBox(third, "src/long.ts").isChecked()).toBe(false);
+
+    // A reread that fails blocks every write until a reload of the same snapshot reads progress.
+    const fourth = await newPage(context, { responses: ["/api/operation 503"] });
+    await fourth.setViewportSize({ width: 1280, height: 800 });
+    const blocked = viewedOf(fourth);
+    await fourth.goto(`${one.origin}${one.path}`);
+    await says(fourth, "2/3 hunks viewed in 4 files");
+    await viewedBox(third, "src/long.ts").click();
+    await says(third, "3/3 hunks viewed in 4 files");
+    let unreadable = true;
+    await fourth.route(isOperationUrl, async (route) => {
+      if (!unreadable || route.request().postDataJSON()?.command !== "status")
+        return route.continue();
+      unreadable = false;
+      await route.fulfill({ status: 503, body: "" });
+    });
+    await viewedBox(fourth, "app.ts").click();
+    const unread = fourth
+      .getByRole("main")
+      .getByRole("alert")
+      .filter({ hasText: "Progress can't be read again." });
+    await unread.waitFor();
+    await viewedBox(fourth, "app.ts").click();
+    await viewedBox(fourth, "README.md").click();
+    expect(blocked).toHaveLength(1);
+    await unread.getByRole("button", { name: "Reload session" }).click();
+    await unread.waitFor({ state: "detached" });
+    await says(fourth, "3/3 hunks viewed in 4 files");
+    // README.md, not app.ts: the daemon-restart test reads app.ts still Viewed.
+    await viewedBox(fourth, "README.md").click();
+    await says(fourth, "2/3 hunks viewed in 4 files");
+    expect(blocked).toHaveLength(2);
+    expect((await gyst("session", "status", "--session", one.id)).viewedHunkIds).toHaveLength(2);
+  }, 30_000);
+
+  it("walks the Vim cursor over headers, hidden ranges and lines with its bar on the line and side, keeping scrolloff, selection and layout", async () => {
+    const page = await newPage();
+    await page.setViewportSize({ width: 1280, height: 800 });
+    await page.goto(`${one.origin}${one.path}`);
+    const pane = page.getByRole("main");
+    await pane.getByText("uncommitted-edit").waitFor();
+    await says(page, "README.md · file");
+    await keys(page, "]", "c");
+    await says(page, "README.md:11 · new");
+    await barOn(page, "A new line");
+    await keys(page, "]", "c");
+    await says(page, "app.ts:2 · new");
+    await barOn(page, "const b = 'uncommitted-edit';");
+    await keys(page, "h");
+    await says(page, "app.ts:2 · old");
+    await barOn(page, `const b = '${hostile}';`);
+    await keys(page, "[", "c", "]", "f");
+    await says(page, "app.ts · file");
+    await keys(page, "]", "f", "[", "f");
+    await says(page, "app.ts · file");
+
+    await page.getByRole("button", { name: "src/", exact: true }).click();
+    await pane.getByRole("heading", { name: "src/long.ts" }).waitFor();
+    await keys(page, "g", "g", "j");
+    await says(page, "long.ts · hidden lines");
+    await keys(page, "j", "l");
+    await says(page, "long.ts:97 · new");
+    await barOn(page, "export const line97 = 97;");
+    await keys(page, "h");
+    await says(page, "long.ts:97 · old");
+    await barOn(page, "export const line97 = 97;");
+    await keys(page, "l");
+    // Enter opens the hidden range; once its sides load the cursor is on its first line.
+    await keys(page, "k", "Enter");
+    await says(page, "long.ts:1 · new");
+    await barOn(page, "export const line1 = 1;");
+
+    // A held j keeps the cursor clear of the panel's bottom edge.
+    await keys(page, "g", "g", ...Array.from({ length: 30 }, () => "j"));
+    await says(page, "long.ts:30 · new");
+    await barOn(page, "export const line30 = 30;");
+    const panel = (await pane.boundingBox())!;
+    await waitFor(async () => {
+      const bar = await cursorBar(page).boundingBox();
+      return bar !== null && bar.y + bar.height <= panel.y + panel.height - 80;
+    }, "the cursor clear of the bottom edge");
+
+    // A selection and the cursor survive layout switches.
+    await keys(page, "Shift+V", "j", "j");
+    await says(page, "3 lines selected");
+    await keys(page, "2");
+    await says(page, "long.ts:32");
+    await says(page, "3 lines selected");
+    await barOn(page, "export const line32 = 32;");
+    await keys(page, "1");
+    await says(page, "long.ts:32 · new");
+    await says(page, "3 lines selected");
+    await barOn(page, "export const line32 = 32;");
+    await keys(page, "Escape");
+    await statusLine(page).getByText("3 lines selected").waitFor({ state: "detached" });
+
+    // Scrolling by hand pulls the cursor back into the panel.
+    await pane.hover();
+    await page.mouse.wheel(0, 1500);
+    await waitFor(async () => {
+      const box = await cursorBar(page).boundingBox();
+      return (
+        (await statusLine(page).getByText("long.ts:32 · new", { exact: true }).count()) === 0 &&
+        box !== null &&
+        box.y >= panel.y &&
+        box.y + box.height <= panel.y + panel.height
+      );
+    }, "the cursor pulled back on screen");
+    // The pulled-back cursor stands on the line its bar covers.
+    const pulled = Number(/long\.ts:(\d+) · new/.exec(await statusLine(page).innerText())![1]);
+    const doubled = (pulled >= 100 && pulled <= 110) || (pulled >= 114 && pulled <= 180);
+    await barOn(page, `export const line${pulled} = ${pulled}${doubled ? " * 2" : ""};`);
+
+    // A selecting cursor stays where a hand scroll leaves it; a layout switch then keeps the
+    // reading position rather than scrolling back to it.
+    await keys(page, "Shift+V");
+    await says(page, "1 line selected");
+    await pane.hover();
+    await page.mouse.wheel(0, 1500);
+    // Hidden or above: either way not in the panel.
+    const above = async () => {
+      const box = await cursorBar(page).boundingBox();
+      return box === null || box.y + box.height <= panel.y;
+    };
+    await waitFor(above, "the selecting cursor left above the panel");
+    await keys(page, "2");
+    await waitFor(
+      async () => (await pane.locator("[data-diff-type=split]").count()) === 0,
+      "the stacked layout",
+    );
+    await page.evaluate(() => new Promise((resolve) => setTimeout(resolve, 1000)));
+    expect(await above()).toBe(true);
+    await says(page, "1 line selected");
+  }, 30_000);
+
+  it("folds and unfolds files and opens hidden ranges with Enter, zo, zc, za, zR and zM; Esc never folds", async () => {
+    const page = await newPage();
+    await page.setViewportSize({ width: 1280, height: 800 });
+    await page.goto(`${one.origin}${one.path}`);
+    await page.getByRole("main").getByText("uncommitted-edit").waitFor();
+    const expanded = (path: string) => foldToggle(page, path).getAttribute("aria-expanded");
+    const allExpanded = async (value: string) =>
+      waitFor(
+        async () => {
+          const states = await Promise.all(
+            ["README.md", "app.ts", "src/long.ts"].map((path) => expanded(path)),
+          );
+          return states.every((state) => state === value);
+        },
+        `every file ${value === "true" ? "unfolded" : "folded"}`,
+      );
+    await says(page, "README.md · file");
+    await keys(page, "Enter");
+    await waitFor(async () => (await expanded("README.md")) === "false", "README.md folded");
+    await keys(page, "Enter");
+    await waitFor(async () => (await expanded("README.md")) === "true", "README.md unfolded");
+    await keys(page, "Escape");
+    expect(await expanded("README.md")).toBe("true");
+    await keys(page, "z", "a");
+    await waitFor(async () => (await expanded("README.md")) === "false", "za folds");
+    await keys(page, "z", "o");
+    await waitFor(async () => (await expanded("README.md")) === "true", "zo unfolds");
+    await keys(page, "j", "Enter");
+    await page.getByRole("main").getByText("line 1", { exact: true }).first().waitFor();
+    await keys(page, "j", "z", "c");
+    await waitFor(async () => (await expanded("README.md")) === "false", "zc folds");
+    await says(page, "README.md · file");
+    await keys(page, "z", "Shift+M");
+    await allExpanded("false");
+    await keys(page, "z", "Shift+R");
+    await allExpanded("true");
+    // Caps Lock types `M` without Shift: neither Viewed nor a fold. Bottom still runs after it.
+    await keys(page, "M", "Shift+G");
+    await waitFor(
+      async () => /long\.ts/.test(await statusLine(page).innerText()),
+      "Shift+G at the bottom",
+    );
+    await allExpanded("true");
+    expect(await viewedBox(page, "README.md").isChecked()).toBe(false);
+    await keys(page, "g", "g");
+    await says(page, "README.md · file");
+    // The header's toggle does the same by mouse.
+    await foldToggle(page, "app.ts").click();
+    await waitFor(async () => (await expanded("app.ts")) === "false", "app.ts folded by click");
+
+    // A fold keeps the selection: it is there again when the file unfolds.
+    await keys(page, "g", "g", "]", "c", "Shift+V", "k");
+    await says(page, "2 lines selected");
+    await foldToggle(page, "README.md").click();
+    await waitFor(async () => (await expanded("README.md")) === "false", "README.md folded");
+    await says(page, "2 lines selected");
+    await foldToggle(page, "README.md").click();
+    await waitFor(async () => (await expanded("README.md")) === "true", "README.md unfolded");
+    await says(page, "2 lines selected");
+  }, 30_000);
+
+  it("scrolls with movement keys in Mouse mode, without a cursor, and selects lines with the hover + and by dragging", async () => {
+    const page = await newPage();
+    await page.setViewportSize({ width: 1280, height: 800 });
+    await page.goto(`${one.origin}${one.path}`);
+    const pane = page.getByRole("main");
+    await page.getByRole("button", { name: "src/", exact: true }).click();
+    await pane.getByRole("heading", { name: "src/long.ts" }).waitFor();
+    await page
+      .getByRole("radiogroup", { name: "Input mode" })
+      .getByRole("radio", { name: "Mouse" })
+      .check();
+    expect(await cursorBar(page).isVisible()).toBe(false);
+    expect(await statusLine(page).getByText("long.ts · file").count()).toBe(0);
+    const line = pane.getByText("export const line99 = 99;", { exact: true }).last();
+    const before = (await line.boundingBox())!.y;
+    await keys(page, "j");
+    await waitFor(async () => (await line.boundingBox())!.y < before - 40, "j scrolled down");
+    await keys(page, "k");
+    await waitFor(
+      async () => Math.abs((await line.boundingBox())!.y - before) < 4,
+      "k scrolled up",
+    );
+
+    // The renderer may redraw the hovered row once its scroll settles, taking the + with it; hover
+    // again until the + selects the line.
+    const plus = pane.locator("button[data-utility-button]").filter({ visible: true }).first();
+    await waitFor(async () => {
+      await line.hover();
+      await plus.click({ timeout: 500 }).catch(() => {});
+      return (await statusLine(page).getByText("1 line selected", { exact: true }).count()) === 1;
+    }, "the hover + selecting the line");
+    const from = (await pane
+      .getByText("export const line97 = 97;", { exact: true })
+      .last()
+      .boundingBox())!;
+    const to = (await line.boundingBox())!;
+    await page.mouse.move(from.x - 20, from.y + 8);
+    await page.mouse.down();
+    await page.mouse.move(to.x - 20, to.y + 8, { steps: 5 });
+    await page.mouse.up();
+    await says(page, "3 lines selected");
+    await keys(page, "Escape");
+    await statusLine(page).getByText("3 lines selected").waitFor({ state: "detached" });
+  }, 30_000);
+
+  it("runs commands from a keyboard-operable ⌘K menu and lists the implemented keys in ? help, ignoring review keys while typing", async () => {
+    const page = await newPage();
+    await page.setViewportSize({ width: 1280, height: 800 });
+    await page.goto(`${one.origin}${one.path}`);
+    await page.getByRole("main").getByText("uncommitted-edit").waitFor();
+    await says(page, "README.md · file");
+    const focused = () =>
+      page.evaluate(() => {
+        const element = document.activeElement as HTMLElement;
+        return {
+          name: element.getAttribute("aria-label") ?? element.textContent,
+          visible:
+            element.matches(":focus-visible") && getComputedStyle(element).outlineStyle !== "none",
+        };
+      });
+
+    await keys(page, "Control+k");
+    const menu = page.getByRole("dialog", { name: "Command menu" });
+    await menu.waitFor();
+    expect(await focused()).toEqual({ name: "Search commands", visible: true });
+    // Typing in the search box filters; it never moves the cursor.
+    await page.keyboard.type("jk");
+    expect(await menu.getByRole("combobox", { name: "Search commands" }).inputValue()).toBe("jk");
+    await says(page, "README.md · file");
+    await menu.getByRole("combobox").fill("");
+    await page.keyboard.type("stacked");
+    expect(await menu.getByRole("option").allTextContents()).toEqual(["Stacked diff2"]);
+    await page.keyboard.press("Enter");
+    await menu.waitFor({ state: "detached" });
+    expect(await page.getByRole("radio", { name: "Stacked", exact: true }).isChecked()).toBe(true);
+
+    await keys(page, "Meta+k");
+    await menu.waitFor();
+    const active = () => menu.getByRole("option", { selected: true }).innerText();
+    const firstOption = await active();
+    await page.keyboard.press("ArrowDown");
+    expect(await active()).not.toBe(firstOption);
+    // Past the menu's viewport the active option scrolls into view: ArrowUp from the first wraps
+    // to the last.
+    await page.keyboard.press("ArrowUp");
+    await page.keyboard.press("ArrowUp");
+    expect(await active()).toMatch(/^Keyboard shortcuts/);
+    await waitFor(async () => {
+      const [option, box] = await Promise.all([
+        menu.getByRole("option", { selected: true }).boundingBox(),
+        menu.boundingBox(),
+      ]);
+      return (
+        option !== null &&
+        box !== null &&
+        option.y >= box.y &&
+        option.y + option.height <= box.y + box.height
+      );
+    }, "the last option in view");
+    await page.keyboard.press("Escape");
+    await menu.waitFor({ state: "detached" });
+    await page.getByRole("button", { name: /^Commands/ }).click();
+    await menu.waitFor();
+    await page.keyboard.press("Escape");
+    await menu.waitFor({ state: "detached" });
+
+    await keys(page, "?");
+    const help = page.getByRole("dialog", { name: "Keyboard shortcuts" });
+    await help.waitFor();
+    expect(await focused()).toEqual({ name: "Close Esc", visible: true });
+    for (const label of ["Next change", "Fold every file", "Command menu"])
+      await help.getByText(label, { exact: true }).waitFor();
+    // Keys of later tickets are not listed.
+    expect(await help.getByText(/Reply|comment|Resolve/i).count()).toBe(0);
+    await page.keyboard.press("j");
+    await says(page, "README.md · file");
+    await page.keyboard.press("Escape");
+    await help.waitFor({ state: "detached" });
+    await keys(page, "j");
+    await says(page, "README.md · hidden lines");
+  }, 30_000);
+
+  it("pages the snapshot's files into the tree in the background and offers a session reload when a refresh replaced the snapshot between pages", async () => {
     const id = await openRange("bulk...paged");
     // Deleted even on failure: later tests count saved sessions.
     onTestFinished(() =>
@@ -470,27 +1435,34 @@ describe("installed gyst in a sandboxed browser", () => {
     page.on("request", (request) => {
       if (operationOf(request)?.command === "files") listings.push(operationOf(request));
     });
+    // Later pages wait until the snapshot is replaced, so the first background page goes stale.
+    const { promise: released, resolve: release } = Promise.withResolvers<void>();
+    await page.route(isOperationUrl, async (route) => {
+      const request = route.request().postDataJSON();
+      if (request?.command === "files" && request.snapshotId === captured && request.after)
+        await released;
+      await route.continue();
+    });
     await page.goto(`${one.origin}/session/${id}`);
     await crumbIs(page, "demo/bulk...paged");
-    // The first page's size depends on the daemon's page byte limit; only its presence matters.
-    const more = page.getByRole("button", { name: /^Load more files \(\d+ of 403 shown\)$/ });
-    await more.waitFor();
+    await expect.poll(() => listings.length).toBe(2);
     git("branch", "-f", "paged", "paged~1");
     await gyst("session", "refresh", "--session", id);
     const refreshed = await snapshotOf();
     expect(refreshed).not.toBe(captured);
-    await more.click();
+    release();
     await page.getByRole("alert").getByText("is not the current snapshot").waitFor();
     expect(await page.getByRole("button", { name: "Retry loading files" }).count()).toBe(0);
     await page.getByRole("button", { name: "Reload session" }).click();
-    await more.click();
-    await page
-      .getByRole("list", { name: "Captured files" })
-      .getByRole("listitem")
-      .filter({ hasText: "paged.ts" })
-      .waitFor();
+    // The last unchanged file arrives with the later page; the changed one was listed from the start.
+    const tree = page.getByRole("navigation", { name: "gyst" });
+    await tree.getByRole("button", { name: "Expand bulk" }).click();
+    await tree.getByRole("button", { name: "bulk/399.txt", exact: true }).waitFor();
+    await tree.getByRole("button", { name: "paged.ts (added)" }).waitFor();
     expect(await page.getByRole("alert").count()).toBe(0);
-    expect(await page.getByRole("button", { name: /Load more files/ }).count()).toBe(0);
+    expect(
+      await page.getByRole("button", { name: /Retry loading files|Reload session/ }).count(),
+    ).toBe(0);
     expect(listings.at(-1)).toEqual({
       command: "files",
       session: id,
@@ -498,6 +1470,98 @@ describe("installed gyst in a sandboxed browser", () => {
       after: expect.stringMatching(/^bulk\/\d{3}\.txt$/),
     });
   }, 30_000);
+
+  it("loads an added file listed only on a later files page, its trailing range opened, whichever reply lands first", async () => {
+    // bulk...paged adds paged.ts; its manifest entry is on the second and last files page.
+    const id = await openRange("bulk...paged");
+    onTestFinished(() =>
+      gyst("session", "delete", "--session", id, "--request-id", randomBytes(16).toString("hex")),
+    );
+    for (const first of ["code", "files"] as const) {
+      const page = await newPage();
+      const held = { code: 0, files: 0 };
+      const finished = { code: 0, files: 0 };
+      const gateOf = (operation: any) =>
+        operation?.command === "code" && operation.file === "paged.ts"
+          ? "code"
+          : operation?.command === "files" && operation.after
+            ? "files"
+            : undefined;
+      page.on("requestfinished", (request) => {
+        const gate = gateOf(operationOf(request));
+        if (gate) finished[gate]++;
+      });
+      const gates = { code: Promise.withResolvers<void>(), files: Promise.withResolvers<void>() };
+      await page.route(isOperationUrl, async (route) => {
+        const gate = gateOf(route.request().postDataJSON());
+        if (gate) {
+          held[gate]++;
+          await gates[gate].promise;
+        }
+        await route.continue();
+      });
+      await page.goto(`${one.origin}/session/${id}`);
+      const pane = page.getByRole("main");
+      try {
+        // Until its entry lands, paged.ts reads as a change, so its sides load eagerly.
+        await waitFor(
+          async () => held.code === 2 && held.files === 1,
+          "paged.ts's reads and the later files page",
+        );
+        await pane.getByText("More unchanged context may be available").first().click();
+        gates[first].resolve();
+        await waitFor(async () => finished[first] === held[first], `the ${first} replies`);
+      } finally {
+        gates.code.resolve();
+        gates.files.resolve();
+      }
+      await waitFor(
+        async () => finished.code === 2 && finished.files === 1,
+        `every reply, ${first} first`,
+      );
+      // An earlier test moves `paged` back a commit, so either version may be captured.
+      await pane
+        .getByText(/^v[12]$/)
+        .first()
+        .waitFor();
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      // No false failure, no stale load status, and no range left to open.
+      expect(await page.getByRole("alert").count()).toBe(0);
+      expect(await pane.getByRole("status").count()).toBe(0);
+      expect(await pane.getByText("More unchanged context may be available").count()).toBe(0);
+    }
+
+    // The files page lands first and rebuilds paged.ts as added; its eager reads then fail. The
+    // failure no longer applies to a file with nothing to load, so no alert offers a retry.
+    const page = await newPage(context, {
+      responses: ["/api/operation 503", "/api/operation 503"],
+    });
+    let held = 0;
+    const release = Promise.withResolvers<void>();
+    const files = Promise.withResolvers<void>();
+    await page.route(isOperationUrl, async (route) => {
+      const operation = route.request().postDataJSON();
+      if (operation?.command === "code" && operation.file === "paged.ts") {
+        held++;
+        await release.promise;
+        return route.fulfill({ status: 503, body: "" });
+      }
+      if (operation?.command === "files" && operation.after) await files.promise;
+      await route.continue();
+    });
+    await page.goto(`${one.origin}/session/${id}`);
+    await waitFor(async () => held === 2, "paged.ts's eager reads");
+    files.resolve();
+    await page
+      .getByRole("navigation", { name: "gyst" })
+      .getByRole("button", { name: "paged.ts (added)" })
+      .waitFor();
+    release.resolve();
+    await page.waitForLoadState("networkidle");
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    expect(await page.getByRole("alert").count()).toBe(0);
+    expect(await page.getByRole("main").getByRole("status").count()).toBe(0);
+  }, 60_000);
 
   it("keeps the session across client navigation, cookie reload and a new tab; shows not-found views", async () => {
     const page = await newPage();
@@ -517,8 +1581,12 @@ describe("installed gyst in a sandboxed browser", () => {
     await page.getByRole("heading", { name: "Saved sessions" }).waitFor();
     // The launch cookie authorizes the deep link and the reload; no page here sent a secret.
     expect(bootstraps).toBe(0);
+    // Each view's lazily split route chunks finish loading first, so the test's own next
+    // navigation never aborts one and reads as a failed request.
+    await page.waitForLoadState("networkidle");
     await page.goto(`${one.origin}/session/does-not-exist`);
     await page.getByRole("heading", { name: "Session not found" }).waitFor();
+    await page.waitForLoadState("networkidle");
     await page.goto(`${one.origin}/deliberately/unknown`);
     await page.getByRole("heading", { name: "Page not found" }).waitFor();
     const host = `${one.hostname}:${one.port}`;
@@ -527,8 +1595,7 @@ describe("installed gyst in a sandboxed browser", () => {
 
   it("shows Loading… while the session's real diff is held, then renders the bridge's reply", async () => {
     const page = await newPage();
-    let release = () => {};
-    const released = new Promise<void>((resolve) => (release = resolve));
+    const { promise: released, resolve: release } = Promise.withResolvers<void>();
     const held: string[] = [];
     await page.route(isOperationUrl, async (route) => {
       if (route.request().postDataJSON()?.command === "diff") {
@@ -550,7 +1617,15 @@ describe("installed gyst in a sandboxed browser", () => {
     await page.getByRole("main").getByText("uncommitted-edit").waitFor();
     expect(reply.status()).toBe(200);
     expect((await reply.json()).ok).toBe(true);
-    expect(await page.getByRole("status").count()).toBe(0);
+    // The page's loading state is gone; eager captured-file loads may still settle afterwards.
+    await page
+      .getByRole("status")
+      .getByText("Loading…", { exact: true })
+      .waitFor({ state: "detached" });
+    await waitFor(
+      async () => (await page.getByRole("status").count()) === 0,
+      "every loading status settled",
+    );
   }, 30_000);
 
   it("runs a concurrent range launch in the same profile on its own host and cookie", async () => {
@@ -774,8 +1849,7 @@ describe("installed gyst in a sandboxed browser", () => {
     const b = await openRange("main...topic-b");
     const page = await newPage();
     const top = page.getByRole("banner");
-    let release = () => {};
-    const released = new Promise<void>((resolve) => (release = resolve));
+    const { promise: released, resolve: release } = Promise.withResolvers<void>();
     let held = false;
     await page.route(isOperationUrl, async (route) => {
       if (route.request().postDataJSON()?.command === "delete") {
@@ -809,7 +1883,8 @@ describe("installed gyst in a sandboxed browser", () => {
   it("keeps console diagnostics for an unreadable or internal-error reply, not for an outage", async () => {
     const [b] = (await sessionIds()).filter((id: string) => id !== one.id);
     const page = await newPage(context, {
-      responses: ["/api/operation 503", "/api/operation 503"],
+      // The outage fails each of the load's three reads: open, diff and status.
+      responses: ["/api/operation 503", "/api/operation 503", "/api/operation 503"],
       problems: [
         expect.stringContaining("can't read"),
         expect.stringContaining("injected internal failure"),
@@ -836,23 +1911,17 @@ describe("installed gyst in a sandboxed browser", () => {
     });
     await page.goto(`${one.origin}/session/${b}`);
     await page.getByRole("alert").getByText("can't read").waitFor();
+    // The error shows before the session route's chunk finishes loading; navigating again would
+    // abort that fetch.
+    await page.waitForLoadState("networkidle");
     fault = "internal";
     await page.goto(`${one.origin}/session/${b}`);
     await page.getByRole("alert").getByText("injected internal failure").waitFor();
+    await page.waitForLoadState("networkidle");
     fault = "outage";
     await page.goto(`${one.origin}/session/${b}`);
     await page.getByRole("alert").getByText("Can't reach gyst").waitFor();
     await page.evaluate(() => new Promise((resolve) => setTimeout(resolve, 200)));
-  }, 30_000);
-
-  it("keeps the real hunk view within a narrow viewport", async () => {
-    const page = await newPage();
-    await page.setViewportSize({ width: 390, height: 844 });
-    await page.goto(`${one.origin}${one.path}`);
-    await page.getByRole("main").getByRole("table").first().waitFor();
-    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(
-      true,
-    );
   }, 30_000);
 
   it("returns to a fresh saved-session list after deleting from the session page", async () => {
@@ -896,6 +1965,9 @@ describe("installed gyst in a sandboxed browser", () => {
     const page = await newPage();
     await go(page, four.url);
     await page.getByRole("main").getByText("uncommitted-edit").waitFor();
+    // Viewed progress was saved with the session and survives the restart.
+    await viewedBox(page, "app.ts").waitFor();
+    expect(await viewedBox(page, "app.ts").isChecked()).toBe(true);
     expect(await stop(three.proc, "SIGINT")).toBe(130);
     const [reopened] = (await gyst("session", "list")).sessions;
     expect([reopened.id, reopened.snapshotId]).toEqual([saved.id, saved.snapshotId]);
@@ -951,6 +2023,8 @@ describe("installed gyst in a sandboxed browser", () => {
     expect(new URL(page.url()).port).toBe(String(forward));
     expect(sshd.log()).toContain("Accepted publickey");
     expect(client.log()).toContain("is known and matches the ED25519 host key");
+    // Eager captured-file reads settle first, so stopping the launcher doesn't fail one mid-flight.
+    await page.waitForLoadState("networkidle");
     expect(await stop(four.proc, "SIGINT")).toBe(130);
   }, 30_000);
 });
