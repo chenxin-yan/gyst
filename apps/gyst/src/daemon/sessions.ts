@@ -186,6 +186,18 @@ export class Sessions extends Context.Service<
       CodePayload,
       BadArgs | NoSession | StaleRevision | ValidationFailed | InternalError
     >;
+    /**
+     * The named current snapshot and its manifest, selected once: nothing after this reads the
+     * session again. Another snapshot id is `stale_revision` carrying the current one.
+     */
+    snapshot(request: { readonly session: string; readonly snapshotId: string }): Effect.Effect<
+      {
+        readonly sessionId: string;
+        readonly snapshotId: string;
+        readonly manifest: SnapshotManifest;
+      },
+      NoSession | StaleRevision | InternalError
+    >;
     /** One schema-validated `request.batch`: all ops or none, replays answered by receipt. */
     apply(
       request: Input<"apply">,
@@ -558,7 +570,7 @@ export class Sessions extends Context.Service<
           ),
         );
       /** The named current snapshot, selected once: nothing after this reads the session again. */
-      const currentSnapshot = Effect.fn("Sessions.currentSnapshot")(function* (request: {
+      const snapshot = Effect.fn("Sessions.snapshot")(function* (request: {
         readonly session: string;
         readonly snapshotId: string;
       }) {
@@ -573,7 +585,7 @@ export class Sessions extends Context.Service<
       });
 
       const files = Effect.fn("Sessions.files")(function* (request: Input<"files">) {
-        const { sessionId, snapshotId, manifest } = yield* currentSnapshot(request);
+        const { sessionId, snapshotId, manifest } = yield* snapshot(request);
         let first = 0;
         if (request.after !== undefined) {
           const index = manifest.files.findIndex(({ path }) => path === request.after);
@@ -603,7 +615,7 @@ export class Sessions extends Context.Service<
       });
 
       const code = Effect.fn("Sessions.code")(function* (request: Input<"code">) {
-        const { sessionId, snapshotId, manifest } = yield* currentSnapshot(request);
+        const { sessionId, snapshotId, manifest } = yield* snapshot(request);
         // Membership is the manifest's, so unchanged supporting files are readable too.
         const file = manifest.files.find(({ path }) => path === request.file);
         if (!file)
@@ -812,6 +824,7 @@ export class Sessions extends Context.Service<
         diff,
         files,
         code,
+        snapshot,
         apply,
         viewed,
         refresh,

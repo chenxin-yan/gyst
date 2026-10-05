@@ -5,6 +5,7 @@ import { Layer } from "effect";
 import { CapturedContent } from "../../daemon/content.ts";
 import { Git } from "../../daemon/git.ts";
 import { GitHub } from "../../daemon/github.ts";
+import { Navigation } from "../../daemon/navigation.ts";
 import { Paths } from "../../daemon/paths.ts";
 import { DaemonServer } from "../../daemon/server.ts";
 import { Sessions } from "../../daemon/sessions.ts";
@@ -14,7 +15,8 @@ const daemonServer = layer(
   "daemonServer",
   DaemonServer.layer.pipe(
     Layer.provide(
-      Sessions.layer.pipe(
+      Navigation.layer.pipe(
+        Layer.provideMerge(Sessions.layer),
         Layer.provide(
           Layer.mergeAll(Git.layer, GitHub.layer, SessionStore.layer).pipe(
             Layer.provideMerge(CapturedContent.layer),

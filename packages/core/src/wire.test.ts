@@ -6,7 +6,9 @@ import * as publicWire from "@gyst/core/wire";
 import { BadArgs, ErrorPayloadSchema, NoSession, SourceUnavailable } from "./errors.ts";
 import {
   BrowserRequestSchema,
+  IdentifiersPayloadSchema,
   NavigationGapSchema,
+  NavigationResultPayloadSchema,
   ReplySchema,
   RequestSchema,
   TextRangeSchema,
@@ -217,6 +219,10 @@ describe("daemon wire envelopes", () => {
       "TextPointSchema",
       "TextRangeSchema",
       "NavigationGapSchema",
+      "NavigationLocationSchema",
+      "NavigationUnavailableSchema",
+      "NavigationResultPayloadSchema",
+      "IdentifiersPayloadSchema",
     ] as const;
     const wireExports: Record<string, unknown> = { ...publicWire };
     const rootExports: Record<string, unknown> = { ...publicRoot };
@@ -356,6 +362,101 @@ describe("daemon wire envelopes", () => {
       { kind: "complete" },
     ])
       expect(() => decodeGap(gap)).toThrow();
+  });
+
+  it("binds the launcher's add-on discovery into trusted navigation requests only", () => {
+    const addon = {
+      kind: "available",
+      entry: "/opt/bin/gyst-navigation-typescript",
+      version: "1.0.0",
+    };
+    const target = { session: "s1", snapshotId, side: "new", file: "src/a.ts" };
+    const position = { line: 1, character: 4 };
+    for (const valid of [
+      { command: "definition", ...target, position, addon },
+      { command: "references", ...target, side: "old", position, addon: { kind: "missing" } },
+      { command: "identifiers", ...target, line: 3, addon: { kind: "mismatched", found: "0.9.0" } },
+    ])
+      expect(decodeRequest(valid)).toEqual(valid);
+    for (const invalid of [
+      // The launcher's discovery is required: the daemon never searches for the add-on itself.
+      { command: "definition", ...target, position },
+      { command: "identifiers", ...target, line: 3 },
+      { command: "definition", ...target, position, addon: { ...addon, entry: "bin/gyst" } },
+      { command: "definition", ...target, position, addon, entry: "/bin/sh" },
+      { command: "definition", ...target, file: "../outside.ts", position, addon },
+      { command: "definition", ...target, side: "working-tree", position, addon },
+      { command: "references", ...target, position: { line: 0, character: 0 }, addon },
+      { command: "identifiers", ...target, line: 0, addon },
+      { command: "identifiers", ...target, line: 1, position, addon },
+    ])
+      expect(() => decodeRequest(invalid)).toThrow();
+    // Browsers cannot send them, add-on or not, until the bridge binds the launcher's discovery.
+    for (const command of ["definition", "references", "identifiers"])
+      expect(() => decodeBrowserRequest({ command, ...target, position, addon })).toThrow();
+  });
+
+  it("restates query identity in navigation results and names only captured locations", () => {
+    const decodeResult = Schema.decodeUnknownSync(NavigationResultPayloadSchema, strict);
+    const range = { start: { line: 2, character: 1 }, end: { line: 2, character: 4 } };
+    const identity = {
+      sessionId: "s1",
+      snapshotId,
+      side: "old",
+      file: "src/a.ts",
+      query: "references",
+      position: range.start,
+    };
+    for (const outcome of [
+      {
+        kind: "locations",
+        symbol: { text: "add", range },
+        locations: [{ file: "src/b.ts", range }],
+        outside: 2,
+        gaps: [{ kind: "no-project-config" }],
+      },
+      { kind: "no-symbol" },
+      { kind: "unavailable", reason: { kind: "historical" } },
+      { kind: "unavailable", reason: { kind: "not-source", detail: "no old side" } },
+      { kind: "unavailable", reason: { kind: "engine", message: "exited" } },
+      {
+        kind: "unavailable",
+        reason: { kind: "addon", addon: { kind: "missing", install: "npm install -g x@1" } },
+      },
+    ])
+      expect(decodeResult({ ...identity, outcome })).toEqual({ ...identity, outcome });
+    const located = {
+      kind: "locations",
+      symbol: { text: "add", range },
+      locations: [],
+      outside: 0,
+      gaps: [],
+    };
+    for (const invalid of [
+      { ...identity, outcome: { ...located, locations: [{ file: "/etc/passwd", range }] } },
+      { ...identity, outcome: { ...located, locations: [{ uri: "file:///etc/passwd", range }] } },
+      { ...identity, outcome: { ...located, outside: -1 } },
+      { ...identity, query: "hover", outcome: located },
+      // The browser view of the add-on never carries its host path.
+      {
+        ...identity,
+        outcome: {
+          kind: "unavailable",
+          reason: { kind: "addon", addon: { kind: "available", version: "1", entry: "/x" } },
+        },
+      },
+    ])
+      expect(() => decodeResult(invalid)).toThrow();
+
+    const decodeIdentifiers = Schema.decodeUnknownSync(IdentifiersPayloadSchema, strict);
+    const line = { sessionId: "s1", snapshotId, side: "new", file: "src/a.ts", line: 2 };
+    const identifiers = {
+      ...line,
+      outcome: { kind: "identifiers", identifiers: [{ text: "first", range }], gaps: [] },
+    };
+    expect(decodeIdentifiers(identifiers)).toEqual(identifiers);
+    expect(() => decodeIdentifiers({ ...identifiers, line: 0 })).toThrow();
+    expect(() => decodeIdentifiers({ ...line, outcome: { kind: "no-symbol" } })).toThrow();
   });
 
   it("keeps `code` on the wire for tagged errors", () => {

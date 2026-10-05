@@ -11,6 +11,7 @@ import { join } from "node:path";
 import { DaemonClient } from "../daemon/client.ts";
 import { manifestOf, noGitHub, publishingContent } from "../daemon/capture-doubles.ts";
 import { Git } from "../daemon/git.ts";
+import { Navigation } from "../daemon/navigation.ts";
 import { Paths } from "../daemon/paths.ts";
 import { DaemonServer } from "../daemon/server.ts";
 import { Sessions } from "../daemon/sessions.ts";
@@ -72,8 +73,11 @@ const crypto = Layer.succeed(
 /** One daemon generation: each build has its own instance id and loads the saved sessions anew. */
 const daemonLayer = DaemonServer.layer.pipe(
   Layer.provideMerge(
-    Sessions.layer.pipe(
-      Layer.provide(Layer.mergeAll(git, noGitHub, store, crypto, publishingContent())),
+    Navigation.layer.pipe(
+      Layer.provideMerge(
+        Sessions.layer.pipe(Layer.provide(Layer.mergeAll(git, noGitHub, store, crypto))),
+      ),
+      Layer.provide(publishingContent()),
     ),
   ),
   Layer.provide(paths),

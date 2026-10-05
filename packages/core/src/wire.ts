@@ -8,6 +8,7 @@ import {
 import { ErrorPayloadSchema } from "./errors.ts";
 import { PullRequestNumberSchema, PullRequestStatusSchema } from "./github.ts";
 import { CodeSideSchema, LineNumberSchema } from "./guidance.ts";
+import { AddonDiscoverySchema, AddonStateSchema } from "./navigation.ts";
 import { HunkSchema, ScopeSchema, SessionSummarySchema } from "./session.ts";
 
 // `@gyst/core/wire` is the browser-safe entry: every contract a bridge or browser needs, without the
@@ -169,6 +170,77 @@ export const NavigationGapSchema = Schema.Union([
 ]);
 export type NavigationGap = typeof NavigationGapSchema.Type;
 
+const SideSchema = Schema.Literals(["old", "new"]);
+
+/** A place in one side's captured text; navigation never names anything outside the capture. */
+export const NavigationLocationSchema = Schema.Struct({
+  file: LogicalPathSchema,
+  range: TextRangeSchema,
+});
+export type NavigationLocation = typeof NavigationLocationSchema.Type;
+
+/** An identifier in captured text: the queried symbol, or one offered on a line. */
+const NavigationSymbolSchema = Schema.Struct({ text: Schema.String, range: TextRangeSchema });
+
+/** Why navigation did not run; review itself is unaffected by every one of these. */
+export const NavigationUnavailableSchema = Schema.Union([
+  /** The launcher found no usable add-on of this release; `addon` carries the install command. */
+  Schema.Struct({ kind: Schema.Literal("addon"), addon: AddonStateSchema }),
+  /** The snapshot is not (or stopped being) the session's current one; only it is analysed. */
+  Schema.Struct({ kind: Schema.Literal("historical") }),
+  /** That side of the file has no captured TS/JS text to analyse. */
+  Schema.Struct({ kind: Schema.Literal("not-source"), detail: Schema.String }),
+  /** The engine failed to start, answer or stay up. */
+  Schema.Struct({ kind: Schema.Literal("engine"), message: Schema.String }),
+]);
+export type NavigationUnavailable = typeof NavigationUnavailableSchema.Type;
+
+/**
+ * A definition or references answer. The identity fields restate the request, so a reply that
+ * arrives after the reader moved on can be recognised and dropped. `locations` are on the queried
+ * side only; `outside` counts results beyond the captured files, which are never named. Gaps make
+ * any result, an empty one included, potentially incomplete.
+ */
+export const NavigationResultPayloadSchema = Schema.Struct({
+  sessionId: Schema.String,
+  snapshotId: SnapshotIdSchema,
+  side: SideSchema,
+  file: LogicalPathSchema,
+  query: Schema.Literals(["definition", "references"]),
+  position: TextPointSchema,
+  outcome: Schema.Union([
+    Schema.Struct({
+      kind: Schema.Literal("locations"),
+      symbol: NavigationSymbolSchema,
+      locations: Schema.Array(NavigationLocationSchema),
+      outside: Schema.Natural,
+      gaps: Schema.Array(NavigationGapSchema),
+    }),
+    /** No identifier at the position, so nothing was asked of the engine. */
+    Schema.Struct({ kind: Schema.Literal("no-symbol") }),
+    Schema.Struct({ kind: Schema.Literal("unavailable"), reason: NavigationUnavailableSchema }),
+  ]),
+});
+export type NavigationResultPayload = typeof NavigationResultPayloadSchema.Type;
+
+/** The identifiers on one line the engine resolves, in line order, with the line's identity. */
+export const IdentifiersPayloadSchema = Schema.Struct({
+  sessionId: Schema.String,
+  snapshotId: SnapshotIdSchema,
+  side: SideSchema,
+  file: LogicalPathSchema,
+  line: LineNumberSchema,
+  outcome: Schema.Union([
+    Schema.Struct({
+      kind: Schema.Literal("identifiers"),
+      identifiers: Schema.Array(NavigationSymbolSchema),
+      gaps: Schema.Array(NavigationGapSchema),
+    }),
+    Schema.Struct({ kind: Schema.Literal("unavailable"), reason: NavigationUnavailableSchema }),
+  ]),
+});
+export type IdentifiersPayload = typeof IdentifiersPayloadSchema.Type;
+
 /** One page of the current snapshot's captured files, in path order; `next` is the next `after`. */
 export const FilesPayloadSchema = Schema.Struct({
   sessionId: Schema.String,
@@ -237,6 +309,12 @@ export type DeletePayload = typeof DeletePayloadSchema.Type;
 
 /** An exact saved-session id; no operation falls back to the caller's directory. */
 const exact = { session: Schema.String };
+const navigationTarget = {
+  ...exact,
+  snapshotId: SnapshotIdSchema,
+  side: SideSchema,
+  file: LogicalPathSchema,
+};
 
 /**
  * The operations a browser may request: exact saved-session ids and read filters only. Checkout
@@ -331,6 +409,28 @@ export const RequestSchema = Schema.Union([
   /** `batch` is the JSON apply envelope text; the use case validates it against `ApplyEnvelopeSchema`. */
   Schema.Struct({ command: Schema.Literal("apply"), ...exact, batch: Schema.String }),
   Schema.Struct({ command: Schema.Literal("refresh"), ...exact }),
+  /**
+   * Navigation over one side of a file in the session's current snapshot. `addon` is what the
+   * launcher discovered on its own PATH, bound by that trusted entry point like `open.cwd`.
+   */
+  Schema.Struct({
+    command: Schema.Literal("definition"),
+    ...navigationTarget,
+    position: TextPointSchema,
+    addon: AddonDiscoverySchema,
+  }),
+  Schema.Struct({
+    command: Schema.Literal("references"),
+    ...navigationTarget,
+    position: TextPointSchema,
+    addon: AddonDiscoverySchema,
+  }),
+  Schema.Struct({
+    command: Schema.Literal("identifiers"),
+    ...navigationTarget,
+    line: LineNumberSchema,
+    addon: AddonDiscoverySchema,
+  }),
 ]);
 export type Request = typeof RequestSchema.Type;
 
