@@ -4,8 +4,9 @@
 // insteadOf, so remote matching sees the URL a real clone has.
 import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
-import { mkdir, writeFile } from "node:fs/promises";
-import { dirname, join } from "node:path";
+import { mkdir, readFile, symlink, writeFile } from "node:fs/promises";
+import { delimiter, dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 
 export const githubUrl = "https://github.com/acme/widgets.git";
 export const githubRepository = "acme/widgets";
@@ -103,3 +104,117 @@ export const privateRefs = (checkout: string) =>
   git(checkout, "for-each-ref", "--format=%(refname) %(objectname)", "refs/gyst/")
     .split("\n")
     .filter(Boolean);
+
+/** One PR as `gh api graphql` reports it. */
+export type FakePullRequest = {
+  readonly number: number;
+  readonly title: string;
+  readonly body: string;
+  readonly state: "OPEN" | "CLOSED" | "MERGED";
+  readonly baseRefName: string;
+  readonly headRefName: string;
+  readonly headRefOid: string;
+};
+export type FakeGhReply = {
+  readonly exitCode: number;
+  readonly stdout?: string;
+  readonly stderr?: string;
+};
+
+const fakeGhScript = fileURLToPath(new URL("fake-gh.ts", import.meta.url));
+
+/**
+ * A recorded `gh` first on PATH, shadowing any real one, so no test reaches GitHub. Replies are
+ * written in the shapes the live API returned: GraphQL `data`, with `errors` or gh's own exit code
+ * and stderr for failures.
+ */
+export async function fakeGh(root: string) {
+  const binDir = join(root, "fake-gh", "bin");
+  const dir = join(root, "fake-gh", "replies");
+  await mkdir(binDir, { recursive: true });
+  await mkdir(dir, { recursive: true });
+  await writeFile(
+    join(binDir, "gh"),
+    `#!/bin/sh\nexec '${process.execPath}' '${fakeGhScript}' "$@"\n`,
+    { mode: 0o755 },
+  );
+  const reply = (
+    kind: "pull" | "stack",
+    number: number,
+    { exitCode, stdout, stderr }: FakeGhReply,
+  ) =>
+    writeFile(
+      join(dir, `${kind}-acme-widgets-${number}.json`),
+      JSON.stringify({ exitCode, stdout: stdout ?? "", stderr: stderr ?? "" }),
+    );
+  const answer = (pullRequest: unknown) =>
+    JSON.stringify({ data: { repository: { pullRequest } } });
+  const fieldsOf = (recorded: FakePullRequest) => {
+    const { headRefOid: _, ...pullRequest } = recorded;
+    return {
+      ...pullRequest,
+      url: `https://github.com/${githubRepository}/pull/${recorded.number}`,
+    };
+  };
+  return {
+    binDir,
+    dir,
+    env: (base: NodeJS.ProcessEnv): NodeJS.ProcessEnv => ({
+      ...base,
+      PATH: `${binDir}${delimiter}${base.PATH ?? ""}`,
+      FAKE_GH_DIR: dir,
+    }),
+    pullRequest: (pullRequest: FakePullRequest) =>
+      reply("pull", pullRequest.number, {
+        exitCode: 0,
+        stdout: answer({ ...fieldsOf(pullRequest), headRefOid: pullRequest.headRefOid }),
+      }),
+    /** `number`'s native stack, its layers in position order; null is no membership. */
+    stack: (
+      number: number,
+      stack: {
+        readonly number: number;
+        readonly baseRefName: string;
+        readonly layers: ReadonlyArray<FakePullRequest>;
+      } | null,
+    ) =>
+      reply("stack", number, {
+        exitCode: 0,
+        stdout: answer({
+          number,
+          stack: stack && {
+            number: stack.number,
+            size: stack.layers.length,
+            baseRefName: stack.baseRefName,
+            entries: {
+              totalCount: stack.layers.length,
+              nodes: stack.layers.map((layer, index) => ({
+                position: index + 1,
+                pullRequest: fieldsOf(layer),
+              })),
+            },
+          },
+        }),
+      }),
+    fail: reply,
+    /** Every argv gh was run with, in order. */
+    calls: async (): Promise<string[][]> => {
+      const log = join(dir, "calls.jsonl");
+      if (!existsSync(log)) return [];
+      return (await readFile(log, "utf8"))
+        .split("\n")
+        .filter(Boolean)
+        .map((line) => (JSON.parse(line) as { argv: string[] }).argv);
+    },
+  };
+}
+export type FakeGh = Awaited<ReturnType<typeof fakeGh>>;
+
+/** A PATH holding only git and node: no gh can be found on it. */
+export async function noGhPath(root: string) {
+  const bin = join(root, "no-gh", "bin");
+  await mkdir(bin, { recursive: true });
+  await symlink(join(git(root, "--exec-path"), "git"), join(bin, "git"));
+  await symlink(process.execPath, join(bin, "node"));
+  return bin;
+}
