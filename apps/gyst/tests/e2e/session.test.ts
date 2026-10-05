@@ -669,7 +669,11 @@ describe("gyst session CLI seam", () => {
       }),
     );
     expect(crossGroup.detail).toEqual([
-      { opIndex: 2, message: expect.stringContaining(`hunk ${second.id}, which is in group b`) },
+      { opIndex: 2, message: "note n must cover a changed line of its group a" },
+      {
+        opIndex: 2,
+        message: `note n covers changed lines of hunk ${second.id}, which is in group b, not group a`,
+      },
     ]);
     expect(json(await gyst(cwd, ["session", "status", ...pinned])).groups).toEqual([]);
 
