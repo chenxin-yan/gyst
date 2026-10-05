@@ -742,10 +742,10 @@ function SessionReader(props: {
   });
   readingPlace.current = { ...readingPlace.current, selection, inputMode, cursor };
   useEffect(() => remember(session.id, snapshotId, readingPlace.current));
-  const restoring = useRef(recalled !== undefined);
+  const returning = useRef(recalled !== undefined);
   const onPosition = useCallback(
     (top: ReadingPosition) => {
-      if (restoring.current) return;
+      if (returning.current) return;
       readingPlace.current = { ...readingPlace.current, top };
       remember(session.id, snapshotId, readingPlace.current);
     },
@@ -831,13 +831,13 @@ function SessionReader(props: {
   // scrolling by hand first leaves the reader where they went.
   const fileRevealed = useRef(false);
   useEffect(() => {
-    if (!restoring.current || width === 0 || recalled === undefined) return;
+    if (!returning.current || width === 0 || recalled === undefined) return;
     const view = viewer.current;
     if (!view) return;
-    if (cursor !== recalled.cursor) return void (restoring.current = false);
+    if (cursor !== recalled.cursor) return void (returning.current = false);
     const { top } = recalled;
     if (top === undefined || !model.files.includes(top.file)) {
-      restoring.current = false;
+      returning.current = false;
       const mark = recalled.cursor && here ? markOf(here) : undefined;
       if (mark) view.reveal(mark, "top");
       return;
@@ -860,7 +860,7 @@ function SessionReader(props: {
       (top.line === undefined ||
         model.rows(top.file).some((row) => row.kind === "line" && lineOn(row, side) === top.line));
     if (ready) {
-      restoring.current = false;
+      returning.current = false;
       const mark = { file: top.file, side, ...(top.line !== undefined && { line: top.line }) };
       // After the renderer's next frame, which lays out the lines it has just opened again.
       requestAnimationFrame(() => requestAnimationFrame(() => viewer.current?.reveal(mark, "top")));
@@ -1610,7 +1610,7 @@ function SessionReader(props: {
             setLines(vim && single ? null : next);
           }}
           onManualScroll={() => {
-            restoring.current = false;
+            returning.current = false;
             pullBack();
           }}
           onPosition={onPosition}
