@@ -22,6 +22,7 @@ import {
   Layer,
   PlatformError,
   Schema,
+  Semaphore,
   Stream,
 } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
@@ -333,6 +334,7 @@ export class Git extends Context.Service<
         } satisfies Provenance;
       });
 
+      const pullRequestRefs = yield* Semaphore.make(1);
       /** The remote whose raw configured URL (before any insteadOf) names the PR's repository. */
       const remoteFor = Effect.fn("Git.remoteFor")(function* (root: string, repository: string) {
         const listed = yield* run(root, ["config", "-z", "--get-regexp", "^remote\\..*\\.url$"]);
@@ -387,44 +389,50 @@ export class Git extends Context.Service<
             message,
             detail: { reason: "objects_missing", ...(diagnostic && { diagnostic }) },
           });
-        const fetched = yield* run(root, [
-          // The reference-transaction hook would otherwise run a project program.
-          "-c",
-          "core.hooksPath=/dev/null",
-          "fetch",
-          "--quiet",
-          "--no-tags",
-          "--no-prune",
-          "--no-write-fetch-head",
-          "--no-recurse-submodules",
-          "--no-auto-maintenance",
-          // Empty: no configured refspec opportunistically updates remote-tracking refs.
-          "--refmap=",
-          "--end-of-options",
-          remote,
-          `+refs/pull/${scope.number}/head:${namespace}/head`,
-          `+${baseRef}:${namespace}/base`,
-        ]).pipe(
-          Effect.timeoutOrElse({
-            duration: "2 minutes",
-            orElse: () =>
-              Effect.fail(objectsMissing(`fetching ${url} from remote ${remote} timed out`)),
-          }),
-        );
-        if (fetched.exitCode !== 0)
-          return yield* objectsMissing(
-            `could not fetch ${url} and its base branch ${target.baseRefName} from remote ${remote}`,
-            fetched.stderr.trim(),
+        const fetchAndResolve = Effect.gen(function* () {
+          const fetched = yield* run(root, [
+            // The reference-transaction hook would otherwise run a project program.
+            "-c",
+            "core.hooksPath=/dev/null",
+            "fetch",
+            "--quiet",
+            "--no-tags",
+            "--no-prune",
+            "--no-write-fetch-head",
+            "--no-recurse-submodules",
+            "--no-auto-maintenance",
+            // Empty: no configured refspec opportunistically updates remote-tracking refs.
+            "--refmap=",
+            "--end-of-options",
+            remote,
+            `+refs/pull/${scope.number}/head:${namespace}/head`,
+            `+${baseRef}:${namespace}/base`,
+          ]).pipe(
+            Effect.timeoutOrElse({
+              duration: "2 minutes",
+              orElse: () =>
+                Effect.fail(objectsMissing(`fetching ${url} from remote ${remote} timed out`)),
+            }),
           );
-        const resolve = (ref: string) =>
-          Effect.map(
-            run(root, ["rev-parse", "--verify", "--quiet", `${ref}^{commit}`]),
-            (resolved) => (resolved.exitCode === 0 ? text(resolved.stdout).trim() : undefined),
-          );
-        const tip = yield* resolve(`${namespace}/head`);
-        const base = yield* resolve(`${namespace}/base`);
-        if (tip === undefined || base === undefined)
-          return yield* objectsMissing(`the fetched commits of ${url} are not readable`);
+          if (fetched.exitCode !== 0)
+            return yield* objectsMissing(
+              `could not fetch ${url} and its base branch ${target.baseRefName} from remote ${remote}`,
+              fetched.stderr.trim(),
+            );
+          const resolve = (ref: string) =>
+            Effect.map(
+              run(root, ["rev-parse", "--verify", "--quiet", `${ref}^{commit}`]),
+              (resolved) => (resolved.exitCode === 0 ? text(resolved.stdout).trim() : undefined),
+            );
+          const tip = yield* resolve(`${namespace}/head`);
+          const base = yield* resolve(`${namespace}/base`);
+          if (tip === undefined || base === undefined)
+            return yield* objectsMissing(`the fetched commits of ${url} are not readable`);
+          return { tip, base };
+        });
+        // Acquisitions of one PR share its private refs; one permit keeps another fetch from
+        // landing between this fetch and its two resolutions, which would mix two pairs.
+        const { tip, base } = yield* fetchAndResolve.pipe(Semaphore.withPermit(pullRequestRefs));
         if (tip !== target.headRefOid)
           return yield* new SourceUnavailable({
             message: `${url} moved while gyst read it: open it again`,

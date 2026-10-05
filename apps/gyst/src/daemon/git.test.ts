@@ -6,7 +6,7 @@ import {
   type SnapshotManifest,
   snapshotIdOf,
 } from "@gyst/core";
-import { ConfigProvider, Effect, Layer, PlatformError, Stream } from "effect";
+import { ConfigProvider, Effect, Fiber, Layer, PlatformError, Stream } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -1021,6 +1021,67 @@ describe("Git.pullRequestRange", () => {
       git(elsewhere, "config", `url.${github.origin}.insteadOf`, url);
       expect((await range(elsewhere, 2, "layer-a", github.b1)).head, url).toBe(github.b1);
     }
+  });
+
+  it("keeps a concurrent acquisition's fetch from landing between another's head and base reads", async () => {
+    const github = await stacked("pr-concurrent");
+    let fetches = 0;
+    const paused = Promise.withResolvers<void>();
+    const resume = Promise.withResolvers<void>();
+    // Holds the first acquisition after it read its head and before it reads its base.
+    const pausing = Layer.effect(
+      ChildProcessSpawner.ChildProcessSpawner,
+      Effect.gen(function* () {
+        const live = yield* ChildProcessSpawner.ChildProcessSpawner;
+        let held = false;
+        return ChildProcessSpawner.make((command) => {
+          if (command._tag !== "StandardCommand") return live.spawn(command);
+          if (command.args.includes("fetch")) fetches += 1;
+          if (held || !command.args.some((arg) => arg.endsWith("/pull/2/base^{commit}")))
+            return live.spawn(command);
+          held = true;
+          paused.resolve();
+          return Effect.andThen(
+            Effect.promise(() => resume.promise),
+            live.spawn(command),
+          );
+        });
+      }),
+    ).pipe(Layer.provide(NodeServices.layer));
+    const acquire = (headRefOid: string) =>
+      Git.use((g) =>
+        g.pullRequestRange(github.checkout, pullRequestScope(2), {
+          baseRefName: "layer-a",
+          headRefOid,
+        }),
+      );
+    const { first, second, fetchesWhileHeld, a2, b2 } = await run(
+      Effect.gen(function* () {
+        const firstFiber = yield* Effect.forkChild(acquire(github.b1));
+        yield* Effect.promise(() => paused.promise);
+        // A restack moves both refs while the first acquisition is between its reads.
+        const a2 = yield* Effect.promise(() => github.commit("layer-a", { "a.txt": "a, again\n" }));
+        github.publish("layer-a", 1);
+        git(github.author, "rebase", "-q", "--onto", "layer-a", github.a1, "layer-b");
+        const b2 = github.publish("layer-b", 2);
+        const secondFiber = yield* Effect.forkChild(acquire(b2));
+        yield* Effect.sleep("500 millis");
+        const fetchesWhileHeld = fetches;
+        resume.resolve();
+        return {
+          first: yield* Fiber.join(firstFiber),
+          second: yield* Fiber.join(secondFiber),
+          fetchesWhileHeld,
+          a2,
+          b2,
+        };
+      }),
+      undefined,
+      pausing,
+    );
+    expect(fetchesWhileHeld).toBe(1);
+    expect(first).toEqual({ base: github.a1, head: github.b1, mergeBase: github.a1 });
+    expect(second).toEqual({ base: a2, head: b2, mergeBase: a2 });
   });
 
   it("fetches a repository whose name is not a valid ref component into escaped private refs", async () => {
