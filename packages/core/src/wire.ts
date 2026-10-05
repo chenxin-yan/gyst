@@ -135,6 +135,40 @@ export const pageBytes = 64 * 1024;
 export const CodePositionSchema = Schema.Struct({ line: LineNumberSchema, offset: Schema.Natural });
 export type CodePosition = typeof CodePositionSchema.Type;
 
+/**
+ * A point in one side's captured text: an LF-delimited line as in `CodePositionSchema`, and UTF-16
+ * code units from that line's start (a CR, lone or before the LF, and a BOM each count as one).
+ */
+export const TextPointSchema = Schema.Struct({ line: LineNumberSchema, character: Schema.Natural });
+export type TextPoint = typeof TextPointSchema.Type;
+
+export const TextRangeSchema = Schema.Struct({ start: TextPointSchema, end: TextPointSchema });
+export type TextRange = typeof TextRangeSchema.Type;
+
+/**
+ * A known reason navigation over one side's captured files may be incomplete. Gaps are named
+ * evidence, never a completeness claim: no gaps does not mean every input was present.
+ */
+export const NavigationGapSchema = Schema.Union([
+  /** This captured `package.json` declares packages; installed packages are never captured. */
+  Schema.Struct({ kind: Schema.Literal("dependencies"), file: LogicalPathSchema }),
+  /** A path on this side whose bytes were not captured: a symlink, submodule or non-text source. */
+  Schema.Struct({
+    kind: Schema.Literal("uncaptured"),
+    file: LogicalPathSchema,
+    reason: ContentSideSchema.members[2].fields.reason,
+  }),
+  /** No `tsconfig.json` or `jsconfig.json` on this side, so the engine infers a project. */
+  Schema.Struct({ kind: Schema.Literal("no-project-config") }),
+  /** The engine reported an import or configuration in this file it could not resolve. */
+  Schema.Struct({
+    kind: Schema.Literal("unresolved-import"),
+    file: LogicalPathSchema,
+    message: Schema.String,
+  }),
+]);
+export type NavigationGap = typeof NavigationGapSchema.Type;
+
 /** One page of the current snapshot's captured files, in path order; `next` is the next `after`. */
 export const FilesPayloadSchema = Schema.Struct({
   sessionId: Schema.String,

@@ -4,7 +4,13 @@ import { readFileSync } from "node:fs";
 import * as publicRoot from "@gyst/core";
 import * as publicWire from "@gyst/core/wire";
 import { BadArgs, ErrorPayloadSchema, NoSession, SourceUnavailable } from "./errors.ts";
-import { BrowserRequestSchema, ReplySchema, RequestSchema } from "./wire.ts";
+import {
+  BrowserRequestSchema,
+  NavigationGapSchema,
+  ReplySchema,
+  RequestSchema,
+  TextRangeSchema,
+} from "./wire.ts";
 
 const strict = { onExcessProperty: "error" } as const;
 const decodeRequest = Schema.decodeUnknownSync(RequestSchema, strict);
@@ -208,6 +214,9 @@ describe("daemon wire envelopes", () => {
       "AddonStateSchema",
       "navigationAddon",
       "navigationInstallCommand",
+      "TextPointSchema",
+      "TextRangeSchema",
+      "NavigationGapSchema",
     ] as const;
     const wireExports: Record<string, unknown> = { ...publicWire };
     const rootExports: Record<string, unknown> = { ...publicRoot };
@@ -322,6 +331,31 @@ describe("daemon wire envelopes", () => {
       expect(failed.error).toBeInstanceOf(BadArgs);
       expect(failed.error.message).toBe("bad request");
     }
+  });
+
+  it("names text points by 1-based line and UTF-16 character, and navigation gaps by kind", () => {
+    const decodeRange = Schema.decodeUnknownSync(TextRangeSchema, strict);
+    const range = { start: { line: 1, character: 0 }, end: { line: 2, character: 3 } };
+    expect(decodeRange(range)).toEqual(range);
+    for (const start of [{ line: 0, character: 0 }, { line: 1, character: -1 }, { line: 1 }])
+      expect(() => decodeRange({ ...range, start })).toThrow();
+
+    const decodeGap = Schema.decodeUnknownSync(NavigationGapSchema, strict);
+    for (const gap of [
+      { kind: "dependencies", file: "package.json" },
+      { kind: "uncaptured", file: "src/link.ts", reason: "symlink" },
+      { kind: "uncaptured", file: "vendor", reason: "submodule" },
+      { kind: "no-project-config" },
+      { kind: "unresolved-import", file: "src/a.ts", message: "Cannot find module './gen'" },
+    ])
+      expect(decodeGap(gap)).toEqual(gap);
+    for (const gap of [
+      { kind: "dependencies", file: "../package.json" },
+      { kind: "uncaptured", file: "a.ts", reason: "ignored" },
+      { kind: "no-project-config", file: "/tmp/x" },
+      { kind: "complete" },
+    ])
+      expect(() => decodeGap(gap)).toThrow();
   });
 
   it("keeps `code` on the wire for tagged errors", () => {

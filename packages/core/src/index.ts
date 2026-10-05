@@ -144,6 +144,8 @@ export {
   DiffPayloadSchema,
   type ListPayload,
   ListPayloadSchema,
+  type NavigationGap,
+  NavigationGapSchema,
   type OpenPayload,
   OpenPayloadSchema,
   type Reply,
@@ -160,4 +162,8 @@ export {
   SubscriptionEventSchema,
   type StackPayload,
   StackPayloadSchema,
+  type TextPoint,
+  TextPointSchema,
+  type TextRange,
+  TextRangeSchema,
 } from "./wire.ts";
