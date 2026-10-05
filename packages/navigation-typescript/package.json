@@ -2,7 +2,6 @@
   "name": "@gyst/navigation-typescript",
   "version": "0.1.2",
   "description": "Optional TypeScript/JavaScript definition and usage navigation for gyst",
-  "private": true,
   "license": "MIT",
   "type": "module",
   "repository": {
@@ -14,6 +13,9 @@
   "bugs": "https://github.com/chenxin-yan/gyst/issues",
   "engines": {
     "node": ">=24"
+  },
+  "publishConfig": {
+    "access": "public"
   },
   "bin": {
     "gyst-navigation-typescript": "src/cli.js"
