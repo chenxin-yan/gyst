@@ -15,12 +15,14 @@ import {
   chromium,
   type Page,
   type Request as PageRequest,
+  type Route,
 } from "playwright-core";
 import { afterAll, beforeAll, describe, expect, it, onTestFinished } from "vite-plus/test";
 
 import {
   commandLine,
   daemonPid,
+  failed,
   installed,
   isAlive,
   isolatedEnv,
@@ -350,15 +352,15 @@ async function applyFromCli(id: string): Promise<number> {
   return json(applied).revision;
 }
 
-/** Applies one agent batch through the installed CLI, as a skill does; resolves its status. */
-const applyBatch = async (session: string, batch: object) =>
-  json(
-    await run(installed.bin, ["session", "apply", "--session", session], {
-      cwd: repo,
-      env,
-      stdin: JSON.stringify(batch),
-    }),
-  );
+/** Runs one agent batch through the installed CLI, as a skill does. */
+const applyRun = (session: string, batch: object) =>
+  run(installed.bin, ["session", "apply", "--session", session], {
+    cwd: repo,
+    env,
+    stdin: JSON.stringify(batch),
+  });
+/** Applies one agent batch; resolves its status. */
+const applyBatch = async (session: string, batch: object) => json(await applyRun(session, batch));
 
 /** A fresh walk~1...walk session, deleted after the test, with its hunk ids by changed line. */
 async function openWalk() {
@@ -374,9 +376,11 @@ async function openWalk() {
   const [a10, a20, a40] = of("a.ts");
   const [b5] = of("b.ts");
   const [c3] = of("c.ts");
-  const publish = (revision: number, idempotencyKey: string, ops: object[]) =>
-    applyBatch(id, { revision, snapshotId, idempotencyKey, ops });
-  return { id, a10, a20, a40, b5, c3, publish };
+  const attempt = (revision: number, idempotencyKey: string, ops: object[]) =>
+    applyRun(id, { revision, snapshotId, idempotencyKey, ops });
+  const publish = async (revision: number, idempotencyKey: string, ops: object[]) =>
+    json(await attempt(revision, idempotencyKey, ops));
+  return { id, a10, a20, a40, b5, c3, attempt, publish };
 }
 type Walk = Awaited<ReturnType<typeof openWalk>>;
 
@@ -2846,6 +2850,361 @@ describe("installed gyst in a sandboxed browser", () => {
     await page.waitForLoadState("networkidle");
     expect(reads.filter((read) => read.file === "src/long.ts")).toEqual([]);
     expect(reads.every((read) => read.snapshotId !== snapshotId)).toBe(true);
+  }, 30_000);
+
+  it("keeps hostile prose inert, opens a web link only on a click, and leaves the view unchanged when the CLI refuses unsafe Markdown", async () => {
+    const walk = await openWalk();
+    const overview = [
+      `Raw ${hostile} stays text.`,
+      "",
+      "<script>window.injected = 2</script>",
+      "",
+      "Read [the guide](https://example.com/guide).",
+    ].join("\n");
+    await walk.publish(0, "hostile", [{ type: "walkthrough.update", overview }]);
+    // The link's page is answered here, so following it never leaves the sandbox.
+    const fetched: string[] = [];
+    const guide = "https://example.com/**";
+    const answer = (route: Route) => {
+      fetched.push(route.request().url());
+      return route.fulfill({ contentType: "text/html", body: "<title>Guide</title>" });
+    };
+    await context.route(guide, answer);
+    onTestFinished(() => context.unroute(guide, answer));
+    const page = await newPage();
+    await page.setViewportSize({ width: 1280, height: 1200 });
+    await page.goto(`${one.origin}/session/${walk.id}`);
+    const card = page.getByRole("main").getByRole("region", { name: "Walkthrough overview" });
+    const inert = async () => {
+      await card.getByText(`Raw ${hostile} stays text.`, { exact: true }).waitFor();
+      await card.getByText("<script>window.injected = 2</script>", { exact: true }).waitFor();
+      expect(await card.locator("img, script").count()).toBe(0);
+      expect(await page.evaluate(() => "injected" in window)).toBe(false);
+    };
+    await inert();
+    const link = card.getByRole("link", { name: "the guide" });
+    expect(
+      await link.evaluate((anchor) =>
+        ["href", "target", "rel"].map((at) => anchor.getAttribute(at)),
+      ),
+    ).toEqual(["https://example.com/guide", "_blank", "noopener noreferrer nofollow"]);
+    await page.waitForLoadState("networkidle");
+    expect(fetched).toEqual([]);
+    const opening = page.waitForEvent("popup");
+    await link.click();
+    const opened = await opening;
+    await opened.waitForLoadState();
+    expect(opened.url()).toBe("https://example.com/guide");
+    expect(await opened.evaluate(() => [window.opener, document.referrer])).toEqual([null, ""]);
+    await opened.close();
+    expect(fetched).toEqual(["https://example.com/guide"]);
+
+    // Each unsafe text fails its whole batch at the CLI; nothing it carried reaches the reader.
+    const refused: Array<[string, string]> = [
+      ["[run](javascript:alert(1))", 'link "javascript:alert(1)" must be an absolute http(s) URL'],
+      ["[run](JaVaScRiPt:alert(1))", 'link "JaVaScRiPt:alert(1)" must be an absolute http(s) URL'],
+      [
+        "[run](&#106;avascript:alert(1))",
+        'link "javascript:alert(1)" must be an absolute http(s) URL',
+      ],
+      [
+        "[run]\n\n[run]: data:text/html,hi",
+        'link "data:text/html,hi" must be an absolute http(s) URL',
+      ],
+      ["![logo](https://example.com/logo.png)", "images are not allowed"],
+      [
+        '```mermaid\n%%{init: {"securityLevel": "loose"}}%%\nflowchart LR\n  a --> b\n```',
+        "Mermaid diagrams may not carry %%{ }%% directives",
+      ],
+      [
+        "```mermaid\n\n---\nconfig:\n  securityLevel: loose\n---\nflowchart LR\n  a --> b\n```",
+        "Mermaid diagrams may not carry --- frontmatter",
+      ],
+    ];
+    for (const [index, [markdown, problem]] of refused.entries())
+      expect(
+        failed(
+          await walk.attempt(1, `refused-${index}`, [
+            { type: "walkthrough.update", overview: `${markdown}\n\nworth it` },
+            coreGroup(walk),
+          ]),
+        ),
+      ).toMatchObject({
+        code: "validation_failed",
+        detail: [{ opIndex: 0, message: expect.stringContaining(problem) }],
+      });
+    expect(await gyst("session", "status", "--session", walk.id)).toMatchObject({
+      revision: 1,
+      overview: { markdown: overview },
+      groups: [],
+    });
+    await page.waitForLoadState("networkidle");
+    await page.reload();
+    await inert();
+    expect(await page.getByText("worth it").count()).toBe(0);
+    expect(
+      await page
+        .getByRole("navigation", { name: "gyst" })
+        .getByText(/Parse the config/)
+        .count(),
+    ).toBe(0);
+  }, 30_000);
+
+  it("renders strict app-themed Mermaid only where it is still shown after a held load, shows a broken diagram's error and source, and highlights known fence languages only", async () => {
+    const walk = await openWalk();
+    await walk.publish(0, "rich", [
+      {
+        ...coreGroup(walk),
+        overview: [
+          "Reads every value once.",
+          "",
+          "```mermaid",
+          "flowchart LR",
+          "  parse --> check",
+          "```",
+          "",
+          "```ts",
+          "const parsed = parse(input);",
+          "```",
+          "",
+          "```nosuchlang",
+          "plain words here",
+          "```",
+        ].join("\n"),
+      },
+      {
+        ...edgeGroup(walk),
+        overview: [
+          "Drops the unused c3.",
+          "",
+          "```mermaid",
+          "this is not a diagram",
+          "```",
+          "",
+          "Still reads after the diagram.",
+        ].join("\n"),
+      },
+    ]);
+    const page = await newPage();
+    await page.setViewportSize({ width: 1280, height: 1200 });
+    // Mermaid's chunks stay held until the reader has left the diagram's group and come back.
+    const mermaidChunk = /\/assets\/mermaid[^/]*\.js$/;
+    let release = () => {};
+    const held = new Promise<void>((resolve) => (release = resolve));
+    const chunks: string[] = [];
+    await page.route(mermaidChunk, async (route) => {
+      chunks.push(route.request().url());
+      await held;
+      await route.continue();
+    });
+    await page.goto(`${one.origin}/session/${walk.id}`);
+    const pane = page.getByRole("main");
+    const side = page.getByRole("navigation", { name: "gyst" });
+    const core = side.getByRole("button", { name: /^Parse the config/ });
+    const edge = side.getByRole("button", { name: /^Handle the edge/ });
+    const card = pane.getByRole("region", { name: "Group overview" });
+    await core.click();
+    // The source reads while Mermaid loads.
+    await card.getByText("flowchart LR parse --> check", { exact: true }).waitFor();
+    await waitFor(() => chunks.length > 0, "Mermaid's chunk requested");
+    await edge.click();
+    await card.getByText("this is not a diagram", { exact: true }).waitFor();
+    await core.click();
+    await card.getByText("Reads every value once.", { exact: true }).waitFor();
+    release();
+    const diagram = card.getByRole("img", { name: "Diagram" });
+    await diagram.locator("svg").waitFor();
+    await diagram.getByText("parse", { exact: true }).waitFor();
+    await diagram.getByText("check", { exact: true }).waitFor();
+    expect(await card.getByText("flowchart LR", { exact: false }).count()).toBe(0);
+    await page.waitForLoadState("networkidle");
+    // One diagram in the document: none for the group left behind, no copy and no scratch render.
+    expect(await page.locator("svg[id^='gyst-mermaid']").count()).toBe(1);
+    expect(await page.locator("[id^='dgyst-mermaid']").count()).toBe(0);
+    expect(await diagram.locator("foreignObject, a, script, image, use").count()).toBe(0);
+    // Drawn in the app's palette, not one of Mermaid's own themes.
+    const style = (await diagram.locator("svg style").allTextContents()).join("\n");
+    expect(style).not.toMatch(/#ececff|#fff4dd/i);
+    // A known fence language is highlighted; an unknown one stays plain code.
+    await card.locator("pre code span[style*='color']").first().waitFor();
+    const plain = card.locator("pre").filter({ hasText: "plain words here" });
+    expect(await plain.locator("code").textContent()).toBe("plain words here");
+    expect(await plain.locator("[style]").count()).toBe(0);
+
+    // A broken diagram says why and keeps its source; the text around it still reads.
+    await edge.click();
+    const failure = card.locator("details");
+    await failure.getByText(/^Diagram failed: /).waitFor();
+    await failure.getByText("this is not a diagram", { exact: true }).waitFor();
+    await card.getByText("Still reads after the diagram.", { exact: true }).waitFor();
+    await card.getByText("Drops the unused c3.", { exact: true }).waitFor();
+    expect(await page.locator("svg[id^='gyst-mermaid']").count()).toBe(0);
+  }, 30_000);
+
+  it("shows a diagram's source and the reason when Mermaid can't load, around readable guidance", async () => {
+    const walk = await openWalk();
+    await walk.publish(0, "unloadable", [
+      {
+        type: "walkthrough.update",
+        overview: "Before.\n\n```mermaid\nflowchart LR\n  a --> b\n```\n\nAfter.",
+      },
+    ]);
+    const page = await newPage(context, {
+      problems: [expect.stringMatching(/^requestfailed \/assets\/mermaid/)],
+    });
+    await page.setViewportSize({ width: 1280, height: 1200 });
+    await page.route(/\/assets\/mermaid[^/]*\.js$/, (route) => route.abort());
+    await page.goto(`${one.origin}/session/${walk.id}`);
+    const card = page.getByRole("main").getByRole("region", { name: "Walkthrough overview" });
+    const failure = card.locator("details");
+    await failure.getByText(/^Diagram failed: Mermaid could not load: /).waitFor();
+    await failure.getByText("flowchart LR a --> b", { exact: true }).waitFor();
+    await card.getByText("Before.", { exact: true }).waitFor();
+    await card.getByText("After.", { exact: true }).waitFor();
+    await page.waitForLoadState("networkidle");
+  }, 30_000);
+
+  it("rolls a mixed invalid batch back, replays a retried batch byte for byte and refuses a stale batch without touching the human's Viewed", async () => {
+    const walk = await openWalk();
+    const page = await newPage();
+    await page.setViewportSize({ width: 1280, height: 1200 });
+    const writes = viewedOf(page);
+    await page.goto(`${one.origin}/session/${walk.id}`);
+    const side = page.getByRole("navigation", { name: "gyst" });
+    const reload = async () => {
+      await page.waitForLoadState("networkidle");
+      await page.reload();
+      await headingsAre(page, ["walk/a.ts", "walk/b.ts", "walk/c.ts"]);
+    };
+    const status = () => gyst("session", "status", "--session", walk.id);
+    await side.getByText("No walkthrough for this session yet.", { exact: true }).waitFor();
+
+    const [span, bNote] = [walkNotes.slice(0, 1), walkNotes.slice(1, 2)];
+    const valid = [
+      { type: "walkthrough.update", overview: walkOverview },
+      coreGroup(walk),
+      ...span,
+    ];
+    // The last op names a group that does not exist; nothing before it lands either.
+    const mixed = failed(
+      await walk.attempt(0, "mixed", [
+        ...valid,
+        ...bNote.map((note) => ({ ...note, group: "edge" })),
+      ]),
+    );
+    expect(mixed.code).toBe("validation_failed");
+    expect(mixed.detail.map(({ opIndex }: { opIndex: number }) => opIndex)).toEqual([3]);
+    expect(await status()).toMatchObject({ revision: 0, overview: null, groups: [] });
+    await reload();
+    await side.getByText("No walkthrough for this session yet.", { exact: true }).waitFor();
+    expect(await page.getByRole("main").getByRole("region").count()).toBe(0);
+
+    const corrected = await walk.attempt(0, "corrected", valid);
+    expect(json(corrected).revision).toBe(1);
+    await reload();
+    expect(await walkthroughRows(page)).toEqual([
+      "Overview",
+      "Parse the config, 0 of 3 hunks viewed",
+    ]);
+    await side.getByRole("button", { name: /^Parse the config/ }).click();
+    await headingsAre(page, ["walk/b.ts", "walk/a.ts"]);
+    await page.getByRole("main").locator("[data-note=span]").waitFor();
+    // The human marks b.ts Viewed, which moves the review on to revision 2.
+    await viewedBox(page, "walk/b.ts").check();
+    await says(page, "1/3 hunks viewed in 2 files");
+    expect(writes).toEqual([expect.objectContaining({ hunkIds: [walk.b5], viewed: true })]);
+
+    // A retry of the recorded batch answers exactly as it first did; a changed one under its key fails.
+    expect((await walk.attempt(0, "corrected", valid)).stdout).toBe(corrected.stdout);
+    expect(failed(await walk.attempt(0, "corrected", [...valid, ...bNote])).message).toBe(
+      "idempotency key reused with a different batch",
+    );
+    // A batch written before the Viewed write would unview b.ts; it is refused instead.
+    expect(failed(await walk.attempt(1, "stale", bNote))).toMatchObject({
+      code: "stale_revision",
+      message: expect.stringContaining("apply revision 1 is stale"),
+    });
+    expect(await status()).toMatchObject({ revision: 2, viewedHunkIds: [walk.b5] });
+    await reload();
+    await side
+      .getByRole("button", { name: "Parse the config, 1 of 3 hunks viewed", exact: true })
+      .waitFor();
+    await says(page, "1/5 hunks viewed in 3 files");
+    expect(await viewedBox(page, "walk/b.ts").isChecked()).toBe(true);
+    expect(await page.getByRole("main").locator("[data-note=b-note]").count()).toBe(0);
+    expect(writes).toHaveLength(1);
+  }, 30_000);
+
+  it("keeps a note over two own hunks once, refuses a cross-group note at the CLI, and moves a re-anchored note, unviewing its old and new hunks", async () => {
+    const walk = await openWalk();
+    await publishWalk(walk);
+    const page = await newPage();
+    await page.setViewportSize({ width: 1280, height: 1200 });
+    await page.goto(`${one.origin}/session/${walk.id}`);
+    const pane = page.getByRole("main");
+    const side = page.getByRole("navigation", { name: "gyst" });
+    const notes = pane.locator("[data-note]");
+    const noteIds = () =>
+      notes.evaluateAll((all) => all.map((note) => note.getAttribute("data-note")));
+    const openCore = async () => {
+      await side.getByRole("button", { name: /^Parse the config/ }).click();
+      await headingsAre(page, ["walk/b.ts", "walk/a.ts"]);
+      await waitFor(async () => (await notes.count()) === 2, "core's two notes");
+    };
+    await openCore();
+    expect(await pane.getByText("Both doublings share").count()).toBe(1);
+    expect(await noteIds()).toEqual(["b-note", "span"]);
+
+    // Lines 20 to 40 reach edge's change at line 40: the whole batch fails.
+    const crossing = failed(
+      await walk.attempt(1, "crossing", [
+        {
+          type: "note.create",
+          id: "wide",
+          group: "core",
+          anchor: { path: "walk/a.ts", side: "new", startLine: 20, endLine: 40 },
+          markdown: "Too wide.",
+        },
+      ]),
+    );
+    expect(crossing).toMatchObject({
+      code: "validation_failed",
+      detail: [
+        {
+          opIndex: 0,
+          message: `note wide covers changed lines of hunk ${walk.a40}, which is in group edge, not group core`,
+        },
+      ],
+    });
+
+    // Every hunk Viewed, from the snapshot view.
+    await side.getByRole("button", { name: "All changes", exact: true }).click();
+    for (const path of ["walk/a.ts", "walk/b.ts", "walk/c.ts"]) await viewedBox(page, path).check();
+    await says(page, "5/5 hunks viewed in 3 files");
+    // span moves from a.ts 10–20 to b.ts 4–6: a.ts's two core hunks and b.ts's are unviewed.
+    const moved = await walk.publish(4, "move", [
+      {
+        type: "note.update",
+        id: "span",
+        anchor: { path: "walk/b.ts", side: "new", startLine: 4, endLine: 6 },
+      },
+    ]);
+    expect(moved.viewedHunkIds).toHaveLength(2);
+    expect(moved.viewedHunkIds).toEqual(expect.arrayContaining([walk.a40, walk.c3]));
+    await page.waitForLoadState("networkidle");
+    await page.reload();
+    await openCore();
+    expect(await noteIds()).toEqual(["span", "b-note"]);
+    await pane.getByRole("button", { name: "L4–6 · new", exact: true }).waitFor();
+    const [note, aTs] = await Promise.all([
+      pane.locator("[data-note=span]").boundingBox(),
+      pane.getByRole("heading", { name: "walk/a.ts" }).boundingBox(),
+    ]);
+    expect(note!.y).toBeLessThan(aTs!.y);
+    await says(page, "0/3 hunks viewed in 2 files");
+    await side
+      .getByRole("button", { name: "Handle the edge, all 2 of 2 hunks viewed", exact: true })
+      .waitFor();
   }, 30_000);
 
   it("stops each viewer with 130 on SIGINT and keeps the daemon and saved sessions", async () => {
