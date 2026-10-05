@@ -123,6 +123,12 @@ export const isWebUrl = (url: string) => {
 const diagramDirective = /%%\s*\{/;
 const diagramFrontmatter = /^\s*---/;
 const diagramShapeData = /@\{/;
+// `$$…$$` is KaTeX math, which Mermaid measures by inserting the label as HTML into the live page,
+// where an `<img>` beside it loads.
+const diagramMath = /\$\$/;
+// Sequence statements that attach data to a participant: `properties` (and `details`, read from a
+// page element by id) set an icon image fetched while rendering; `links` and `link` give it URLs.
+const sequenceData = /^\s*(?:links?|properties|details)\b/i;
 // Statements that set author colours: flowchart/state/class/ER/block styles, C4 style updates and,
 // in sequence diagrams, coloured `rect` and `box` regions.
 const diagramStyling =
@@ -130,8 +136,9 @@ const diagramStyling =
 const sequenceStyling = /^\s*(?:rect|box)(?:\s|$)/i;
 
 /**
- * What the shared rich-content policy refuses in a Mermaid diagram: author configuration, shape
- * data (which can load images) and author styling. Both the entry check and the renderer apply it.
+ * What the shared rich-content policy refuses in a Mermaid diagram: author configuration, what can
+ * load images (shape data, math and participant data) and author styling. Both the entry check and
+ * the renderer apply it.
  */
 export function diagramProblems(source: string): string[] {
   const problems: string[] = [];
@@ -141,8 +148,15 @@ export function diagramProblems(source: string): string[] {
     problems.push("Mermaid diagrams may not carry --- frontmatter");
   if (diagramShapeData.test(source))
     problems.push("Mermaid diagrams may not carry @{ } shape data, which can load images");
+  if (diagramMath.test(source))
+    problems.push("Mermaid diagrams may not carry $$ math, which can load images");
   const statements = source.split(/[\n;]/);
   const sequence = /^\s*sequenceDiagram\b/m.test(source);
+  const data = sequence ? statements.find((statement) => sequenceData.test(statement)) : undefined;
+  if (data !== undefined)
+    problems.push(
+      `Mermaid diagrams may not carry participant links or properties, which can load images: ${JSON.stringify(/[a-z]+/i.exec(data)![0])}`,
+    );
   const styled = statements.find(
     (statement) => diagramStyling.test(statement) || (sequence && sequenceStyling.test(statement)),
   );

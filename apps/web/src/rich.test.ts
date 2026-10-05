@@ -229,6 +229,22 @@ describe("mermaidSource", () => {
     });
   });
 
+  it("refuses math and participant data, which load images before any SVG exists to sanitize", () => {
+    expect(
+      mermaidSource(
+        'sequenceDiagram\n  participant A as <img src="http://127.0.0.1:9/m.png"> $$x$$',
+      ),
+    ).toEqual({ error: "Mermaid diagrams may not carry $$ math, which can load images." });
+    expect(
+      mermaidSource(
+        'sequenceDiagram\n  participant A\n  properties A: {"icon":"http://127.0.0.1:9/i.svg"}',
+      ),
+    ).toEqual({
+      error:
+        'Mermaid diagrams may not carry participant links or properties, which can load images: "properties".',
+    });
+  });
+
   it("keeps ordinary comments and source", () => {
     expect(mermaidSource(`${diagram}\n%% a comment`)).toEqual({
       source: `${diagram}\n%% a comment`,

@@ -182,4 +182,32 @@ describe("inspectMarkdown", () => {
       inspectMarkdown(fence("flowchart LR\n  styles --> rect\n  rect --> boxes")).problems,
     ).toEqual([]);
   });
+
+  it("rejects Mermaid math and sequence participant data, which load images while rendering", () => {
+    const fence = (body: string) => `\`\`\`mermaid\n${body}\n\`\`\``;
+    for (const body of [
+      'sequenceDiagram\n  participant A as <img src="http://127.0.0.1:9/math.png"> $$x$$',
+      "flowchart LR\n  A[$$x^2$$] --> B",
+    ])
+      expect(inspectMarkdown(fence(body)).problems, body).toEqual([
+        "line 1: Mermaid diagrams may not carry $$ math, which can load images",
+      ]);
+    for (const [body, keyword] of [
+      [
+        'sequenceDiagram\n  participant A\n  properties A: {"icon":"http://127.0.0.1:9/i.svg"}',
+        "properties",
+      ],
+      ["sequenceDiagram\n  participant A\n  details A: properties", "details"],
+      ['sequenceDiagram\n  participant A\n  links A: {"Repo": "https://example.com"}', "links"],
+      ["sequenceDiagram\n  participant A; LINK A: Repo @ https://example.com", "LINK"],
+    ])
+      expect(inspectMarkdown(fence(body!)).problems, body).toEqual([
+        `line 1: Mermaid diagrams may not carry participant links or properties, which can load images: ${JSON.stringify(keyword)}`,
+      ]);
+    // Participants named like the statements, and the words outside a sequence diagram.
+    expect(
+      inspectMarkdown(fence("sequenceDiagram\n  linked->>propertiesX: one $ two")).problems,
+    ).toEqual([]);
+    expect(inspectMarkdown(fence("flowchart LR\n  details --> links")).problems).toEqual([]);
+  });
 });

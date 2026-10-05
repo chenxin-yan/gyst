@@ -5,8 +5,8 @@ import { type ChildProcess, execFileSync, spawn, spawnSync } from "node:child_pr
 import { randomBytes } from "node:crypto";
 import { accessSync, constants } from "node:fs";
 import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
-import { request as httpRequest } from "node:http";
-import { createServer } from "node:net";
+import { createServer as createHttpServer, request as httpRequest } from "node:http";
+import { type AddressInfo, createServer } from "node:net";
 import { homedir, userInfo } from "node:os";
 import { delimiter, join } from "node:path";
 import {
@@ -484,6 +484,13 @@ const panelTop = (page: Page) =>
       return at?.scrollTop;
     });
 const focusedText = (page: Page) => page.evaluate(() => document.activeElement?.textContent);
+/** Chromium's console error for an image the viewer's Content-Security-Policy refuses. */
+const blockedImage = (url: string) =>
+  expect.stringMatching(
+    new RegExp(
+      `^console .*'${RegExp.escape(url)}'.* Content Security Policy directive: "img-src data:"`,
+    ),
+  );
 
 const walkthroughRows = (page: Page) =>
   page
@@ -3206,6 +3213,73 @@ describe("installed gyst in a sandboxed browser", () => {
     await card.getByText("Before.", { exact: true }).waitFor();
     await card.getByText("After.", { exact: true }).waitFor();
     await settled(page);
+  }, 30_000);
+
+  it("makes no request for a diagram's images while rendering: the CLI and the renderer refuse Mermaid participant data and math, and the viewer's policy blocks any other fetch", async () => {
+    // Any host an author names; this one records what reaches it.
+    const requested: string[] = [];
+    const host = createHttpServer((request, response) => {
+      requested.push(request.url ?? "");
+      response.end();
+    });
+    await new Promise<void>((resolve) => host.listen(0, "127.0.0.1", resolve));
+    onTestFinished(() => new Promise<void>((resolve) => host.close(() => resolve())));
+    const probe = `http://127.0.0.1:${(host.address() as AddressInfo).port}`;
+    const fetching: Array<[string, string]> = [
+      [
+        `sequenceDiagram\n  participant A\n  properties A: {"icon":"${probe}/icon.svg"}`,
+        'Mermaid diagrams may not carry participant links or properties, which can load images: "properties"',
+      ],
+      [
+        `sequenceDiagram\n  participant A as <img src="${probe}/math.png"> $$x$$`,
+        "Mermaid diagrams may not carry $$ math, which can load images",
+      ],
+    ];
+    const fence = (diagram: string) => `\`\`\`mermaid\n${diagram}\n\`\`\``;
+    const walk = await openWalk();
+    for (const [index, [diagram, problem]] of fetching.entries())
+      expect(
+        failed(
+          await walk.attempt(0, `fetching-${index}`, [
+            { type: "walkthrough.update", overview: fence(diagram) },
+          ]),
+        ),
+      ).toMatchObject({
+        code: "validation_failed",
+        detail: [{ opIndex: 0, message: expect.stringContaining(problem) }],
+      });
+    await walk.publish(0, "fetching", [{ type: "walkthrough.update", overview: "Diagrams." }]);
+
+    // Guidance that reaches the reader anyway still never reaches Mermaid.
+    const slipped = `${probe}/slipped.png`;
+    const page = await newPage(context, {
+      problems: [blockedImage(slipped), "requestfailed /slipped.png"],
+    });
+    await page.setViewportSize({ width: 1280, height: 1200 });
+    await page.route(isOperationUrl, async (route) => {
+      if (route.request().postDataJSON()?.command !== "status") return route.fallback();
+      const response = await route.fetch();
+      const reply = await response.json();
+      reply.value.overview.markdown = fetching.map(([diagram]) => fence(diagram)).join("\n\n");
+      await route.fulfill({ response, json: reply });
+    });
+    await page.goto(`${one.origin}/session/${walk.id}`);
+    const card = page.getByRole("main").getByRole("region", { name: "Walkthrough overview" });
+    for (const [, problem] of fetching)
+      await card.getByText(`Diagram failed: ${problem}.`, { exact: true }).waitFor();
+    await settled(page);
+    expect(await page.locator("svg[id^='gyst-mermaid'], [id^='dgyst-mermaid']").count()).toBe(0);
+
+    // Whatever a renderer might still let through, the viewer's policy refuses to fetch.
+    const refused = page.waitForEvent("console", (message) => message.text().includes(slipped));
+    await page.evaluate((src) => {
+      const image = document.createElement("img");
+      image.src = src;
+      document.body.append(image);
+    }, slipped);
+    await refused;
+    await settled(page);
+    expect(requested).toEqual([]);
   }, 30_000);
 
   it("rolls a mixed invalid batch back, replays a retried batch byte for byte and refuses a stale batch without touching the human's Viewed", async () => {

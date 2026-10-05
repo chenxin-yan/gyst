@@ -185,6 +185,9 @@ describe("browserApp static routes", () => {
       expect(response.header("x-content-type-options")).toBe("nosniff");
       expect(response.header("referrer-policy")).toBe("no-referrer");
       expect(response.header("cache-control")).toBe("no-store");
+      expect(response.header("content-security-policy")).toBe(
+        "default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src data:; connect-src 'self'",
+      );
       expect(response.header("access-control-allow-origin")).toBeUndefined();
       expect(response.header("set-cookie")).toBeUndefined();
     }
