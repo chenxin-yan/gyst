@@ -147,6 +147,11 @@ describe("installed gyst CLI", () => {
     expect(failed(await gyst(root, ["main...feature", "extra"]))).toMatchObject({
       code: "bad_args",
     });
+    expect(failed(await gyst(root, ["https://example.com/acme/widgets/pull/2"]))).toEqual({
+      code: "bad_args",
+      message: "expected a GitHub PR URL such as https://github.com/owner/name/pull/123",
+      detail: "https://example.com/acme/widgets/pull/2",
+    });
     expect(failed(await gyst(root, ["session", "status", "--no-such-flag"]))).toEqual({
       code: "bad_args",
       message: expect.stringContaining("no-such-flag"),

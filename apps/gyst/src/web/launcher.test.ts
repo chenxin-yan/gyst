@@ -9,7 +9,7 @@ import { connect } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DaemonClient } from "../daemon/client.ts";
-import { manifestOf, publishingContent } from "../daemon/capture-doubles.ts";
+import { manifestOf, noGitHub, publishingContent } from "../daemon/capture-doubles.ts";
 import { Git } from "../daemon/git.ts";
 import { Paths } from "../daemon/paths.ts";
 import { DaemonServer } from "../daemon/server.ts";
@@ -51,6 +51,7 @@ const paths = Layer.sync(Paths, () => ({
 const git = Layer.succeed(Git, {
   repoRoot: (cwd) => Effect.succeed(cwd),
   capture: (_root, scope) => Effect.succeed(manifestOf(patch, scope)),
+  capturePullRequest: () => Effect.die("no PR captures in this test"),
   pullRequestRange: () => Effect.die("no PR ranges in this test"),
 });
 const receipts: Array<{ requestId: string; sessionId: string }> = [];
@@ -71,7 +72,7 @@ const crypto = Layer.succeed(
 /** One daemon generation: each build has its own instance id and loads the saved sessions anew. */
 const daemonLayer = DaemonServer.layer.pipe(
   Layer.provideMerge(
-    Sessions.layer.pipe(Layer.provide(Layer.mergeAll(git, store, crypto, publishingContent()))),
+    Sessions.layer.pipe(Layer.provide(Layer.mergeAll(git, noGitHub, store, crypto, publishingContent()))),
   ),
   Layer.provide(paths),
   Layer.provide(NodeServices.layer),

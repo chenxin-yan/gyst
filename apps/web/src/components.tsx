@@ -176,6 +176,10 @@ export const repoName = (repoRoot: string) => repoRoot.split("/").findLast(Boole
 export function ScopeLabel(props: { scope: Scope; small?: boolean }) {
   return props.scope.kind === "range" ? (
     <code {...stylex.props(props.small && ui.smallCode)}>{props.scope.range}</code>
+  ) : props.scope.kind === "pr" ? (
+    <code {...stylex.props(props.small && ui.smallCode)}>
+      {props.scope.repository}#{props.scope.number}
+    </code>
   ) : (
     <span>uncommitted changes</span>
   );

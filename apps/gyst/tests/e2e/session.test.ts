@@ -189,6 +189,17 @@ describe("gyst session CLI seam", () => {
       message: "choose a Git range or --session, not both",
     });
     expect(await failure(["open", "--stdin"])).toMatchObject({ code: "bad_args" });
+    // A URL is a PR or refused, never read as a Git range.
+    for (const url of [
+      "https://gitlab.com/acme/widgets/pull/2",
+      "http://github.com/acme/widgets/pull/2",
+      "https://github.com/acme/widgets/issues/2",
+    ])
+      expect(await failure(["open", url])).toMatchObject({
+        code: "bad_args",
+        message: "expected a GitHub PR URL such as https://github.com/owner/name/pull/123",
+        detail: url,
+      });
     expect(await failure(["status"])).toEqual({
       code: "bad_args",
       message: 'Missing required flag "--session"',

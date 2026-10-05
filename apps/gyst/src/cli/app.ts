@@ -7,7 +7,13 @@ import packageJson from "../../package.json" with { type: "json" };
 import { browserOpener, serveViewer } from "../web/launcher.ts";
 import { installedWebUiDir } from "../web/server.ts";
 import { daemon } from "./commands/daemon.ts";
-import { daemonClient, session, terminalProgress } from "./commands/session.ts";
+import {
+  daemonClient,
+  scopeArgDescription,
+  scopeOf,
+  session,
+  terminalProgress,
+} from "./commands/session.ts";
 import { coReviewSkill } from "./extensions/co-review-skill.ts";
 import { jsonErrors } from "./extensions/json-errors.ts";
 
@@ -23,12 +29,7 @@ export const app = new Crust("gyst", {
     type: "string",
     description: "View this exact saved session id instead of selecting by scope",
   })
-  .args(
-    defineArg("range", {
-      type: "string",
-      description: "A Git range such as main...feature; omitted, uncommitted changes",
-    }),
-  )
+  .args(defineArg("range", { type: "string", description: scopeArgDescription }))
   .action(
     handler(function* ({ args, flags, rawArgs, stdout }) {
       if (rawArgs.length > 0)
@@ -38,14 +39,7 @@ export const app = new Crust("gyst", {
       yield* serveViewer(
         flags.session !== undefined
           ? { command: "open", session: flags.session }
-          : {
-              command: "open",
-              cwd: process.cwd(),
-              scope:
-                args.range === undefined
-                  ? { kind: "uncommitted" }
-                  : { kind: "range", range: args.range },
-            },
+          : { command: "open", cwd: process.cwd(), scope: yield* scopeOf(args.range) },
         {
           webUiDir: installedWebUiDir,
           opener: browserOpener(process.platform, process.env, process.stdout.isTTY),

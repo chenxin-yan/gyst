@@ -1,7 +1,14 @@
 import { defineArg, defineCommand } from "@crustjs/core";
 import { handler, layer } from "@crustjs/effect";
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import { BadArgs, type CaptureProgress, type Request, RequestSchema } from "@gyst/core";
+import {
+  BadArgs,
+  type CaptureProgress,
+  parsePullRequestUrl,
+  type Request,
+  RequestSchema,
+  type Scope,
+} from "@gyst/core";
 import { Effect, Layer, Schema, Stdio, Stream } from "effect";
 import { DaemonClient } from "../../daemon/client.ts";
 import { Paths } from "../../daemon/paths.ts";
@@ -10,6 +17,25 @@ export const daemonClient = layer(
   "daemonClient",
   DaemonClient.layer.pipe(Layer.provide(Paths.layer), Layer.provideMerge(NodeServices.layer)),
 );
+
+/** The positional's description, shared by the root launch and `session open`. */
+export const scopeArgDescription =
+  "A Git range such as main...feature, or a GitHub PR URL such as https://github.com/owner/name/pull/123; omitted, uncommitted changes";
+
+/** A GitHub PR URL, else a Git range. Any other URL is refused rather than read as a range. */
+export const scopeOf = (target: string | undefined): Effect.Effect<Scope, BadArgs> => {
+  if (target === undefined) return Effect.succeed({ kind: "uncommitted" });
+  const pullRequest = parsePullRequestUrl(target);
+  if (pullRequest) return Effect.succeed(pullRequest);
+  if (/^https?:\/\//iu.test(target))
+    return Effect.fail(
+      new BadArgs({
+        message: "expected a GitHub PR URL such as https://github.com/owner/name/pull/123",
+        detail: target,
+      }),
+    );
+  return Effect.succeed({ kind: "range", range: target });
+};
 
 const sessionFlag = {
   name: "session",
@@ -89,7 +115,7 @@ const open = defineCommand(
   "open",
   {
     description:
-      "Open the session for uncommitted changes or a Git range, creating it only if none is saved; prints its identity without launching a viewer",
+      "Open the session for uncommitted changes, a Git range or a GitHub PR, creating it only if none is saved; prints its identity without launching a viewer",
   },
   (command) =>
     command
@@ -99,12 +125,7 @@ const open = defineCommand(
         type: "string",
         description: "Open this exact saved session id instead of selecting by scope",
       })
-      .args(
-        defineArg("range", {
-          type: "string",
-          description: "A Git range such as main...feature; omitted, uncommitted changes",
-        }),
-      )
+      .args(defineArg("range", { type: "string", description: scopeArgDescription }))
       .action(
         handler(function* ({ args, flags, rawArgs, stdout }) {
           if (rawArgs.length > 0)
@@ -115,14 +136,7 @@ const open = defineCommand(
             return yield* call({ command: "open", session: flags.session }, stdout);
           }
           yield* call(
-            {
-              command: "open",
-              cwd: process.cwd(),
-              scope:
-                args.range === undefined
-                  ? { kind: "uncommitted" }
-                  : { kind: "range", range: args.range },
-            },
+            { command: "open", cwd: process.cwd(), scope: yield* scopeOf(args.range) },
             stdout,
             terminalProgress(process.stderr),
           );
