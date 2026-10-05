@@ -1460,6 +1460,7 @@ describe("Sessions.subscribe", () => {
         session: persisted.id,
         batch: JSON.stringify({
           revision,
+          snapshotId: files.get(persisted.id)!.snapshotId,
           idempotencyKey,
           ops: [{ type: "group.update", id: "g2", title: idempotencyKey }],
         }),

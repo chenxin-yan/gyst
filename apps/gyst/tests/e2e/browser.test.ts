@@ -342,8 +342,13 @@ async function launchFor(id: string) {
 }
 /** A CLI apply of no ops: a change committed elsewhere that only raises the revision. */
 async function applyFromCli(id: string): Promise<number> {
-  const { revision } = await gyst("session", "status", "--session", id);
-  const batch = { revision, idempotencyKey: randomBytes(16).toString("hex"), ops: [] };
+  const { revision, session } = await gyst("session", "status", "--session", id);
+  const batch = {
+    revision,
+    snapshotId: session.snapshotId,
+    idempotencyKey: randomBytes(16).toString("hex"),
+    ops: [],
+  };
   const applied = await run(installed.bin, ["session", "apply", "--session", id], {
     cwd: repo,
     env,
@@ -2327,7 +2332,7 @@ describe("installed gyst in a sandboxed browser", () => {
       groupedHunks: 3,
       totalHunks: 5,
     });
-    await page.waitForLoadState("networkidle");
+    await settled(page);
     await page.reload();
     await coverage.getByText("3 of 5 hunks are in groups; the rest are under Files.").waitFor();
     expect(await walkthroughRows(page)).toEqual([
@@ -2356,7 +2361,7 @@ describe("installed gyst in a sandboxed browser", () => {
       { type: "walkthrough.update", groupOrder: ["edge", "core"] },
     ]);
     expect(second.preparation.state).toBe("complete");
-    await page.waitForLoadState("networkidle");
+    await settled(page);
     await page.reload();
     await side.getByRole("button", { name: /^Handle the edge/ }).waitFor();
     expect(await walkthroughRows(page)).toEqual([
@@ -2510,7 +2515,7 @@ describe("installed gyst in a sandboxed browser", () => {
       { type: "note.update", id: "span", markdown: "Reworded." },
     ]);
     expect(reworded.viewedHunkIds).toEqual([walk.b5]);
-    await page.waitForLoadState("networkidle");
+    await settled(page);
     await page.reload();
     await side
       .getByRole("button", { name: "Parse the config, 1 of 3 hunks viewed", exact: true })
@@ -2524,7 +2529,7 @@ describe("installed gyst in a sandboxed browser", () => {
       { type: "group.update", id: "core", files: ["walk/a.ts", "walk/b.ts"] },
     ]);
     expect(reordered.viewedHunkIds).toEqual([walk.b5]);
-    await page.waitForLoadState("networkidle");
+    await settled(page);
     await page.reload();
     await side.getByRole("button", { name: /^Handle the edge/ }).waitFor();
     expect(await walkthroughRows(page)).toEqual([
@@ -2980,7 +2985,7 @@ describe("installed gyst in a sandboxed browser", () => {
       .waitFor();
     expect(await peek.getByRole("button", { name: "Expand" }).count()).toBe(0);
     expect(await peek.textContent()).toContain("(earlier)");
-    await page.waitForLoadState("networkidle");
+    await settled(page);
     expect(reads.filter((read) => read.file === "src/long.ts")).toEqual([]);
     expect(reads.every((read) => read.snapshotId !== snapshotId)).toBe(true);
   }, 30_000);
@@ -3021,7 +3026,7 @@ describe("installed gyst in a sandboxed browser", () => {
         ["href", "target", "rel"].map((at) => anchor.getAttribute(at)),
       ),
     ).toEqual(["https://example.com/guide", "_blank", "noopener noreferrer nofollow"]);
-    await page.waitForLoadState("networkidle");
+    await settled(page);
     expect(fetched).toEqual([]);
     const opening = page.waitForEvent("popup");
     await link.click();
@@ -3079,7 +3084,7 @@ describe("installed gyst in a sandboxed browser", () => {
       overview: { markdown: overview },
       groups: [],
     });
-    await page.waitForLoadState("networkidle");
+    await settled(page);
     await page.reload();
     await inert();
     expect(await page.getByText("worth it").count()).toBe(0);
@@ -3158,7 +3163,7 @@ describe("installed gyst in a sandboxed browser", () => {
     await diagram.getByText("parse", { exact: true }).waitFor();
     await diagram.getByText("check", { exact: true }).waitFor();
     expect(await card.getByText("flowchart LR", { exact: false }).count()).toBe(0);
-    await page.waitForLoadState("networkidle");
+    await settled(page);
     // One diagram in the document: none for the group left behind, no copy and no scratch render.
     expect(await page.locator("svg[id^='gyst-mermaid']").count()).toBe(1);
     expect(await page.locator("[id^='dgyst-mermaid']").count()).toBe(0);
@@ -3202,7 +3207,7 @@ describe("installed gyst in a sandboxed browser", () => {
     await failure.getByText("flowchart LR a --> b", { exact: true }).waitFor();
     await card.getByText("Before.", { exact: true }).waitFor();
     await card.getByText("After.", { exact: true }).waitFor();
-    await page.waitForLoadState("networkidle");
+    await settled(page);
   }, 30_000);
 
   it("rolls a mixed invalid batch back, replays a retried batch byte for byte and refuses a stale batch without touching the human's Viewed", async () => {
@@ -3213,7 +3218,7 @@ describe("installed gyst in a sandboxed browser", () => {
     await page.goto(`${one.origin}/session/${walk.id}`);
     const side = page.getByRole("navigation", { name: "gyst" });
     const reload = async () => {
-      await page.waitForLoadState("networkidle");
+      await settled(page);
       await page.reload();
       await headingsAre(page, ["walk/a.ts", "walk/b.ts", "walk/c.ts"]);
     };
@@ -3332,7 +3337,7 @@ describe("installed gyst in a sandboxed browser", () => {
     ]);
     expect(moved.viewedHunkIds).toHaveLength(2);
     expect(moved.viewedHunkIds).toEqual(expect.arrayContaining([walk.a40, walk.c3]));
-    await page.waitForLoadState("networkidle");
+    await settled(page);
     await page.reload();
     await openCore();
     expect(await noteIds()).toEqual(["span", "b-note"]);
