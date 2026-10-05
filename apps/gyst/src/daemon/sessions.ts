@@ -17,11 +17,14 @@ import {
   setViewed,
   type Scope,
   type Session,
+  type SessionVersion,
   type SnapshotManifest,
   snapshotIdOf,
   StaleRevision,
   type SourceCheckPayload,
   type StatusPayload,
+  type SubscribeRequest,
+  type SubscriptionEvent,
   statusOf,
   summaryOf,
   ValidationFailed,
@@ -35,7 +38,9 @@ import {
   Latch,
   Layer,
   type PlatformError,
+  Queue,
   Schema,
+  type Scope as EffectScope,
   Semaphore,
   Stream,
 } from "effect";
@@ -45,6 +50,14 @@ import { type DeleteReceipt, SessionStore } from "./store.ts";
 type SourceCheck = Omit<SourceCheckPayload, "sessionId" | "revision">;
 type Input<C extends Request["command"]> = Extract<Request, { readonly command: C }>;
 type OnProgress = (progress: CaptureProgress) => Effect.Effect<void>;
+/** What a subscriber hears after its `ready` version: one committed change of its session. */
+export type SessionChange = Extract<SubscriptionEvent, { readonly kind: "changed" | "deleted" }>;
+
+const versionOf = (session: Session): SessionVersion => ({
+  sessionId: session.id,
+  snapshotId: session.snapshotId,
+  revision: session.revision,
+});
 
 const sameScope = (a: Scope, b: Scope) =>
   a.kind === "range" ? b.kind === "range" && a.range === b.range : a.kind === b.kind;
@@ -134,6 +147,18 @@ export class Sessions extends Context.Service<
       request: Input<"delete">,
     ): Effect.Effect<DeletePayload, BadArgs | NoSession | ValidationFailed>;
     /**
+     * Registers for one session's committed changes and returns its version at registration, both
+     * under the state lock, so no commit falls between them. Each subscriber keeps only its newest
+     * undelivered change; `deleted` is the last. Closing the scope unregisters.
+     */
+    subscribe(
+      request: SubscribeRequest,
+    ): Effect.Effect<
+      { readonly version: SessionVersion; readonly events: Queue.Dequeue<SessionChange> },
+      NoSession,
+      EffectScope.Scope
+    >;
+    /**
      * Replaces the in-memory sessions with the persisted ones. The daemon calls it once it owns
      * the socket: a contender that loaded earlier would otherwise serve a map a rival has since
      * changed on disk.
@@ -158,6 +183,12 @@ export class Sessions extends Context.Service<
       // Server handlers run concurrently; one permit keeps state changes from interleaving.
       const lock = yield* Semaphore.make(1);
       const idle = yield* Latch.make(false);
+      const subscribers = new Map<string, Set<Queue.Queue<SessionChange>>>();
+      // Called synchronously right after memory changes, so a subscriber never hears of a state
+      // that is not saved, nor misses one that is.
+      const announce = (sessionId: string, change: SessionChange) => {
+        for (const events of subscribers.get(sessionId) ?? []) Queue.offerUnsafe(events, change);
+      };
 
       // The manifest and every blob it names are committed before any session points at it.
       const publish = (manifest: SnapshotManifest) =>
@@ -428,6 +459,7 @@ export class Sessions extends Context.Service<
         if (outcome.session) {
           yield* store.save(outcome.session).pipe(Effect.orDie);
           sessions.set(session.id, outcome.session);
+          announce(session.id, { kind: "changed", ...versionOf(outcome.session) });
         }
         return outcome.status;
       }, Semaphore.withPermit(lock));
@@ -440,6 +472,7 @@ export class Sessions extends Context.Service<
         if (outcome.session) {
           yield* store.save(outcome.session).pipe(Effect.orDie);
           sessions.set(session.id, outcome.session);
+          announce(session.id, { kind: "changed", ...versionOf(outcome.session) });
         }
         return outcome.result;
       }, Semaphore.withPermit(lock));
@@ -464,6 +497,7 @@ export class Sessions extends Context.Service<
             yield* store.save(refreshed).pipe(Effect.orDie);
             sessions.set(session.id, refreshed);
             sourceChecks.delete(session.id);
+            announce(session.id, { kind: "changed", ...versionOf(refreshed) });
             return statusOf(refreshed);
           }),
         );
@@ -496,6 +530,8 @@ export class Sessions extends Context.Service<
                 deleteReceipts.set(requestId, committed);
                 sessions.delete(session.id);
                 sourceChecks.delete(session.id);
+                announce(session.id, { kind: "deleted", sessionId: session.id });
+                subscribers.delete(session.id);
               }),
             ),
           ),
@@ -505,6 +541,28 @@ export class Sessions extends Context.Service<
         if (sessions.size === 0) yield* idle.open;
         return { deleted: true, sessionId: session.id } satisfies DeletePayload;
       }, Semaphore.withPermit(lock));
+
+      const subscribe = Effect.fn("Sessions.subscribe")(function* (request: SubscribeRequest) {
+        return yield* Effect.acquireRelease(
+          underLock(
+            Effect.gen(function* () {
+              const session = yield* selected(request);
+              const events = yield* Queue.sliding<SessionChange>(1);
+              let registered = subscribers.get(session.id);
+              if (!registered) subscribers.set(session.id, (registered = new Set()));
+              registered.add(events);
+              return { version: versionOf(session), events };
+            }),
+          ),
+          ({ version, events }) =>
+            Effect.suspend(() => {
+              const registered = subscribers.get(version.sessionId);
+              registered?.delete(events);
+              if (registered?.size === 0) subscribers.delete(version.sessionId);
+              return Queue.shutdown(events);
+            }),
+        );
+      });
 
       return Sessions.of({
         open,
@@ -518,6 +576,7 @@ export class Sessions extends Context.Service<
         viewed,
         refresh,
         delete: remove,
+        subscribe,
         load,
         idle: idle.await,
         isEmpty: Semaphore.withPermit(

@@ -92,6 +92,12 @@ export {
   ReplySchema,
   type Request,
   RequestSchema,
+  type SessionVersion,
+  SessionVersionSchema,
   type SourceCheckPayload,
   SourceCheckPayloadSchema,
+  type SubscribeRequest,
+  SubscribeRequestSchema,
+  type SubscriptionEvent,
+  SubscriptionEventSchema,
 } from "./wire.ts";
