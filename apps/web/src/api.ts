@@ -12,6 +12,8 @@ import {
   ReplySchema,
   SourceCheckPayloadSchema,
   StatusPayloadSchema,
+  type SubscriptionEvent,
+  SubscriptionEventSchema,
   ViewedPayloadSchema,
 } from "@gyst/core/wire";
 import { Schema } from "effect";
@@ -44,6 +46,15 @@ export const isExpectedFailure = (error: unknown) =>
       (error._tag === "no_session" ||
         error._tag === "daemon_unreachable" ||
         error._tag === "stale_revision");
+
+/**
+ * Whether a failed write may still have been applied: its reply was lost on the way, so only a
+ * resend with the same request id can tell. A refused browser or address never reached gyst.
+ */
+export const isUncertain = (error: unknown) =>
+  error instanceof TransportError
+    ? error.reason !== "unauthorized" && error.reason !== "forbidden"
+    : isDaemonError(error) && error._tag === "daemon_unreachable";
 
 // Whether this page's launch link was refused, which decides what a later 401 means.
 let linkRefused = false;
@@ -115,6 +126,66 @@ export async function operation<Request extends BrowserRequest>(
     })(reply.value);
   } catch (cause) {
     throw new TransportError("unexpected", "gyst sent a reply this viewer can't read.", { cause });
+  }
+}
+
+const decodeEvent = Schema.decodeUnknownSync(Schema.fromJsonString(SubscriptionEventSchema), {
+  onExcessProperty: "error",
+});
+
+/**
+ * The session's committed-state invalidations as the launcher streams them, `ready` first, until
+ * the stream ends or `signal` aborts. Throws a TransportError when it can't be opened or read.
+ */
+export async function* events(
+  session: string,
+  signal: AbortSignal,
+): AsyncGenerator<SubscriptionEvent, void, undefined> {
+  const response = await post(webPaths.events, {
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ session }),
+    signal,
+  });
+  if (response.status !== 200) {
+    await drain(response);
+    throw failureOf(response.status);
+  }
+  if (response.headers.get("content-type")?.split(";")[0]?.trim() !== "text/event-stream") {
+    await drain(response);
+    throw new TransportError("unexpected", "gyst sent a stream this viewer can't read.");
+  }
+  const reader = response.body!.pipeThrough(new TextDecoderStream()).getReader();
+  try {
+    let buffered = "";
+    for (;;) {
+      const { done, value } = await reader.read().catch(() => {
+        throw unavailable();
+      });
+      // An event cut off by the end was never sent whole, so it is dropped.
+      if (done) return;
+      buffered += value;
+      for (let end = buffered.indexOf("\n\n"); end >= 0; end = buffered.indexOf("\n\n")) {
+        const data = buffered
+          .slice(0, end)
+          .split("\n")
+          .filter((line) => line.startsWith("data:"))
+          .map((line) => line.slice(line.startsWith("data: ") ? 6 : 5))
+          .join("\n");
+        buffered = buffered.slice(end + 2);
+        if (data === "") continue;
+        let event: SubscriptionEvent;
+        try {
+          event = decodeEvent(data);
+        } catch (cause) {
+          throw new TransportError("unexpected", "gyst sent an event this viewer can't read.", {
+            cause,
+          });
+        }
+        yield event;
+      }
+    }
+  } finally {
+    await reader.cancel().catch(() => undefined);
   }
 }
 

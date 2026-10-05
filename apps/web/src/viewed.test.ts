@@ -1,9 +1,12 @@
+import { DaemonUnreachable, StaleRevision, ValidationFailed } from "@gyst/core/wire";
 import { describe, expect, it } from "vite-plus/test";
+import { TransportError } from "./api.ts";
 import {
   checkboxOf,
   initialViewed,
   intentFor,
   readOneSnapshot,
+  replayOf,
   sectionViewed,
   type ViewedState,
   viewedReducer,
@@ -174,6 +177,63 @@ describe("Viewed writes", () => {
       ["c1"],
     ]);
     expect(intentFor(reloaded, change, mint)).toMatchObject({ revision: 7, attempts: 1 });
+  });
+});
+
+describe("live progress", () => {
+  it("ignores a status read older than the progress shown, finishing a reread", () => {
+    const applied = viewedReducer(sent(start()), {
+      type: "applied",
+      result: result({ revision: 5, hunkIds: ["a1", "a2"], viewed: true }),
+    });
+    const late = { snapshotId, revision: 4, viewedHunkIds: ["b1"] };
+    expect(viewedReducer(applied, { type: "status", status: late })).toBe(applied);
+    const rereading = viewedReducer(sent(applied), {
+      type: "failed",
+      error: { _tag: "stale_revision" },
+    });
+    const reread = viewedReducer(rereading, { type: "status", status: late });
+    expect([reread.busy, reread.revision, [...reread.viewed]]).toEqual([
+      undefined,
+      5,
+      ["b1", "a1", "a2"],
+    ]);
+    // The same revision applies as read.
+    expect(
+      viewedReducer(applied, { type: "status", status: { ...late, revision: 5 } }).viewed,
+    ).toEqual(new Set(["b1"]));
+  });
+
+  it("replays a write whose reply was lost with its request id and payload", () => {
+    const sending = sent(start());
+    for (const error of [
+      new TransportError("unavailable", "lost"),
+      new DaemonUnreachable({ message: "restarted" }),
+    ]) {
+      const failed = viewedReducer(sending, { type: "failed", error });
+      const replay = replayOf(failed)!;
+      expect(replay).toEqual({ ...sending.intent!, attempts: 2, failure: undefined });
+      // Its answer may be the receipt of the first send, so status is read again.
+      const answered = viewedReducer(viewedReducer(failed, { type: "send", intent: replay }), {
+        type: "applied",
+        result: result({ revision: 4, hunkIds: ["a1", "a2"], viewed: true }),
+      });
+      expect(answered.busy).toEqual({ kind: "rereading", file: "a.ts" });
+      expect(answered.revision).toBe(3);
+    }
+  });
+
+  it("replays nothing while busy or for a write that failed for certain", () => {
+    const sending = sent(start());
+    expect(replayOf(start())).toBeUndefined();
+    expect(replayOf(sending)).toBeUndefined();
+    for (const error of [
+      new TransportError("unauthorized", "m"),
+      new TransportError("forbidden", "m"),
+      new StaleRevision({ message: "m" }),
+      new ValidationFailed({ message: "m" }),
+    ])
+      expect(replayOf(viewedReducer(sending, { type: "failed", error }))).toBeUndefined();
   });
 });
 

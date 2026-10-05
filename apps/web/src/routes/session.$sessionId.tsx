@@ -42,7 +42,7 @@ import {
   useState,
 } from "react";
 import { flushSync } from "react-dom";
-import { isExpectedFailure, newRequestId, operation } from "../api.ts";
+import { events, isExpectedFailure, newRequestId, operation } from "../api.ts";
 import { CommandMenu, KeyHelp } from "../commands.tsx";
 import {
   AllSessionsLink,
@@ -73,6 +73,14 @@ import {
 import { contentLoader, hydrationConcurrency, hydrationWindow, nearbyItems } from "../hydration.ts";
 import { type Command, type CommandId, commandsFor, type InputMode, typed } from "../keymap.ts";
 import {
+  behind,
+  initialLive,
+  type LiveEvent,
+  liveReducer,
+  type LiveState,
+  retryDelay,
+} from "../live.ts";
+import {
   capturedFiles,
   changedFiles,
   PagingStopped,
@@ -95,9 +103,11 @@ import {
   initialViewed,
   intentFor,
   readOneSnapshot,
+  replayOf,
   sectionViewed,
   type StatusRead,
   type ViewedEvent,
+  type ViewedIntent,
   viewedReducer,
   type ViewedState,
 } from "../viewed.ts";
@@ -161,13 +171,85 @@ const statusRead = (status: StatusPayload): StatusRead => ({
   viewedHunkIds: status.viewedHunkIds,
 });
 
+/** The reader's live link: its state, and how a failed read of what it announced reports itself. */
+type LiveSession = { state: LiveState; lost: (generation: number, error: unknown) => void };
+
+/**
+ * The reader's subscription to its session's committed state, for as long as it is mounted. A
+ * lost stream connects again with backoff and resynchronizes from its `ready`, until the session
+ * is deleted or gyst refuses this browser.
+ */
+function useLiveSession(sessionId: string): LiveSession {
+  const [state, setState] = useState(initialLive);
+  const latest = useRef(state);
+  const restart = useRef<LiveSession["lost"]>(() => {});
+  useEffect(() => {
+    let stopped = false;
+    let connection = new AbortController();
+    let wake = () => {};
+    const apply = (event: LiveEvent) => {
+      if (stopped) return latest.current;
+      latest.current = liveReducer(latest.current, event);
+      setState(latest.current);
+      return latest.current;
+    };
+    // A loss the reader noticed first ends the stream it came over, which then connects again.
+    restart.current = (generation, error) => {
+      const before = latest.current;
+      if (apply({ type: "lost", generation, error }) !== before) connection.abort();
+    };
+    void (async () => {
+      for (;;) {
+        const { generation } = apply({ type: "connect" });
+        connection = new AbortController();
+        let error: unknown;
+        try {
+          for await (const event of events(sessionId, connection.signal))
+            apply({ type: "frame", generation, event });
+        } catch (caught) {
+          error = caught;
+        }
+        if (stopped) return;
+        if (!connection.signal.aborted && error !== undefined && !isExpectedFailure(error))
+          console.error(error);
+        const { phase, attempts } = apply({ type: "lost", generation, error });
+        if (phase === "deleted" || phase === "refused") return;
+        await new Promise<void>((resolve) => {
+          const timer = setTimeout(resolve, retryDelay(attempts));
+          wake = () => {
+            clearTimeout(timer);
+            resolve();
+          };
+        });
+        if (stopped) return;
+      }
+    })();
+    return () => {
+      stopped = true;
+      connection.abort();
+      wake();
+    };
+  }, [sessionId]);
+  return { state, lost: (generation, error) => restart.current(generation, error) };
+}
+
 /**
  * Viewed progress, shared by every view of the snapshot: the reader's one copy of the Viewed hunk
- * ids and its writes. A write is refused while another is sent or status is read again.
+ * ids and its writes. A write is refused while another is sent or status is read again, and while
+ * gyst can't be reached: nothing is queued. The live link keeps it current: progress committed
+ * elsewhere is read once more (one read at a time), and a write whose reply was lost is resent
+ * with its request id once gyst answers again.
  */
-function useViewedProgress(sessionId: string, snapshotId: string, status: StatusPayload) {
+function useViewedProgress(
+  sessionId: string,
+  snapshotId: string,
+  status: StatusPayload,
+  live: LiveSession,
+) {
   const [state, setState] = useState(() => initialViewed(statusRead(status)));
   const latest = useRef<ViewedState>(state);
+  const linked = useRef(live);
+  linked.current = live;
   const mounted = useMounted();
   const apply = (event: ViewedEvent) => {
     const next = viewedReducer(latest.current, event);
@@ -193,9 +275,7 @@ function useViewedProgress(sessionId: string, snapshotId: string, status: Status
       if (mounted.current) apply({ type: "unread", error });
     }
   };
-  const write = (file: string, hunkIds: readonly string[], viewed: boolean) => {
-    const intent = intentFor(latest.current, { file, hunkIds, viewed }, newRequestId);
-    if (intent === undefined) return false;
+  const send = (intent: ViewedIntent) => {
     apply({ type: "send", intent });
     void (async () => {
       try {
@@ -214,8 +294,49 @@ function useViewedProgress(sessionId: string, snapshotId: string, status: Status
         if (mounted.current) await settle(apply({ type: "failed", error }));
       }
     })();
+  };
+  const write = (file: string, hunkIds: readonly string[], viewed: boolean) => {
+    const { phase } = linked.current.state;
+    if (phase === "recovering" || phase === "deleted" || phase === "refused") return false;
+    const intent = intentFor(latest.current, { file, hunkIds, viewed }, newRequestId);
+    if (intent === undefined) return false;
+    send(intent);
     return true;
   };
+  // At most one automatic resend per announced version, so a reply lost again waits for Retry or
+  // the next announcement rather than looping.
+  const reading = useRef(false);
+  const replayedAt = useRef<LiveState["known"]>(undefined);
+  const sync = () => {
+    const current = latest.current;
+    const { state: now, lost } = linked.current;
+    if (!mounted.current || current.busy || reading.current || now.phase !== "live") return;
+    const replay = replayOf(current);
+    if (replay && replayedAt.current !== now.known) {
+      replayedAt.current = now.known;
+      return send(replay);
+    }
+    if (behind(now, current) !== "read") return;
+    reading.current = true;
+    void operation({ command: "status", session: sessionId })
+      .then(
+        // A write sent meanwhile answers for itself; this read is checked again after it settles.
+        (read) => {
+          if (mounted.current && latest.current.busy === undefined)
+            apply({ type: "status", status: statusRead(read) });
+        },
+        // Not this file's failure: the link recovers, then reads again from its `ready`.
+        (error: unknown) => {
+          if (!isExpectedFailure(error)) console.error(error);
+          if (mounted.current) lost(now.generation, error);
+        },
+      )
+      .finally(() => {
+        reading.current = false;
+        sync();
+      });
+  };
+  useEffect(sync, [live.state, state]);
   return { state, write };
 }
 
@@ -256,7 +377,8 @@ function SessionReader(props: {
   const [opened] = useState(() => new Map<string, Map<number, Opened>>());
   const [, setOpenedVersion] = useState(0);
   const viewer = useRef<Viewer>(null);
-  const progress = useViewedProgress(session.id, snapshotId, props.status);
+  const live = useLiveSession(session.id);
+  const progress = useViewedProgress(session.id, snapshotId, props.status, live);
   const mounted = useMounted();
 
   // A later page answers the cursor it was asked with; one already appended is dropped.
@@ -825,6 +947,10 @@ function SessionReader(props: {
             {viewedCount}/{hunkCount} {hunkCount === 1 ? "hunk" : "hunks"} viewed in {shown.length}{" "}
             {shown.length === 1 ? "file" : "files"}
           </span>
+          <LiveStatus
+            live={live.state}
+            replaced={behind(live.state, progress.state) === "replaced"}
+          />
           <span {...stylex.props(styles.grow)} />
           <button
             type="button"
@@ -953,6 +1079,53 @@ const styles = stylex.create({
     fontSize: "11px",
   },
   keysButton: { color: { default: theme.muted, ":hover": theme.ink } },
+});
+
+/**
+ * Whether the reader follows the session's committed state, and what to do when it can't. Said in
+ * the status line, so a change never shifts the diff being read.
+ */
+function LiveStatus({ live, replaced }: { live: LiveState; replaced: boolean }) {
+  const router = useRouter();
+  if (live.phase === "deleted")
+    return (
+      <span role="alert" {...stylex.props(liveStyles.alert)}>
+        This session was deleted.
+      </span>
+    );
+  if (live.phase === "refused")
+    return (
+      <span role="alert" {...stylex.props(liveStyles.alert)}>
+        {live.failure instanceof Error ? live.failure.message : "gyst refused this browser."}
+      </span>
+    );
+  return (
+    <>
+      <span {...stylex.props(live.phase === "live" && styles.ink)}>
+        {live.phase === "live"
+          ? "Live"
+          : live.phase === "connecting"
+            ? "Connecting…"
+            : "Reconnecting…"}
+      </span>
+      {live.phase === "recovering" && (
+        <span {...stylex.props(liveStyles.alert)}>
+          Can't reach gyst; retrying. Viewed changes are paused.
+        </span>
+      )}
+      {replaced && (
+        <span role="alert" {...stylex.props(liveStyles.alert, liveStyles.reload)}>
+          This session was refreshed.
+          <PillButton onClick={() => void router.invalidate()}>Reload session</PillButton>
+        </span>
+      )}
+    </>
+  );
+}
+
+const liveStyles = stylex.create({
+  alert: { color: theme.del },
+  reload: { display: "flex", alignItems: "center", gap: "6px" },
 });
 
 // ─── continuous diff ─────────────────────────────────────────────────────

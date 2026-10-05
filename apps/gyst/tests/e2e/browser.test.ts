@@ -54,6 +54,7 @@ const longTs = (edited: boolean) =>
     )
     .join("");
 const isOperationUrl = (url: URL) => url.pathname === "/api/operation";
+const isEventsUrl = (url: URL) => url.pathname === "/api/events";
 const operationOf = (request: PageRequest) =>
   request.method() === "POST" && isOperationUrl(new URL(request.url()))
     ? request.postDataJSON()
@@ -138,10 +139,15 @@ const ownDaemon = (pid: number) =>
   commandLine(pid).includes(installed.prefix) &&
   commandLine(pid).endsWith(" daemon run");
 
+/** Each test page's operations on the wire, which `settled` waits out. */
+const operationsInFlight = new WeakMap<Page, Set<PageRequest>>();
+
 /**
  * A page closed after its test, which must see exactly the listed HTTP error responses
  * (`<path> <status>`) and problems: failed requests, page errors and console errors. Chromium's
- * "Failed to load resource" lines only repeat those responses and failures.
+ * "Failed to load resource" lines only repeat those responses and failures. A session page's
+ * event stream fails by design whenever it is left, closed or its launcher stops, so only its
+ * responses count.
  */
 async function newPage(
   from: BrowserContext = context,
@@ -155,7 +161,17 @@ async function newPage(
     if (response.status() >= 400)
       seen.responses.push(`${path(response.url())} ${response.status()}`);
   });
-  page.on("requestfailed", (request) => seen.problems.push(`requestfailed ${path(request.url())}`));
+  page.on("requestfailed", (request) => {
+    if (!isEventsUrl(new URL(request.url())))
+      seen.problems.push(`requestfailed ${path(request.url())}`);
+  });
+  const operations = new Set<PageRequest>();
+  operationsInFlight.set(page, operations);
+  page.on("request", (request) => {
+    if (isOperationUrl(new URL(request.url()))) operations.add(request);
+  });
+  for (const settle of ["requestfinished", "requestfailed"] as const)
+    page.on(settle, (request) => operations.delete(request));
   page.on("pageerror", (error) => seen.problems.push(`pageerror ${error.message}`));
   page.on("console", (message) => {
     if (message.type() === "error" && !message.text().startsWith("Failed to load resource:"))
@@ -168,6 +184,22 @@ async function newPage(
   });
   return page;
 }
+
+/**
+ * Waits until no operation of the page has been on the wire for 500 ms. A session page's event
+ * stream stays open, so the network itself never goes idle.
+ */
+async function settled(page: Page) {
+  const operations = operationsInFlight.get(page)!;
+  let quiet = performance.now();
+  await waitFor(() => {
+    if (operations.size > 0) quiet = performance.now();
+    return performance.now() - quiet >= 500;
+  }, "the page's operations to settle");
+}
+
+/** Leaves the page's session streams unanswered, so it never hears of changes made elsewhere. */
+const holdEvents = (page: Page) => page.route(isEventsUrl, () => {});
 
 /** Sends the page's next delete to the real bridge, then drops its reply like a cut connection. */
 async function loseNextDeleteReply(page: Page) {
@@ -1058,8 +1090,10 @@ describe("installed gyst in a sandboxed browser", () => {
     await says(page, "1/3 hunks viewed in 4 files");
   }, 30_000);
 
-  it("conflicts a stale Viewed write from another page without overwriting, and retries a lost reply with the same request id", async () => {
+  it("conflicts a stale Viewed write from another page without overwriting, and replays a lost reply with the same request id", async () => {
     const [first, second] = [await newPage(), await newPage()];
+    // The second page stays deliberately stale: it never hears of the first page's write.
+    await holdEvents(second);
     for (const page of [first, second]) {
       await page.setViewportSize({ width: 1280, height: 800 });
       await page.goto(`${one.origin}${one.path}`);
@@ -1097,26 +1131,27 @@ describe("installed gyst in a sandboxed browser", () => {
       await route.abort();
     });
     await third.goto(`${one.origin}${one.path}`);
-    // The lost reply leaves the box as the daemon last said, with the failure beside it.
-    await viewedBox(third, "src/long.ts").click();
-    const failure = third
-      .getByRole("main")
-      .getByRole("alert")
-      .filter({ hasText: "Couldn't save Viewed" });
-    await failure.waitFor();
-    // The daemon applied it; only the reply was lost.
-    expect((await gyst("session", "status", "--session", one.id)).viewedHunkIds).toHaveLength(2);
+    await viewedBox(third, "src/long.ts").waitFor();
+    await settled(third);
     commands.length = 0;
-    await failure.getByRole("button", { name: "Retry" }).click();
+    // The daemon applies it and only the reply is lost. The page's stream announces the change,
+    // so the page resends the same request, which its receipt answers, without a click.
+    await viewedBox(third, "src/long.ts").click();
     await says(third, "2/3 hunks viewed in 4 files");
+    // A replayed answer may replay history, so status is read again before any new write.
+    await waitFor(
+      async () => commands.join() === "viewed,viewed,status",
+      "the replay and the status read after it",
+    );
     expect(writes).toHaveLength(2);
     expect(writes[1]).toEqual(writes[0]);
-    // A retried answer may replay history, so status is read again before any new write.
-    await waitFor(async () => commands.join() === "viewed,status", "status read after the retry");
     expect(await viewedBox(third, "src/long.ts").isChecked()).toBe(false);
+    expect((await gyst("session", "status", "--session", one.id)).viewedHunkIds).toHaveLength(2);
 
     // A reread that fails blocks every write until a reload of the same snapshot reads progress.
     const fourth = await newPage(context, { responses: ["/api/operation 503"] });
+    // Stale like the second page, so its write conflicts and its reread is the one refused.
+    await holdEvents(fourth);
     await fourth.setViewportSize({ width: 1280, height: 800 });
     const blocked = viewedOf(fourth);
     await fourth.goto(`${one.origin}${one.path}`);
@@ -1463,11 +1498,13 @@ describe("installed gyst in a sandboxed browser", () => {
     const refreshed = await snapshotOf();
     expect(refreshed).not.toBe(captured);
     release();
-    await page.getByRole("alert").getByText("is not the current snapshot").waitFor();
-    expect(await page.getByRole("button", { name: "Retry loading files" }).count()).toBe(0);
-    await page.getByRole("button", { name: "Reload session" }).click();
-    // The last unchanged file arrives with the later page; the changed one was listed from the start.
     const tree = page.getByRole("navigation", { name: "gyst" });
+    await tree.getByRole("alert").getByText("is not the current snapshot").waitFor();
+    // The session's stream announced the refresh too.
+    await statusLine(page).getByRole("alert").getByText("This session was refreshed.").waitFor();
+    expect(await page.getByRole("button", { name: "Retry loading files" }).count()).toBe(0);
+    await tree.getByRole("button", { name: "Reload session" }).click();
+    // The last unchanged file arrives with the later page; the changed one was listed from the start.
     await tree.getByRole("button", { name: "Expand bulk" }).click();
     await tree.getByRole("button", { name: "bulk/399.txt", exact: true }).waitFor();
     await tree.getByRole("button", { name: "paged.ts (added)" }).waitFor();
@@ -1569,7 +1606,7 @@ describe("installed gyst in a sandboxed browser", () => {
       .getByRole("button", { name: "paged.ts (added)" })
       .waitFor();
     release.resolve();
-    await page.waitForLoadState("networkidle");
+    await settled(page);
     await new Promise((resolve) => setTimeout(resolve, 300));
     expect(await page.getByRole("alert").count()).toBe(0);
     expect(await page.getByRole("main").getByRole("status").count()).toBe(0);
@@ -2036,7 +2073,7 @@ describe("installed gyst in a sandboxed browser", () => {
     expect(sshd.log()).toContain("Accepted publickey");
     expect(client.log()).toContain("is known and matches the ED25519 host key");
     // Eager captured-file reads settle first, so stopping the launcher doesn't fail one mid-flight.
-    await page.waitForLoadState("networkidle");
+    await settled(page);
     expect(await stop(four.proc, "SIGINT")).toBe(130);
   }, 30_000);
 });
