@@ -15,7 +15,12 @@ const moves = ["ArrowDown", "ArrowUp", "Home", "End"];
  * opens it from this session's stack. The review keys ignore keydowns while a dialog is open, so
  * ↑/↓/Home/End here move between the rows and Escape closes it, giving focus back to the trigger.
  */
-export function StackSwitcher(props: { sessionId: string; pullRequest: PullRequestStatus }) {
+export function StackSwitcher(props: {
+  sessionId: string;
+  pullRequest: PullRequestStatus;
+  /** The selected session's settled Viewed hunk count, newer than `pullRequest` after its writes. */
+  viewedCount: number;
+}) {
   const [open, setOpen] = useState(false);
   const trigger = useRef<HTMLButtonElement>(null);
   const dialog = useRef<HTMLDialogElement>(null);
@@ -75,6 +80,7 @@ export function StackSwitcher(props: { sessionId: string; pullRequest: PullReque
           dialog={dialog}
           sessionId={props.sessionId}
           pullRequest={props.pullRequest}
+          viewedCount={props.viewedCount}
           onClose={() => setOpen(false)}
         />
       )}
@@ -87,6 +93,7 @@ function StackDialog(props: {
   dialog: RefObject<HTMLDialogElement | null>;
   sessionId: string;
   pullRequest: PullRequestStatus;
+  viewedCount: number;
   onClose: () => void;
 }) {
   const { dialog, sessionId, pullRequest } = props;
@@ -96,7 +103,7 @@ function StackDialog(props: {
   const [opening, setOpening] = useState<number>();
   const [rechecking, setRechecking] = useState(false);
   const [failure, setFailure] = useState<unknown>();
-  const rows = stackRows(pullRequest);
+  const rows = stackRows(pullRequest, props.viewedCount);
 
   useEffect(() => {
     const node = dialog.current!;

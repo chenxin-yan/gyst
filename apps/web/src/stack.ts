@@ -18,9 +18,10 @@ export type StackRow = {
 /**
  * The switcher's rows in layer order, the selected PR marked current. A PR without a known stack
  * (standalone or unknown membership) lists only itself. The selected PR's own details come from its
- * latest read, which a recheck may have refreshed even when stack discovery failed.
+ * latest read, which a recheck may have refreshed even when stack discovery failed, and its Viewed
+ * count from the reader's settled progress, which its own writes keep newer than that read.
  */
-export const stackRows = (status: PullRequestStatus): StackRow[] => {
+export const stackRows = (status: PullRequestStatus, selectedViewed: number): StackRow[] => {
   const saved = new Map(status.sessions.map((entry) => [entry.number, entry]));
   const row = (position: number | undefined, pullRequest: PullRequest): StackRow => {
     const current = pullRequest.number === status.selected;
@@ -32,7 +33,11 @@ export const stackRows = (status: PullRequestStatus): StackRow[] => {
       title,
       state,
       current,
-      session: entry && { id: entry.sessionId, viewed: entry.viewedCount, total: entry.hunkCount },
+      session: entry && {
+        id: entry.sessionId,
+        viewed: current ? selectedViewed : entry.viewedCount,
+        total: entry.hunkCount,
+      },
     };
   };
   return status.stack?.membership === "stacked"

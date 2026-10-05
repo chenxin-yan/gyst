@@ -4403,6 +4403,14 @@ describe("installed gyst in a sandboxed browser", () => {
     await trigger.focus();
     await page.keyboard.press("Enter");
     await dialog.waitFor();
+    // B's own row counts the Viewed write just made, before any status read again.
+    expect((await stackRowsOf(page))[1]).toEqual([
+      "page",
+      "2",
+      "#2 Add layer B",
+      "open",
+      "Viewed 1/2 hunks",
+    ]);
     await page.keyboard.press("ArrowDown");
     expect(await hasFocus(dialog.getByRole("button", { name: "Open #3" }))).toBe(true);
     await page.keyboard.press("Enter");

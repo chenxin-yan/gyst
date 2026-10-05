@@ -1320,7 +1320,11 @@ function SessionReader(props: {
         <>
           <Crumb session={session} />
           {props.status.pullRequest && (
-            <StackSwitcher sessionId={session.id} pullRequest={props.status.pullRequest} />
+            <StackSwitcher
+              sessionId={session.id}
+              pullRequest={props.status.pullRequest}
+              viewedCount={progress.state.viewed.size}
+            />
           )}
           <span {...stylex.props(styles.grow)} />
           <PillButton onClick={() => setDialog("menu")}>

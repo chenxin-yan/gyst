@@ -41,7 +41,7 @@ const stacked = (fields: Partial<PullRequestStatus> = {}): PullRequestStatus => 
 
 describe("stackRows", () => {
   it("lists the layers in position order with their state and marks only the selected PR current", () => {
-    const rows = stackRows(stacked());
+    const rows = stackRows(stacked(), 1);
     expect(
       rows.map((row) => [row.position, row.number, row.title, row.state, row.current]),
     ).toEqual([
@@ -52,14 +52,23 @@ describe("stackRows", () => {
   });
 
   it("gives an unopened layer no session, so it never reads as zero or complete Viewed", () => {
-    const [unopened] = stackRows(stacked());
+    const [unopened] = stackRows(stacked(), 1);
     expect(unopened!.session).toBeUndefined();
   });
 
   it("counts Viewed hunks of the opened layers' own sessions", () => {
-    const [, b, c] = stackRows(stacked());
+    const [, b, c] = stackRows(stacked(), 1);
     expect(b!.session).toEqual({ id: "b", viewed: 1, total: 4 });
     expect(c!.session).toEqual({ id: "c", viewed: 2, total: 2 });
+  });
+
+  it("counts the selected layer's Viewed from the reader's settled progress, newer than status", () => {
+    const [a, b, c] = stackRows(stacked(), 3);
+    expect([a!.session, b!.session, c!.session]).toEqual([
+      undefined,
+      { id: "b", viewed: 3, total: 4 },
+      { id: "c", viewed: 2, total: 2 },
+    ]);
   });
 
   it("shows the selected PR's latest read, which a recheck may refresh while discovery fails", () => {
@@ -67,7 +76,7 @@ describe("stackRows", () => {
       pullRequest: pr(2, { title: "Renamed", state: "merged" }),
       unavailable: { at: minutesAgo(0), reason: "github_failed" },
     });
-    expect(stackRows(status)[1]).toMatchObject({ title: "Renamed", state: "merged" });
+    expect(stackRows(status, 1)[1]).toMatchObject({ title: "Renamed", state: "merged" });
   });
 
   it("lists only the selected PR, without a position, when it stands alone or is unknown", () => {
@@ -82,7 +91,7 @@ describe("stackRows", () => {
       sessions,
     });
     for (const status of [standalone, unknown])
-      expect(stackRows(status)).toEqual([
+      expect(stackRows(status, 0)).toEqual([
         {
           position: undefined,
           number: 2,
