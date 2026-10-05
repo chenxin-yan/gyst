@@ -70,6 +70,14 @@ export {
   parseReferenceHref,
 } from "./guidance.ts";
 export {
+  type AddonDiscovery,
+  AddonDiscoverySchema,
+  type AddonState,
+  AddonStateSchema,
+  navigationAddon,
+  navigationInstallCommand,
+} from "./navigation.ts";
+export {
   type Hunk,
   HunkSchema,
   type Scope,

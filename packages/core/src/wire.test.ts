@@ -204,6 +204,10 @@ describe("daemon wire envelopes", () => {
       "PullRequestContextSchema",
       "PullRequestStatusSchema",
       "StackPayloadSchema",
+      "AddonDiscoverySchema",
+      "AddonStateSchema",
+      "navigationAddon",
+      "navigationInstallCommand",
     ] as const;
     const wireExports: Record<string, unknown> = { ...publicWire };
     const rootExports: Record<string, unknown> = { ...publicRoot };
@@ -274,6 +278,7 @@ describe("daemon wire envelopes", () => {
       "src/github.ts",
       "src/guidance.ts",
       "src/metadata.ts",
+      "src/navigation.ts",
       "src/session.ts",
       "src/wire.ts",
     ]);

@@ -185,6 +185,12 @@ importers:
         specifier: 4.0.4
         version: 4.0.4
 
+  packages/navigation-typescript:
+    dependencies:
+      typescript:
+        specifier: 7.0.2
+        version: 7.0.2
+
 packages:
 
   '@antfu/install-pkg@2.1.0':

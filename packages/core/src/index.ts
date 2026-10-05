@@ -93,6 +93,17 @@ export {
   parseReferenceHref,
 } from "./guidance.ts";
 export { setViewed, type ViewedOutcome, type ViewedRequest } from "./human-action.ts";
+export {
+  type AddonDiscovery,
+  AddonDiscoverySchema,
+  type AddonHandshake,
+  AddonHandshakeSchema,
+  type AddonState,
+  AddonStateSchema,
+  addonStateOf,
+  navigationAddon,
+  navigationInstallCommand,
+} from "./navigation.ts";
 export { refreshSession } from "./refresh.ts";
 export {
   type Group,
