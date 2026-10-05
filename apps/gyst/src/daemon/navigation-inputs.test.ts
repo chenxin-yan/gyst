@@ -185,6 +185,37 @@ describe("materializeSide", () => {
     ]);
   });
 
+  it("names each project config extends target the side did not capture", async () => {
+    const manifest = manifestOf([
+      {
+        path: "app/tsconfig.json",
+        old: await text('{ "extends": "./tsconfig.base.json" }'),
+        new: await text(
+          '{\n  // Shared settings.\n  "extends": ["../config/base", "@tsconfig/strictest", "./tsconfig.base"],\n}\n',
+        ),
+      },
+      { path: "app/tsconfig.base.json", old: absent, new: await text("{}") },
+      { path: "app/jsconfig.web.json", old: absent, new: await text('{ "extends": "/etc/x" }') },
+      // Not a project config: its `extends` is something else's.
+      { path: ".eslintrc.json", old: absent, new: await text('{ "extends": "airbnb" }') },
+      { path: "config/base.json", old: unavailable("symlink"), new: absent },
+    ]);
+    const unresolved = (file: string, target: string) => ({
+      kind: "unresolved-import",
+      file,
+      message: `cannot resolve extends ${JSON.stringify(target)}`,
+    });
+    expect((await materialize(manifest, "old", (await freshRoot()).root)).gaps).toEqual([
+      { kind: "uncaptured", file: "config/base.json", reason: "symlink" },
+      unresolved("app/tsconfig.json", "./tsconfig.base.json"),
+    ]);
+    expect((await materialize(manifest, "new", (await freshRoot()).root)).gaps).toEqual([
+      unresolved("app/jsconfig.web.json", "/etc/x"),
+      unresolved("app/tsconfig.json", "../config/base"),
+      unresolved("app/tsconfig.json", "@tsconfig/strictest"),
+    ]);
+  });
+
   it("copies rather than links durable blobs, and writes nothing outside root", async () => {
     const manifest = await snapshot();
     const { outer, root } = await freshRoot();

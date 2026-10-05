@@ -5,6 +5,7 @@ import {
   type SnapshotManifest,
 } from "@gyst/core";
 import { Effect, FileSystem, Path, Schema, Stream } from "effect";
+import { posix } from "node:path";
 import { CapturedContent } from "./content.ts";
 import { lspLanguageId } from "./lsp.ts";
 
@@ -14,6 +15,13 @@ const copyConcurrency = 16;
 const navigationInput = (path: string) =>
   lspLanguageId(path) !== undefined || path.endsWith(".json");
 const basename = (path: string) => path.slice(path.lastIndexOf("/") + 1);
+const projectConfig = (path: string) => /^[jt]sconfig(?:\..+)?\.json$/.test(basename(path));
+
+/** The `extends` targets of a project config, which is JSON with comments, as written. */
+const extendsOf = (text: string) =>
+  [...text.matchAll(/"extends"\s*:\s*("(?:[^"\\]|\\.)*"|\[[^\]]*\])/g)].flatMap(({ 1: value }) =>
+    [...value!.matchAll(/"((?:[^"\\]|\\.)*)"/g)].map(({ 1: target }) => target!),
+  );
 
 const DependencyFields = Schema.Record(Schema.String, Schema.Unknown);
 const decodePackageJson = Schema.decodeUnknownOption(
@@ -72,7 +80,8 @@ export const materializeSide = Effect.fn("materializeSide")(function* (
     );
     const dependencies =
       basename(file.path) === "package.json" && declaresPackages(yield* fs.readFileString(target));
-    return { bytes, dependencies };
+    const extended = projectConfig(file.path) ? extendsOf(yield* fs.readFileString(target)) : [];
+    return { bytes, dependencies, extended };
   });
 
   const results = yield* Effect.forEach(
@@ -105,6 +114,27 @@ export const materializeSide = Effect.fn("materializeSide")(function* (
       (basename(file.path) === "tsconfig.json" || basename(file.path) === "jsconfig.json"),
   );
   if (!configured) gaps.push({ kind: "no-project-config" });
+  // The engine reports an unreadable `extends` only for the config, never for a queried file. A
+  // relative target resolves within the capture, `.json` added when missing; a package's never.
+  const captured = new Set(
+    manifest.files.flatMap((file) => (file[side].kind === "text" ? [file.path] : [])),
+  );
+  for (const [index, file] of manifest.files.entries())
+    for (const target of results[index]?.copied?.extended ?? []) {
+      const relative = /^\.\.?\//.test(target)
+        ? posix.normalize(posix.join(posix.dirname(file.path), target))
+        : undefined;
+      const found =
+        relative !== undefined &&
+        (captured.has(relative) ||
+          (!relative.endsWith(".json") && captured.has(`${relative}.json`)));
+      if (!found)
+        gaps.push({
+          kind: "unresolved-import",
+          file: file.path,
+          message: `cannot resolve extends ${JSON.stringify(target).slice(0, 200)}`,
+        });
+    }
   const written = results.flatMap(({ copied }) => (copied ? [copied] : []));
   return {
     project,

@@ -161,7 +161,7 @@ export const NavigationGapSchema = Schema.Union([
   }),
   /** No `tsconfig.json` or `jsconfig.json` on this side, so the engine infers a project. */
   Schema.Struct({ kind: Schema.Literal("no-project-config") }),
-  /** The engine reported an import or configuration in this file it could not resolve. */
+  /** An import or configuration (`extends`) in this file whose target the capture lacks. */
   Schema.Struct({
     kind: Schema.Literal("unresolved-import"),
     file: LogicalPathSchema,
