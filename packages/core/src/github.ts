@@ -3,7 +3,7 @@ import type { Session } from "./session.ts";
 
 /**
  * `owner/name` on github.com, lowercased: GitHub names are case-insensitive, so one repository has
- * one spelling. Each part is also a valid Git ref component, since it names private refs.
+ * one spelling.
  */
 export const RepositorySchema = Schema.String.check(
   Schema.makeFilter((repository) => {
@@ -14,9 +14,8 @@ export const RepositorySchema = Schema.String.check(
         /^[a-z0-9-]+$/.test(owner) &&
         name !== undefined &&
         /^[a-z0-9_.-]+$/.test(name) &&
-        !name.startsWith(".") &&
-        !name.includes("..") &&
-        !name.endsWith(".lock")) ||
+        name !== "." &&
+        name !== "..") ||
       "repository must be a lowercase GitHub owner/name"
     );
   }),

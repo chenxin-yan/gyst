@@ -379,7 +379,9 @@ export class Git extends Context.Service<
             message: `GitHub reported a base branch for ${url} that is not a valid branch name`,
             detail: { reason: "github_failed", diagnostic: target.baseRefName },
           });
-        const namespace = `refs/gyst/github/${scope.repository}/pull/${scope.number}`;
+        // `%` never appears in a repository name, so escaping every `.` is injective and leaves no
+        // leading dot, `..` or `.lock` that Git would refuse in a ref.
+        const namespace = `refs/gyst/github/${scope.repository.replaceAll(".", "%2e")}/pull/${scope.number}`;
         const objectsMissing = (message: string, diagnostic?: string) =>
           new SourceUnavailable({
             message,

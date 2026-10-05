@@ -55,6 +55,13 @@ describe("parsePullRequestUrl", () => {
       repository: "my-org/repo.name_2",
       number: 3,
     });
+    // Valid GitHub names that are not valid Git ref components still name a repository.
+    for (const name of [".github", "a..b", "x.lock"])
+      expect(parsePullRequestUrl(`https://github.com/acme/${name}/pull/1`), name).toEqual({
+        kind: "pr",
+        repository: `acme/${name}`,
+        number: 1,
+      });
   });
 
   it("rejects every other URL or text", () => {
@@ -73,9 +80,7 @@ describe("parsePullRequestUrl", () => {
       "https://github.com/acme/widgets/pull/99999999999999999999",
       "https://github.com/acme/widgets/pull/",
       "https://github.com/acme/../pull/12",
-      "https://github.com/acme/a..b/pull/12",
-      "https://github.com/acme/.hidden/pull/12",
-      "https://github.com/acme/x.lock/pull/12",
+      "https://github.com/acme/./pull/12",
       "https://github.com/a%2fb/widgets/pull/12",
       "https://github.com/extra/acme/widgets/pull/12",
       "https://github.com/acme/widgets/pull/12\nsecond line",

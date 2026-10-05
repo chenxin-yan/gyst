@@ -1023,6 +1023,27 @@ describe("Git.pullRequestRange", () => {
     }
   });
 
+  it("fetches a repository whose name is not a valid ref component into escaped private refs", async () => {
+    const github = await stacked("pr-dot-repository");
+    const url = "https://github.com/acme/.github.git";
+    git(github.checkout, "remote", "add", "dotgithub", url);
+    git(github.checkout, "config", `url.${github.origin}.insteadOf`, url);
+    const scope = { kind: "pr", repository: "acme/.github", number: 2 } as const;
+    const resolved = await run(
+      Git.use((g) =>
+        g.pullRequestRange(github.checkout, scope, {
+          baseRefName: "layer-a",
+          headRefOid: github.b1,
+        }),
+      ),
+    );
+    expect(resolved).toEqual({ base: github.a1, head: github.b1, mergeBase: github.a1 });
+    expect(privateRefs(github.checkout)).toEqual([
+      `refs/gyst/github/acme/%2egithub/pull/2/base ${github.a1}`,
+      `refs/gyst/github/acme/%2egithub/pull/2/head ${github.b1}`,
+    ]);
+  });
+
   it("rejects a base branch name Git would not accept before fetching", async () => {
     const github = await stacked("pr-bad-base");
     for (const name of ["-x", "a..b", "x:y", "has space", ""])
