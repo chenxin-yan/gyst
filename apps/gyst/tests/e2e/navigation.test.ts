@@ -94,6 +94,8 @@ const killEnginesAfterTest = (root: string) =>
     for (const pid of engines(root)) if (isAlive(pid)) process.kill(pid, "SIGKILL");
   });
 
+/** Only Linux exposes another process's environment, through `/proc`. */
+const readsEnviron = process.platform === "linux";
 const environ = (pid: number) =>
   Object.fromEntries(
     readFileSync(`/proc/${pid}/environ`, "utf8")
@@ -501,7 +503,7 @@ describe("TS/JS navigation through the installed add-on", () => {
     const viewer = await launchViewer([], { cwd, env: launchEnv(box, fake, navigationBin) });
     const { definition, references } = await queries(viewer);
     const daemon = await daemonPid(box.data);
-    expect(environ(daemon).PATH?.split(delimiter)[0]).toBe(fake);
+    if (readsEnviron) expect(environ(daemon).PATH?.split(delimiter)[0]).toBe(fake);
 
     const found = located(await definition("new", "src/pad.js", { line: 5, character: 23 }));
     expect(found).toMatchObject({
@@ -511,9 +513,11 @@ describe("TS/JS navigation through the installed add-on", () => {
     expect(found.gaps).toContainEqual({ kind: "dependencies", file: "package.json" });
     const [engine, ...others] = engines(navigation.prefix);
     expect(others).toEqual([]);
-    const engineEnv = environ(engine!);
-    expect(engineEnv.PATH).toBeUndefined();
-    expect(engineEnv.HOME?.startsWith(join(box.data, "navigation") + sep)).toBe(true);
+    if (readsEnviron) {
+      const engineEnv = environ(engine!);
+      expect(engineEnv.PATH).toBeUndefined();
+      expect(engineEnv.HOME?.startsWith(join(box.data, "navigation") + sep)).toBe(true);
+    }
     // With acquisition on, 7.0.2 runs npm for such a project within about 4 seconds.
     await sleep(8_000);
     located(await references("new", "src/pad.js", { line: 2, character: 16 }));
