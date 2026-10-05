@@ -2575,6 +2575,14 @@ describe("installed gyst in a sandboxed browser", () => {
     // The resend's receipt asks for a status read before any new write; it and the new
     // connection's read are held.
     const held = await heldStatusReads(page, 2, () => lost);
+    // Once the daemon is stopped, the page's resubscription waits for the CLI's apply, so the new
+    // connection's ready names it rather than announcing it after its read.
+    let restarted = false;
+    const { promise: applied, resolve: commit } = Promise.withResolvers<void>();
+    await page.route(isEventsUrl, async (route) => {
+      if (restarted) await applied;
+      await route.continue().catch(() => {});
+    });
     await go(page, launched.url);
     await says(page, "Live");
     await settled(page);
@@ -2584,10 +2592,12 @@ describe("installed gyst in a sandboxed browser", () => {
       await held.fetched(0, "the status read after the resend");
       expect(writes).toHaveLength(2);
       expect(writes[1]).toEqual(writes[0]);
+      restarted = true;
       const daemon = await killDaemon(data, "SIGTERM");
       // Committed while the page reconnects; the new connection's ready names it.
       const revision = await applyFromCli(id);
       expect(revision).toBe(before + 2);
+      commit();
       await held.fetched(1, "the new connection's status read");
       expect(await daemonPid(data)).not.toBe(daemon);
       await synchronizingWithout(page, writes, "app.ts", "0/3 hunks viewed in 3 files");
@@ -2607,6 +2617,7 @@ describe("installed gyst in a sandboxed browser", () => {
       expect(writes[2].requestId).not.toBe(writes[0].requestId);
       expect((await gyst("session", "status", "--session", id)).revision).toBe(revision + 1);
     } finally {
+      commit();
       held.releaseAll();
     }
   }, 60_000);
