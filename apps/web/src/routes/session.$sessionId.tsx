@@ -42,7 +42,7 @@ import {
   useState,
 } from "react";
 import { flushSync } from "react-dom";
-import { events, isExpectedFailure, newRequestId, operation } from "../api.ts";
+import { events, isExpectedFailure, newRequestId, operation, TransportError } from "../api.ts";
 import { CommandMenu, KeyHelp } from "../commands.tsx";
 import {
   AllSessionsLink,
@@ -172,6 +172,9 @@ const statusRead = (status: StatusPayload): StatusRead => ({
   viewedHunkIds: status.viewedHunkIds,
 });
 
+const replyLost = () =>
+  new TransportError("unavailable", "The connection to gyst was lost before it answered.");
+
 /**
  * The reader's live link: its rendered state, its state as of now (a loss or connection not yet
  * rendered included), and how a failed read of what it announced reports itself; true when that
@@ -281,8 +284,19 @@ function useViewedProgress(
     loaded.current = status;
     if (latest.current.busy === undefined) apply({ type: "status", status: statusRead(status) });
   });
+  // The connection the write on the wire was sent over, and how many writes were sent: a status
+  // read sent before the latest write says nothing of it.
+  const sentOver = useRef(0);
+  const sends = useRef(0);
   const send = (intent: ViewedIntent) => {
+    sentOver.current = linked.current.now().generation;
+    sends.current++;
     apply({ type: "send", intent });
+    // Only the intent still on the wire is settled by its reply: one given up meanwhile was resent
+    // or replaced, and a late answer must not overwrite what came after.
+    const settle = (event: ViewedEvent) => {
+      if (mounted.current && latest.current.intent === intent) apply(event);
+    };
     void (async () => {
       try {
         const result = await operation({
@@ -294,10 +308,10 @@ function useViewedProgress(
           hunkIds: [...intent.hunkIds],
           viewed: intent.viewed,
         });
-        if (mounted.current) apply({ type: "applied", result });
+        settle({ type: "applied", result });
       } catch (error) {
         if (!isExpectedFailure(error)) console.error(error);
-        if (mounted.current) apply({ type: "failed", error });
+        settle({ type: "failed", error });
       }
     })();
   };
@@ -321,15 +335,21 @@ function useViewedProgress(
   const read = (generation: number, required: boolean) => {
     const mine = { generation, required };
     reading.current = mine;
+    const since = sends.current;
     const current = () => mounted.current && linked.current.now().generation === generation;
     let recovering = false;
     void operation({ command: "status", session: sessionId })
       .then(
-        // A write sent meanwhile answers for itself, and a read sent before a write's answer asked
-        // for one says nothing of that answer; either is checked again once this read settles.
+        // A write sent meanwhile answers for itself, even once its reply is lost, and a read sent
+        // before a write's answer asked for one says nothing of that answer; either is checked
+        // again once this read settles.
         (answer) => {
           const { busy } = latest.current;
-          if (current() && (busy === undefined || (required && busy.kind === "rereading")))
+          if (
+            current() &&
+            sends.current === since &&
+            (busy === undefined || (required && busy.kind === "rereading"))
+          )
             apply({ type: "status", status: statusRead(answer) });
         },
         (error: unknown) => {
@@ -349,10 +369,14 @@ function useViewedProgress(
       });
   };
   const sync = () => {
-    const current = latest.current;
+    let current = latest.current;
     const { state: now } = linked.current;
     const { generation, phase } = now;
     if (!mounted.current || reading.current?.generation === generation) return;
+    // A write sent over a connection since lost may never be answered. The new connection gives
+    // up on its reply and resends it with its request id, which tells whether it applied.
+    if (current.busy?.kind === "sending" && phase === "live" && sentOver.current !== generation)
+      current = apply({ type: "failed", error: replyLost() });
     // Required even before the first connection is live; a lost one reads again from its `ready`.
     if (current.busy?.kind === "rereading") {
       if (phase === "connecting" || phase === "live") read(generation, true);
