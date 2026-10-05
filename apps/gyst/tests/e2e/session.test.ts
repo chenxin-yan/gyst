@@ -155,6 +155,17 @@ describe("gyst session CLI seam", () => {
     expect(range.scope).toEqual({ kind: "range", range: "HEAD~1..HEAD" });
     await writeFile(join(nested, "inside.txt"), "working tree is not the fixed range\n");
     expect((await check(range.id)).state).toBe("unchanged");
+    // A stack recheck belongs to PR sessions only and changes nothing here.
+    for (const id of [session.id, range.id]) {
+      const before = await readFile(join(data, `${id}.json`), "utf8");
+      expect(
+        failed(await gyst(box.root, ["session", "check", "--session", id, "--stack"])),
+      ).toMatchObject({
+        code: "bad_args",
+        message: "only a GitHub PR session has a native stack to recheck",
+      });
+      expect(await readFile(join(data, `${id}.json`), "utf8")).toBe(before);
+    }
     for (const id of [session.id, range.id])
       succeeded(await gyst(cwd, ["session", "delete", "--session", id, "--request-id", id]));
   }, 20_000);

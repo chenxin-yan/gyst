@@ -160,9 +160,16 @@ const check = defineCommand(
   (command) =>
     command
       .use(daemonClient)
-      .flags(sessionFlag)
+      .flags(sessionFlag, {
+        name: "stack",
+        type: "boolean",
+        description:
+          "Recheck a PR session's native GitHub stack metadata instead; never refreshes code or review state",
+      })
       .action(
-        handler(({ flags, stdout }) => call({ command: "check", session: flags.session }, stdout)),
+        handler(({ flags, stdout }) =>
+          call({ command: flags.stack ? "stack" : "check", session: flags.session }, stdout),
+        ),
       ),
 );
 const diff = defineCommand("diff", { description: "Read snapshot hunks" }, (command) =>
