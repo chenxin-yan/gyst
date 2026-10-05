@@ -144,8 +144,7 @@ const messageOf = (error: unknown) => (error instanceof Error ? error.message : 
 /**
  * Renders diagrams one at a time, because Mermaid keeps its configuration and scratch DOM global.
  * `load` runs on the first request only; a failed load fails every request waiting on it, and the
- * next request tries again. Outcomes are cached per palette and source. A `slot` is one place a
- * diagram is shown: only its latest request is delivered, and none after `release`.
+ * next request tries again. Outcomes are cached per palette and source.
  */
 export function createDiagramQueue(load: () => Promise<DiagramEngine>) {
   let engine: Promise<DiagramEngine> | undefined;
@@ -153,7 +152,6 @@ export function createDiagramQueue(load: () => Promise<DiagramEngine>) {
   let configured: string | undefined;
   let renders = 0;
   const outcomes = new Map<string, Promise<DiagramOutcome>>();
-  const latest = new WeakMap<object, symbol>();
 
   const loaded = () => {
     if (engine) return engine;
@@ -192,14 +190,8 @@ export function createDiagramQueue(load: () => Promise<DiagramEngine>) {
   };
 
   return {
-    request(
-      slot: object,
-      source: string,
-      colors: DiagramColors,
-      deliver: (outcome: DiagramOutcome) => void,
-    ) {
-      const token = Symbol("diagram request");
-      latest.set(slot, token);
+    /** The diagram drawn in `colors`; it never rejects, a failure is its outcome. */
+    render(source: string, colors: DiagramColors): Promise<DiagramOutcome> {
       const colorsKey = JSON.stringify(colors);
       const key = JSON.stringify([colorsKey, source]);
       let outcome = outcomes.get(key);
@@ -207,12 +199,7 @@ export function createDiagramQueue(load: () => Promise<DiagramEngine>) {
         outcome = enqueue(source, colors, colorsKey, key);
         outcomes.set(key, outcome);
       }
-      void outcome.then((result) => {
-        if (latest.get(slot) === token) deliver(result);
-      });
-    },
-    release(slot: object) {
-      latest.delete(slot);
+      return outcome;
     },
   };
 }

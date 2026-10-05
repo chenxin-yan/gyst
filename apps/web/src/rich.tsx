@@ -259,15 +259,18 @@ function MermaidDiagram(props: { source: string }) {
       setState({ error: stripped.error });
       return;
     }
-    const slot = {};
-    diagrams.request(slot, stripped.source, diagramColors(element), (outcome) => {
+    let current = true;
+    void diagrams.render(stripped.source, diagramColors(element)).then((outcome) => {
+      if (!current) return;
       const fragment = "svg" in outcome ? sanitizedDiagram(outcome.svg) : undefined;
       if (fragment) {
         element.replaceChildren(fragment);
         setState({ rendered: true });
       } else setState({ error: "error" in outcome ? outcome.error : "The diagram is not SVG." });
     });
-    return () => diagrams.release(slot);
+    return () => {
+      current = false;
+    };
   }, [source]);
   return (
     <div {...stylex.props(rich.block)}>

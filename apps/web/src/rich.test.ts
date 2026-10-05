@@ -280,26 +280,16 @@ describe("mermaidConfig", () => {
   });
 });
 
-type Deferred<T> = { promise: Promise<T>; resolve: (value: T) => void; reject: (e: Error) => void };
-const deferred = <T>(): Deferred<T> => {
-  let resolve!: (value: T) => void;
-  let reject!: (e: Error) => void;
-  const promise = new Promise<T>((yes, no) => {
-    resolve = yes;
-    reject = no;
-  });
-  return { promise, resolve, reject };
-};
 const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
 
 /** A fake Mermaid whose renders finish only when the test says so. */
 function fakeEngine() {
-  const calls: { id: string; text: string; done: Deferred<{ svg: string }> }[] = [];
+  const calls: { id: string; text: string; done: PromiseWithResolvers<{ svg: string }> }[] = [];
   const configs: unknown[] = [];
   const engine: DiagramEngine = {
     initialize: (config) => configs.push(config),
     render: (id, text) => {
-      const done = deferred<{ svg: string }>();
+      const done = Promise.withResolvers<{ svg: string }>();
       calls.push({ id, text, done });
       return done.promise;
     },
@@ -314,8 +304,8 @@ describe("createDiagramQueue", () => {
     const queue = createDiagramQueue(load);
     expect(load).not.toHaveBeenCalled();
     const got: DiagramOutcome[] = [];
-    queue.request({}, "graph A", colors, (outcome) => got.push(outcome));
-    queue.request({}, "graph B", colors, (outcome) => got.push(outcome));
+    void queue.render("graph A", colors).then((outcome) => got.push(outcome));
+    void queue.render("graph B", colors).then((outcome) => got.push(outcome));
     await settle();
     expect(load).toHaveBeenCalledTimes(1);
     expect(calls.map(({ text }) => text)).toEqual(["graph A"]);
@@ -329,44 +319,21 @@ describe("createDiagramQueue", () => {
     expect(configs).toEqual([mermaidConfig(colors)]);
   });
 
-  it("delivers only a slot's latest request, and nothing after release", async () => {
-    const { engine, calls } = fakeEngine();
-    const queue = createDiagramQueue(() => Promise.resolve(engine));
-    const slot = {};
-    const got: DiagramOutcome[] = [];
-    queue.request(slot, "graph old", colors, (outcome) => got.push(outcome));
-    queue.request(slot, "graph new", colors, (outcome) => got.push(outcome));
-    await settle();
-    calls[0]!.done.resolve({ svg: "<svg>old</svg>" });
-    await settle();
-    calls[1]!.done.resolve({ svg: "<svg>new</svg>" });
-    await settle();
-    expect(got).toEqual([{ svg: "<svg>new</svg>" }]);
-
-    const gone = {};
-    queue.request(gone, "graph gone", colors, (outcome) => got.push(outcome));
-    queue.release(gone);
-    await settle();
-    calls[2]!.done.resolve({ svg: "<svg>gone</svg>" });
-    await settle();
-    expect(got).toHaveLength(1);
-  });
-
   it("caches outcomes per palette and source", async () => {
     const { engine, calls, configs } = fakeEngine();
     const queue = createDiagramQueue(() => Promise.resolve(engine));
     const got: DiagramOutcome[] = [];
-    queue.request({}, "graph A", colors, (outcome) => got.push(outcome));
+    void queue.render("graph A", colors).then((outcome) => got.push(outcome));
     await settle();
     calls[0]!.done.resolve({ svg: "<svg>A</svg>" });
     await settle();
-    queue.request({}, "graph A", colors, (outcome) => got.push(outcome));
+    void queue.render("graph A", colors).then((outcome) => got.push(outcome));
     await settle();
     expect(calls).toHaveLength(1);
     expect(got).toEqual([{ svg: "<svg>A</svg>" }, { svg: "<svg>A</svg>" }]);
 
     const light = { ...colors, background: "#eff1f5" };
-    queue.request({}, "graph A", light, (outcome) => got.push(outcome));
+    void queue.render("graph A", light).then((outcome) => got.push(outcome));
     await settle();
     expect(calls).toHaveLength(2);
     expect(configs).toEqual([mermaidConfig(colors), mermaidConfig(light)]);
@@ -376,8 +343,8 @@ describe("createDiagramQueue", () => {
     const { engine, calls } = fakeEngine();
     const queue = createDiagramQueue(() => Promise.resolve(engine));
     const got: DiagramOutcome[] = [];
-    queue.request({}, "graph bad", colors, (outcome) => got.push(outcome));
-    queue.request({}, "graph good", colors, (outcome) => got.push(outcome));
+    void queue.render("graph bad", colors).then((outcome) => got.push(outcome));
+    void queue.render("graph good", colors).then((outcome) => got.push(outcome));
     await settle();
     calls[0]!.done.reject(new Error("Parse error on line 1"));
     await settle();
@@ -394,8 +361,8 @@ describe("createDiagramQueue", () => {
       .mockResolvedValue(engine);
     const queue = createDiagramQueue(load);
     const got: DiagramOutcome[] = [];
-    queue.request({}, "graph A", colors, (outcome) => got.push(outcome));
-    queue.request({}, "graph B", colors, (outcome) => got.push(outcome));
+    void queue.render("graph A", colors).then((outcome) => got.push(outcome));
+    void queue.render("graph B", colors).then((outcome) => got.push(outcome));
     await settle();
     expect(got).toEqual([
       { error: "Mermaid could not load: chunk failed" },
@@ -403,7 +370,7 @@ describe("createDiagramQueue", () => {
     ]);
     expect(load).toHaveBeenCalledTimes(1);
 
-    queue.request({}, "graph A", colors, (outcome) => got.push(outcome));
+    void queue.render("graph A", colors).then((outcome) => got.push(outcome));
     await settle();
     expect(load).toHaveBeenCalledTimes(2);
     calls[0]!.done.resolve({ svg: "<svg>A</svg>" });
