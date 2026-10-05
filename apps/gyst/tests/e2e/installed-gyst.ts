@@ -1,5 +1,6 @@
 import { spawn, spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
+import { request as httpRequest, type IncomingHttpHeaders } from "node:http";
 import { mkdir, mkdtemp, readFile, realpath, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { delimiter, dirname, join } from "node:path";
@@ -206,5 +207,97 @@ export async function sandbox() {
       dataDirs.add(dataDir);
       return run(installed.bin, args, { cwd, env: { ...env, GYST_DATA_DIR: dataDir }, stdin });
     },
+  };
+}
+
+/** A POST to a launch's listener on loopback, with exactly the given headers. */
+const post = (port: number, path: string, headers: Record<string, string>, body = "") =>
+  new Promise<{ status: number | undefined; headers: IncomingHttpHeaders; body: string }>(
+    (resolve, reject) => {
+      const request = httpRequest(
+        { host: "127.0.0.1", port, method: "POST", path, headers, setHost: false },
+        (response) => {
+          const chunks: Buffer[] = [];
+          response.on("data", (chunk: Buffer) => chunks.push(chunk));
+          response.once("error", reject);
+          response.once("end", () =>
+            resolve({
+              status: response.statusCode,
+              headers: response.headers,
+              body: Buffer.concat(chunks).toString("utf8"),
+            }),
+          );
+        },
+      );
+      request.once("error", reject);
+      request.end(body);
+    },
+  );
+
+/**
+ * A foreground `gyst` launch signed in as its browser would be: the private URL's secret is
+ * exchanged for the auth cookie, and `operation` posts a browser operation to the bridge, resolving
+ * the daemon's reply. Stopped with SIGINT (Ctrl-C) after the test.
+ */
+export async function launchViewer(
+  args: ReadonlyArray<string>,
+  options: { cwd: string; env: NodeJS.ProcessEnv },
+) {
+  const name = ["gyst", ...args].join(" ");
+  const child = spawn(installed.bin, args, {
+    cwd: options.cwd,
+    env: options.env,
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  let stdout = "";
+  let stderr = "";
+  let exit: number | string | undefined;
+  child.stdout.setEncoding("utf8").on("data", (chunk: string) => (stdout += chunk));
+  child.stderr.setEncoding("utf8").on("data", (chunk: string) => (stderr += chunk));
+  child.once("error", (error) => (exit ??= error.message));
+  child.once("close", (code, signal) => (exit ??= code ?? signal ?? "closed"));
+  const stop = async () => {
+    if (exit === undefined) child.kill("SIGINT");
+    await waitFor(() => exit !== undefined, `${name} to exit on SIGINT`, 10_000);
+  };
+  onTestFinished(stop);
+  await waitFor(
+    () => stdout.includes("Press Ctrl-C") || exit !== undefined,
+    `${name} to be ready`,
+    20_000,
+  );
+  // stdout is left out: it holds the secret-bearing URL.
+  if (exit !== undefined) throw new Error(`${name} exited ${exit} early:\n${stderr}`);
+  const url = stdout.split("\n").find((line) => line.startsWith("http://")) ?? "";
+  const match = /^http:\/\/(g-[0-9a-f]{32}\.localhost):(\d+)\/session\/([^#]+)#([\w-]{43})$/.exec(
+    url,
+  );
+  if (!match) throw new Error("the launch URL lacks the .localhost host, session path or secret");
+  const [, hostname = "", port = "", id = "", secret = ""] = match;
+  const host = `${hostname}:${port}`;
+  const origin = `http://${host}`;
+  const bootstrap = await post(Number(port), "/bootstrap", {
+    host,
+    origin,
+    authorization: `Bearer ${secret}`,
+  });
+  const cookie = bootstrap.headers["set-cookie"]?.[0]?.split(";", 1)[0];
+  if (bootstrap.status !== 204 || cookie === undefined)
+    throw new Error(`${name} refused its own bootstrap: ${bootstrap.status}`);
+  return {
+    /** The session the launch opened. */
+    id: decodeURIComponent(id),
+    operation: async (operation: object): Promise<any> => {
+      const reply = await post(
+        Number(port),
+        "/api/operation",
+        { host, origin, cookie, "content-type": "application/json" },
+        JSON.stringify(operation),
+      );
+      if (reply.status !== 200)
+        throw new Error(`${JSON.stringify(operation)} answered ${reply.status}: ${reply.body}`);
+      return JSON.parse(reply.body);
+    },
+    stop,
   };
 }
