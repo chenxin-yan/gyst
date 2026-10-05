@@ -1815,6 +1815,10 @@ function ContinuousDiff(props: {
     });
     return () => cancelAnimationFrame(frame);
   }, [layout, props.files]);
+  // A note that leaves with its view never reports the pointer leaving it.
+  useLayoutEffect(() => {
+    highlighted.current = undefined;
+  }, [props.files]);
   useLayoutEffect(paint);
 
   return (
