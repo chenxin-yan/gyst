@@ -171,8 +171,11 @@ const statusRead = (status: StatusPayload): StatusRead => ({
   viewedHunkIds: status.viewedHunkIds,
 });
 
-/** The reader's live link: its state, and how a failed read of what it announced reports itself. */
-type LiveSession = { state: LiveState; lost: (generation: number, error: unknown) => void };
+/**
+ * The reader's live link: its state, and how a failed read of what it announced reports itself;
+ * true when that ended the current connection.
+ */
+type LiveSession = { state: LiveState; lost: (generation: number, error: unknown) => boolean };
 
 /**
  * The reader's subscription to its session's committed state, for as long as it is mounted. A
@@ -182,7 +185,7 @@ type LiveSession = { state: LiveState; lost: (generation: number, error: unknown
 function useLiveSession(sessionId: string): LiveSession {
   const [state, setState] = useState(initialLive);
   const latest = useRef(state);
-  const restart = useRef<LiveSession["lost"]>(() => {});
+  const restart = useRef<LiveSession["lost"]>(() => false);
   useEffect(() => {
     let stopped = false;
     let connection = new AbortController();
@@ -196,7 +199,9 @@ function useLiveSession(sessionId: string): LiveSession {
     // A loss the reader noticed first ends the stream it came over, which then connects again.
     restart.current = (generation, error) => {
       const before = latest.current;
-      if (apply({ type: "lost", generation, error }) !== before) connection.abort();
+      if (apply({ type: "lost", generation, error }) === before) return false;
+      connection.abort();
+      return true;
     };
     void (async () => {
       for (;;) {
@@ -318,6 +323,7 @@ function useViewedProgress(
     }
     if (behind(now, current) !== "read") return;
     reading.current = true;
+    let recovering = false;
     void operation({ command: "status", session: sessionId })
       .then(
         // A write sent meanwhile answers for itself; this read is checked again after it settles.
@@ -328,12 +334,13 @@ function useViewedProgress(
         // Not this file's failure: the link recovers, then reads again from its `ready`.
         (error: unknown) => {
           if (!isExpectedFailure(error)) console.error(error);
-          if (mounted.current) lost(now.generation, error);
+          if (mounted.current) recovering = lost(now.generation, error);
         },
       )
       .finally(() => {
         reading.current = false;
-        sync();
+        // The loss isn't rendered yet, so checking again now would read over the given-up link.
+        if (!recovering) sync();
       });
   };
   useEffect(sync, [live.state, state]);
