@@ -455,6 +455,99 @@ describe("Navigation over real captures and the workspace add-on", () => {
     );
   }, 120_000);
 
+  it("queries keyword-named members but not keywords, and names JavaScript's missing imports", async () => {
+    const dataDir = join(dir, "data-keywords");
+    const keys =
+      "export const handlers = { delete() {}, default: 1 };\n" +
+      "handlers.delete();\n" +
+      "export class Box {\n" +
+      "  catch() { return this; }\n" +
+      "}\n" +
+      "new Box().catch();\n";
+    const script =
+      'import { schema } from "./generated/schema.js";\n' +
+      'import { here } from "./present.js";\n' +
+      'import pad from "left-pad";\n' +
+      '// import "./commented.js";\n' +
+      "export const value = pad(schema + here);\n";
+    const cwd = await repo("keywords", {
+      ".gitignore": "src/generated/\n",
+      "jsconfig.json": "{}\n",
+      "src/present.js": "export const here = 1;\n",
+    });
+    await write(cwd, {
+      "src/keys.ts": keys,
+      "src/script.js": script,
+      // Ignored, so never captured.
+      "src/generated/schema.js": "export const schema = 1;\n",
+    });
+
+    await runReal(
+      dataDir,
+      Effect.gen(function* () {
+        const { session } = yield* (yield* Sessions).open({
+          command: "open",
+          cwd,
+          scope: { kind: "uncommitted" },
+        });
+        const target = (file: string) => ({
+          session: session.id,
+          snapshotId: session.snapshotId,
+          file,
+          side: "new" as const,
+        });
+        const keysTarget = target("src/keys.ts");
+
+        // A reserved word as a member name is the engine's symbol, declaration and use alike.
+        const deleteDefinition = located(yield* definition(keysTarget, at(keys, 2, "delete")));
+        expect(deleteDefinition).toMatchObject({
+          symbol: { text: "delete", range: span(keys, 2, "delete") },
+          locations: [{ file: "src/keys.ts", range: span(keys, 1, "delete") }],
+        });
+        expect(located(yield* references(keysTarget, at(keys, 1, "delete"))).locations).toEqual([
+          { file: "src/keys.ts", range: span(keys, 1, "delete") },
+          { file: "src/keys.ts", range: span(keys, 2, "delete") },
+        ]);
+        expect(located(yield* definition(keysTarget, at(keys, 6, "catch"))).locations).toEqual([
+          { file: "src/keys.ts", range: span(keys, 4, "catch") },
+        ]);
+        // The keywords themselves stay unqueried, though the engine resolves `return` and `this`.
+        for (const word of ["return", "this"])
+          expect((yield* definition(keysTarget, at(keys, 4, word))).outcome).toEqual({
+            kind: "no-symbol",
+          });
+        const offered = (line: number) =>
+          identifiers(keysTarget, line).pipe(
+            Effect.map(({ outcome }) =>
+              outcome.kind === "identifiers"
+                ? outcome.identifiers.map(({ text }) => text)
+                : outcome,
+            ),
+          );
+        expect(yield* offered(1)).toEqual(["handlers", "delete", "default"]);
+        expect(yield* offered(4)).toEqual(["catch"]);
+        expect(yield* offered(6)).toEqual(["Box", "catch"]);
+
+        // Without checkJs the engine reports no unresolved import in JavaScript; each is named.
+        const scriptResult = located(
+          yield* references(target("src/script.js"), at(script, 5, "schema")),
+        );
+        expect(scriptResult.gaps).toEqual([
+          {
+            kind: "unresolved-import",
+            file: "src/script.js",
+            message: 'cannot resolve "./generated/schema.js"',
+          },
+          {
+            kind: "unresolved-import",
+            file: "src/script.js",
+            message: 'cannot resolve "left-pad"',
+          },
+        ]);
+      }),
+    );
+  }, 120_000);
+
   it("refuses a historical snapshot, before and during a query, and keeps no engine for it", async () => {
     const dataDir = join(dir, "data-historical");
     const cwd = await repo("historical", { "src/math.ts": oldMath, "src/use.ts": oldUse });

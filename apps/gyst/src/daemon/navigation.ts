@@ -114,9 +114,10 @@ const identifierPattern =
   /(?<![\p{ID_Continue}$\u200C\u200D])[\p{ID_Start}$_#][\p{ID_Continue}$\u200C\u200D]*/gu;
 
 /**
- * Words that are never a name in module code. The engine still resolves some of them (`return` to
- * its function, `this` to its class), so they are not offered or queried as symbols. Contextual
- * keywords (`as`, `from`, `type`, `async`, ...) can be names and are left to the engine.
+ * Words that are keywords in module code except as a property or method name (`map.delete`,
+ * `{ default: 1 }`). The engine still resolves some keywords (`return` to its function, `this` to
+ * its class), so one of these is a name only where the engine classifies it as one. Contextual
+ * keywords (`as`, `from`, `type`, `async`, ...) can be any name and are left to the engine.
  */
 const reservedWords = new Set(
   (
@@ -149,6 +150,9 @@ const decodeLocations = Schema.decodeUnknownOption(
 );
 const decodeHighlights = Schema.decodeUnknownOption(
   Schema.NullOr(Schema.Array(Schema.Struct({ range: LspRangeSchema }))),
+);
+const decodeTokens = Schema.decodeUnknownOption(
+  Schema.NullOr(Schema.Struct({ data: Schema.Array(Schema.Number) })),
 );
 const decodeDiagnostics = Schema.decodeUnknownOption(
   Schema.Struct({
@@ -186,15 +190,13 @@ const linesOf = (text: string) => {
 };
 
 const candidatesOn = (lines: ReadonlyArray<string>, line: number): Array<NavigationSymbol> =>
-  [...(lines[line - 1] ?? "").matchAll(identifierPattern)]
-    .filter(([word]) => !reservedWords.has(word))
-    .map(({ 0: word, index }) => ({
-      text: word,
-      range: {
-        start: { line, character: index },
-        end: { line, character: index + word.length },
-      },
-    }));
+  [...(lines[line - 1] ?? "").matchAll(identifierPattern)].map(({ 0: word, index }) => ({
+    text: word,
+    range: {
+      start: { line, character: index },
+      end: { line, character: index + word.length },
+    },
+  }));
 
 /** The identifier the point is in or just after, which is what a reader points at. */
 const symbolAt = (text: string, point: TextPoint) =>
@@ -202,6 +204,43 @@ const symbolAt = (text: string, point: TextPoint) =>
     ({ range }) =>
       range.start.character <= point.character && point.character <= range.end.character,
   );
+
+/**
+ * Whether a candidate is a name rather than a keyword: any word but a reserved one, which is a name
+ * only where one of the engine's semantic tokens spans exactly it.
+ */
+const isName = (engine: Engine, uri: string, text: string, candidate: NavigationSymbol) => {
+  if (!reservedWords.has(candidate.text)) return Effect.succeed(true);
+  const start = toLspPosition(text, candidate.range.start)!;
+  const end = toLspPosition(text, candidate.range.end)!;
+  return engine
+    .request("textDocument/semanticTokens/range", {
+      textDocument: { uri },
+      range: { start, end },
+    })
+    .pipe(
+      Effect.map((result) => {
+        const decoded = decodeTokens(result);
+        if (decoded._tag === "None" || decoded.value === null) return false;
+        const { data } = decoded.value;
+        // Five numbers per token: its line and start relative to the previous token's, its length.
+        for (let index = 0, line = 0, character = 0; index + 4 < data.length; index += 5) {
+          character = data[index] === 0 ? character + data[index + 1]! : data[index + 1]!;
+          line += data[index]!;
+          if (
+            line === start.line &&
+            character === start.character &&
+            data[index + 2] === end.character - start.character
+          )
+            return true;
+        }
+        return false;
+      }),
+    );
+};
+
+/** A quoted module specifier after `from`, `import`, `import(` or `require(`. */
+const specifierPattern = /\b(?:from|import|require)\s*\(?\s*((["'])[^"'\\\n]+\2)/g;
 
 export class Navigation extends Context.Service<
   Navigation,
@@ -767,36 +806,101 @@ export class Navigation extends Context.Service<
         return { locations, outside };
       });
 
+      /** Whether an engine location is a file this side captured as text, or a host file. */
+      const resolvesTo = (manifest: SnapshotManifest, side: Side, project: string, uri: string) => {
+        let host: string;
+        try {
+          host = fileURLToPath(uri);
+        } catch {
+          return false;
+        }
+        const relative = path.relative(project, host);
+        if (relative.split(path.sep)[0] === ".." || path.isAbsolute(relative)) return true;
+        const logical = relative.split(path.sep).join("/");
+        return manifest.files.some((file) => file.path === logical && file[side].kind === "text");
+      };
+
       /**
-       * Imports in the queried file the engine could not resolve: missing generated, ignored or
-       * installed sources. The message quotes only the captured specifier, never the engine's text,
-       * which can name host paths.
+       * Imports in the queried file that are missing: generated, ignored or installed sources. The
+       * engine reports them for type-checked files. It reports none in JavaScript without
+       * `checkJs`, so there each specifier's definition is asked as well: nothing (a missing
+       * package) or a file that was never captured (it names one either way) is missing, while a
+       * string that is not a specifier answers null. Messages quote only the captured specifier,
+       * never the engine's text, which can name host paths.
        */
-      const unresolvedImports = (engine: Engine, uri: string, file: string, text: string) =>
-        engine.request("textDocument/diagnostic", { textDocument: { uri } }).pipe(
-          Effect.map((result): Array<NavigationGap> => {
-            const report = decodeDiagnostics(result);
-            if (report._tag === "None") return [];
-            const lines = text.split("\n");
-            return (report.value.items ?? []).flatMap(({ code, range }) => {
-              if (typeof code !== "number" || !unresolvedCodes.has(code)) return [];
-              const start = fromLspPosition(text, range.start);
-              const end = fromLspPosition(text, range.end);
-              const line = start ? (lines[start.line - 1] ?? "") : "";
-              const quoted =
-                start && end
-                  ? line.slice(start.character, end.line === start.line ? end.character : undefined)
-                  : "";
-              return [
-                {
-                  kind: "unresolved-import",
-                  file,
-                  message: `cannot resolve ${quoted.slice(0, 200)} (TS${code})`,
-                },
-              ];
-            });
-          }),
+      const missingImports = Effect.fnUntraced(function* (
+        engine: Engine,
+        uri: string,
+        request: Target,
+        manifest: SnapshotManifest,
+        project: string,
+        text: string,
+      ) {
+        const file = request.file;
+        const report = decodeDiagnostics(
+          yield* engine.request("textDocument/diagnostic", { textDocument: { uri } }),
         );
+        const lines = text.split("\n");
+        const reported = (report._tag === "None" ? [] : (report.value.items ?? [])).flatMap(
+          ({ code, range }) => {
+            if (typeof code !== "number" || !unresolvedCodes.has(code)) return [];
+            const start = fromLspPosition(text, range.start);
+            const end = fromLspPosition(text, range.end);
+            const line = start ? (lines[start.line - 1] ?? "") : "";
+            const quoted =
+              start && end
+                ? line.slice(start.character, end.line === start.line ? end.character : undefined)
+                : "";
+            return [{ quoted, code }];
+          },
+        );
+        const gaps: Array<NavigationGap> = reported.map(({ quoted, code }) => ({
+          kind: "unresolved-import",
+          file,
+          message: `cannot resolve ${quoted.slice(0, 200)} (TS${code})`,
+        }));
+        if (!lspLanguageId(file)?.startsWith("javascript")) return gaps;
+        const known = new Set(reported.map(({ quoted }) => quoted));
+        const specifiers = linesOf(text).flatMap((lineText, index) =>
+          [...lineText.matchAll(specifierPattern)].flatMap(({ 0: match, 1: quoted, index: at }) =>
+            quoted === undefined || known.has(quoted)
+              ? []
+              : [
+                  {
+                    quoted,
+                    point: { line: index + 1, character: at + match.length - quoted.length + 1 },
+                  },
+                ],
+          ),
+        );
+        const probed = yield* Effect.forEach(
+          specifiers,
+          ({ quoted, point }) =>
+            engine
+              .request("textDocument/definition", {
+                textDocument: { uri },
+                position: toLspPosition(text, point)!,
+              })
+              .pipe(
+                Effect.map((result): Array<NavigationGap> =>
+                  result === null ||
+                  locationsOf(result).some((location) =>
+                    resolvesTo(manifest, request.side, project, location.uri),
+                  )
+                    ? []
+                    : [
+                        {
+                          kind: "unresolved-import",
+                          file,
+                          message: `cannot resolve ${quoted.slice(0, 200)}`,
+                        },
+                      ],
+                ),
+              ),
+          { concurrency: 8 },
+        );
+        return [...gaps, ...probed.flat()];
+      });
 
       const located = (query: "definition" | "references") =>
         Effect.fn(`Navigation.${query}`)(function* (request: Input<typeof query>) {
@@ -813,13 +917,22 @@ export class Navigation extends Context.Service<
             return yield* analysed(request, manifest, addon, (prepared, analysis) =>
               Effect.gen(function* () {
                 const uri = yield* opened(analysis, prepared, request.file, text);
+                if (!(yield* isName(prepared.engine, uri, text, symbol)))
+                  return { kind: "no-symbol" } as const;
                 const result = yield* prepared.engine.request(`textDocument/${query}`, {
                   textDocument: { uri },
                   position,
                   ...(query === "references" ? { context: { includeDeclaration: true } } : {}),
                 });
                 const fenced = yield* fence(manifest, request.side, prepared.project, result);
-                const gaps = yield* unresolvedImports(prepared.engine, uri, request.file, text);
+                const gaps = yield* missingImports(
+                  prepared.engine,
+                  uri,
+                  request,
+                  manifest,
+                  prepared.project,
+                  text,
+                );
                 return {
                   kind: "locations",
                   symbol,
@@ -858,10 +971,13 @@ export class Navigation extends Context.Service<
             Effect.gen(function* () {
               const uri = yield* opened(analysis, prepared, request.file, text);
               // A name resolves to a definition and is one of its own highlighted occurrences; a
-              // word inside a module specifier or a keyword the engine maps elsewhere is not.
+              // word inside a module specifier or a contextual keyword the engine maps elsewhere
+              // is not.
               const named = yield* Effect.forEach(
                 candidates,
-                Effect.fnUntraced(function* ({ range }) {
+                Effect.fnUntraced(function* (candidate) {
+                  if (!(yield* isName(prepared.engine, uri, text, candidate))) return false;
+                  const { range } = candidate;
                   const start = toLspPosition(text, range.start)!;
                   const end = toLspPosition(text, range.end);
                   const at = { textDocument: { uri }, position: start };
@@ -885,7 +1001,14 @@ export class Navigation extends Context.Service<
                 }),
                 { concurrency: 8 },
               );
-              const gaps = yield* unresolvedImports(prepared.engine, uri, request.file, text);
+              const gaps = yield* missingImports(
+                prepared.engine,
+                uri,
+                request,
+                manifest,
+                prepared.project,
+                text,
+              );
               return {
                 kind: "identifiers",
                 identifiers: candidates.filter((_, index) => named[index]),

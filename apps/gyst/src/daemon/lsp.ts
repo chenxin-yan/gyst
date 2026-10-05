@@ -139,6 +139,21 @@ export interface Engine {
   notify(method: string, params?: unknown): Effect.Effect<void, EngineFailure>;
 }
 
+const semanticTokenTypes = [
+  "namespace",
+  "class",
+  "enum",
+  "interface",
+  "typeParameter",
+  "type",
+  "parameter",
+  "variable",
+  "property",
+  "enumMember",
+  "function",
+  "method",
+];
+
 const InitializeResultSchema = Schema.Struct({
   capabilities: Schema.Record(Schema.String, Schema.Unknown),
 });
@@ -275,7 +290,16 @@ export const startLanguageServer = Effect.fnUntraced(function* (
     capabilities: {
       general: { positionEncodings: ["utf-16"] },
       workspace: { configuration: true },
-      textDocument: { diagnostic: {} },
+      textDocument: {
+        diagnostic: {},
+        // 7.0.2 sends no tokens unless the client names token types; these are its own.
+        semanticTokens: {
+          requests: { range: true },
+          tokenTypes: semanticTokenTypes,
+          tokenModifiers: [],
+          formats: ["relative"],
+        },
+      },
     },
   });
   const decoded = Schema.decodeUnknownOption(InitializeResultSchema)(initialized);

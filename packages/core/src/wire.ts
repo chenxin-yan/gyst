@@ -216,7 +216,7 @@ export const NavigationResultPayloadSchema = Schema.Struct({
       outside: Schema.Natural,
       gaps: Schema.Array(NavigationGapSchema),
     }),
-    /** No identifier at the position, so nothing was asked of the engine. */
+    /** No name at the position: no identifier, or a keyword. */
     Schema.Struct({ kind: Schema.Literal("no-symbol") }),
     Schema.Struct({ kind: Schema.Literal("unavailable"), reason: NavigationUnavailableSchema }),
   ]),
