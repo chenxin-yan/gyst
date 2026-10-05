@@ -1,5 +1,12 @@
 import { Schema } from "effect";
-import { metadataFields, NoteTextSchema } from "./metadata.ts";
+import {
+  GuidanceTextSchema,
+  guidanceTextFields,
+  MarkdownSchema,
+  NoteSchema,
+  noteFields,
+} from "./guidance.ts";
+import { TitleSchema } from "./metadata.ts";
 
 export const HunkSchema = Schema.Struct({
   id: Schema.String,
@@ -10,10 +17,16 @@ export const HunkSchema = Schema.Struct({
 });
 export type Hunk = typeof HunkSchema.Type;
 
+/** One review question. A session's `groups` array order is the walkthrough order. */
 export const GroupSchema = Schema.Struct({
   id: Schema.String,
-  ...metadataFields,
+  title: TitleSchema,
+  overview: Schema.NullOr(GuidanceTextSchema),
   hunkIds: Schema.Array(Schema.String),
+  /** The member hunks' files, each once, in the order the group explains them. */
+  files: Schema.Array(Schema.String),
+  /** In code order: file order, then hunk order, old side first, then start line. */
+  notes: Schema.Array(NoteSchema),
 });
 export type Group = typeof GroupSchema.Type;
 
@@ -40,24 +53,41 @@ const sessionSummaryFields = {
 };
 export const SessionSummarySchema = Schema.Struct(sessionSummaryFields);
 export type SessionSummary = typeof SessionSummarySchema.Type;
-// Wire notes carry text; receipts carry indices into `receiptNoteTexts`.
+/**
+ * How far an agent has prepared the walkthrough. `plain` has no guidance at all; `complete` puts
+ * every current hunk in exactly one group, with the walkthrough and every group overview present.
+ * Anything between is `incomplete`: valid and readable, never refused.
+ */
+export const PreparationSchema = Schema.Struct({
+  state: Schema.Literals(["plain", "incomplete", "complete"]),
+  groupedHunks: Schema.Natural,
+  totalHunks: Schema.Natural,
+  overviewMissing: Schema.Boolean,
+  groupsMissingOverview: Schema.Array(Schema.String),
+});
+export type Preparation = typeof PreparationSchema.Type;
+
+// Wire guidance carries Markdown; receipts carry indices into `receiptTexts`.
 const statusPayloadFields = <Text extends Schema.Top>(text: Text) => ({
   session: SessionSummarySchema,
   revision: Schema.Number,
+  overview: Schema.NullOr(Schema.Struct(guidanceTextFields(text))),
   groups: Schema.Array(
     Schema.Struct({
       ...GroupSchema.fields,
-      notes: Schema.Array(Schema.Struct({ hunkId: Schema.String, text })),
+      overview: Schema.NullOr(Schema.Struct(guidanceTextFields(text))),
+      notes: Schema.Array(Schema.Struct(noteFields(text))),
       count: Schema.Number,
     }),
   ),
+  preparation: PreparationSchema,
   viewedHunkIds: Schema.Array(Schema.String),
   /** `viewed` is derived: every changed hunk of the file is Viewed. */
   files: Schema.Array(
     Schema.Struct({ path: Schema.String, hunkCount: Schema.Number, viewed: Schema.Boolean }),
   ),
 });
-export const StatusPayloadSchema = Schema.Struct(statusPayloadFields(NoteTextSchema));
+export const StatusPayloadSchema = Schema.Struct(statusPayloadFields(MarkdownSchema));
 export type StatusPayload = typeof StatusPayloadSchema.Type;
 const ReceiptStatusSchema = Schema.Struct(statusPayloadFields(Schema.Natural));
 export type ReceiptStatus = typeof ReceiptStatusSchema.Type;
@@ -90,11 +120,13 @@ export const SessionSchema = Schema.Struct({
   ...sessionSummaryFields,
   revision: Schema.Number,
   hunks: Schema.Array(HunkSchema),
+  /** The walkthrough overview. */
+  overview: Schema.NullOr(GuidanceTextSchema),
   groups: Schema.Array(GroupSchema),
   /** Human reading progress, one bit per current hunk: the hunks marked Viewed. */
   viewedHunkIds: Schema.Array(Schema.String),
-  // Progressive publication stores each distinct historical note text once.
-  receiptNoteTexts: Schema.Array(NoteTextSchema),
+  // Progressive publication stores each distinct historical overview or note text once.
+  receiptTexts: Schema.Array(MarkdownSchema),
   applyReceipts: Schema.Array(ApplyReceiptSchema),
   viewedReceipts: Schema.Array(ViewedReceiptSchema),
 }).check(
@@ -109,10 +141,11 @@ export const SessionSchema = Schema.Struct({
   Schema.makeFilter(
     (session) =>
       session.applyReceipts.every(({ status }) =>
-        status.groups.every(({ notes }) =>
-          notes.every(({ text }) => text < session.receiptNoteTexts.length),
-        ),
-      ) || "receipt note reference is outside receiptNoteTexts",
+        [
+          status.overview,
+          ...status.groups.flatMap(({ overview, notes }) => [overview, ...notes]),
+        ].every((text) => text === null || text.markdown < session.receiptTexts.length),
+      ) || "receipt text reference is outside receiptTexts",
   ),
 );
 export type Session = typeof SessionSchema.Type;

@@ -40,14 +40,18 @@ export function refreshSession(
     return { ...fresh, id: old.id };
   });
 
+  const fileOf = new Map(draft.hunks.map(({ id, file }) => [id, file]));
   draft.groups = draft.groups.flatMap((group) => {
     const hunkIds = group.hunkIds.filter((id) => survivingIds.has(id));
     if (hunkIds.length === 0) return [];
+    const files = new Set(hunkIds.map((id) => fileOf.get(id)));
     return [
       {
         ...group,
         hunkIds,
-        notes: hunkIds.length === group.hunkIds.length ? group.notes : [],
+        files: group.files.filter((file) => files.has(file)),
+        // Interim until #91 reconciles guidance: a note survives only on its own snapshot.
+        notes: group.notes.filter(({ anchor }) => anchor.snapshotId === draft.snapshotId),
       },
     ];
   });

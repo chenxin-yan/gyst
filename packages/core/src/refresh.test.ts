@@ -14,6 +14,13 @@ const hunk = (id: string, file: string, contentHash: string): Hunk => ({
   patch: `@@ -1 +1 @@\n-${id}\n+${contentHash}`,
 });
 
+const overview = (markdown: string) => ({ markdown, references: [] });
+const note = (id: string, path: string, line = 1) => ({
+  id,
+  anchor: { snapshotId: "snapshot", path, side: "new" as const, startLine: line, endLine: line },
+  ...overview(`About ${id}.`),
+});
+
 function session(): Session {
   return {
     id: "session",
@@ -23,6 +30,7 @@ function session(): Session {
     createdAt: "2026-01-01T00:00:00.000Z",
     updatedAt: "2026-01-01T00:00:00.000Z",
     revision: 4,
+    overview: overview("The walkthrough."),
     hunks: [
       hunk("old-a", "a.ts", "same"),
       hunk("old-b", "b.ts", "changed"),
@@ -33,20 +41,38 @@ function session(): Session {
       {
         id: "group-1",
         title: "coherent change",
-        notes: [{ hunkId: "old-a", text: "intent and behavior" }],
+        overview: overview("Intent and behavior."),
         hunkIds: ["old-a"],
+        files: ["a.ts"],
+        notes: [note("note-a", "a.ts")],
       },
-      { id: "group-b", title: "changed", notes: [], hunkIds: ["old-b"] },
-      { id: "group-c", title: "gone", notes: [], hunkIds: ["old-c"] },
+      {
+        id: "group-b",
+        title: "changed",
+        overview: null,
+        hunkIds: ["old-b"],
+        files: ["b.ts"],
+        notes: [],
+      },
+      {
+        id: "group-c",
+        title: "gone",
+        overview: null,
+        hunkIds: ["old-c"],
+        files: ["c.ts"],
+        notes: [],
+      },
       {
         id: "group-d",
         title: "stable",
-        notes: [{ hunkId: "old-d", text: "keep" }],
+        overview: overview("Keep."),
         hunkIds: ["old-d"],
+        files: ["d.ts"],
+        notes: [note("note-d", "d.ts")],
       },
     ],
     viewedHunkIds: ["old-a", "old-b", "old-c", "old-d"],
-    receiptNoteTexts: [],
+    receiptTexts: [],
     applyReceipts: [],
     viewedReceipts: [],
   };
@@ -74,36 +100,36 @@ describe("refreshSession", () => {
       "old-d",
       "fresh-cross-file",
     ]);
-    expect(refreshed.groups).toEqual([
-      expect.objectContaining({ id: "group-1", hunkIds: ["old-a"] }),
-      expect.objectContaining({
-        id: "group-d",
-        notes: [{ hunkId: "old-d", text: "keep" }],
-        hunkIds: ["old-d"],
-      }),
-    ]);
+    expect(refreshed.groups).toEqual([session().groups[0], session().groups[3]]);
     // A changed body, a vanished hunk and a same body in another file keep no progress.
     expect(refreshed.viewedHunkIds).toEqual(["old-a", "old-d"]);
     expect(refreshed.revision).toBe(5);
   });
 
-  it("clears a group's notes when any member disappears, keeping survivors' own Viewed", () => {
+  it("keeps overviews and surviving file order, and notes only on their own snapshot", () => {
     const original: Session = {
       ...session(),
       groups: [
         {
           id: "group-1",
           title: "coherent change",
-          notes: [{ hunkId: "old-a", text: "intent and behavior" }],
-          hunkIds: ["old-a", "old-c"],
+          overview: overview("Intent and behavior."),
+          hunkIds: ["old-c", "old-a", "old-d"],
+          files: ["d.ts", "c.ts", "a.ts"],
+          notes: [note("note-a", "a.ts"), note("note-d", "d.ts")],
         },
       ],
     };
-    const refreshed = refreshSession(original, [hunk("fresh-a", "a.ts", "same")], LATER);
-    expect(refreshed.groups).toEqual([
-      { id: "group-1", title: "coherent change", notes: [], hunkIds: ["old-a"] },
+    const fresh = [hunk("fresh-a", "a.ts", "same"), hunk("fresh-d", "d.ts", "independent")];
+    const same = refreshSession(original, fresh, LATER);
+    expect(same.groups).toEqual([
+      { ...original.groups[0], hunkIds: ["old-a", "old-d"], files: ["d.ts", "a.ts"] },
     ]);
-    expect(refreshed.viewedHunkIds).toEqual(["old-a"]);
+    // Until #91 reconciles guidance, a new snapshot drops notes anchored to the old one.
+    const next = refreshSession({ ...original, snapshotId: "next" }, fresh, LATER);
+    expect(next.overview).toEqual(original.overview);
+    expect(next.groups).toEqual([{ ...same.groups[0], notes: [] }]);
+    expect(next.viewedHunkIds).toEqual(["old-a", "old-d"]);
 
     const empty = refreshSession(original, [], LATER);
     expect(empty.groups).toEqual([]);
@@ -120,8 +146,10 @@ describe("refreshSession", () => {
       groups: fresh.map((hunk, index) => ({
         id: `duplicate-${index}`,
         title: `note ${index}`,
-        notes: [{ hunkId: hunk.id, text: `note ${index}` }],
+        overview: overview(`group ${index}`),
         hunkIds: [hunk.id],
+        files: ["same.ts"],
+        notes: [note(`note-${index}`, "same.ts", index === 0 ? 1 : 20)],
       })),
       viewedHunkIds: [fresh[0]!.id],
     };
@@ -152,8 +180,10 @@ describe("refreshSession", () => {
         {
           id: "group-1",
           title: "duplicate edits",
-          notes: [],
+          overview: null,
           hunkIds: ["old-first", "old-second"],
+          files: ["same.ts"],
+          notes: [],
         },
       ],
       viewedHunkIds: ["old-first", "old-second"],

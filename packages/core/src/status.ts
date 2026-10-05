@@ -1,8 +1,31 @@
 import { Struct } from "effect";
-import type { Session, SessionSummary, StatusPayload } from "./session.ts";
+import type { Preparation, Session, SessionSummary, StatusPayload } from "./session.ts";
 
 export const summaryOf = (session: Session): SessionSummary =>
   Struct.pick(session, ["id", "repoRoot", "scope", "snapshotId", "createdAt", "updatedAt"]);
+
+function preparationOf(session: Session): Preparation {
+  const hunkIds = new Set(session.hunks.map(({ id }) => id));
+  const memberships = session.groups.flatMap(({ hunkIds }) => hunkIds);
+  const groupedHunks = new Set(memberships.filter((id) => hunkIds.has(id))).size;
+  const overviewMissing = session.overview === null;
+  const groupsMissingOverview = session.groups.flatMap(({ id, overview }) =>
+    overview === null ? [id] : [],
+  );
+  const covered = groupedHunks === hunkIds.size && memberships.length === groupedHunks;
+  return {
+    state:
+      session.groups.length === 0 && overviewMissing
+        ? "plain"
+        : covered && !overviewMissing && groupsMissingOverview.length === 0
+          ? "complete"
+          : "incomplete",
+    groupedHunks,
+    totalHunks: hunkIds.size,
+    overviewMissing,
+    groupsMissingOverview,
+  };
+}
 
 export function statusOf(session: Session): StatusPayload {
   const viewed = new Set(session.viewedHunkIds);
@@ -17,7 +40,9 @@ export function statusOf(session: Session): StatusPayload {
   return {
     session: summaryOf(session),
     revision: session.revision,
+    overview: session.overview,
     groups: session.groups.map((group) => ({ ...group, count: group.hunkIds.length })),
+    preparation: preparationOf(session),
     viewedHunkIds: [...session.viewedHunkIds],
     files: [...files].map(([path, file]) => ({ path, ...file })),
   };

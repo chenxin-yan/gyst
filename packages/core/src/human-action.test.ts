@@ -21,9 +21,12 @@ const session: Session = {
   updatedAt: LATER,
   revision: 3,
   hunks: [hunk("a1", "a.ts"), hunk("a2", "a.ts"), hunk("b1", "b.ts")],
-  groups: [{ id: "g", title: "grouped", notes: [], hunkIds: ["a1"] }],
+  overview: null,
+  groups: [
+    { id: "g", title: "grouped", overview: null, hunkIds: ["a1"], files: ["a.ts"], notes: [] },
+  ],
   viewedHunkIds: [],
-  receiptNoteTexts: [],
+  receiptTexts: [],
   applyReceipts: [],
   viewedReceipts: [],
 };

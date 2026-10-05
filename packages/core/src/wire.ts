@@ -6,6 +6,7 @@ import {
   SnapshotIdSchema,
 } from "./content.ts";
 import { ErrorPayloadSchema } from "./errors.ts";
+import { CodeSideSchema, LineNumberSchema } from "./guidance.ts";
 import { HunkSchema, ScopeSchema, SessionSummarySchema } from "./session.ts";
 
 // `@gyst/core/wire` is the browser-safe entry: every contract a bridge or browser needs, without the
@@ -23,6 +24,23 @@ export {
   ValidationFailed,
 } from "./errors.ts";
 export { type ContentSide, type ManifestFile } from "./content.ts";
+export {
+  anchoredHunkIds,
+  type CapturedRange,
+  CapturedRangeSchema,
+  changedLinesOf,
+  type CodeRange,
+  CodeRangeSchema,
+  type CodeSide,
+  CodeSideSchema,
+  type GuidanceText,
+  GuidanceTextSchema,
+  LineNumberSchema,
+  MarkdownSchema,
+  type Note,
+  NoteSchema,
+  parseReferenceHref,
+} from "./guidance.ts";
 export {
   type Hunk,
   HunkSchema,
@@ -73,9 +91,6 @@ export type ListPayload = typeof ListPayloadSchema.Type;
  */
 export const pageBytes = 64 * 1024;
 
-/** 1-based. A line is the bytes up to and including its LF, or up to the end of content. */
-const LineNumberSchema = Schema.Int.check(Schema.isGreaterThanOrEqualTo(1));
-
 /**
  * A byte offset into one side's captured content and the line it falls in: 1 + the LFs before
  * `offset`. At the end of content that is one past the last line only when the content is empty or
@@ -108,7 +123,7 @@ export const CodePayloadSchema = Schema.Struct({
   sessionId: Schema.String,
   snapshotId: SnapshotIdSchema,
   file: LogicalPathSchema,
-  side: Schema.Literals(["old", "new"]),
+  side: CodeSideSchema,
   content: Schema.Union([
     Schema.Struct({
       kind: Schema.Literal("text"),
@@ -182,7 +197,7 @@ export const BrowserRequestSchema = Schema.Union([
     ...exact,
     snapshotId: SnapshotIdSchema,
     file: LogicalPathSchema,
-    side: Schema.Literals(["old", "new"]),
+    side: CodeSideSchema,
     startLine: Schema.optional(LineNumberSchema),
     offset: Schema.optional(Schema.Natural),
     endLine: Schema.optional(LineNumberSchema),

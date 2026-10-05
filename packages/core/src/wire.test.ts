@@ -156,6 +156,11 @@ describe("daemon wire envelopes", () => {
       "ScopeSchema",
       "SessionSummarySchema",
       "HunkSchema",
+      "MarkdownSchema",
+      "CodeRangeSchema",
+      "CapturedRangeSchema",
+      "NoteSchema",
+      "parseReferenceHref",
       "ErrorCodeSchema",
       "ErrorPayloadSchema",
       "DaemonError",
@@ -185,7 +190,15 @@ describe("daemon wire envelopes", () => {
     const status: publicWire.StatusPayload = {
       session: summary,
       revision: 0,
+      overview: null,
       groups: [],
+      preparation: {
+        state: "plain",
+        groupedHunks: 0,
+        totalHunks: 1,
+        overviewMissing: true,
+        groupsMissingOverview: [],
+      },
       viewedHunkIds: [],
       files: [{ path: "a.ts", hunkCount: 1, viewed: false }],
     };
@@ -224,6 +237,7 @@ describe("daemon wire envelopes", () => {
     expect([...seen].map((href) => href.slice(packageDir.href.length)).sort()).toEqual([
       "src/content.ts",
       "src/errors.ts",
+      "src/guidance.ts",
       "src/metadata.ts",
       "src/session.ts",
       "src/wire.ts",

@@ -1,5 +1,8 @@
 import { Schema } from "effect";
+import { LogicalPathSchema } from "./guidance.ts";
 import { HunkSchema, ScopeSchema } from "./session.ts";
+
+export { LogicalPathSchema };
 
 const sha256Pattern = /^[0-9a-f]{64}$/;
 
@@ -10,18 +13,6 @@ export const SnapshotIdSchema = Schema.String.check(Schema.isPattern(sha256Patte
 /** A resolved Git commit: SHA-1 or SHA-256 object format, lowercase hex. */
 export const GitObjectIdSchema = Schema.String.check(
   Schema.isPattern(/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/),
-);
-
-/** Project-relative `/`-separated metadata; it names content and is never resolved as a host path. */
-export const LogicalPathSchema = Schema.String.check(
-  Schema.makeFilter(
-    (path) =>
-      (!path.includes("\0") &&
-        path
-          .split("/")
-          .every((segment) => segment !== "" && segment !== "." && segment !== "..")) ||
-      "path must be project-relative with no empty, `.` or `..` segments",
-  ),
 );
 
 /** One side of a file. `text` is the exact eligible bytes; the rest say why no bytes exist. */
