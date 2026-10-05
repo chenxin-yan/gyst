@@ -440,6 +440,42 @@ const publishWalk = (walk: Walk) =>
     ...walkNotes,
   ]);
 
+/**
+ * References for the walkthrough: span's to b.ts (a changed file whose note links on), b-note's to
+ * the unchanged src/long.ts, and the overview's to long.ts too.
+ */
+const referenceOps = [
+  {
+    type: "note.update",
+    id: "span",
+    markdown: "Both doublings share **one** reason; see [the five](gyst:new/walk/b.ts#L4-L6).",
+  },
+  {
+    type: "note.update",
+    id: "b-note",
+    markdown: "Five doubles too, like [line 40](gyst:new/src/long.ts#L40-L44).",
+  },
+  {
+    type: "walkthrough.update",
+    overview: "Two independent edits over [the constants](gyst:new/src/long.ts#L10-L12).",
+  },
+];
+/** The open reference peek, and its renderer row when it opened under a note. */
+const peekOf = (page: Page) => page.getByRole("main").locator("[data-peek]");
+const spacerOf = (page: Page) => page.getByRole("main").locator("[data-peek-spacer]");
+/** The panel's scroll offset, read from the scrolling element around the diff. */
+const panelTop = (page: Page) =>
+  page
+    .getByRole("main")
+    .locator("[data-peek], h2")
+    .first()
+    .evaluate((element) => {
+      let at: Element | null = element;
+      while (at && getComputedStyle(at).overflowY !== "auto") at = at.parentElement;
+      return at?.scrollTop;
+    });
+const focusedText = (page: Page) => page.evaluate(() => document.activeElement?.textContent);
+
 const walkthroughRows = (page: Page) =>
   page
     .getByRole("navigation", { name: "gyst" })
@@ -623,6 +659,12 @@ describe("installed gyst in a sandboxed browser", () => {
       git("add", ".");
       git("commit", "-qm", edited ? "walk" : "walk base");
     }
+    // walk-next adds walk/d.ts on top of walk, so a walk~1...peek session refreshed from walk to
+    // walk-next gets a new snapshot that keeps every walk hunk.
+    git("switch", "-qc", "walk-next");
+    await writeFile(join(repo, "walk", "d.ts"), "export const d1 = 1;\n");
+    git("add", ".");
+    git("commit", "-qm", "walk next");
     git("switch", "-q", "main");
     git("switch", "-qc", "feature");
     await writeFile(join(repo, "feature.ts"), "export const feature = 'range-only';\n");
@@ -2521,6 +2563,289 @@ describe("installed gyst in a sandboxed browser", () => {
     expect((await gyst("session", "status", "--session", walk.id)).viewedHunkIds).not.toContain(
       walk.a40,
     );
+  }, 30_000);
+
+  it("opens a note's reference as a full-width inline peek over a row both split columns reserve, stacked when narrow", async () => {
+    const walk = await openWalk();
+    await publishWalk(walk);
+    await walk.publish(1, "refs", referenceOps);
+    const page = await newPage();
+    await page.setViewportSize({ width: 1280, height: 1200 });
+    await page.goto(`${one.origin}/session/${walk.id}`);
+    const pane = page.getByRole("main");
+    const side = page.getByRole("navigation", { name: "gyst" });
+    await side.getByRole("button", { name: /^Parse the config/ }).click();
+    await headingsAre(page, ["walk/b.ts", "walk/a.ts"]);
+    await page.getByRole("radio", { name: "Split", exact: true }).check();
+    await pane.locator("[data-note=span]").getByRole("button", { name: "the five" }).click();
+    const peek = peekOf(page);
+    await peek.waitFor();
+    // The preview reads b.ts's captured lines 1 to 9, lines 4 to 6 highlighted.
+    const preview = peek.locator("[data-peek-preview]");
+    await preview.waitFor();
+    expect(await preview.locator("[data-target]").allTextContents()).toEqual([
+      "4export const b4 = 4;",
+      "5export const b5 = 5 * 2;",
+      "6export const b6 = 6;",
+    ]);
+    const location = peek.getByRole("list", { name: "Reference location" });
+    expect(await location.textContent()).toContain("walk/b.ts");
+    expect(await peek.getByRole("button", { name: "Expand" }).count()).toBe(1);
+    expect(await peek.getByRole("button", { name: "Close reference" }).count()).toBe(1);
+    expect(await page.getByRole("dialog").count()).toBe(0);
+    expect(await focusedText(page)).toBe("Expand");
+
+    // The overlay spans the whole diff item over its spacer, which is exactly as tall.
+    const spacer = spacerOf(page);
+    const item = spacer.locator("xpath=../..");
+    const fits = async () => {
+      const [over, row, file] = await Promise.all([
+        peek.boundingBox(),
+        spacer.boundingBox(),
+        item.boundingBox(),
+      ]);
+      return (
+        over !== null &&
+        row !== null &&
+        file !== null &&
+        Math.abs(over.x - file.x) <= 1 &&
+        Math.abs(over.width - file.width) <= 1 &&
+        Math.abs(over.y - row.y) <= 1 &&
+        Math.abs(over.height - row.height) <= 1 &&
+        row.height > 40
+      );
+    };
+    await waitFor(fits, "the peek over its spacer, as wide as the diff");
+    // Both split columns reserve the row: the old column's next line sits below it, not under it.
+    const row = (await spacer.boundingBox())!;
+    const copies = (text: string) =>
+      pane.getByText(text, { exact: true }).evaluateAll((all) =>
+        all.map((element) => {
+          const box = element.getBoundingClientRect();
+          return { x: box.x, y: box.y, bottom: box.bottom };
+        }),
+      );
+    const [old21, new21] = (await copies("export const a21 = 21;")).sort((a, b) => a.x - b.x);
+    expect(old21!.x).toBeLessThan(new21!.x);
+    expect(old21!.y).toBeGreaterThanOrEqual(row.y + row.height - 1);
+    expect(new21!.y).toBeGreaterThanOrEqual(row.y + row.height - 1);
+    const [old20] = (await copies("export const a20 = 20;")).sort((a, b) => a.x - b.x);
+    expect(old20!.bottom).toBeLessThanOrEqual(row.y + 1);
+    // Preview on the left, its location on the right.
+    const [shown, listed] = await Promise.all([preview.boundingBox(), location.boundingBox()]);
+    expect(listed!.x).toBeGreaterThanOrEqual(shown!.x + shown!.width);
+
+    // Narrow: the location stacks under the preview, and the peek stays inside the panel.
+    await page.setViewportSize({ width: 700, height: 1000 });
+    await waitFor(async () => {
+      const [a, b] = await Promise.all([preview.boundingBox(), location.boundingBox()]);
+      return a !== null && b !== null && b.y >= a.y + a.height - 1;
+    }, "the location under the preview");
+    await waitFor(fits, "the narrow peek over its spacer, as wide as the diff");
+    const [narrow, main] = await Promise.all([peek.boundingBox(), pane.boundingBox()]);
+    expect(narrow!.x).toBeGreaterThanOrEqual(main!.x);
+    expect(narrow!.x + narrow!.width).toBeLessThanOrEqual(main!.x + main!.width + 1);
+
+    // Esc closes it, and its row goes with it.
+    await keys(page, "Escape");
+    await peek.waitFor({ state: "detached" });
+    expect(await spacer.count()).toBe(0);
+  }, 30_000);
+
+  it("expands a reference to an unchanged file in the main panel with ordinary movement and selection, and never marks it Viewed", async () => {
+    const walk = await openWalk();
+    await publishWalk(walk);
+    await walk.publish(1, "refs", referenceOps);
+    const page = await newPage();
+    await page.setViewportSize({ width: 1280, height: 1200 });
+    const writes = viewedOf(page);
+    await page.goto(`${one.origin}/session/${walk.id}`);
+    const pane = page.getByRole("main");
+    const side = page.getByRole("navigation", { name: "gyst" });
+    await side.getByRole("button", { name: /^Parse the config/ }).click();
+    await headingsAre(page, ["walk/b.ts", "walk/a.ts"]);
+    await page.getByRole("radio", { name: "Split", exact: true }).check();
+    await pane.locator("[data-note=b-note]").getByRole("button", { name: "line 40" }).click();
+    await peekOf(page).getByRole("button", { name: "Expand" }).click();
+
+    const identity = pane.getByRole("region", { name: "Captured file" });
+    await identity.waitFor();
+    expect(await identity.textContent()).toMatch(
+      /Captured · src\/long\.ts · new side · snapshot [0-9a-f]{7}/,
+    );
+    await headingsAre(page, ["src/long.ts"]);
+    await says(page, "long.ts:40 · new");
+    await says(page, "Captured file");
+    await pane.getByText("export const line40 = 40;", { exact: true }).waitFor();
+    // The target range is highlighted, lines 40 to 44.
+    const range = pane.locator("[data-range]");
+    await range.waitFor();
+    const [box, from, to] = await Promise.all([
+      range.boundingBox(),
+      pane.getByText("export const line40 = 40;", { exact: true }).boundingBox(),
+      pane.getByText("export const line44 = 44;", { exact: true }).boundingBox(),
+    ]);
+    expect(box!.y).toBeLessThanOrEqual(from!.y + 2);
+    expect(box!.y + box!.height).toBeGreaterThanOrEqual(to!.y + to!.height - 2);
+    // Ordinary movement and V selection; the cursor bar is on the line.
+    await keys(page, "j");
+    await says(page, "long.ts:41 · new");
+    await barOn(page, "export const line41 = 41;");
+    await keys(page, "Shift+V", "j", "j");
+    await says(page, "long.ts:43 · new");
+    await says(page, "3 lines selected");
+    await keys(page, "Escape");
+    await keys(page, "Shift+G");
+    await says(page, "long.ts:300 · new");
+    // Viewed and its key do nothing here.
+    expect(await pane.getByRole("checkbox").count()).toBe(0);
+    await keys(page, "m");
+    await statusLine(page)
+      .getByText("Viewed doesn't change while a captured file is expanded.")
+      .waitFor();
+
+    await keys(page, "Backspace");
+    await headingsAre(page, ["walk/b.ts", "walk/a.ts"]);
+    await peekOf(page).waitFor();
+    await says(page, "0/3 hunks viewed in 2 files");
+    expect(writes).toEqual([]);
+  }, 30_000);
+
+  it("expands references twice over and goes back twice to the same file, line, side, cursor, selection and peek, never touching Viewed", async () => {
+    const walk = await openWalk();
+    await publishWalk(walk);
+    await walk.publish(1, "refs", referenceOps);
+    const page = await newPage();
+    await page.setViewportSize({ width: 1280, height: 1200 });
+    const writes = viewedOf(page);
+    await page.goto(`${one.origin}/session/${walk.id}`);
+    const pane = page.getByRole("main");
+    const side = page.getByRole("navigation", { name: "gyst" });
+    await side.getByRole("button", { name: /^Parse the config/ }).click();
+    await headingsAre(page, ["walk/b.ts", "walk/a.ts"]);
+    await page.getByRole("radio", { name: "Split", exact: true }).check();
+    // The origin: lines 18 to 20 of a.ts's new side selected, the cursor on 18.
+    await keys(page, "g", "g", "]", "n", "]", "n");
+    await says(page, "a.ts:20 · new");
+    await keys(page, "Shift+V", "k", "k");
+    await says(page, "a.ts:18 · new");
+    await says(page, "3 lines selected");
+    const originTop = await panelTop(page);
+
+    await pane.locator("[data-note=span]").getByRole("button", { name: "the five" }).click();
+    await peekOf(page).getByRole("button", { name: "Expand" }).click();
+    // b.ts expanded: its whole diff, its notes from every group, the target highlighted.
+    const identity = pane.getByRole("region", { name: "Captured file" });
+    await identity.getByText("walk/b.ts", { exact: true }).waitFor();
+    await headingsAre(page, ["walk/b.ts"]);
+    await says(page, "b.ts:4 · new");
+    expect(await pane.getByRole("checkbox").count()).toBe(0);
+    await pane.locator("[data-range]").waitFor();
+    await keys(page, "j");
+    await says(page, "b.ts:5 · new");
+
+    await pane.locator("[data-note=b-note]").getByRole("button", { name: "line 40" }).click();
+    await peekOf(page).getByRole("button", { name: "Expand" }).click();
+    await identity.getByText("src/long.ts", { exact: true }).waitFor();
+    await headingsAre(page, ["src/long.ts"]);
+    await says(page, "long.ts:40 · new");
+
+    // Back to b.ts: its cursor, and its peek open again with Expand focused.
+    await keys(page, "Backspace");
+    await headingsAre(page, ["walk/b.ts"]);
+    await says(page, "b.ts:5 · new");
+    const reopened = peekOf(page);
+    await reopened.waitFor();
+    expect(await reopened.getAttribute("aria-label")).toBe("Reference src/long.ts:L40–44 · new");
+    await waitFor(async () => (await focusedText(page)) === "Expand", "Expand focused");
+
+    // Back to the group: the same cursor, selection, position and peek.
+    await keys(page, "Backspace");
+    await headingsAre(page, ["walk/b.ts", "walk/a.ts"]);
+    await says(page, "a.ts:18 · new");
+    await says(page, "3 lines selected");
+    await says(page, "0/3 hunks viewed in 2 files");
+    await waitFor(
+      async () =>
+        (await peekOf(page).getAttribute("aria-label")) === "Reference walk/b.ts:L4–6 · new",
+      "the b.ts peek again",
+    );
+    await waitFor(async () => (await focusedText(page)) === "Expand", "Expand focused");
+    await waitFor(
+      async () => Math.abs(((await panelTop(page)) ?? 0) - (originTop ?? 0)) < 40,
+      "the origin's position",
+    );
+    await barOn(page, "export const a18 = 18;");
+    // Nowhere further back.
+    await keys(page, "Backspace");
+    await says(page, "a.ts:18 · new");
+    await side
+      .getByRole("button", { name: "Parse the config, 0 of 3 hunks viewed", exact: true })
+      .waitFor();
+    expect(writes).toEqual([]);
+  }, 30_000);
+
+  it("opens an overview's reference in flow inside the overview card, and Back returns there", async () => {
+    const walk = await openWalk();
+    await publishWalk(walk);
+    await walk.publish(1, "refs", referenceOps);
+    const page = await newPage();
+    await page.setViewportSize({ width: 1280, height: 1200 });
+    await page.goto(`${one.origin}/session/${walk.id}`);
+    const pane = page.getByRole("main");
+    const overview = pane.getByRole("region", { name: "Walkthrough overview" });
+    await overview.getByRole("button", { name: "the constants" }).click();
+    const peek = overview.locator("[data-peek]");
+    await peek.waitFor();
+    await peek.locator("[data-peek-preview] [data-target]").first().waitFor();
+    expect(await spacerOf(page).count()).toBe(0);
+    expect(await peek.locator("[data-target]").count()).toBe(3);
+    const before = await panelTop(page);
+    await peek.getByRole("button", { name: "Expand" }).click();
+    await headingsAre(page, ["src/long.ts"]);
+    await says(page, "long.ts:10 · new");
+    await keys(page, "Backspace");
+    await headingsAre(page, ["walk/a.ts", "walk/b.ts", "walk/c.ts"]);
+    await overview.locator("[data-peek]").waitFor();
+    await waitFor(async () => (await focusedText(page)) === "Expand", "Expand focused");
+    expect(await panelTop(page)).toBe(before);
+  }, 30_000);
+
+  it("says why a reference pinned to an earlier snapshot is unavailable after a refresh, without reading anything for it", async () => {
+    git("branch", "-f", "peek", "walk");
+    const id = await openRange("walk~1...peek");
+    onTestFinished(() =>
+      gyst("session", "delete", "--session", id, "--request-id", randomBytes(16).toString("hex")),
+    );
+    const { snapshotId } = await gyst("session", "diff", "--session", id);
+    await applyBatch(id, {
+      revision: 0,
+      snapshotId,
+      idempotencyKey: "pinned",
+      ops: [referenceOps[2]],
+    });
+    git("branch", "-f", "peek", "walk-next");
+    await gyst("session", "refresh", "--session", id);
+    const page = await newPage();
+    await page.setViewportSize({ width: 1280, height: 1200 });
+    const reads: any[] = [];
+    page.on("request", (request) => {
+      if (operationOf(request)?.command === "code") reads.push(operationOf(request));
+    });
+    await page.goto(`${one.origin}/session/${id}`);
+    const pane = page.getByRole("main");
+    await headingsAre(page, ["walk/a.ts", "walk/b.ts", "walk/c.ts", "walk/d.ts"]);
+    const overview = pane.getByRole("region", { name: "Walkthrough overview" });
+    await overview.getByRole("button", { name: "the constants" }).click();
+    const peek = overview.locator("[data-peek]");
+    await peek
+      .getByText("Unavailable: captured in an earlier snapshot this session no longer keeps.")
+      .waitFor();
+    expect(await peek.getByRole("button", { name: "Expand" }).count()).toBe(0);
+    expect(await peek.textContent()).toContain("(earlier)");
+    await page.waitForLoadState("networkidle");
+    expect(reads.filter((read) => read.file === "src/long.ts")).toEqual([]);
+    expect(reads.every((read) => read.snapshotId !== snapshotId)).toBe(true);
   }, 30_000);
 
   it("stops each viewer with 130 on SIGINT and keeps the daemon and saved sessions", async () => {
