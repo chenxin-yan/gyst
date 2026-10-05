@@ -220,6 +220,15 @@ describe("mermaidSource", () => {
     expect(mermaidSource(`%%{init: {}}%%\n  `)).toEqual({ error: "The diagram is empty." });
   });
 
+  it("refuses shape data and author styling instead of handing them to Mermaid", () => {
+    expect(mermaidSource('flowchart LR\n  A@{ img: "https://example.com/p.png" }')).toEqual({
+      error: "Mermaid diagrams may not carry @{ } shape data, which can load images.",
+    });
+    expect(mermaidSource(`%%{init: {}}%%\n${diagram}\n  style a fill:#f00`)).toEqual({
+      error: 'Mermaid diagrams may not carry author styling: "style".',
+    });
+  });
+
   it("keeps ordinary comments and source", () => {
     expect(mermaidSource(`${diagram}\n%% a comment`)).toEqual({
       source: `${diagram}\n%% a comment`,

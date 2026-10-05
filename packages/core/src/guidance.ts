@@ -117,6 +117,42 @@ export const isWebUrl = (url: string) => {
   return protocol === "http:" || protocol === "https:";
 };
 
+// Mermaid reads configuration from `%%{…}%%` directives and leading `---` frontmatter, and node
+// images and icons from `@{…}` shape data: an image shape fetches its URL while rendering, before
+// any SVG exists to sanitize.
+const diagramDirective = /%%\s*\{/;
+const diagramFrontmatter = /^\s*---/;
+const diagramShapeData = /@\{/;
+// Statements that set author colours: flowchart/state/class/ER/block styles, C4 style updates and,
+// in sequence diagrams, coloured `rect` and `box` regions.
+const diagramStyling =
+  /^\s*(?:(?:style|linkStyle|classDef|cssClass)\s|Update(?:Element|Rel|Boundary)Style\b|UpdateLayoutConfig\b)/i;
+const sequenceStyling = /^\s*(?:rect|box)(?:\s|$)/i;
+
+/**
+ * What the shared rich-content policy refuses in a Mermaid diagram: author configuration, shape
+ * data (which can load images) and author styling. Both the entry check and the renderer apply it.
+ */
+export function diagramProblems(source: string): string[] {
+  const problems: string[] = [];
+  if (diagramDirective.test(source))
+    problems.push("Mermaid diagrams may not carry %%{ }%% directives");
+  if (diagramFrontmatter.test(source))
+    problems.push("Mermaid diagrams may not carry --- frontmatter");
+  if (diagramShapeData.test(source))
+    problems.push("Mermaid diagrams may not carry @{ } shape data, which can load images");
+  const statements = source.split(/[\n;]/);
+  const sequence = /^\s*sequenceDiagram\b/m.test(source);
+  const styled = statements.find(
+    (statement) => diagramStyling.test(statement) || (sequence && sequenceStyling.test(statement)),
+  );
+  if (styled !== undefined)
+    problems.push(
+      `Mermaid diagrams may not carry author styling: ${JSON.stringify(/[a-z]+/i.exec(styled)![0])}`,
+    );
+  return problems;
+}
+
 const referenceHref = /^gyst:(old|new)\/([^#]+)#L([1-9]\d*)(?:-L([1-9]\d*))?$/;
 
 /** Parses a `gyst:<old|new>/<path>#L<start>[-L<end>]` link; anything else is not a reference. */

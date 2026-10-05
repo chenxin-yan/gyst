@@ -33,6 +33,7 @@ export {
   CodeRangeSchema,
   type CodeSide,
   CodeSideSchema,
+  diagramProblems,
   type GuidanceText,
   GuidanceTextSchema,
   isWebUrl,

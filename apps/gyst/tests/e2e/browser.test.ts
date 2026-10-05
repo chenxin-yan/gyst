@@ -2920,6 +2920,14 @@ describe("installed gyst in a sandboxed browser", () => {
         "```mermaid\n\n---\nconfig:\n  securityLevel: loose\n---\nflowchart LR\n  a --> b\n```",
         "Mermaid diagrams may not carry --- frontmatter",
       ],
+      [
+        '```mermaid\nflowchart LR\n  a@{ img: "https://example.com/probe.png" } --> b\n```',
+        "Mermaid diagrams may not carry @{ } shape data",
+      ],
+      [
+        "```mermaid\nflowchart LR\n  a --> b\n  style a fill:#ff0000\n```",
+        'Mermaid diagrams may not carry author styling: "style"',
+      ],
     ];
     for (const [index, [markdown, problem]] of refused.entries())
       expect(

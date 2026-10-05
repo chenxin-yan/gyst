@@ -1,4 +1,10 @@
-import { type CapturedRange, type CodeRange, isWebUrl, parseReferenceHref } from "@gyst/core/wire";
+import {
+  type CapturedRange,
+  type CodeRange,
+  diagramProblems,
+  isWebUrl,
+  parseReferenceHref,
+} from "@gyst/core/wire";
 import type { MermaidConfig } from "mermaid";
 
 /** What a Markdown link may do: open an `http(s)` page, follow a pinned reference, or nothing. */
@@ -45,6 +51,7 @@ const directive = /%%\s*\{[\s\S]*?(?:\}\s*%%|$)/g;
 /**
  * Removes all author configuration from a diagram: leading `---` frontmatter and every `%%{…}%%`
  * directive, repeated until none is left, because removing one can join its neighbours into another.
+ * A diagram with shape data or author styling is refused, never handed to Mermaid.
  */
 export function mermaidSource(text: string): { source: string } | { error: string } {
   let source = text.replace(/\r\n?/g, "\n");
@@ -58,7 +65,9 @@ export function mermaidSource(text: string): { source: string } | { error: strin
     source = source.replace(directive, "");
   }
   source = source.trimStart();
-  return source.trimEnd() ? { source } : { error: "The diagram is empty." };
+  if (!source.trimEnd()) return { error: "The diagram is empty." };
+  const [problem] = diagramProblems(source);
+  return problem ? { error: `${problem}.` } : { source };
 }
 
 /** The app palette a diagram is drawn in, read from the app's CSS custom properties. */

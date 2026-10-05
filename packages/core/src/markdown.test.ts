@@ -154,4 +154,32 @@ describe("inspectMarkdown", () => {
     // Other languages may show Mermaid syntax as code.
     expect(inspectMarkdown(fence("%%{init:{}}%%\n---", "text")).problems).toEqual([]);
   });
+
+  it("rejects Mermaid shape data, which can load images, and author styling", () => {
+    const fence = (body: string) => `\`\`\`mermaid\n${body}\n\`\`\``;
+    for (const body of [
+      'flowchart LR\n  A@{ img: "https://example.com/probe.png", label: "Probe" }',
+      'flowchart LR\n  A@{ "\\u0069mg": "https://example.com/probe.png" }',
+      "flowchart LR\n  A@{ icon: 'fa:user' } --> B",
+    ])
+      expect(inspectMarkdown(fence(body)).problems, body).toEqual([
+        "line 1: Mermaid diagrams may not carry @{ } shape data, which can load images",
+      ]);
+    for (const [body, keyword] of [
+      ["flowchart LR\n  A --> B\n  style A fill:#ff0000", "style"],
+      ["flowchart LR\n  A --> B; classDef default fill:#f00", "classDef"],
+      ["flowchart LR\n  A --> B\n  linkStyle 0 stroke:#f00", "linkStyle"],
+      ["classDiagram\n  class A\n  cssClass A red", "cssClass"],
+      ["C4Context\n  Person(a, A)\n  UpdateElementStyle(a, $bgColor=red)", "UpdateElementStyle"],
+      ["sequenceDiagram\n  rect rgb(255, 0, 0)\n  A->>B: hi\n  end", "rect"],
+      ["sequenceDiagram\n  box Aqua Team\n  participant A\n  end", "box"],
+    ])
+      expect(inspectMarkdown(fence(body!)).problems, body).toEqual([
+        `line 1: Mermaid diagrams may not carry author styling: ${JSON.stringify(keyword)}`,
+      ]);
+    // Words that only start like a styling statement, and `rect` outside a sequence diagram.
+    expect(
+      inspectMarkdown(fence("flowchart LR\n  styles --> rect\n  rect --> boxes")).problems,
+    ).toEqual([]);
+  });
 });
