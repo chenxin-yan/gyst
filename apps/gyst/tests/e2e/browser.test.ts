@@ -274,16 +274,23 @@ const freePort = () =>
       });
   });
 
-/** OpenSSH executables from PATH, plus /usr/sbin where Ubuntu keeps sshd. */
-function openssh(name: string): string {
-  for (const dir of [...(process.env.PATH ?? "").split(delimiter), "/usr/sbin"].filter(Boolean)) {
+/** The first executable `name` on PATH or in `extra` directories. */
+function executable(name: string, extra: ReadonlyArray<string> = []): string | undefined {
+  for (const dir of [...(process.env.PATH ?? "").split(delimiter), ...extra].filter(Boolean)) {
     const file = join(dir, name);
     try {
       accessSync(file, constants.X_OK);
       return file;
     } catch {}
   }
-  throw new Error(`OpenSSH ${name} is not on PATH or in /usr/sbin`);
+  return undefined;
+}
+
+/** OpenSSH executables from PATH, plus /usr/sbin where Ubuntu keeps sshd. */
+function openssh(name: string): string {
+  const file = executable(name, ["/usr/sbin"]);
+  if (file === undefined) throw new Error(`OpenSSH ${name} is not on PATH or in /usr/sbin`);
+  return file;
 }
 
 describe("installed gyst in a sandboxed browser", () => {
@@ -386,7 +393,12 @@ describe("installed gyst in a sandboxed browser", () => {
     // Untracked binary: captured as an unavailable side, never as text.
     await writeFile(join(repo, "logo.bin"), new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0, 1]));
 
-    const chromiumPath = process.env.CHROMIUM_PATH;
+    // Without either, Playwright's chrome channel finds Google Chrome's standard install location.
+    const chromiumPath =
+      process.env.CHROMIUM_PATH ??
+      ["google-chrome", "google-chrome-stable", "chromium", "chromium-browser"]
+        .map((name) => executable(name))
+        .find((file) => file !== undefined);
     browser = await chromium.launch({
       ...(chromiumPath ? { executablePath: chromiumPath } : { channel: "chrome" }),
       chromiumSandbox: true,
