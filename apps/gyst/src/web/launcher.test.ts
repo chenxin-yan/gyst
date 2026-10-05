@@ -97,7 +97,7 @@ const daemonLayer = DaemonServer.layer.pipe(
       Layer.provideMerge(
         Sessions.layer.pipe(Layer.provide(Layer.mergeAll(git, noGitHub, store, crypto))),
       ),
-      Layer.provide(publishingContent()),
+      Layer.provide(content),
     ),
   ),
   Layer.provide(paths),

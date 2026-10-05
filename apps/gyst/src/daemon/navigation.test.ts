@@ -35,6 +35,7 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { noGitHub } from "./capture-doubles.ts";
 import { CapturedContent } from "./content.ts";
 import { Git } from "./git.ts";
 import {
@@ -131,7 +132,7 @@ const stack = (dataDir: string, policy: Policy = navigationPolicy) =>
   Navigation.layer.pipe(
     Layer.provide(Layer.succeed(NavigationPolicy, policy)),
     Layer.provideMerge(Sessions.layer),
-    Layer.provide(Layer.mergeAll(Git.layer, SessionStore.layer)),
+    Layer.provide(Layer.mergeAll(Git.layer, noGitHub, SessionStore.layer)),
     Layer.provideMerge(gatedContent),
     Layer.provideMerge(Paths.layer),
     Layer.provide(recordingSpawner),
