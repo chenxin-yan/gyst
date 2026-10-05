@@ -152,20 +152,16 @@ or style inside its shadow roots, and use only its public API.
 
 `pnpm test` includes browser tests (`apps/gyst/tests/e2e/browser.test.ts`) that drive the
 installed package, its real launches, daemon and a private key-authenticated SSH local forward on
-127.0.0.1 from a sandboxed Chromium. They need Google Chrome (or
-`CHROMIUM_PATH=/path/to/chromium`), git and OpenSSH (`sshd`, `ssh` and `ssh-keygen` on `PATH`, or
-`sshd` in `/usr/sbin`). Their scratch directory lives under `$HOME`, since sshd's `StrictModes`
-rejects a world-writable `/tmp` ancestor, and is removed after.
+127.0.0.1 from a sandboxed Chromium. They need git, OpenSSH (`sshd`, `ssh` and `ssh-keygen` on
+`PATH`, or `sshd` in `/usr/sbin`) and a Chrome or Chromium: `CHROMIUM_PATH` if set, else the first
+of `google-chrome`, `google-chrome-stable`, `chromium` and `chromium-browser` on `PATH`, else
+Google Chrome's standard install location. Their scratch directory lives under `$HOME`, since
+sshd's `StrictModes` rejects a world-writable `/tmp` ancestor, and is removed after.
 
-The tests launch `CHROMIUM_PATH` if set, else the first of `google-chrome`,
-`google-chrome-stable`, `chromium` and `chromium-browser` on `PATH`, else Google Chrome's
-standard install location. CI uses the Chrome preinstalled on GitHub's `ubuntu-latest` image,
-which also has git and OpenSSH, so the workflow installs nothing. These are system prerequisites,
-not pinned tools: mise does not manage a browser. On NixOS, add them for one run:
-
-```sh
-nix shell nixpkgs#chromium nixpkgs#openssh --command pnpm test:e2e
-```
+These are system prerequisites, not tools mise pins. A browser needs the system's libraries, and
+its sandbox needs the system's permission: Ubuntu 23.10 and later allow it only for Chrome at its
+installed path. CI uses the Google Chrome, git and OpenSSH preinstalled on GitHub's
+`ubuntu-latest` image, so the workflow installs nothing.
 
 To try the viewer over SSH, see the README's [Over SSH](README.md#over-ssh) section.
 
