@@ -478,6 +478,10 @@ function SessionReader(props: {
   });
   const [spacer, setSpacer] = useState<HTMLDivElement | null>(null);
   const peekHandle = useRef<PeekHandle>(null);
+  // The control a peek was followed from, focused again when the peek closes. The renderer
+  // remounts a note as its annotations change, so a note's reference is found again by identity.
+  const peekOpener = useRef<HTMLElement | null>(null);
+  const [refocus, setRefocus] = useState<{ noteId: string; target: CapturedRange }>();
   // An expanded file opens its hidden lines in its own map, so Back finds the origin's as it was.
   const expandedOpened = useRef(new Map<string, Map<number, Opened>>());
   const [notice, setNotice] = useState<string>();
@@ -560,6 +564,8 @@ function SessionReader(props: {
   const [collapsedNotes, setCollapsedNotes] = useState<ReadonlySet<string>>(new Set());
   // The note Mouse mode last scrolled to, which its scrolled-to place no longer names.
   const lastNote = useRef<number>(undefined);
+  // The note `]n`/`[n` last put the Vim cursor on: notes can share a line, which the cursor can't.
+  const cursorNote = useRef<string>(undefined);
   const layout = layoutOf(mode, width);
 
   // The metadata each file shows, and the one place its full contents are kept: its partial
@@ -736,14 +742,16 @@ function SessionReader(props: {
       const diff = diffs.get(file);
       if (diff) return rowsOf(diff, openedNow.get(file) ?? new Map());
       const text = wholeFiles.get(file);
-      return text === undefined ? [] : capturedRows(linesOf(text).length);
+      return text === undefined || captured === undefined
+        ? []
+        : capturedRows(linesOf(text).length, captured.side === "old" ? "deletions" : "additions");
     };
     return {
       files: shown.map((file) => file.path),
       rows,
       stops: (file, side) => stopsOf(file, rows(file), layout, side),
     };
-  }, [shown, folded, diffs, layout, openedNow, wholeFiles]);
+  }, [shown, folded, diffs, layout, openedNow, wholeFiles, captured]);
   const first = model.files[0];
   const current: Cursor | undefined =
     cursor && model.files.includes(cursor.file)
@@ -855,13 +863,33 @@ function SessionReader(props: {
     line: markOf(target)?.line ?? 0,
   });
 
+  /** The note the Vim cursor stands on: the one `]n`/`[n` went to, else the first on its line. */
+  const noteAt = (target: Cursor | undefined) => {
+    if (target?.kind !== "line") return undefined;
+    const from = noteFrom(target);
+    const onLine = notes.filter(
+      (at) => at.fileIndex === from.fileIndex && at.side === from.side && at.line === from.line,
+    );
+    return onLine.find((at) => at.note.id === cursorNote.current) ?? onLine[0];
+  };
+
+  const setNoteCollapsed = (id: string, collapse: boolean) =>
+    setCollapsedNotes((before) => {
+      const after = new Set(before);
+      if (collapse) after.add(id);
+      else after.delete(id);
+      return after;
+    });
+
   /** Goes to the next or previous note: the Vim cursor moves to its line, Mouse mode scrolls to it. */
   const stepNote = (direction: 1 | -1) => {
     if (vim) {
       if (here === undefined || selecting) return;
-      const index = noteStep(notes, noteFrom(here), direction);
+      const on = noteAt(here);
+      const index = noteStep(notes, noteFrom(here), direction, on && notes.indexOf(on));
       const at = index === undefined ? undefined : notes[index]!;
       if (at === undefined) return;
+      cursorNote.current = at.note.id;
       if (folded.has(at.file)) setFolds([at.file], false);
       return go({ file: at.file, kind: "line", side: at.side, line: at.line });
     }
@@ -884,12 +912,29 @@ function SessionReader(props: {
     setPeek(undefined);
     setBack([]);
     if (captured === undefined) return;
+    if (back[0]) setFolded(back[0].folded);
     setCaptured(undefined);
     setPanel(({ key }) => ({ key: key + 1, restore: undefined }));
   };
 
   /** Opens a reference's peek where it was followed, in place of any other. */
-  const follow = (target: CapturedRange, origin: PeekOrigin) => setPeek({ target, origin });
+  const follow = (target: CapturedRange, origin: PeekOrigin) => {
+    peekOpener.current =
+      document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    setRefocus(undefined);
+    setPeek({ target, origin });
+  };
+
+  /** Closes the peek and gives focus back to the reference it was followed from. */
+  const closePeek = () => {
+    if (peek === undefined) return;
+    const opener = peekOpener.current;
+    peekOpener.current = null;
+    flushSync(() => setPeek(undefined));
+    if (peek.origin.kind === "note")
+      setRefocus({ noteId: peek.origin.noteId, target: peek.target });
+    else if (opener?.isConnected) opener.focus({ preventScroll: true });
+  };
 
   /** Shows a peek's target in the main panel; Back returns to this place and this peek. */
   const expand = (target: CapturedRange) => {
@@ -899,11 +944,13 @@ function SessionReader(props: {
       captured,
       cursor: current,
       lines,
+      folded,
       restore: restoreFor(peek, at),
       peek,
     };
     setBack((stack) => pushed(stack, origin));
     expandedOpened.current = new Map();
+    setFolded(new Set());
     setCaptured(target);
     setPeek(undefined);
     setLines(null);
@@ -927,6 +974,7 @@ function SessionReader(props: {
     setCaptured(to.captured);
     setCursor(to.cursor);
     setLines(to.lines);
+    setFolded(to.folded);
     setPeek(to.peek);
     setPanel(({ key }) => ({ key: key + 1, restore: to.restore }));
   };
@@ -986,7 +1034,7 @@ function SessionReader(props: {
         narrow={width < splitMinWidth}
         snapshotId={snapshotId}
         onExpand={() => expand(peek.target)}
-        onClose={() => setPeek(undefined)}
+        onClose={closePeek}
         {...(overlay && { overlay, handle: peekHandle })}
       />
     );
@@ -994,6 +1042,7 @@ function SessionReader(props: {
   const run = (id: CommandId) => {
     const view = viewer.current;
     if (id !== "nextNote" && id !== "previousNote") lastNote.current = undefined;
+    setRefocus(undefined);
     setNotice(undefined);
     if (id === "menu" || id === "help") return setDialog(id);
     if (id === "back") return goBack();
@@ -1028,7 +1077,7 @@ function SessionReader(props: {
       return setFolds(model.files, fold, fold && here ? { ...here, kind: "header" } : undefined);
     }
     // Esc ends a selection first, then closes the peek.
-    if (id === "cancel") return lines === null ? setPeek(undefined) : setLines(null);
+    if (id === "cancel") return lines === null ? closePeek() : setLines(null);
     if (!vim) {
       // Mouse mode: movement scrolls; folds and Viewed act on the file at the top of the panel.
       const height = view?.height() ?? 0;
@@ -1068,6 +1117,7 @@ function SessionReader(props: {
       }
     }
     if (here === undefined) return;
+    const noteHere = noteAt(here);
     switch (id) {
       case "down":
       case "up":
@@ -1120,16 +1170,21 @@ function SessionReader(props: {
         if (here.kind === "range") return openRange(here);
         if (here.kind === "header" && diffs.has(here.file))
           return setFolds([here.file], !folded.has(here.file));
-        return;
+        return noteHere && setNoteCollapsed(noteHere.note.id, false);
       case "unfold":
         if (here.kind === "range") return openRange(here);
         if (here.kind === "header" && folded.has(here.file)) return setFolds([here.file], false);
-        return;
+        return noteHere && setNoteCollapsed(noteHere.note.id, false);
       case "fold":
+        // One level at a time: an open note at the cursor closes before its file folds.
+        if (noteHere && !collapsedNotes.has(noteHere.note.id))
+          return setNoteCollapsed(noteHere.note.id, true);
         if (!diffs.has(here.file) || folded.has(here.file)) return;
         return setFolds([here.file], true, { ...here, kind: "header" });
       case "toggleFold":
         if (here.kind === "range") return openRange(here);
+        if (noteHere)
+          return setNoteCollapsed(noteHere.note.id, !collapsedNotes.has(noteHere.note.id));
         if (!diffs.has(here.file)) return;
         if (folded.has(here.file)) return setFolds([here.file], false);
         return setFolds([here.file], true, { ...here, kind: "header" });
@@ -1186,6 +1241,7 @@ function SessionReader(props: {
   /** Scrolling by hand pulls a cursor that left the panel back onto its first or last line. */
   const pullBack = () => {
     lastNote.current = undefined;
+    setRefocus(undefined);
     if (!vim || here === undefined || selecting) return;
     const mark = markOf(here);
     const where = mark ? viewer.current?.where(mark) : undefined;
@@ -1408,6 +1464,7 @@ function SessionReader(props: {
                 onReference={(target) =>
                   follow(target, { kind: "note", noteId: annotation.note.id })
                 }
+                refocus={refocus?.noteId === annotation.note.id ? refocus.target : undefined}
               />
             )
           }
@@ -1424,7 +1481,18 @@ function SessionReader(props: {
                 : target,
             )
           }
-          onLines={(next) => {
+          onLines={(picked) => {
+            // A file shown whole has one column, on the expanded reference's side.
+            const wholeSide: Side | undefined =
+              picked && captured && !diffs.has(picked.id)
+                ? captured.side === "old"
+                  ? "deletions"
+                  : "additions"
+                : undefined;
+            const next =
+              picked && wholeSide
+                ? { ...picked, range: { ...picked.range, side: wholeSide, endSide: wholeSide } }
+                : picked;
             const single =
               next !== null &&
               next.range.start === next.range.end &&

@@ -30,6 +30,7 @@ describe("the Back stack", () => {
       captured: undefined,
       cursor: { file: "walk/a.ts", kind: "line", side: "additions", line: 20 },
       lines: { id: "walk/a.ts", range: { start: 18, side: "additions", end: 20 } },
+      folded: new Set(["walk/b.ts"]),
       restore: { position },
       peek: notePeek,
     };
@@ -38,6 +39,7 @@ describe("the Back stack", () => {
       captured: notePeek.target,
       cursor: { file: "walk/b.ts", kind: "line", side: "additions", line: 5 },
       lines: null,
+      folded: new Set(),
       restore: { position: { file: "walk/b.ts", side: "additions", line: 1 } },
       peek: { target: range("src/long.ts", 40), origin: { kind: "note", noteId: "b-note" } },
     };
@@ -50,6 +52,7 @@ describe("the Back stack", () => {
     const again = popped(stack)!;
     expect(again.place).toBe(origin);
     expect(again.place.lines).toEqual(origin.lines);
+    expect(again.place.folded).toEqual(new Set(["walk/b.ts"]));
     expect(again.stack).toEqual([]);
     expect(popped(again.stack)).toBeUndefined();
   });

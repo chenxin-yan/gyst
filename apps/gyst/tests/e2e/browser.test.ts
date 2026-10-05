@@ -2815,6 +2815,139 @@ describe("installed gyst in a sandboxed browser", () => {
     expect(await panelTop(page)).toBe(before);
   }, 30_000);
 
+  it("keeps an old-side whole file on the old side when stacked, unfolds a folded target, restores folds on Back and returns focus when a peek closes", async () => {
+    const walk = await openWalk();
+    await publishWalk(walk);
+    await walk.publish(1, "refs", [
+      ...referenceOps.slice(0, 2),
+      {
+        type: "walkthrough.update",
+        overview: "Two independent edits over [the old constants](gyst:old/src/long.ts#L20-L22).",
+      },
+    ]);
+    const page = await newPage();
+    await page.setViewportSize({ width: 1280, height: 1200 });
+    await page.goto(`${one.origin}/session/${walk.id}`);
+    const pane = page.getByRole("main");
+    const side = page.getByRole("navigation", { name: "gyst" });
+    await headingsAre(page, ["walk/a.ts", "walk/b.ts", "walk/c.ts"]);
+    await page.getByRole("radio", { name: "Stacked", exact: true }).check();
+
+    // An old-side reference to an unchanged file walks and selects its old side, even stacked.
+    const overview = pane.getByRole("region", { name: "Walkthrough overview" });
+    await overview.getByRole("button", { name: "the old constants" }).click();
+    await overview.locator("[data-peek]").getByRole("button", { name: "Expand" }).click();
+    await headingsAre(page, ["src/long.ts"]);
+    expect(await pane.getByRole("region", { name: "Captured file" }).textContent()).toContain(
+      "old side",
+    );
+    await says(page, "long.ts:20");
+    await keys(page, "j", "Shift+V", "j");
+    await says(page, "long.ts:22");
+    await says(page, "2 lines selected");
+    await page.getByRole("radio", { name: "Split", exact: true }).check();
+    await says(page, "long.ts:22 · old");
+    await keys(page, "Escape", "k");
+    await says(page, "long.ts:21 · old");
+    await keys(page, "Backspace");
+    await headingsAre(page, ["walk/a.ts", "walk/b.ts", "walk/c.ts"]);
+
+    // Closing a note's peek, by Esc or Close, gives focus back to the reference it was followed from.
+    await side.getByRole("button", { name: /^Parse the config/ }).click();
+    await headingsAre(page, ["walk/b.ts", "walk/a.ts"]);
+    const five = pane.locator("[data-note=span]").getByRole("button", { name: "the five" });
+    await five.click();
+    await waitFor(async () => (await focusedText(page)) === "Expand", "Expand focused");
+    await page.keyboard.press("Escape");
+    await peekOf(page).waitFor({ state: "detached" });
+    await waitFor(async () => (await focusedText(page)) === "the five", "the reference focused");
+    await five.click();
+    await peekOf(page).getByRole("button", { name: "Close reference" }).click();
+    await peekOf(page).waitFor({ state: "detached" });
+    await waitFor(async () => (await focusedText(page)) === "the five", "the reference focused");
+
+    // Viewed folds b.ts; expanding a reference into it still shows its target.
+    await viewedBox(page, "walk/b.ts").check();
+    await waitFor(
+      async () => (await foldToggle(page, "walk/b.ts").getAttribute("aria-expanded")) === "false",
+      "b.ts folded",
+    );
+    await five.click();
+    await peekOf(page).getByRole("button", { name: "Expand" }).click();
+    await headingsAre(page, ["walk/b.ts"]);
+    await pane.locator("[data-range]").waitFor();
+    await pane.getByText("export const b5 = 5 * 2;", { exact: true }).waitFor();
+    // Folding the expanded file is its own: Back finds the group's folds as they were.
+    await foldToggle(page, "walk/b.ts").click();
+    await waitFor(
+      async () => (await pane.getByText("export const b5 = 5 * 2;", { exact: true }).count()) === 0,
+      "the expanded b.ts folded",
+    );
+    await keys(page, "Backspace");
+    await headingsAre(page, ["walk/b.ts", "walk/a.ts"]);
+    expect(await foldToggle(page, "walk/b.ts").getAttribute("aria-expanded")).toBe("false");
+    expect(await foldToggle(page, "walk/a.ts").getAttribute("aria-expanded")).toBe("true");
+    await pane.getByText("export const a20 = 20 * 2;", { exact: true }).waitFor();
+  }, 30_000);
+
+  it("walks notes that share a line one by one, and opens and closes the note at the cursor", async () => {
+    const walk = await openWalk();
+    await publishWalk(walk);
+    await walk.publish(1, "twin", [
+      {
+        type: "note.create",
+        id: "twin",
+        group: "core",
+        anchor: { path: "walk/b.ts", side: "new", startLine: 5, endLine: 5 },
+        markdown: "Same line, another thought.",
+      },
+    ]);
+    const page = await newPage();
+    await page.setViewportSize({ width: 1280, height: 1200 });
+    await page.goto(`${one.origin}/session/${walk.id}`);
+    const pane = page.getByRole("main");
+    const side = page.getByRole("navigation", { name: "gyst" });
+    await side.getByRole("button", { name: /^Parse the config/ }).click();
+    await headingsAre(page, ["walk/b.ts", "walk/a.ts"]);
+    const notes = pane.locator("[data-note]");
+    await waitFor(async () => (await notes.count()) === 3, "the group's three notes");
+    const open = (id: string) =>
+      pane
+        .locator(`[data-note=${id}]`)
+        .getByRole("button", { name: "L5 · new", exact: true })
+        .getAttribute("aria-expanded");
+    const opens = (id: string, expanded: "true" | "false") =>
+      waitFor(async () => (await open(id)) === expanded, `${id} expanded ${expanded}`);
+
+    await keys(page, "g", "g", "]", "n");
+    await says(page, "b.ts:5 · new");
+    // z c closes the note the cursor went to, and only that one.
+    await keys(page, "z", "c");
+    await waitFor(
+      async () => new Set([await open("b-note"), await open("twin")]).size === 2,
+      "one of the line's notes closed",
+    );
+    const [first, second] =
+      (await open("b-note")) === "false" ? ["b-note", "twin"] : ["twin", "b-note"];
+    // The next note shares the line: the cursor goes to it, not back to the first.
+    await keys(page, "]", "n");
+    await says(page, "b.ts:5 · new");
+    await keys(page, "z", "c");
+    await opens(second, "false");
+    await keys(page, "Enter");
+    await opens(second, "true");
+    expect(await open(first)).toBe("false");
+    await keys(page, "]", "n");
+    await says(page, "a.ts:20 · new");
+    await keys(page, "[", "n");
+    await says(page, "b.ts:5 · new");
+    await keys(page, "z", "a");
+    await opens(second, "false");
+    await keys(page, "[", "n", "z", "o");
+    await opens(first, "true");
+    expect(await open(second)).toBe("false");
+  }, 30_000);
+
   it("says why a reference pinned to an earlier snapshot is unavailable after a refresh, without reading anything for it", async () => {
     git("branch", "-f", "peek", "walk");
     const id = await openRange("walk~1...peek");

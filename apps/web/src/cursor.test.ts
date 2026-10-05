@@ -248,30 +248,39 @@ describe("change and file jumps", () => {
 });
 
 describe("a captured file shown whole", () => {
-  const whole = (layout: "split" | "stacked"): Model => ({
+  const whole = (layout: "split" | "stacked", side: "deletions" | "additions"): Model => ({
     files: ["src/long.ts"],
-    rows: () => capturedRows(5),
-    stops: (file, side) => stopsOf(file, capturedRows(5), layout, side),
+    rows: () => capturedRows(5, side),
+    stops: (file, at) => stopsOf(file, capturedRows(5, side), layout, at),
   });
 
   it("walks lines 1 to the end on the side it was opened on, with no changes to jump to", () => {
-    const split = whole("split");
+    const split = whole("split", "deletions");
     const old = line("src/long.ts", "deletions", 2);
     expect(moved(split, old, 1)).toEqual(line("src/long.ts", "deletions", 3));
     expect(moved(split, header("src/long.ts", "deletions"), 2)).toEqual(old);
     expect(edge(split, "last", "deletions")).toEqual(line("src/long.ts", "deletions", 5));
     expect(change(split, old, 1)).toBeUndefined();
-    expect(capturedRows(0)).toEqual([]);
+    expect(capturedRows(0, "additions")).toEqual([]);
   });
 
-  it("selects within its lines, and keeps a stacked cursor on the same line", () => {
-    const stacked = whole("stacked");
-    const from = line("src/long.ts", "additions", 4);
-    expect(moved(stacked, from, 5, true)).toEqual(line("src/long.ts", "additions", 5));
-    expect(moved(stacked, from, -9, true)).toEqual(line("src/long.ts", "additions", 1));
+  it("keeps an old side's cursor and selection on the old side when stacked", () => {
+    const stacked = whole("stacked", "deletions");
+    const from = line("src/long.ts", "deletions", 4);
+    expect(moved(stacked, from, 1)).toEqual(line("src/long.ts", "deletions", 5));
+    expect(moved(stacked, from, 5, true)).toEqual(line("src/long.ts", "deletions", 5));
+    expect(moved(stacked, from, -9, true)).toEqual(line("src/long.ts", "deletions", 1));
+    expect(edge(stacked, "last", "additions")).toEqual(line("src/long.ts", "deletions", 5));
     const stops = stacked.stops("src/long.ts", "deletions");
     expect(
-      stops[locate(stops, capturedRows(5), line("src/long.ts", "deletions", 3))],
-    ).toMatchObject({ kind: "line", line: 3 });
+      stops[locate(stops, capturedRows(5, "deletions"), line("src/long.ts", "deletions", 3))],
+    ).toMatchObject({ kind: "line", side: "deletions", line: 3 });
+  });
+
+  it("keeps a new side's cursor on the new side when stacked", () => {
+    const stacked = whole("stacked", "additions");
+    expect(moved(stacked, line("src/long.ts", "additions", 4), 5, true)).toEqual(
+      line("src/long.ts", "additions", 5),
+    );
   });
 });

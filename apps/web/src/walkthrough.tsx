@@ -2,8 +2,8 @@
 // and the note and foreign-change annotations inside the diff. Derivations live in walkthrough.ts.
 import type { CapturedRange, StatusPayload } from "@gyst/core/wire";
 import * as stylex from "@stylexjs/stylex";
-import type { FocusEvent, ReactNode } from "react";
-import { rangeLabel } from "./rich.ts";
+import { type FocusEvent, type ReactNode, useEffect, useRef } from "react";
+import { rangeLabel, referenceLabel } from "./rich.ts";
 import { RichText } from "./rich.tsx";
 import { theme } from "./tokens.stylex.ts";
 import {
@@ -179,13 +179,24 @@ export function NoteCard(props: {
   onToggle: () => void;
   onHighlight: (range: CapturedRange | undefined) => void;
   onReference: (target: CapturedRange) => void;
+  /** A reference whose peek just closed: focused again, also when the renderer remounts the note. */
+  refocus?: CapturedRange | undefined;
 }) {
-  const { note, onHighlight } = props;
+  const { note, onHighlight, refocus } = props;
+  const slot = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (refocus === undefined) return;
+    const title = CSS.escape(referenceLabel(refocus));
+    slot.current?.querySelector<HTMLElement>(`button[title="${title}"]`)?.focus({
+      preventScroll: true,
+    });
+  }, [refocus]);
   const leave = (event: FocusEvent<HTMLDivElement>) => {
     if (!event.currentTarget.contains(event.relatedTarget)) onHighlight(undefined);
   };
   return (
     <div
+      ref={slot}
       data-annotation
       data-note={note.id}
       onMouseEnter={() => onHighlight(note.anchor)}

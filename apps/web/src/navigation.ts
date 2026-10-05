@@ -28,6 +28,8 @@ export type Place = {
   /** The cursor, whose side is the split column it walked. */
   cursor: Cursor | undefined;
   lines: CodeViewLineSelection | null;
+  /** The files folded there; an expanded file starts unfolded and folds on its own. */
+  folded: ReadonlySet<string>;
   restore: Restore;
   peek: Peek | undefined;
 };

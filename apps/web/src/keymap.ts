@@ -79,17 +79,18 @@ export const commands: readonly Command[] = [
   {
     id: "open",
     keys: [["Enter"]],
-    label: "Open the hidden lines at the cursor; on a file header, fold or unfold the file",
+    label:
+      "Open the hidden lines or the note at the cursor; on a file header, fold or unfold the file",
     vimOnly: true,
   },
   {
     id: "unfold",
     keys: [["Z", "O"]],
-    label: "Open the hidden lines or the folded file at the cursor",
+    label: "Open the hidden lines, the note or the folded file at the cursor",
   },
   { id: "cancel", keys: [["Escape"]], label: "Cancel the selection" },
-  { id: "fold", keys: [["Z", "C"]], label: "Fold the cursor's file" },
-  { id: "toggleFold", keys: [["Z", "A"]], label: "Toggle the fold at the cursor" },
+  { id: "fold", keys: [["Z", "C"]], label: "Close the note at the cursor, or fold its file" },
+  { id: "toggleFold", keys: [["Z", "A"]], label: "Toggle the note or the fold at the cursor" },
   { id: "unfoldAll", keys: [["Z", "Shift+R"]], label: "Unfold every file" },
   { id: "foldAll", keys: [["Z", "Shift+M"]], label: "Fold every file" },
   {
