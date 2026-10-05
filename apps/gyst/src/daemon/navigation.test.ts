@@ -427,7 +427,7 @@ describe("Navigation over real captures and the workspace add-on", () => {
           side("src/blob.ts", "new"),
           "the new side of src/blob.ts was not captured as text (binary)",
         );
-        // No identifier at the position: nothing is asked of the engine.
+        // No name at the position: punctuation, or a keyword.
         expect((yield* definition(newUseTarget, at(newUse, 2, "= "))).outcome).toEqual({
           kind: "no-symbol",
         });
