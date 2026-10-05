@@ -3,7 +3,7 @@ import { getSharedHighlighter } from "@pierre/diffs";
 import * as stylex from "@stylexjs/stylex";
 import DOMPurify from "dompurify";
 import { toJsxRuntime } from "hast-util-to-jsx-runtime";
-import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
+import { createContext, type ReactNode, useContext, useEffect, useRef, useState } from "react";
 import { Fragment, jsx, jsxs } from "react/jsx-runtime";
 import Markdown, { type Components, type ExtraProps } from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -51,6 +51,100 @@ function fenceOf(node: HastElement | undefined): { code: string; lang: string | 
   return { code: text.replace(/\n$/, ""), lang: lang?.slice("language-".length).toLowerCase() };
 }
 
+/** The pinned references a rich text's `gyst:` links may follow, and what following one does. */
+const ReferenceContext = createContext<{
+  references: readonly CapturedRange[];
+  onReference: (target: CapturedRange) => void;
+}>({ references: [], onReference: () => {} });
+
+function RichLink({ href, children }: { href?: string | undefined; children?: ReactNode }) {
+  const { references, onReference } = useContext(ReferenceContext);
+  const link = linkOf(href, references);
+  switch (link.kind) {
+    case "external":
+      return (
+        <a
+          href={link.href}
+          target="_blank"
+          rel="noopener noreferrer nofollow"
+          {...stylex.props(rich.link)}
+        >
+          {children}
+        </a>
+      );
+    case "reference":
+      return (
+        <button
+          type="button"
+          title={referenceLabel(link.target)}
+          onClick={() => onReference(link.target)}
+          {...stylex.props(rich.link)}
+        >
+          {children}
+        </button>
+      );
+    case "unavailable":
+      return (
+        <span title={`Unavailable: ${link.reason}`} {...stylex.props(rich.unavailable)}>
+          {children}
+        </span>
+      );
+    case "inert":
+      return <span>{children}</span>;
+  }
+}
+
+// One set of component types for every render: a new type would remount the element, so a
+// followed reference's button would leave the page before its peek gives focus back to it.
+const components: Components = {
+  a: RichLink,
+  img: ({ alt }) => (alt ? <span>{alt}</span> : null),
+  pre: ({ node }) => {
+    const { code, lang } = fenceOf(node);
+    return lang === "mermaid" ? (
+      <MermaidDiagram source={code} />
+    ) : (
+      <HighlightedCode code={code} lang={lang} />
+    );
+  },
+  p: ({ children }) => <p {...stylex.props(rich.block)}>{children}</p>,
+  ul: ({ children, className }) => (
+    <ul
+      {...stylex.props(
+        rich.block,
+        rich.list,
+        className?.includes("contains-task-list") ? rich.tasks : rich.bullets,
+      )}
+    >
+      {children}
+    </ul>
+  ),
+  ol: ({ children, start }) => (
+    <ol start={start} {...stylex.props(rich.block, rich.list, rich.numbers)}>
+      {children}
+    </ol>
+  ),
+  blockquote: ({ children }) => (
+    <blockquote {...stylex.props(rich.block, rich.quote)}>{children}</blockquote>
+  ),
+  table: ({ children }) => (
+    <div {...stylex.props(rich.block, rich.tableBox)}>
+      <table {...stylex.props(rich.table)}>{children}</table>
+    </div>
+  ),
+  th: ({ children, style }) => (
+    <th style={style} {...stylex.props(rich.cell, rich.head)}>
+      {children}
+    </th>
+  ),
+  td: ({ children, style }) => (
+    <td style={style} {...stylex.props(rich.cell)}>
+      {children}
+    </td>
+  ),
+  code: ({ children }) => <code {...stylex.props(rich.inlineCode)}>{children}</code>,
+};
+
 /**
  * Authored Markdown under the shared rich-content policy: GFM, no raw HTML or images, `http(s)`
  * links opened only by a click, and `gyst:` links that follow only this text's pinned references.
@@ -61,96 +155,13 @@ export function RichText(props: {
   onReference: (target: CapturedRange) => void;
 }) {
   const { references, onReference } = props;
-  const components = useMemo(
-    (): Components => ({
-      a: ({ href, children }) => {
-        const link = linkOf(href, references);
-        switch (link.kind) {
-          case "external":
-            return (
-              <a
-                href={link.href}
-                target="_blank"
-                rel="noopener noreferrer nofollow"
-                {...stylex.props(rich.link)}
-              >
-                {children}
-              </a>
-            );
-          case "reference":
-            return (
-              <button
-                type="button"
-                title={referenceLabel(link.target)}
-                onClick={() => onReference(link.target)}
-                {...stylex.props(rich.link)}
-              >
-                {children}
-              </button>
-            );
-          case "unavailable":
-            return (
-              <span title={`Unavailable: ${link.reason}`} {...stylex.props(rich.unavailable)}>
-                {children}
-              </span>
-            );
-          case "inert":
-            return <span>{children}</span>;
-        }
-      },
-      img: ({ alt }) => (alt ? <span>{alt}</span> : null),
-      pre: ({ node }) => {
-        const { code, lang } = fenceOf(node);
-        return lang === "mermaid" ? (
-          <MermaidDiagram source={code} />
-        ) : (
-          <HighlightedCode code={code} lang={lang} />
-        );
-      },
-      p: ({ children }) => <p {...stylex.props(rich.block)}>{children}</p>,
-      ul: ({ children, className }) => (
-        <ul
-          {...stylex.props(
-            rich.block,
-            rich.list,
-            className?.includes("contains-task-list") ? rich.tasks : rich.bullets,
-          )}
-        >
-          {children}
-        </ul>
-      ),
-      ol: ({ children, start }) => (
-        <ol start={start} {...stylex.props(rich.block, rich.list, rich.numbers)}>
-          {children}
-        </ol>
-      ),
-      blockquote: ({ children }) => (
-        <blockquote {...stylex.props(rich.block, rich.quote)}>{children}</blockquote>
-      ),
-      table: ({ children }) => (
-        <div {...stylex.props(rich.block, rich.tableBox)}>
-          <table {...stylex.props(rich.table)}>{children}</table>
-        </div>
-      ),
-      th: ({ children, style }) => (
-        <th style={style} {...stylex.props(rich.cell, rich.head)}>
-          {children}
-        </th>
-      ),
-      td: ({ children, style }) => (
-        <td style={style} {...stylex.props(rich.cell)}>
-          {children}
-        </td>
-      ),
-      code: ({ children }) => <code {...stylex.props(rich.inlineCode)}>{children}</code>,
-    }),
-    [references, onReference],
-  );
   return (
     <div {...stylex.props(rich.body)}>
-      <Markdown remarkPlugins={remarkPlugins} urlTransform={safeUrl} components={components}>
-        {props.markdown}
-      </Markdown>
+      <ReferenceContext value={{ references, onReference }}>
+        <Markdown remarkPlugins={remarkPlugins} urlTransform={safeUrl} components={components}>
+          {props.markdown}
+        </Markdown>
+      </ReferenceContext>
     </div>
   );
 }

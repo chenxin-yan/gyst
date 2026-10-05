@@ -2799,7 +2799,7 @@ describe("installed gyst in a sandboxed browser", () => {
     expect(writes).toEqual([]);
   }, 30_000);
 
-  it("opens an overview's reference in flow inside the overview card, and Back returns there", async () => {
+  it("opens an overview's reference in flow inside the overview card, Back returns there, and closing the peek focuses the reference again", async () => {
     const walk = await openWalk();
     await publishWalk(walk);
     await walk.publish(1, "refs", referenceOps);
@@ -2808,8 +2808,26 @@ describe("installed gyst in a sandboxed browser", () => {
     await page.goto(`${one.origin}/session/${walk.id}`);
     const pane = page.getByRole("main");
     const overview = pane.getByRole("region", { name: "Walkthrough overview" });
-    await overview.getByRole("button", { name: "the constants" }).click();
+    const constants = overview.getByRole("button", { name: "the constants" });
     const peek = overview.locator("[data-peek]");
+    const closedTo = async (close: () => Promise<void>) => {
+      await waitFor(async () => (await focusedText(page)) === "Expand", "Expand focused");
+      await close();
+      await peek.waitFor({ state: "detached" });
+      await waitFor(
+        async () => (await focusedText(page)) === "the constants",
+        "the reference focused",
+      );
+    };
+    const escape = () => page.keyboard.press("Escape");
+    const closeButton = () => peek.getByRole("button", { name: "Close reference" }).click();
+    // Closing the peek, by Esc or Close, gives focus back to the reference it was followed from.
+    await constants.click();
+    await closedTo(escape);
+    await constants.click();
+    await closedTo(closeButton);
+
+    await constants.click();
     await peek.waitFor();
     await peek.locator("[data-peek-preview] [data-target]").first().waitFor();
     expect(await spacerOf(page).count()).toBe(0);
@@ -2820,9 +2838,17 @@ describe("installed gyst in a sandboxed browser", () => {
     await says(page, "long.ts:10 · new");
     await keys(page, "Backspace");
     await headingsAre(page, ["walk/a.ts", "walk/b.ts", "walk/c.ts"]);
-    await overview.locator("[data-peek]").waitFor();
+    await peek.waitFor();
     await waitFor(async () => (await focusedText(page)) === "Expand", "Expand focused");
     expect(await panelTop(page)).toBe(before);
+    // Back rebuilt the overview: closing still finds the reference, by Esc or Close.
+    await closedTo(escape);
+    await constants.click();
+    await peek.getByRole("button", { name: "Expand" }).click();
+    await headingsAre(page, ["src/long.ts"]);
+    await keys(page, "Backspace");
+    await headingsAre(page, ["walk/a.ts", "walk/b.ts", "walk/c.ts"]);
+    await closedTo(closeButton);
   }, 30_000);
 
   it("keeps an old-side whole file on the old side when stacked, unfolds a folded target, restores folds on Back and returns focus when a peek closes", async () => {

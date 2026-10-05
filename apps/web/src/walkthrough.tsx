@@ -2,7 +2,7 @@
 // and the note and foreign-change annotations inside the diff. Derivations live in walkthrough.ts.
 import type { CapturedRange, StatusPayload } from "@gyst/core/wire";
 import * as stylex from "@stylexjs/stylex";
-import { type FocusEvent, type ReactNode, useEffect, useRef } from "react";
+import { type FocusEvent, type ReactNode, type RefObject, useEffect, useRef } from "react";
 import { rangeLabel, referenceLabel } from "./rich.ts";
 import { RichText } from "./rich.tsx";
 import { theme } from "./tokens.stylex.ts";
@@ -127,6 +127,17 @@ const nav = stylex.create({
   },
 });
 
+/** Focuses the reference to `refocus` inside `slot` whenever it is set: a closed peek's origin. */
+function useRefocus(slot: RefObject<HTMLElement | null>, refocus: CapturedRange | undefined) {
+  useEffect(() => {
+    if (refocus === undefined) return;
+    const title = CSS.escape(referenceLabel(refocus));
+    slot.current?.querySelector<HTMLElement>(`button[title="${title}"]`)?.focus({
+      preventScroll: true,
+    });
+  }, [slot, refocus]);
+}
+
 /**
  * The overview above a view's diff: the walkthrough's above the whole snapshot, or a group's above
  * its files. Never a heading, which would join the file headers' outline.
@@ -138,9 +149,13 @@ export function OverviewCard(props: {
   onReference: (target: CapturedRange) => void;
   /** A reference peek followed from this overview, read in flow below it. */
   peek?: ReactNode;
+  /** A reference whose peek just closed, focused again: Back rebuilds the overview it was in. */
+  refocus?: CapturedRange | undefined;
 }) {
+  const box = useRef<HTMLElement>(null);
+  useRefocus(box, props.refocus);
   return (
-    <section aria-label={props.label} {...stylex.props(card.box)}>
+    <section ref={box} aria-label={props.label} {...stylex.props(card.box)}>
       {props.title !== undefined && <p {...stylex.props(card.title)}>{props.title}</p>}
       {props.overview ? (
         <RichText
@@ -184,13 +199,7 @@ export function NoteCard(props: {
 }) {
   const { note, onHighlight, refocus } = props;
   const slot = useRef<HTMLDivElement>(null);
-  useEffect(() => {
-    if (refocus === undefined) return;
-    const title = CSS.escape(referenceLabel(refocus));
-    slot.current?.querySelector<HTMLElement>(`button[title="${title}"]`)?.focus({
-      preventScroll: true,
-    });
-  }, [refocus]);
+  useRefocus(slot, refocus);
   const leave = (event: FocusEvent<HTMLDivElement>) => {
     if (!event.currentTarget.contains(event.relatedTarget)) onHighlight(undefined);
   };

@@ -499,9 +499,10 @@ function SessionReader(props: {
   const [spacer, setSpacer] = useState<HTMLDivElement | null>(null);
   const peekHandle = useRef<PeekHandle>(null);
   // The control a peek was followed from, focused again when the peek closes. The renderer
-  // remounts a note as its annotations change, so a note's reference is found again by identity.
+  // remounts a note as its annotations change, and Back rebuilds an overview, so a reference no
+  // longer on the page is found again by identity.
   const peekOpener = useRef<HTMLElement | null>(null);
-  const [refocus, setRefocus] = useState<{ noteId: string; target: CapturedRange }>();
+  const [refocus, setRefocus] = useState<{ origin: PeekOrigin; target: CapturedRange }>();
   // An expanded file opens its hidden lines in its own map, so Back finds the origin's as it was.
   const expandedOpened = useRef(new Map<string, Map<number, Opened>>());
   const [notice, setNotice] = useState<string>();
@@ -951,9 +952,9 @@ function SessionReader(props: {
     const opener = peekOpener.current;
     peekOpener.current = null;
     flushSync(() => setPeek(undefined));
-    if (peek.origin.kind === "note")
-      setRefocus({ noteId: peek.origin.noteId, target: peek.target });
-    else if (opener?.isConnected) opener.focus({ preventScroll: true });
+    if (peek.origin.kind === "overview" && opener?.isConnected)
+      opener.focus({ preventScroll: true });
+    else setRefocus({ origin: peek.origin, target: peek.target });
   };
 
   /** Shows a peek's target in the main panel; Back returns to this place and this peek. */
@@ -1441,6 +1442,7 @@ function SessionReader(props: {
                   overview={inView.group.overview}
                   onReference={(target) => follow(target, { kind: "overview" })}
                   peek={peek?.origin.kind === "overview" && peekOf()}
+                  refocus={refocus?.origin.kind === "overview" ? refocus.target : undefined}
                 />
               ) : (
                 review.kind === "files" &&
@@ -1451,6 +1453,7 @@ function SessionReader(props: {
                     overview={status.overview}
                     onReference={(target) => follow(target, { kind: "overview" })}
                     peek={peek?.origin.kind === "overview" && peekOf()}
+                    refocus={refocus?.origin.kind === "overview" ? refocus.target : undefined}
                   />
                 )
               )}
@@ -1484,7 +1487,11 @@ function SessionReader(props: {
                 onReference={(target) =>
                   follow(target, { kind: "note", noteId: annotation.note.id })
                 }
-                refocus={refocus?.noteId === annotation.note.id ? refocus.target : undefined}
+                refocus={
+                  refocus?.origin.kind === "note" && refocus.origin.noteId === annotation.note.id
+                    ? refocus.target
+                    : undefined
+                }
               />
             )
           }
