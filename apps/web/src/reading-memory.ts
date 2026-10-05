@@ -1,15 +1,14 @@
-import type { Cursor, Opened, Side } from "./cursor.ts";
+import type { Cursor, Opened } from "./cursor.ts";
 import type { InputMode } from "./keymap.ts";
-
-/** Where the reader is: a file and, inside its diff, the side and line at the top of the panel. */
-export type ReadingPosition = { file: string; side: Side | undefined; line: number | undefined };
+import type { ReadingPosition } from "./navigation.ts";
+import type { ReviewView } from "./walkthrough.ts";
 
 /**
- * Where a reader left a session: its file selection, input mode, Vim cursor, the hidden lines it
+ * Where a reader left a session: its view, input mode, Vim cursor, the hidden lines it
  * opened (a place inside them exists only once they open again) and the position at the panel's top.
  */
 export type ReadingPlace = {
-  selection: string;
+  review: ReviewView;
   inputMode: InputMode;
   cursor: Cursor | undefined;
   opened: Map<string, Map<number, Opened>>;

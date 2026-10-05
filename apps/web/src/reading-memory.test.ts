@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vite-plus/test";
 import { type ReadingPlace, recall, remember } from "./reading-memory.ts";
 
-const placeAt = (selection: string, file: string | undefined): ReadingPlace => ({
-  selection,
+const placeAt = (path: string, file: string | undefined): ReadingPlace => ({
+  review: { kind: "files", path },
   inputMode: "vim",
   cursor: undefined,
   opened: new Map(),
@@ -12,7 +12,7 @@ const placeAt = (selection: string, file: string | undefined): ReadingPlace => (
 describe("reading memory", () => {
   it("keeps each session's place apart, so switching sessions resumes each where it was left", () => {
     const b: ReadingPlace = {
-      selection: "src",
+      review: { kind: "files", path: "src" },
       inputMode: "mouse",
       cursor: { file: "src/b.ts", kind: "line", side: "additions", line: 12 },
       opened: new Map([["src/b.ts", new Map([[0, { fromStart: 20, fromEnd: 0 }]])]]),

@@ -123,14 +123,22 @@ describe("GitHub PR sessions through the installed CLI", () => {
         ["session", "apply", "--session", b],
         JSON.stringify({
           revision: 0,
+          snapshotId: openedB.session.snapshotId,
           idempotencyKey: "prepare-b",
           ops: [
             {
               type: "group.create",
               id: "layer-b",
-              memberHunkIds: [hunkId],
               title: "Layer B",
-              notes: [{ hunkId, text: "Read this on top of layer A." }],
+              overview: "Adds layer B.",
+              memberHunkIds: [hunkId],
+            },
+            {
+              type: "note.create",
+              id: "on-a",
+              group: "layer-b",
+              anchor: { path: "b.txt", side: "new", startLine: 1, endLine: 1 },
+              markdown: "Read this on top of layer A.",
             },
           ],
         }),
@@ -197,7 +205,7 @@ describe("GitHub PR sessions through the installed CLI", () => {
     expect(resumed.session.snapshotId).toBe(snapshotB);
     expect(await status(b)).toMatchObject({
       revision: 1,
-      groups: [{ id: "layer-b", notes: [{ text: "Read this on top of layer A." }] }],
+      groups: [{ id: "layer-b", notes: [{ markdown: "Read this on top of layer A." }] }],
     });
     expect((await fake.calls()).length).toBe(calls);
 

@@ -122,7 +122,7 @@ import {
   treeOf,
   wholeFileType,
 } from "../reader.ts";
-import { type ReadingPlace, type ReadingPosition, recall, remember } from "../reading-memory.ts";
+import { type ReadingPlace, recall, remember } from "../reading-memory.ts";
 import { StackSwitcher } from "../stack.tsx";
 import { media, theme } from "../tokens.stylex.ts";
 import {
@@ -734,13 +734,13 @@ function SessionReader(props: {
   // changes by scrolling alone, without a render, so the panel reports it. Until a return has put
   // the recalled position back, the panel's own start is not the reader's place.
   const readingPlace = useRef<ReadingPlace>({
-    selection,
+    review,
     inputMode,
     cursor,
     opened,
     top: recalled?.top,
   });
-  readingPlace.current = { ...readingPlace.current, selection, inputMode, cursor };
+  readingPlace.current = { ...readingPlace.current, review, inputMode, cursor };
   useEffect(() => remember(session.id, snapshotId, readingPlace.current));
   const returning = useRef(recalled !== undefined);
   const onPosition = useCallback(
