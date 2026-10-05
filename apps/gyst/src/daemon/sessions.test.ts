@@ -9,9 +9,13 @@ import {
   type Session,
   type ManifestFile,
   pageBytes,
+  type PullRequest,
+  type PullRequestScope,
   type Request,
+  SessionSchema,
   type SnapshotManifest,
   snapshotIdOf,
+  SourceUnavailable,
 } from "@gyst/core";
 import {
   ConfigProvider,
@@ -24,6 +28,7 @@ import {
   Option,
   PlatformError,
   Queue,
+  Schema,
   Stream,
 } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
@@ -33,7 +38,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { manifestOf, publishingContent } from "./capture-doubles.ts";
 import { CapturedContent } from "./content.ts";
-import { Git } from "./git.ts";
+import { Git, type PullRequestTarget } from "./git.ts";
+import { GitHub, type StackDiscovery } from "./github.ts";
 import { Paths } from "./paths.ts";
 import { Sessions } from "./sessions.ts";
 import { type DeleteReceipt, SessionStore } from "./store.ts";
@@ -57,7 +63,13 @@ diff --git a/b.txt b/b.txt
 
 let files: Map<string, Session>;
 let deleteReceipts: ReadonlyArray<DeleteReceipt>;
-let captureCalls: Array<{ root: string; scope: Scope }>;
+let captureCalls: Array<{ root: string; scope: Scope; target?: PullRequestTarget }>;
+/** Every GitHub read, in order; local and range sessions must leave it empty. */
+let githubCalls: Array<{ method: "pullRequest" | "stack"; number: number }>;
+let headRefOid: string;
+let discovery: StackDiscovery;
+let pullRequestFailure: SourceUnavailable | undefined;
+let pullRequestCaptureFailure: SourceUnavailable | undefined;
 let saveFails: boolean;
 let removeFails: boolean;
 let nextId: number;
@@ -98,6 +110,18 @@ const crypto = Layer.succeed(
   }),
 );
 
+const capturing = (scope: Scope) =>
+  Effect.suspend(() => {
+    const captured =
+      patchEffect ?? Effect.sync(() => withUncaptured(manifestOf(gitPatch, scope, supporting)));
+    const delayed = slowCapture ? Effect.delay(captured, "20 millis") : captured;
+    return gate
+      ? Deferred.succeed(gate.started, undefined).pipe(
+          Effect.andThen(Deferred.await(gate.release)),
+          Effect.andThen(delayed),
+        )
+      : delayed;
+  });
 const git = Layer.succeed(Git, {
   repoRoot: (cwd) =>
     cwd.startsWith(root) || cwd.startsWith(otherRoot)
@@ -106,17 +130,40 @@ const git = Layer.succeed(Git, {
   capture: (root, scope) =>
     Effect.suspend(() => {
       captureCalls.push({ root, scope });
-      const captured =
-        patchEffect ?? Effect.sync(() => withUncaptured(manifestOf(gitPatch, scope, supporting)));
-      const delayed = slowCapture ? Effect.delay(captured, "20 millis") : captured;
-      return gate
-        ? Deferred.succeed(gate.started, undefined).pipe(
-            Effect.andThen(Deferred.await(gate.release)),
-            Effect.andThen(delayed),
-          )
-        : delayed;
+      return capturing(scope);
     }),
-  pullRequestRange: () => Effect.die("no PR ranges in this test"),
+  capturePullRequest: (root, scope, target) =>
+    Effect.suspend(() => {
+      captureCalls.push({ root, scope, target });
+      const captured: Effect.Effect<SnapshotManifest, SourceUnavailable | BadArgs | InternalError> =
+        pullRequestCaptureFailure ? Effect.fail(pullRequestCaptureFailure) : capturing(scope);
+      return captured;
+    }),
+  pullRequestRange: () => Effect.die("Sessions captures PRs through capturePullRequest"),
+});
+
+const pullRequestOf = (number: number): PullRequest => ({
+  number,
+  title: `Layer ${number}`,
+  description: `Why layer ${number}`,
+  state: "open",
+  url: `https://github.com/acme/widgets/pull/${number}`,
+  baseRefName: number === 1 ? "main" : `layer-${number - 1}`,
+  headRefName: `layer-${number}`,
+});
+const github = Layer.succeed(GitHub, {
+  pullRequest: (scope) =>
+    Effect.suspend(() => {
+      githubCalls.push({ method: "pullRequest", number: scope.number });
+      return pullRequestFailure
+        ? Effect.fail(pullRequestFailure)
+        : Effect.succeed({ pullRequest: pullRequestOf(scope.number), headRefOid });
+    }),
+  stack: (scope) =>
+    Effect.sync(() => {
+      githubCalls.push({ method: "stack", number: scope.number });
+      return discovery;
+    }),
 });
 
 const content = publishingContent((manifest) =>
@@ -168,7 +215,7 @@ const store = Layer.succeed(SessionStore, {
 });
 
 const sessionsLayer = Sessions.layer.pipe(
-  Layer.provide(Layer.mergeAll(git, store, crypto, content)),
+  Layer.provide(Layer.mergeAll(git, github, store, crypto, content)),
 );
 // Like the daemon: persisted sessions are loaded once the service is built, not while building it.
 // Each `run` is a fresh daemon over the same persisted files and receipts.
@@ -271,6 +318,22 @@ beforeEach(() => {
   files = new Map([[persisted.id, persisted]]);
   deleteReceipts = [];
   captureCalls = [];
+  githubCalls = [];
+  headRefOid = "1".repeat(40);
+  discovery = {
+    ok: true,
+    membership: {
+      membership: "stacked",
+      number: 7,
+      baseRefName: "main",
+      layers: [1, 2, 3].map((number) => ({
+        position: number,
+        pullRequest: pullRequestOf(number),
+      })),
+    },
+  };
+  pullRequestFailure = undefined;
+  pullRequestCaptureFailure = undefined;
   saveFails = false;
   removeFails = false;
   nextId = 0;
@@ -720,6 +783,161 @@ describe("Sessions.open", () => {
         }),
       ),
     );
+  });
+});
+
+describe("Sessions PR sessions", () => {
+  const layer2: PullRequestScope = { kind: "pr", repository: "acme/widgets", number: 2 };
+  const decodeSession = Schema.decodeUnknownSync(SessionSchema);
+  const unavailable = (reason: "gh_missing" | "objects_missing") =>
+    new SourceUnavailable({ message: `PR source unavailable: ${reason}`, detail: { reason } });
+
+  it("captures the PR's range at GitHub's head and stores its attempted stack discovery", async () => {
+    const opened = await run(openScope(layer2, `${root}/sub`));
+    expect(opened).toMatchObject({ created: true, session: { repoRoot: root, scope: layer2 } });
+    expect(captureCalls).toEqual([
+      { root, scope: layer2, target: { baseRefName: "layer-1", headRefOid } },
+    ]);
+    expect(githubCalls).toEqual([
+      { method: "pullRequest", number: 2 },
+      { method: "stack", number: 2 },
+    ]);
+    const saved = decodeSession(files.get(opened.session.id));
+    expect(saved.pullRequest).toEqual({
+      pullRequest: pullRequestOf(2),
+      stack: { verifiedAt: expect.any(String), ...(discovery.ok && discovery.membership) },
+      unavailable: null,
+    });
+  });
+
+  it("reuses the saved PR session as it is after its head, stack or checkout changes, without asking GitHub", async () => {
+    const first = await run(openScope(layer2));
+    const saved = JSON.stringify([...files]);
+    const calls = githubCalls.length;
+    headRefOid = "2".repeat(40);
+    gitPatch = patch.replace("+two", "+restacked");
+    discovery = { ok: false, reason: "github_failed" };
+    const again = await run(
+      Effect.gen(function* () {
+        const elsewhere = yield* openScope(layer2, otherRoot);
+        expect(yield* openScope(layer2, `${root}/sub`)).toEqual(elsewhere);
+        return elsewhere;
+      }),
+    );
+    expect(again).toEqual({ ...first, created: false });
+    expect(githubCalls).toHaveLength(calls);
+    expect(captureCalls).toHaveLength(1);
+    expect(JSON.stringify([...files])).toBe(saved);
+  });
+
+  it("keeps a PR apart from a range with an equal diff, and from other PRs and repositories", async () => {
+    const scopes: Scope[] = [
+      { kind: "range", range: "layer-1...layer-2" },
+      layer2,
+      { ...layer2, number: 3 },
+      { ...layer2, repository: "acme/gadgets" },
+    ];
+    const opened = await run(Effect.forEach(scopes, (scope) => openScope(scope)));
+    expect(new Set(opened.map(({ session }) => session.id)).size).toBe(4);
+    expect(new Set(opened.map(({ session }) => session.snapshotId)).size).toBe(4);
+    expect(files.get(opened[0]!.session.id)?.pullRequest).toBeUndefined();
+    expect((await run(openScope(scopes[1]))).session.id).toBe(opened[1]!.session.id);
+  });
+
+  it("never asks GitHub for uncommitted or range sessions", async () => {
+    await run(
+      Sessions.use((sessions) =>
+        Effect.gen(function* () {
+          for (const scope of [uncommitted, { kind: "range", range: "main...feature" } as const]) {
+            const { session } = yield* openScope(scope);
+            yield* sessions.check({ command: "check", session: session.id });
+            yield* sessions.refresh({ command: "refresh", session: session.id });
+          }
+        }),
+      ),
+    );
+    expect(captureCalls.map(({ scope }) => scope.kind)).toEqual([
+      "uncommitted",
+      "uncommitted",
+      "uncommitted",
+      "range",
+      "range",
+      "range",
+    ]);
+    expect(githubCalls).toEqual([]);
+  });
+
+  it("saves nothing when GitHub or the PR's Git objects are unavailable", async () => {
+    const saved = JSON.stringify([...files]);
+    pullRequestFailure = unavailable("gh_missing");
+    expect(await failure(openScope(layer2))).toBe(pullRequestFailure);
+    expect(captureCalls).toEqual([]);
+    pullRequestFailure = undefined;
+    pullRequestCaptureFailure = unavailable("objects_missing");
+    expect(await failure(openScope(layer2))).toBe(pullRequestCaptureFailure);
+    // Discovery is attempted only once the PR's own range resolved.
+    expect(githubCalls.map(({ method }) => method)).toEqual(["pullRequest", "pullRequest"]);
+    expect(commits).toEqual([]);
+    expect(JSON.stringify([...files])).toBe(saved);
+  });
+
+  it("opens a resolvable PR standalone when stack discovery is unavailable", async () => {
+    discovery = { ok: false, reason: "github_failed" };
+    const opened = await run(openScope(layer2));
+    expect(opened.created).toBe(true);
+    expect(decodeSession(files.get(opened.session.id)).pullRequest).toEqual({
+      pullRequest: pullRequestOf(2),
+      stack: null,
+      unavailable: { at: expect.any(String), reason: "github_failed" },
+    });
+  });
+
+  it("refreshes only the PR's range at its current head and keeps the stack context", async () => {
+    const { session } = await run(openScope(layer2));
+    const context = files.get(session.id)?.pullRequest;
+    headRefOid = "2".repeat(40);
+    gitPatch = patch.replace("+two", "+restacked");
+    discovery = { ok: false, reason: "github_failed" };
+    const refreshed = await run(
+      Sessions.use((s) => s.refresh({ command: "refresh", session: session.id })),
+    );
+    expect(refreshed.session.snapshotId).not.toBe(session.snapshotId);
+    expect(captureCalls.at(-1)).toEqual({
+      root,
+      scope: layer2,
+      target: { baseRefName: "layer-1", headRefOid },
+    });
+    expect(githubCalls.map(({ method }) => method)).toEqual([
+      "pullRequest",
+      "stack",
+      "pullRequest",
+    ]);
+    expect(decodeSession(files.get(session.id)).pullRequest).toEqual(context);
+
+    // A refresh that cannot read the PR changes nothing.
+    const saved = JSON.stringify([...files]);
+    pullRequestFailure = unavailable("gh_missing");
+    expect(
+      await failure(Sessions.use((s) => s.refresh({ command: "refresh", session: session.id }))),
+    ).toBe(pullRequestFailure);
+    expect(JSON.stringify([...files])).toBe(saved);
+  });
+
+  it("checks a PR against GitHub's current head and reports an unreadable PR as unavailable", async () => {
+    const { session } = await run(openScope(layer2));
+    const check = Sessions.use((s) => s.check({ command: "check", session: session.id }));
+    expect(await run(check)).toMatchObject({ state: "unchanged" });
+    gitPatch = patch.replace("+two", "+moved");
+    expect(await run(check)).toMatchObject({ state: "changed" });
+    pullRequestFailure = unavailable("gh_missing");
+    expect(await run(check)).toEqual({
+      sessionId: session.id,
+      revision: 0,
+      state: "unavailable",
+      message: pullRequestFailure.message,
+      checkedAt: expect.any(String),
+    });
+    expect(githubCalls.filter(({ method }) => method === "stack")).toHaveLength(1);
   });
 });
 
@@ -1687,7 +1905,7 @@ describe("Sessions captured reads over real captures", () => {
         Sessions.use((s) => s.load).pipe(Effect.andThen(effect)),
         Sessions.layer.pipe(
           Layer.provide(Git.layer.pipe(Layer.provideMerge(gatedContent))),
-          Layer.provide(Layer.mergeAll(store, crypto)),
+          Layer.provide(Layer.mergeAll(store, crypto, github)),
           Layer.provide(Paths.layer),
           Layer.provide(NodeServices.layer),
           Layer.provide(

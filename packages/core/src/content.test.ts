@@ -132,6 +132,28 @@ describe("SnapshotManifestSchema", () => {
     const rangeProvenance = { kind: "range", base: commit, head: commit, mergeBase: null };
     expect(Result.isFailure(decode({ ...manifest, provenance: rangeProvenance }))).toBe(true);
   });
+
+  it("requires a PR scope's own merge base, and only for a PR scope", () => {
+    const [base, head, mergeBase] = ["b", "c", "d"].map((char) => char.repeat(40));
+    const scope = { kind: "pr", repository: "acme/widgets", number: 2 } as const;
+    const pullRequest: SnapshotManifest = {
+      ...manifest,
+      scope,
+      provenance: { kind: "pr", base: base!, head: head!, mergeBase: mergeBase! },
+    };
+    expect(Result.getOrThrow(decode(pullRequest))).toEqual(pullRequest);
+    expect(JSON.parse(canonicalManifestJson(pullRequest)) as SnapshotManifest).toMatchObject({
+      scope,
+      provenance: pullRequest.provenance,
+    });
+    for (const invalid of [
+      { ...pullRequest, provenance: { ...pullRequest.provenance, mergeBase: null } },
+      { ...pullRequest, provenance: { kind: "range", base, head, mergeBase } },
+      { ...pullRequest, scope: { kind: "range", range: "main...feature" } },
+      { ...manifest, provenance: pullRequest.provenance },
+    ])
+      expect(Result.isFailure(decode(invalid))).toBe(true);
+  });
 });
 
 describe("snapshotIdOf", () => {

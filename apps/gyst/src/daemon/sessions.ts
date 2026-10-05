@@ -16,6 +16,8 @@ import {
   NoSession,
   type OpenPayload,
   pageBytes,
+  type PullRequest,
+  type PullRequestContext,
   refreshSession,
   type Request,
   setViewed,
@@ -24,6 +26,7 @@ import {
   type SessionVersion,
   type SnapshotManifest,
   snapshotIdOf,
+  type SourceUnavailable,
   StaleRevision,
   type SourceCheckPayload,
   type StatusPayload,
@@ -50,6 +53,7 @@ import {
 } from "effect";
 import { CapturedContent, codePage } from "./content.ts";
 import { Git } from "./git.ts";
+import { GitHub, type StackDiscovery } from "./github.ts";
 import { type DeleteReceipt, SessionStore } from "./store.ts";
 type SourceCheck = Omit<SourceCheckPayload, "sessionId" | "revision">;
 type Input<C extends Request["command"]> = Extract<Request, { readonly command: C }>;
@@ -64,7 +68,24 @@ const versionOf = (session: Session): SessionVersion => ({
 });
 
 const sameScope = (a: Scope, b: Scope) =>
-  a.kind === "range" ? b.kind === "range" && a.range === b.range : a.kind === b.kind;
+  a.kind === "range"
+    ? b.kind === "range" && a.range === b.range
+    : a.kind === "pr"
+      ? b.kind === "pr" && a.repository === b.repository && a.number === b.number
+      : a.kind === b.kind;
+/** A PR is one session whichever checkout opens it; local scopes belong to their repository. */
+const identifies = (session: Session, root: string, scope: Scope) =>
+  sameScope(session.scope, scope) && (scope.kind === "pr" || session.repoRoot === root);
+
+const contextOf = (
+  pullRequest: PullRequest,
+  discovery: StackDiscovery,
+  at: string,
+): PullRequestContext => ({
+  pullRequest,
+  stack: discovery.ok ? { verifiedAt: at, ...discovery.membership } : null,
+  unavailable: discovery.ok ? null : { at, reason: discovery.reason },
+});
 
 const opened = (session: Session, created: boolean): OpenPayload => ({
   session: summaryOf(session),
@@ -98,13 +119,14 @@ export class Sessions extends Context.Service<
   Sessions,
   {
     /**
-     * Returns the saved session for this repository and recorded scope as it is, else captures and
-     * persists a new one. Opens are serialized, so concurrent opens of one scope return one session.
+     * Returns the saved session for this repository and recorded scope (for a PR, its repository
+     * and number alone) as it is, else captures and persists a new one, with a PR's attempted stack
+     * discovery. Opens are serialized, so concurrent opens of one scope return one session.
      */
     open(
       request: Input<"open">,
       onProgress?: OnProgress,
-    ): Effect.Effect<OpenPayload, BadArgs | NoSession | InternalError>;
+    ): Effect.Effect<OpenPayload, BadArgs | NoSession | SourceUnavailable | InternalError>;
     readonly list: Effect.Effect<ListPayload>;
     status(request: Input<"status">): Effect.Effect<StatusPayload, NoSession>;
     check(request: Input<"check">): Effect.Effect<SourceCheckPayload, NoSession>;
@@ -142,7 +164,10 @@ export class Sessions extends Context.Service<
     refresh(
       request: Input<"refresh">,
       onProgress?: OnProgress,
-    ): Effect.Effect<StatusPayload, BadArgs | NoSession | ValidationFailed | InternalError>;
+    ): Effect.Effect<
+      StatusPayload,
+      BadArgs | NoSession | SourceUnavailable | ValidationFailed | InternalError
+    >;
     /**
      * Removes one saved session. A retry with the same `requestId` and session returns the recorded
      * result, even after a restart; the same `requestId` for another session fails.
@@ -178,6 +203,7 @@ export class Sessions extends Context.Service<
     Sessions,
     Effect.gen(function* () {
       const git = yield* Git;
+      const github = yield* GitHub;
       const content = yield* CapturedContent;
       const store = yield* SessionStore;
       const { randomUUIDv4 } = yield* Crypto.Crypto;
@@ -222,19 +248,44 @@ export class Sessions extends Context.Service<
       const sourceLock = yield* Semaphore.make(1);
       const underLock = Semaphore.withPermit(lock);
 
-      const open = Effect.fn("Sessions.open")(function* (
-        request: Input<"open">,
+      /** The recorded scope's manifest; a PR's range comes from what GitHub reports now. */
+      const acquire = Effect.fn("Sessions.acquire")(function* (
+        root: string,
+        scope: Scope,
         onProgress?: OnProgress,
       ) {
-        if (!("cwd" in request)) return opened(yield* underLock(selected(request)), false);
-        const root = yield* git.repoRoot(request.cwd);
+        if (scope.kind !== "pr")
+          return { manifest: yield* git.capture(root, scope, onProgress), pullRequest: undefined };
+        const { pullRequest, headRefOid } = yield* github.pullRequest(scope);
+        const manifest = yield* git.capturePullRequest(
+          root,
+          scope,
+          { baseRefName: pullRequest.baseRefName, headRefOid },
+          onProgress,
+        );
+        return { manifest, pullRequest };
+      });
+
+      /** Reuses the saved session as it is, with no capture or GitHub call; run under `sourceLock`. */
+      const openScope = Effect.fn("Sessions.openScope")(function* (
+        root: string,
+        scope: Scope,
+        onProgress?: OnProgress,
+      ) {
         const saved = () =>
-          [...sessions.values()].find(
-            (session) => session.repoRoot === root && sameScope(session.scope, request.scope),
-          );
+          [...sessions.values()].find((session) => identifies(session, root, scope));
         const reused = yield* underLock(Effect.sync(saved));
         if (reused) return opened(reused, false);
-        const manifest = yield* git.capture(root, request.scope, onProgress);
+        const { manifest, pullRequest } = yield* acquire(root, scope, onProgress);
+        // Discovery never blocks the PR's own review: a failure is recorded, not raised.
+        const context =
+          scope.kind === "pr" && pullRequest
+            ? contextOf(
+                pullRequest,
+                yield* github.stack(scope),
+                DateTime.formatIso(yield* DateTime.now),
+              )
+            : undefined;
         const snapshotId = yield* publish(manifest);
         return yield* underLock(
           Effect.gen(function* () {
@@ -247,7 +298,7 @@ export class Sessions extends Context.Service<
             const session: Session = {
               id,
               repoRoot: root,
-              scope: request.scope,
+              scope,
               snapshotId,
               createdAt: now,
               updatedAt: now,
@@ -259,6 +310,7 @@ export class Sessions extends Context.Service<
               receiptTexts: [],
               applyReceipts: [],
               viewedReceipts: [],
+              ...(context && { pullRequest: context }),
             };
             yield* store.save(session).pipe(Effect.orDie);
             sessions.set(session.id, session);
@@ -266,6 +318,14 @@ export class Sessions extends Context.Service<
             return opened(session, true);
           }),
         );
+      });
+
+      const open = Effect.fn("Sessions.open")(function* (
+        request: Input<"open">,
+        onProgress?: OnProgress,
+      ) {
+        if (!("cwd" in request)) return opened(yield* underLock(selected(request)), false);
+        return yield* openScope(yield* git.repoRoot(request.cwd), request.scope, onProgress);
       }, Semaphore.withPermit(sourceLock));
 
       const list = Effect.sync(() => ({
@@ -286,10 +346,10 @@ export class Sessions extends Context.Service<
             const { scope, repoRoot, snapshotId } = session;
             cached = yield* Effect.cachedWithTTL(
               Effect.gen(function* () {
-                const result = yield* git.capture(repoRoot, scope).pipe(
+                const result = yield* acquire(repoRoot, scope).pipe(
                   Effect.timeout("2 seconds"),
                   // Every captured input counts, so a changed helper is a changed source.
-                  Effect.map((manifest) =>
+                  Effect.map(({ manifest }) =>
                     snapshotIdOf(manifest) !== snapshotId
                       ? { state: "changed" as const }
                       : (uncaptured(manifest) ?? { state: "unchanged" as const }),
@@ -531,7 +591,8 @@ export class Sessions extends Context.Service<
         onProgress?: OnProgress,
       ) {
         const { repoRoot, scope } = yield* underLock(selected(request));
-        const manifest = yield* git.capture(repoRoot, scope, onProgress);
+        // A PR re-reads only its range; its stack context changes on an explicit recheck alone.
+        const { manifest } = yield* acquire(repoRoot, scope, onProgress);
         const snapshotId = yield* publish(manifest);
         return yield* underLock(
           Effect.gen(function* () {

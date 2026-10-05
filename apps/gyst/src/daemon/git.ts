@@ -156,6 +156,12 @@ const eligibleText = <E>(bytes: Stream.Stream<Uint8Array, E>) => {
   );
 };
 
+/** Scopes captured from this checkout alone; a PR scope also needs what GitHub reports. */
+export type LocalScope = Exclude<Scope, { readonly kind: "pr" }>;
+/** What GitHub reports a PR's range must be captured at. */
+export type PullRequestTarget = { readonly baseRefName: string; readonly headRefOid: string };
+type CommitProvenance = Exclude<Provenance, { readonly kind: "uncommitted" }>;
+
 export class Git extends Context.Service<
   Git,
   {
@@ -170,9 +176,19 @@ export class Git extends Context.Service<
      */
     capture(
       root: string,
-      scope: Scope,
+      scope: LocalScope,
       onProgress?: (progress: CaptureProgress) => Effect.Effect<void>,
     ): Effect.Effect<SnapshotManifest, BadArgs | InternalError>;
+    /**
+     * A PR scope captured like a range over `pullRequestRange`'s commits: the PR's own merge base
+     * against its head, with every file of both trees, so inherited unchanged source stays readable.
+     */
+    capturePullRequest(
+      root: string,
+      scope: PullRequestScope,
+      target: PullRequestTarget,
+      onProgress?: (progress: CaptureProgress) => Effect.Effect<void>,
+    ): Effect.Effect<SnapshotManifest, SourceUnavailable | BadArgs | InternalError>;
     /**
      * A PR's own range in a matching checkout: merge-base(base branch, PR head)..PR head, the head
      * verified to be `headRefOid`. Fetches only into `refs/gyst/github/<repository>/pull/<n>/`.
@@ -180,7 +196,7 @@ export class Git extends Context.Service<
     pullRequestRange(
       root: string,
       scope: PullRequestScope,
-      target: { readonly baseRefName: string; readonly headRefOid: string },
+      target: PullRequestTarget,
     ): Effect.Effect<
       { readonly base: string; readonly head: string; readonly mergeBase: string },
       SourceUnavailable | BadArgs
@@ -350,7 +366,7 @@ export class Git extends Context.Service<
       const pullRequestRange = Effect.fn("Git.pullRequestRange")(function* (
         root: string,
         scope: PullRequestScope,
-        target: { readonly baseRefName: string; readonly headRefOid: string },
+        target: PullRequestTarget,
       ) {
         const url = pullRequestUrlOf(scope);
         const remote = yield* remoteFor(root, scope.repository);
@@ -596,10 +612,12 @@ export class Git extends Context.Service<
         ),
       );
 
-      const capture = Effect.fn("Git.capture")(function* (
+      // A range and a PR share the commit-pair capture; only uncommitted work reads the checkout.
+      const snapshot = Effect.fn("Git.snapshot")(function* (
         root: string,
         scope: Scope,
-        onProgress: (progress: CaptureProgress) => Effect.Effect<void> = () => Effect.void,
+        commits: CommitProvenance | undefined,
+        onProgress: (progress: CaptureProgress) => Effect.Effect<void>,
       ) {
         const objects = new Map<string, ContentSide>();
         const read = { bytes: 0 };
@@ -617,8 +635,8 @@ export class Git extends Context.Service<
         });
         const sides: Array<{ path: string; old: CapturedSide; new: CapturedSide }> = [];
         let provenance: Provenance;
-        if (scope.kind === "range") {
-          provenance = yield* range(root, scope.range);
+        if (commits) {
+          provenance = commits;
           const oldTree = yield* tree(root, provenance.mergeBase ?? provenance.base);
           const newTree = yield* tree(root, provenance.head);
           const paths = [...new Set([...oldTree.keys(), ...newTree.keys()])].sort();
@@ -768,7 +786,26 @@ export class Git extends Context.Service<
         return { scope, provenance, files, hunks } satisfies SnapshotManifest;
       });
 
-      return Git.of({ repoRoot, capture, pullRequestRange });
+      const capture = Effect.fn("Git.capture")(function* (
+        root: string,
+        scope: LocalScope,
+        onProgress: (progress: CaptureProgress) => Effect.Effect<void> = () => Effect.void,
+      ) {
+        const commits = scope.kind === "range" ? yield* range(root, scope.range) : undefined;
+        return yield* snapshot(root, scope, commits, onProgress);
+      });
+
+      const capturePullRequest = Effect.fn("Git.capturePullRequest")(function* (
+        root: string,
+        scope: PullRequestScope,
+        target: PullRequestTarget,
+        onProgress: (progress: CaptureProgress) => Effect.Effect<void> = () => Effect.void,
+      ) {
+        const commits = yield* pullRequestRange(root, scope, target);
+        return yield* snapshot(root, scope, { kind: "pr", ...commits }, onProgress);
+      });
+
+      return Git.of({ repoRoot, capture, capturePullRequest, pullRequestRange });
     }),
   );
 }

@@ -8,6 +8,7 @@ import {
   RepositorySchema,
   StackMembershipSchema,
 } from "./github.ts";
+import { type Session, SessionSchema } from "./session.ts";
 
 const strict = { onExcessProperty: "error" } as const;
 const decodeMembership = Schema.decodeUnknownSync(StackMembershipSchema, strict);
@@ -151,5 +152,42 @@ describe("PullRequestContextSchema", () => {
         unavailable: { at, reason: "objects_missing" },
       }),
     ).toThrow();
+  });
+});
+
+describe("SessionSchema PR context", () => {
+  const at = "2026-01-01T00:00:00.000Z";
+  const base: Session = {
+    id: "s",
+    repoRoot: "/repo",
+    scope: { kind: "uncommitted" },
+    snapshotId: "a".repeat(64),
+    createdAt: at,
+    updatedAt: at,
+    revision: 0,
+    hunks: [],
+    groups: [],
+    viewedHunkIds: [],
+    receiptNoteTexts: [],
+    applyReceipts: [],
+    viewedReceipts: [],
+  };
+  const context = {
+    pullRequest: pullRequest(2),
+    stack: { verifiedAt: at, membership: "none" },
+    unavailable: null,
+  } as const;
+  const decodeSession = Schema.decodeUnknownSync(SessionSchema, strict);
+  const scope = { kind: "pr", repository: "acme/widgets", number: 2 } as const;
+
+  it("carries GitHub context exactly when the scope is a PR", () => {
+    const pr = { ...base, scope, pullRequest: context };
+    expect(decodeSession(pr)).toEqual(pr);
+    expect(decodeSession(base)).toEqual(base);
+    expect(() => decodeSession({ ...base, scope })).toThrow("GitHub PR context exactly");
+    for (const local of [base.scope, { kind: "range", range: "main...feature" }])
+      expect(() => decodeSession({ ...base, scope: local, pullRequest: context })).toThrow(
+        "GitHub PR context exactly",
+      );
   });
 });

@@ -78,7 +78,8 @@ export type ManifestFile = typeof ManifestFileSchema.Type;
 
 /**
  * Commits resolved once per capture. Uncommitted `head` is null for an unborn repository (empty
- * baseline). A range's old side is `mergeBase` for `...` and `base` for `..`.
+ * baseline). A range's old side is `mergeBase` for `...` and `base` for `..`. A PR's old side is
+ * always the merge base of its base branch and head, never a lower layer's newest head.
  */
 export const ProvenanceSchema = Schema.Union([
   Schema.Struct({ kind: Schema.Literal("uncommitted"), head: Schema.NullOr(GitObjectIdSchema) }),
@@ -87,6 +88,12 @@ export const ProvenanceSchema = Schema.Union([
     base: GitObjectIdSchema,
     head: GitObjectIdSchema,
     mergeBase: Schema.NullOr(GitObjectIdSchema),
+  }),
+  Schema.Struct({
+    kind: Schema.Literal("pr"),
+    base: GitObjectIdSchema,
+    head: GitObjectIdSchema,
+    mergeBase: GitObjectIdSchema,
   }),
 ]);
 export type Provenance = typeof ProvenanceSchema.Type;
@@ -105,7 +112,7 @@ export const SnapshotManifestSchema = Schema.Struct({
   Schema.makeFilter(
     ({ scope, provenance }) =>
       (provenance.kind === scope.kind &&
-        (provenance.kind === "uncommitted" ||
+        (provenance.kind !== "range" ||
           (scope.kind === "range" && scope.range.includes("...")) ===
             (provenance.mergeBase !== null))) ||
       "provenance must match the recorded scope, with a merge base exactly for `...` ranges",

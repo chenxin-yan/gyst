@@ -2,6 +2,7 @@ import { parseSnapshot, type Scope, type SnapshotManifest, snapshotIdOf } from "
 import { Effect, Layer, Result, Stream } from "effect";
 import { createHash } from "node:crypto";
 import { CapturedContent } from "./content.ts";
+import { GitHub } from "./github.ts";
 
 // Test doubles for the capture seam; imported only by tests.
 
@@ -36,16 +37,24 @@ export const manifestOf = (
     provenance:
       scope.kind === "uncommitted"
         ? { kind: "uncommitted", head: commit("a") }
-        : {
-            kind: "range",
-            base: commit("b"),
-            head: commit("c"),
-            mergeBase: scope.range.includes("...") ? commit("d") : null,
-          },
+        : scope.kind === "pr"
+          ? { kind: "pr", base: commit("b"), head: commit("c"), mergeBase: commit("d") }
+          : {
+              kind: "range",
+              base: commit("b"),
+              head: commit("c"),
+              mergeBase: scope.range.includes("...") ? commit("d") : null,
+            },
     files,
     hunks,
   };
 };
+
+/** For tests whose sessions are all local: any GitHub call is a defect. */
+export const noGitHub = Layer.succeed(GitHub, {
+  pullRequest: () => Effect.die("no GitHub calls in this test"),
+  stack: () => Effect.die("no GitHub calls in this test"),
+});
 
 /** Publishes manifests by identity alone; the byte operations are unused through `Sessions`. */
 export const publishingContent = (

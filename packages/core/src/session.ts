@@ -1,4 +1,5 @@
 import { Schema } from "effect";
+import { PullRequestContextSchema, PullRequestScopeSchema } from "./github.ts";
 import {
   GuidanceTextSchema,
   guidanceTextFields,
@@ -31,14 +32,16 @@ export const GroupSchema = Schema.Struct({
 export type Group = typeof GroupSchema.Type;
 
 /**
- * What a session reviews, recorded as the caller wrote it. With the repository root it is the
- * session's identity: a moved ref or an equal resolved diff never makes it another session.
+ * What a session reviews, recorded as the caller wrote it. With the repository root it is a local
+ * session's identity, and a PR's alone is its repository plus PR: a moved ref, a new PR head or
+ * stack position, or an equal resolved diff never makes it another session.
  */
 export const ScopeSchema = Schema.Union([
   /** HEAD (or the empty tree) against the working tree, including untracked files. */
   Schema.Struct({ kind: Schema.Literal("uncommitted") }),
   /** A Git range such as `main...feature`; its endpoints resolve again at each capture. */
   Schema.Struct({ kind: Schema.Literal("range"), range: Schema.String }),
+  PullRequestScopeSchema,
 ]);
 export type Scope = typeof ScopeSchema.Type;
 
@@ -129,7 +132,14 @@ export const SessionSchema = Schema.Struct({
   receiptTexts: Schema.Array(MarkdownSchema),
   applyReceipts: Schema.Array(ApplyReceiptSchema),
   viewedReceipts: Schema.Array(ViewedReceiptSchema),
+  /** A PR session's GitHub context, apart from its snapshot: refresh re-reads only the range. */
+  pullRequest: Schema.optional(PullRequestContextSchema),
 }).check(
+  Schema.makeFilter(
+    (session) =>
+      (session.scope.kind === "pr") === (session.pullRequest !== undefined) ||
+      "a session has GitHub PR context exactly when its scope is a PR",
+  ),
   Schema.makeFilter((session) => {
     const hunkIds = new Set(session.hunks.map(({ id }) => id));
     return (

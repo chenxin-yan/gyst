@@ -26,7 +26,7 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CapturedContent } from "./content.ts";
-import { Git, nulFraming } from "./git.ts";
+import { Git, type LocalScope, nulFraming } from "./git.ts";
 import { Paths } from "./paths.ts";
 import { githubOrigin, githubRepository, privateRefs, refState } from "../../tests/github.ts";
 
@@ -75,7 +75,7 @@ const run = <A, E>(
     ),
   );
 /** Captures and publishes, so every manifest a test inspects also passed strict publication. */
-const capture = (cwd: string, scope: SnapshotManifest["scope"] = { kind: "uncommitted" }) =>
+const capture = (cwd: string, scope: LocalScope = { kind: "uncommitted" }) =>
   run(
     Effect.gen(function* () {
       const manifest = yield* Git.use((g) => g.capture(cwd, scope));
@@ -87,7 +87,7 @@ const capture = (cwd: string, scope: SnapshotManifest["scope"] = { kind: "uncomm
   );
 const captureError = (
   cwd: string,
-  scope: SnapshotManifest["scope"] = { kind: "uncommitted" },
+  scope: LocalScope = { kind: "uncommitted" },
   wrap?: (real: ContentService) => ContentService,
 ) => run(Effect.flip(Git.use((g) => g.capture(cwd, scope))), wrap);
 
@@ -825,7 +825,7 @@ describe("Git.capture", () => {
     git(cwd, "branch", "-M", "main");
     await writeFile(join(cwd, "tracked.txt"), "changed\n");
     await writeFile(join(cwd, "untracked.txt"), "new\n");
-    const heard = (scope: SnapshotManifest["scope"]) =>
+    const heard = (scope: LocalScope) =>
       run(
         Effect.gen(function* () {
           const progress: CaptureProgress[] = [];
@@ -883,34 +883,41 @@ describe("Git.capture", () => {
   });
 });
 
+const pullRequestScope = (number: number) =>
+  ({ kind: "pr", repository: githubRepository, number }) as const;
+/**
+ * main m1 <- layer-a (PR 1) <- layer-b (PR 2), and feature (PR 4) branched from m1 before main
+ * moved on to m2 without restacking it.
+ */
+async function stacked(name: string) {
+  const github = await githubOrigin(join(root, name));
+  const m1 = git(github.author, "rev-parse", "main");
+  const a1 = await github.commit("layer-a", { "a.txt": "layer a\n" }, { from: "main" });
+  github.publish("layer-a", 1);
+  const b1 = await github.commit("layer-b", { "b.txt": "layer b\n" }, { from: "layer-a" });
+  github.publish("layer-b", 2);
+  const f1 = await github.commit("feature", { "f.txt": "feature\n" }, { from: "main" });
+  github.publish("feature", 4);
+  const m2 = await github.commit("main", { "README.md": "widgets, moved on\n" });
+  github.publish("main");
+  return { ...github, m1: m1.trim(), m2, a1, b1, f1 };
+}
+
 describe("Git.pullRequestRange", () => {
-  const scope = (number: number) => ({ kind: "pr", repository: githubRepository, number }) as const;
   const range = (cwd: string, number: number, baseRefName: string, headRefOid: string) =>
-    run(Git.use((g) => g.pullRequestRange(cwd, scope(number), { baseRefName, headRefOid })));
+    run(
+      Git.use((g) =>
+        g.pullRequestRange(cwd, pullRequestScope(number), { baseRefName, headRefOid }),
+      ),
+    );
   const rangeError = (cwd: string, number: number, baseRefName: string, headRefOid: string) =>
     run(
       Effect.flip(
-        Git.use((g) => g.pullRequestRange(cwd, scope(number), { baseRefName, headRefOid })),
+        Git.use((g) =>
+          g.pullRequestRange(cwd, pullRequestScope(number), { baseRefName, headRefOid }),
+        ),
       ),
     );
-
-  /**
-   * main m1 <- layer-a (PR 1) <- layer-b (PR 2), and feature (PR 4) branched from m1 before main
-   * moved on to m2 without restacking it.
-   */
-  async function stacked(name: string) {
-    const github = await githubOrigin(join(root, name));
-    const m1 = git(github.author, "rev-parse", "main");
-    const a1 = await github.commit("layer-a", { "a.txt": "layer a\n" }, { from: "main" });
-    github.publish("layer-a", 1);
-    const b1 = await github.commit("layer-b", { "b.txt": "layer b\n" }, { from: "layer-a" });
-    github.publish("layer-b", 2);
-    const f1 = await github.commit("feature", { "f.txt": "feature\n" }, { from: "main" });
-    github.publish("feature", 4);
-    const m2 = await github.commit("main", { "README.md": "widgets, moved on\n" });
-    github.publish("main");
-    return { ...github, m1: m1.trim(), m2, a1, b1, f1 };
-  }
 
   it("resolves a stacked layer against its own base branch, never the stack base", async () => {
     const github = await stacked("pr-stacked");
@@ -1024,5 +1031,72 @@ describe("Git.pullRequestRange", () => {
         detail: { reason: "github_failed", diagnostic: name },
       });
     expect(privateRefs(github.checkout)).toEqual([]);
+  });
+});
+
+describe("Git.capturePullRequest", () => {
+  /** Captures a PR at the head GitHub reported and publishes it, like `capture`. */
+  const capturePullRequest = (cwd: string, number: number, baseRefName: string, head: string) =>
+    run(
+      Effect.gen(function* () {
+        const manifest = yield* Git.use((g) =>
+          g.capturePullRequest(cwd, pullRequestScope(number), {
+            baseRefName,
+            headRefOid: head,
+          }),
+        );
+        expect(yield* CapturedContent.use((c) => c.putManifest(manifest))).toBe(
+          snapshotIdOf(manifest),
+        );
+        return manifest;
+      }),
+    );
+
+  it("captures only a layer's own hunks, with inherited source readable unchanged", async () => {
+    const github = await stacked("capture-pr-layer");
+    const manifest = await capturePullRequest(github.checkout, 2, "layer-a", github.b1);
+    expect(manifest.scope).toEqual(pullRequestScope(2));
+    expect(manifest.provenance).toEqual({
+      kind: "pr",
+      base: github.a1,
+      head: github.b1,
+      mergeBase: github.a1,
+    });
+    expect(hunkFiles(manifest)).toEqual(["b.txt"]);
+    // Layer A's file is the selected snapshot's unchanged supporting source.
+    const inherited = fileOf(manifest, "a.txt");
+    expect(inherited?.old).toEqual(inherited?.new);
+    expect(await bytesOf(inherited?.new)).toEqual(Buffer.from("layer a\n"));
+    expect(manifest.files.map(({ path }) => path)).toEqual(["README.md", "a.txt", "b.txt"]);
+  });
+
+  it("diffs a non-restacked PR from its true merge base, excluding its base branch's later change", async () => {
+    const github = await stacked("capture-pr-not-restacked");
+    const manifest = await capturePullRequest(github.checkout, 4, "main", github.f1);
+    expect(manifest.provenance).toMatchObject({
+      kind: "pr",
+      base: github.m2,
+      mergeBase: github.m1,
+    });
+    expect(hunkFiles(manifest)).toEqual(["f.txt"]);
+    const readme = fileOf(manifest, "README.md");
+    expect(readme?.old).toEqual(readme?.new);
+    expect(await bytesOf(readme?.new)).toEqual(Buffer.from("widgets\n"));
+  });
+
+  it("captures nothing when the PR range cannot be resolved", async () => {
+    const github = await stacked("capture-pr-missing");
+    expect(
+      await run(
+        Effect.flip(
+          Git.use((g) =>
+            g.capturePullRequest(github.checkout, pullRequestScope(5), {
+              baseRefName: "main",
+              headRefOid: github.f1,
+            }),
+          ),
+        ),
+      ),
+    ).toMatchObject({ _tag: "source_unavailable", detail: { reason: "objects_missing" } });
   });
 });

@@ -4,6 +4,7 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import { Layer } from "effect";
 import { CapturedContent } from "../../daemon/content.ts";
 import { Git } from "../../daemon/git.ts";
+import { GitHub } from "../../daemon/github.ts";
 import { Paths } from "../../daemon/paths.ts";
 import { DaemonServer } from "../../daemon/server.ts";
 import { Sessions } from "../../daemon/sessions.ts";
@@ -15,7 +16,7 @@ const daemonServer = layer(
     Layer.provide(
       Sessions.layer.pipe(
         Layer.provide(
-          Layer.mergeAll(Git.layer, SessionStore.layer).pipe(
+          Layer.mergeAll(Git.layer, GitHub.layer, SessionStore.layer).pipe(
             Layer.provideMerge(CapturedContent.layer),
           ),
         ),
