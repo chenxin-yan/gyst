@@ -2,6 +2,7 @@ import type { Hunk } from "@gyst/core/wire";
 import { hydratePartialDiff } from "@pierre/diffs";
 import { describe, expect, it } from "vite-plus/test";
 import {
+  capturedRows,
   change,
   type Cursor,
   edge,
@@ -243,5 +244,34 @@ describe("change and file jumps", () => {
     expect(fileStep(stacked, line("b.ts", "additions", 2), -1)).toEqual(header("b.ts"));
     expect(fileStep(stacked, header("b.ts"), -1)).toEqual(header("a.ts"));
     expect(fileStep(stacked, header("b.ts"), 1)).toBeUndefined();
+  });
+});
+
+describe("a captured file shown whole", () => {
+  const whole = (layout: "split" | "stacked"): Model => ({
+    files: ["src/long.ts"],
+    rows: () => capturedRows(5),
+    stops: (file, side) => stopsOf(file, capturedRows(5), layout, side),
+  });
+
+  it("walks lines 1 to the end on the side it was opened on, with no changes to jump to", () => {
+    const split = whole("split");
+    const old = line("src/long.ts", "deletions", 2);
+    expect(moved(split, old, 1)).toEqual(line("src/long.ts", "deletions", 3));
+    expect(moved(split, header("src/long.ts", "deletions"), 2)).toEqual(old);
+    expect(edge(split, "last", "deletions")).toEqual(line("src/long.ts", "deletions", 5));
+    expect(change(split, old, 1)).toBeUndefined();
+    expect(capturedRows(0)).toEqual([]);
+  });
+
+  it("selects within its lines, and keeps a stacked cursor on the same line", () => {
+    const stacked = whole("stacked");
+    const from = line("src/long.ts", "additions", 4);
+    expect(moved(stacked, from, 5, true)).toEqual(line("src/long.ts", "additions", 5));
+    expect(moved(stacked, from, -9, true)).toEqual(line("src/long.ts", "additions", 1));
+    const stops = stacked.stops("src/long.ts", "deletions");
+    expect(
+      stops[locate(stops, capturedRows(5), line("src/long.ts", "deletions", 3))],
+    ).toMatchObject({ kind: "line", line: 3 });
   });
 });
