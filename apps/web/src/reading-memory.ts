@@ -1,0 +1,24 @@
+import type { Cursor } from "./cursor.ts";
+
+/** Where a reader left a session: its file selection, Vim cursor and the file at the panel's top. */
+export type ReadingPlace = {
+  selection: string;
+  cursor: Cursor | undefined;
+  file: string | undefined;
+};
+
+/**
+ * Each session's reading place for this page's lifetime, so switching between stack layers (or any
+ * sessions) and back resumes where the reader was. Kept per session ID, so one session's place never
+ * leaks into another; a place belongs to the snapshot it was read in, and a refresh starts afresh.
+ */
+const places = new Map<string, { snapshotId: string; place: ReadingPlace }>();
+
+export const remember = (sessionId: string, snapshotId: string, place: ReadingPlace) => {
+  places.set(sessionId, { snapshotId, place });
+};
+
+export const recall = (sessionId: string, snapshotId: string): ReadingPlace | undefined => {
+  const saved = places.get(sessionId);
+  return saved?.snapshotId === snapshotId ? saved.place : undefined;
+};

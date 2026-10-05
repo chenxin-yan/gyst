@@ -121,6 +121,8 @@ import {
   treeOf,
   wholeFileType,
 } from "../reader.ts";
+import { type ReadingPlace, recall, remember } from "../reading-memory.ts";
+import { StackSwitcher } from "../stack.tsx";
 import { media, theme } from "../tokens.stylex.ts";
 import {
   checkboxOf,
@@ -469,12 +471,14 @@ function SessionReader(props: {
   const navigate = useNavigate();
   const router = useRouter();
   const [pages, setPages] = useState([props.firstPage]);
-  const [review, setReview] = useState<ReviewView>({ kind: "files", path: "" });
+  // Where the reader left this session earlier in this page's life, if in this snapshot.
+  const [recalled] = useState(() => recall(session.id, snapshotId));
+  const [review, setReview] = useState<ReviewView>(recalled?.review ?? { kind: "files", path: "" });
   const [mode, setMode] = useState<LayoutMode>("auto");
   const [width, setWidth] = useState(0);
   const [loads, setLoads] = useState<ReadonlyMap<string, FileLoad>>(new Map());
   const [inputMode, setInputMode] = useState<InputMode>("vim");
-  const [cursor, setCursor] = useState<Cursor>();
+  const [cursor, setCursor] = useState<Cursor | undefined>(recalled?.cursor);
   const [lines, setLines] = useState<CodeViewLineSelection | null>(null);
   const [folded, setFolded] = useState<ReadonlySet<string>>(new Set());
   const [dialog, setDialog] = useState<"menu" | "help">();
@@ -718,12 +722,19 @@ function SessionReader(props: {
     );
   }, [loader, hydratable, diffs]);
   useEffect(followWindow, [followWindow]);
+  // This session's reading place, kept for a return from another session. The file at the top
+  // changes by scrolling alone, without a render, so the window report keeps it too.
+  const readingPlace = useRef<ReadingPlace>({ selection, cursor, file: recalled?.file });
+  readingPlace.current = { ...readingPlace.current, selection, cursor };
+  useEffect(() => remember(session.id, snapshotId, readingPlace.current));
   const onWindow = useCallback(
     (shownNow: readonly string[]) => {
       visible.current = shownNow;
       followWindow();
+      readingPlace.current = { ...readingPlace.current, file: viewer.current?.fileInView() };
+      remember(session.id, snapshotId, readingPlace.current);
     },
-    [followWindow],
+    [followWindow, session.id, snapshotId],
   );
 
   const tree = useMemo(
@@ -797,6 +808,21 @@ function SessionReader(props: {
       );
     return row && { file: target.file, side: "additions", line: row.new, full: true };
   };
+
+  // A return to this session puts its cursor, or else the file it showed, back at the top. Once the
+  // panel has a width: until then the layout may still switch, which resets the panel to its top.
+  const revealed = useRef(recalled === undefined);
+  useEffect(() => {
+    if (revealed.current || width === 0 || recalled === undefined) return;
+    revealed.current = true;
+    const mark =
+      recalled.cursor && here
+        ? markOf(here)
+        : recalled.file !== undefined && model.files.includes(recalled.file)
+          ? { file: recalled.file, side: "additions" as const }
+          : undefined;
+    if (mark) viewer.current?.reveal(mark, "top");
+  });
 
   /** Moves the cursor (and a selection's moving end) and keeps it in view. */
   const go = (target: Cursor | undefined, how: "nearest" | "top" = "nearest") => {
@@ -1293,6 +1319,9 @@ function SessionReader(props: {
       top={
         <>
           <Crumb session={session} />
+          {props.status.pullRequest && (
+            <StackSwitcher sessionId={session.id} pullRequest={props.status.pullRequest} />
+          )}
           <span {...stylex.props(styles.grow)} />
           <PillButton onClick={() => setDialog("menu")}>
             Commands <kbd {...stylex.props(styles.kbd)}>⌘K</kbd>
