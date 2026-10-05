@@ -72,7 +72,9 @@ const crypto = Layer.succeed(
 /** One daemon generation: each build has its own instance id and loads the saved sessions anew. */
 const daemonLayer = DaemonServer.layer.pipe(
   Layer.provideMerge(
-    Sessions.layer.pipe(Layer.provide(Layer.mergeAll(git, noGitHub, store, crypto, publishingContent()))),
+    Sessions.layer.pipe(
+      Layer.provide(Layer.mergeAll(git, noGitHub, store, crypto, publishingContent())),
+    ),
   ),
   Layer.provide(paths),
   Layer.provide(NodeServices.layer),

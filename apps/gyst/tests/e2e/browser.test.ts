@@ -311,7 +311,7 @@ const topLine = async (page: Page) => {
   return below[0]?.[0];
 };
 /** Waits until `read` gives the same value twice, 200 ms apart, as once a scroll settled. */
-const settled = async <T>(read: () => Promise<T>) => {
+const steady = async <T>(read: () => Promise<T>) => {
   let last = await read();
   for (;;) {
     await new Promise((resolve) => setTimeout(resolve, 200));
@@ -1772,7 +1772,7 @@ describe("installed gyst in a sandboxed browser", () => {
       .getByRole("radio", { name: "Mouse" });
     // Away to the session list and back, client-side, as a switch to another session would.
     const leaveAndReturn = async () => {
-      await page.waitForLoadState("networkidle");
+      await settled(page);
       await page.getByRole("link", { name: "All sessions" }).click();
       await page.getByRole("heading", { name: "Saved sessions" }).waitFor();
       await page.goBack();
@@ -1789,7 +1789,7 @@ describe("installed gyst in a sandboxed browser", () => {
     await keys(page, ...Array.from({ length: 40 }, () => "j"));
     await says(page, "long.ts:41 · new");
     await barOn(page, "export const line41 = 41;");
-    const vimTop = await settled(() => topLine(page));
+    const vimTop = await steady(() => topLine(page));
     expect(vimTop).toBeGreaterThan(1);
 
     // The cursor stands inside the opened lines again, at the same place in the panel, and the
@@ -1807,7 +1807,7 @@ describe("installed gyst in a sandboxed browser", () => {
     await mouse.check();
     await pane.hover();
     await page.mouse.wheel(0, 2400);
-    const mouseTop = await settled(() => topLine(page));
+    const mouseTop = await steady(() => topLine(page));
     expect(mouseTop).toBeGreaterThan(vimTop! + 40);
     await leaveAndReturn();
     expect(await mouse.isChecked()).toBe(true);
@@ -1816,7 +1816,7 @@ describe("installed gyst in a sandboxed browser", () => {
       async () => (await topLine(page)) === mouseTop,
       `line ${mouseTop} at the top again`,
     );
-    await page.waitForLoadState("networkidle");
+    await settled(page);
   }, 30_000);
 
   it("runs commands from a keyboard-operable ⌘K menu and lists the implemented keys in ? help, ignoring review keys while typing", async () => {
@@ -4458,7 +4458,7 @@ describe("installed gyst in a sandboxed browser", () => {
     // gh read only B and its stack: never A or C, nor for any local session opened before.
     const asked = expect.arrayContaining(["api", "graphql", "number=2"]);
     expect(await github.fake.calls()).toEqual([asked, asked]);
-    await page.waitForLoadState("networkidle");
+    await settled(page);
     expect(await stop(b.proc, "SIGINT")).toBe(130);
   }, 30_000);
 
@@ -4537,7 +4537,7 @@ describe("installed gyst in a sandboxed browser", () => {
       [b.id, 2],
       [c, 3],
     ]);
-    await page.waitForLoadState("networkidle");
+    await settled(page);
     expect(await stop(b.proc, "SIGINT")).toBe(130);
   }, 30_000);
 
@@ -4604,7 +4604,7 @@ describe("installed gyst in a sandboxed browser", () => {
     expect((await gyst("session", "status", "--session", b.id)).session.snapshotId).toBe(
       snapshotId,
     );
-    await page.waitForLoadState("networkidle");
+    await settled(page);
     expect(await stop(b.proc, "SIGINT")).toBe(130);
   }, 30_000);
 });
