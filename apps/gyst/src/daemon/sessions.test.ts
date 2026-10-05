@@ -194,6 +194,18 @@ const viewedNow = (session: string, hunkIds: string[], requestId: string, viewed
     }),
   );
 
+const persistedNote = (id: string, path: string) => ({
+  id,
+  anchor: {
+    snapshotId: "persisted-snapshot",
+    path,
+    side: "new" as const,
+    startLine: 1,
+    endLine: 1,
+  },
+  markdown: "intent and behavior",
+  references: [],
+});
 const persisted: Session = {
   id: "persisted",
   repoRoot: otherRoot,
@@ -225,22 +237,27 @@ const persisted: Session = {
       contentHash: "ef",
     },
   ],
+  overview: null,
   groups: [
     {
       id: "g1",
       title: "same edit",
-      notes: [{ hunkId: "h1", text: "intent and behavior" }],
+      overview: { markdown: "Same edit.", references: [] },
       hunkIds: ["h1"],
+      files: ["x.txt"],
+      notes: [persistedNote("n1", "x.txt")],
     },
     {
       id: "g2",
       title: "read me",
-      notes: [{ hunkId: "h2", text: "intent and behavior" }],
+      overview: null,
       hunkIds: ["h2"],
+      files: ["y.txt"],
+      notes: [persistedNote("n2", "y.txt")],
     },
   ],
   viewedHunkIds: ["h1"],
-  receiptNoteTexts: [],
+  receiptTexts: [],
   applyReceipts: [],
   viewedReceipts: [],
 };
@@ -282,13 +299,14 @@ describe("Sessions.check", () => {
             session: session.id,
             batch: JSON.stringify({
               revision: 0,
+              snapshotId: session.snapshotId,
               idempotencyKey: "prepare",
               ops: [
                 {
                   type: "group.create",
                   id: "step",
                   title: "Change both paths",
-                  notes: [{ hunkId: ids[0]!, text: "Review both changes together." }],
+                  overview: "Review both changes together.",
                   memberHunkIds: ids,
                 },
               ],
@@ -679,6 +697,7 @@ describe("Sessions.open", () => {
               session: persisted.id,
               batch: JSON.stringify({
                 revision: persisted.revision,
+                snapshotId: persisted.snapshotId,
                 idempotencyKey: "during-capture",
                 ops: [
                   {
@@ -686,7 +705,7 @@ describe("Sessions.open", () => {
                     id: "g3",
                     memberHunkIds: ["h3"],
                     title: "third",
-                    notes: [{ hunkId: "h3", text: "third" }],
+                    overview: "third",
                   },
                 ],
               }),
@@ -722,13 +741,8 @@ describe("Sessions reads", () => {
     );
     expect(byId.session.id).toBe("persisted");
     expect(byId.groups[0]?.count).toBe(1);
-    expect(byId.groups[1]).toEqual({
-      id: "g2",
-      hunkIds: ["h2"],
-      count: 1,
-      title: "read me",
-      notes: [{ hunkId: "h2", text: "intent and behavior" }],
-    });
+    expect(byId.groups[1]).toEqual({ ...persisted.groups[1], count: 1 });
+    expect(byId.preparation).toMatchObject({ state: "incomplete", groupedHunks: 2 });
     // Ungrouped h3 stays readable under its file; file Viewed derives from its hunks.
     expect(byId.viewedHunkIds).toEqual(["h1"]);
     expect(byId.files).toEqual([
@@ -771,15 +785,10 @@ describe("Sessions.apply", () => {
     );
   const envelope: ApplyEnvelope = {
     revision: 3,
+    snapshotId: persisted.snapshotId,
     idempotencyKey: "first-pass",
     ops: [
-      {
-        type: "group.create",
-        id: "g3",
-        memberHunkIds: ["h3"],
-        title: "third",
-        notes: [{ hunkId: "h3", text: "third" }],
-      },
+      { type: "group.create", id: "g3", memberHunkIds: ["h3"], title: "third", overview: "third" },
     ],
   };
 
@@ -788,8 +797,9 @@ describe("Sessions.apply", () => {
     expect(status.revision).toBe(4);
     expect(status.groups.map((group) => group.id)).toEqual(["g1", "g2", "g3"]);
     const saved = files.get("persisted")!;
-    // The receipt stores each distinct note text once; g1 and g2 share the same text.
-    expect(saved.receiptNoteTexts).toEqual(["intent and behavior", "third"]);
+    // The receipt stores each distinct text once; the notes of g1 and g2 share theirs.
+    expect(saved.receiptTexts).toEqual(["Same edit.", "intent and behavior", "third"]);
+    const [g1, g2, g3] = status.groups;
     expect(saved.applyReceipts).toEqual([
       {
         key: "first-pass",
@@ -797,9 +807,13 @@ describe("Sessions.apply", () => {
         status: {
           ...status,
           groups: [
-            { ...status.groups[0]!, notes: [{ hunkId: "h1", text: 0 }] },
-            { ...status.groups[1]!, notes: [{ hunkId: "h2", text: 0 }] },
-            { ...status.groups[2]!, notes: [{ hunkId: "h3", text: 1 }] },
+            {
+              ...g1!,
+              overview: { markdown: 0, references: [] },
+              notes: [{ ...g1!.notes[0]!, markdown: 1 }],
+            },
+            { ...g2!, notes: [{ ...g2!.notes[0]!, markdown: 1 }] },
+            { ...g3!, overview: { markdown: 2, references: [] } },
           ],
         },
       },
@@ -813,14 +827,14 @@ describe("Sessions.apply", () => {
   it("rejects the whole batch on any invalid op, a removed queue op, or a stale revision", async () => {
     const invalid = await failure(
       apply({
-        revision: 3,
+        ...envelope,
         idempotencyKey: "invalid",
         ops: [
           {
             type: "group.create",
             id: "g3",
             title: "coherent change",
-            notes: [],
+            overview: "Why.",
             memberHunkIds: ["h3"],
           },
           { type: "group.update", id: "missing", title: "nope" },
@@ -832,15 +846,17 @@ describe("Sessions.apply", () => {
     // The review queue is gone: its op is an invalid envelope, not an alias.
     const queue = await failure(
       apply({
-        revision: 3,
+        ...envelope,
         idempotencyKey: "queue",
         ops: [{ type: "queue.set", itemIds: ["g1", "g2"] }],
       }),
     );
     expect(queue).toMatchObject({ _tag: "validation_failed", message: "invalid apply envelope" });
-    const stale = await failure(apply({ revision: 0, idempotencyKey: "stale", ops: [] }));
-    expect(stale._tag).toBe("stale_revision");
-    expect(stale.detail).toEqual([expect.objectContaining({ opIndex: -1 })]);
+    for (const outdated of [{ revision: 0 }, { snapshotId: "older" }]) {
+      const stale = await failure(apply({ ...envelope, ...outdated, idempotencyKey: "stale" }));
+      expect(stale._tag).toBe("stale_revision");
+      expect(stale.detail).toEqual([expect.objectContaining({ opIndex: -1 })]);
+    }
     const malformed = await failure(apply("not json"));
     expect(malformed._tag).toBe("validation_failed");
     expect(malformed.message).toBe("invalid apply envelope");
@@ -854,9 +870,9 @@ describe("Sessions.apply", () => {
 
   it("rejects legacy fields, partial metadata and controls without writes", async () => {
     for (const op of [
-      { type: "group.update", id: "g1", overview: "old" },
-      { type: "group.update", id: "g1", notes: [{ hunkId: "h2", text: "wrong group" }] },
-      { type: "group.update", id: "g1", notes: [{ hunkId: "h1", text: "bad\ntext" }] },
+      { type: "group.update", id: "g1", notes: [] },
+      { type: "group.update", id: "g1", notes: [{ hunkId: "h1", text: "old note" }] },
+      { type: "group.update", id: "g1", overview: "bad\u001btext" },
       { type: "group.update", id: "g1", tldr: "old" },
       { type: "group.update", id: "g1", exemplarHunkId: "h1" },
       { type: "group.update", id: "g1", title: "new", tldr: "old" },
@@ -866,12 +882,13 @@ describe("Sessions.apply", () => {
         id: "g3",
         memberHunkIds: ["h3"],
         title: "bad\u001b",
-        notes: [{ hunkId: "h3", text: "valid" }],
+        overview: "valid",
       },
+      { type: "note.create", id: "n3", group: "g1", hunkId: "h1", text: "old note" },
       { type: "hunk.annotate", hunkId: "h3", title: "obsolete", overview: "obsolete" },
     ]) {
       expect(
-        (await failure(apply({ revision: 3, idempotencyKey: "invalid", ops: [op] })))._tag,
+        (await failure(apply({ ...envelope, idempotencyKey: "invalid", ops: [op] })))._tag,
       ).toBe("validation_failed");
       expect(files.get("persisted")).toEqual(persisted);
     }
@@ -882,7 +899,7 @@ describe("Sessions.apply", () => {
       Effect.gen(function* () {
         const s = yield* Sessions;
         const firstBatch = {
-          revision: 3,
+          ...envelope,
           idempotencyKey: "partial",
           ops: [{ type: "group.update", id: "g2", title: "read me first" }],
         };
@@ -1084,21 +1101,22 @@ diff --git a/c.txt b/c.txt
           session: session.id,
           batch: JSON.stringify({
             revision: 0,
+            snapshotId: session.snapshotId,
             idempotencyKey: "fold",
             ops: [
               {
                 type: "group.create",
                 id: "g",
                 title: "same",
-                notes: [{ hunkId: a, text: "intent and behavior" }],
+                overview: "intent and behavior",
                 memberHunkIds: [a],
               },
               {
                 type: "group.create",
                 id: "changed",
                 memberHunkIds: [b],
-                title: "stale note",
-                notes: [{ hunkId: b, text: "stale note" }],
+                title: "changed",
+                overview: "goes with its hunk",
               },
             ],
           }),
@@ -1141,6 +1159,7 @@ diff --git a/c.txt b/c.txt
           session: persisted.id,
           batch: JSON.stringify({
             revision: persisted.revision,
+            snapshotId: persisted.snapshotId,
             idempotencyKey: "before-refresh",
             ops: [
               {
@@ -1148,7 +1167,7 @@ diff --git a/c.txt b/c.txt
                 id: "g3",
                 memberHunkIds: ["h3"],
                 title: "third",
-                notes: [{ hunkId: "h3", text: "third" }],
+                overview: "third",
               },
             ],
           }),
@@ -1202,13 +1221,14 @@ diff --git a/c.txt b/c.txt
               session: session.id,
               batch: JSON.stringify({
                 revision: 0,
+                snapshotId: session.snapshotId,
                 idempotencyKey: "late",
                 ops: [
                   {
                     type: "group.create",
                     id: "late",
                     title: "Late guidance",
-                    notes: [{ hunkId: ids[0]!, text: "Written during capture." }],
+                    overview: "Written during capture.",
                     memberHunkIds: ids,
                   },
                 ],
@@ -1861,6 +1881,83 @@ describe("Sessions captured reads over real captures", () => {
           _tag: "validation_failed",
           detail: { file: "missing.txt" },
         });
+      }),
+    );
+  });
+
+  it("checks applied note anchors against the captured lines, not the checkout", async () => {
+    const cwd = await repo("anchors", {
+      "changed.txt": "one\ntwo\nthree\n",
+      "deleted.txt": "going away\n",
+      "helper.ts": "a\nb\n",
+    });
+    // The new side's last line is unterminated: it still counts.
+    await writeFile(join(cwd, "changed.txt"), "one\nTWO\nthree\nfour");
+    await rm(join(cwd, "deleted.txt"));
+    await runReal(
+      Effect.gen(function* () {
+        const sessions = yield* Sessions;
+        const { session } = yield* sessions.open({ command: "open", cwd, scope: uncommitted });
+        // Only captured content answers: the checkout is gone and a live-only file never existed.
+        yield* Effect.promise(() => rm(cwd, { recursive: true, force: true }));
+        const ids = (yield* sessions.diff({ command: "diff", session: session.id })).hunks.map(
+          ({ id }) => id,
+        );
+        const anchor = (path: string, side: "old" | "new", startLine: number, endLine: number) => ({
+          path,
+          side,
+          startLine,
+          endLine,
+        });
+        const apply = (revision: number, idempotencyKey: string, ops: unknown[]) =>
+          sessions.apply({
+            command: "apply",
+            session: session.id,
+            batch: JSON.stringify({
+              revision,
+              snapshotId: session.snapshotId,
+              idempotencyKey,
+              ops,
+            }),
+          });
+        const note = (id: string, range: ReturnType<typeof anchor>) => ({
+          type: "note.create",
+          id,
+          group: "g",
+          anchor: range,
+          markdown: `About ${id}.`,
+        });
+        const published = yield* apply(0, "publish", [
+          {
+            type: "group.create",
+            id: "g",
+            title: "All",
+            overview: "Everything.",
+            memberHunkIds: ids,
+          },
+          note("tail", anchor("changed.txt", "new", 1, 4)),
+          note("removed", anchor("deleted.txt", "old", 1, 1)),
+        ]);
+        expect(published.groups[0]?.notes.map(({ id }) => id)).toEqual(["tail", "removed"]);
+        for (const [range, message] of [
+          [
+            anchor("changed.txt", "new", 4, 5),
+            "lines 4-5 are outside the new side of changed.txt, which has 4 lines",
+          ],
+          [anchor("deleted.txt", "new", 1, 1), "the new side of deleted.txt does not exist"],
+          [anchor("live.txt", "new", 1, 1), "live.txt is not in the captured snapshot"],
+          // An unchanged supporting file is captured, but a note must cover its group's changes.
+          [anchor("helper.ts", "new", 1, 2), "must cover a changed line of its group g"],
+        ] as const) {
+          const rejected = yield* Effect.flip(apply(1, `bad-${message}`, [note("bad", range)]));
+          expect(rejected).toMatchObject({
+            _tag: "validation_failed",
+            detail: [{ opIndex: 0, message: expect.stringContaining(message) }],
+          });
+        }
+        expect((yield* sessions.status({ command: "status", session: session.id })).revision).toBe(
+          1,
+        );
       }),
     );
   });

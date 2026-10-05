@@ -19,9 +19,10 @@ const session = (id: string): Session => ({
   updatedAt: "2026-01-01T00:00:00.000Z",
   revision: 0,
   hunks: [],
+  overview: null,
   groups: [],
   viewedHunkIds: [],
-  receiptNoteTexts: [],
+  receiptTexts: [],
   applyReceipts: [],
   viewedReceipts: [],
 });
@@ -70,21 +71,54 @@ describe("SessionStore", () => {
       acceptHistory: [],
     });
     await writeFile(join(dataDir, "older.json"), older);
+    // Hunk-anchored plain-text notes are superseded by range notes; such a session is skipped too.
+    const { overview: _, receiptTexts: __, ...unprepared } = session("hunk-notes");
+    const hunkNotes = JSON.stringify({
+      ...unprepared,
+      groups: [{ id: "g", title: "old", notes: [{ hunkId: "h", text: "old" }], hunkIds: ["h"] }],
+      receiptNoteTexts: [],
+    });
+    await writeFile(join(dataDir, "hunk-notes.json"), hunkNotes);
     const loaded = await run(SessionStore.use((s) => s.loadAll));
     expect(loaded.map((loadedSession) => loadedSession.id)).toEqual(["a"]);
     expect(await readFile(join(dataDir, "older.json"), "utf8")).toBe(older);
+    expect(await readFile(join(dataDir, "hunk-notes.json"), "utf8")).toBe(hunkNotes);
   });
 
   it("round-trips semantic metadata, Viewed and their historical receipts", async () => {
     const prepared: Session = {
       ...session("semantic"),
-      hunks: [{ id: "h", file: "h.ts", header: "@@ -1 +1 @@", patch: "-a\n+b", contentHash: "h" }],
+      hunks: [
+        {
+          id: "h",
+          file: "h.ts",
+          header: "@@ -1 +1 @@",
+          patch: "@@ -1 +1 @@\n-a\n+b",
+          contentHash: "h",
+        },
+      ],
+      overview: { markdown: "One behavior, **two** operations.", references: [] },
       groups: [
         {
           id: "g",
           title: "API and tests",
-          notes: [{ hunkId: "h", text: "Different operations, one behavior." }],
+          overview: null,
           hunkIds: ["h"],
+          files: ["h.ts"],
+          notes: [
+            {
+              id: "n",
+              anchor: {
+                snapshotId: "snapshot",
+                path: "h.ts",
+                side: "new",
+                startLine: 1,
+                endLine: 1,
+              },
+              markdown: "Different operations, one behavior.",
+              references: [],
+            },
+          ],
         },
       ],
       viewedHunkIds: ["h"],
@@ -92,14 +126,21 @@ describe("SessionStore", () => {
     const status = statusOf(prepared);
     const saved: Session = {
       ...prepared,
-      receiptNoteTexts: [prepared.groups[0]!.notes[0]!.text],
+      receiptTexts: [prepared.overview!.markdown, prepared.groups[0]!.notes[0]!.markdown],
       applyReceipts: [
         {
           key: "publish",
           digest: "digest",
           status: {
             ...status,
-            groups: [{ ...status.groups[0]!, notes: [{ hunkId: "h", text: 0 }] }],
+            overview: { ...status.overview!, markdown: 0 },
+            groups: [
+              {
+                ...status.groups[0]!,
+                overview: null,
+                notes: [{ ...status.groups[0]!.notes[0]!, markdown: 1 }],
+              },
+            ],
           },
         },
       ],

@@ -1,4 +1,5 @@
 import {
+  changedLinesOf,
   SessionSchema,
   setViewed,
   SourceCheckPayloadSchema,
@@ -15,6 +16,11 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { describe, expect, it, onTestFinished } from "vite-plus/test";
 
 import packageJson from "../../package.json" with { type: "json" };
+/** A one-line new-side anchor on the first line `hunk` adds. */
+const addedLine = (hunk: { file: string; patch: string }) => {
+  const line = changedLinesOf(hunk).new[0]!;
+  return { path: hunk.file, side: "new", startLine: line, endLine: line };
+};
 import {
   commandLine,
   daemonPid,
@@ -287,6 +293,7 @@ describe("gyst session CLI seam", () => {
         ["session", "apply", "--session", id],
         JSON.stringify({
           revision: 0,
+          snapshotId: threeDot.session.snapshotId,
           idempotencyKey: "prepare",
           ops: [
             {
@@ -294,7 +301,7 @@ describe("gyst session CLI seam", () => {
               id: "feature",
               memberHunkIds: [hunkId],
               title: "Add the feature",
-              notes: [{ hunkId, text: "Guidance that reopening must keep." }],
+              overview: "Guidance that reopening must keep.",
             },
           ],
         }),
@@ -345,33 +352,39 @@ describe("gyst session CLI seam", () => {
     // Seed review state on disk: the respawned daemon must serve it, not the pre-kill snapshot.
     const statePath = join(data, `${status.session.id}.json`);
     const state = JSON.parse(await readFile(statePath, "utf8"));
+    const hunks: { id: string; file: string; patch: string }[] = state.hunks;
+    const note = (hunk: (typeof hunks)[number]) => ({
+      id: `note-${hunk.id}`,
+      anchor: { snapshotId: state.snapshotId, ...addedLine(hunk) },
+      markdown: "intent and behavior",
+      references: [],
+    });
+    const seeded = hunks.find((hunk) => hunk.id === hunkId)!;
+    const independentHunk = hunks.find((hunk) => hunk.id !== hunkId)!;
     state.groups = [
       {
         id: "group-1",
         title: "same edit",
-        notes: [{ hunkId, text: "intent and behavior" }],
+        overview: null,
         hunkIds: [hunkId],
+        files: [seeded.file],
+        notes: [note(seeded)],
+      },
+      {
+        id: "group-2",
+        title: "needs human review",
+        overview: { markdown: "Why it changed.", references: [] },
+        hunkIds: [independentHunk.id],
+        files: [independentHunk.file],
+        notes: [note(independentHunk)],
       },
     ];
-    const independentHunk = state.hunks.find((hunk: { id: string }) => hunk.id !== hunkId);
-    state.groups.push({
-      id: "group-2",
-      hunkIds: [independentHunk.id],
-      title: "needs human review",
-      notes: [{ hunkId: independentHunk.id, text: "intent and behavior" }],
-    });
     await writeFile(statePath, JSON.stringify(state));
     await writeFile(join(data, "corrupt.json"), "not json");
     const restoredStatus = json(await gyst(cwd, ["session", "status", ...pinned]));
     expect(restoredStatus.session.id).toBe(status.session.id);
     expect(restoredStatus.groups[0].count).toBe(1);
-    expect(restoredStatus.groups[1]).toEqual({
-      id: "group-2",
-      hunkIds: [independentHunk.id],
-      count: 1,
-      title: "needs human review",
-      notes: [{ hunkId: independentHunk.id, text: "intent and behavior" }],
-    });
+    expect(restoredStatus.groups[1]).toEqual({ ...state.groups[1], count: 1 });
     const respawned = await daemonPid(data);
     expect(respawned).not.toBe(pid);
     // The CLI relaunched its own installed entry on the Node under test.
@@ -553,7 +566,7 @@ describe("gyst session CLI seam", () => {
     const diff = json(await gyst(cwd, ["session", "diff", ...pinned]));
     expect(diff.hunks[0].patch.endsWith(line)).toBe(true);
     // Trailing whitespace is valid JSON: a 2 MB batch that must arrive whole to validate.
-    const batch = `${JSON.stringify({ revision: 0, idempotencyKey: "large", ops: [] })}${" ".repeat(2_000_000)}`;
+    const batch = `${JSON.stringify({ revision: 0, snapshotId: session.snapshotId, idempotencyKey: "large", ops: [] })}${" ".repeat(2_000_000)}`;
     expect(json(await gyst(cwd, ["session", "apply", ...pinned], batch)).revision).toBe(1);
     succeeded(await gyst(cwd, ["session", "delete", ...pinned, "--request-id", "cleanup"]));
   }, 20_000);
@@ -618,40 +631,58 @@ describe("gyst session CLI seam", () => {
     const { session } = json(await gyst(cwd, ["session", "open"]));
     const pinned = ["--session", session.id];
     const [first, second] = json(await gyst(cwd, ["session", "diff", ...pinned])).hunks;
-
-    const invalidError = failed(
-      await gyst(
+    const apply = async (batch: object) =>
+      gyst(
         cwd,
         ["session", "apply", ...pinned],
-        JSON.stringify({
-          revision: 0,
-          idempotencyKey: "invalid-batch",
-          ops: [
-            {
-              type: "group.create",
-              id: "group-1",
-              title: "coherent change",
-              notes: [{ hunkId: first.id, text: "intent and behavior" }],
-              memberHunkIds: [first.id],
-            },
-            { type: "group.update", id: "missing", title: "nope" },
-          ],
-        }),
-      ),
+        JSON.stringify({ snapshotId: session.snapshotId, ...batch }),
+      );
+
+    const invalidError = failed(
+      await apply({
+        revision: 0,
+        idempotencyKey: "invalid-batch",
+        ops: [
+          {
+            type: "group.create",
+            id: "group-1",
+            title: "coherent change",
+            overview: "intent and behavior",
+            memberHunkIds: [first.id],
+          },
+          { type: "group.update", id: "missing", title: "nope" },
+        ],
+      }),
     );
     expect(invalidError.code).toBe("validation_failed");
     expect(invalidError.detail).toEqual([expect.objectContaining({ opIndex: 1 })]);
+    // A note that reaches into another group's change fails the whole batch too.
+    const crossGroup = failed(
+      await apply({
+        revision: 0,
+        idempotencyKey: "cross-group",
+        ops: [
+          { type: "group.create", id: "a", title: "a", overview: "a", memberHunkIds: [first.id] },
+          { type: "group.create", id: "b", title: "b", overview: "b", memberHunkIds: [second.id] },
+          { type: "note.create", id: "n", group: "a", anchor: addedLine(second), markdown: "x" },
+        ],
+      }),
+    );
+    expect(crossGroup.detail).toEqual([
+      { opIndex: 2, message: expect.stringContaining(`hunk ${second.id}, which is in group b`) },
+    ]);
     expect(json(await gyst(cwd, ["session", "status", ...pinned])).groups).toEqual([]);
 
     const envelope = {
       revision: 0,
       idempotencyKey: "pre-pass",
       ops: [
+        { type: "walkthrough.update", overview: "Two independent edits." },
         {
           type: "group.create",
           id: "group-1",
           title: "coherent change",
-          notes: [{ hunkId: first.id, text: "intent and behavior" }],
+          overview: "intent and behavior",
           memberHunkIds: [first.id],
         },
         {
@@ -659,52 +690,69 @@ describe("gyst session CLI seam", () => {
           id: "group-2",
           memberHunkIds: [second.id],
           title: "read this",
-          notes: [{ hunkId: second.id, text: "read this" }],
+          overview: "read this",
+        },
+        {
+          type: "note.create",
+          id: "note-1",
+          group: "group-1",
+          anchor: addedLine(first),
+          markdown: "**Why** this line.",
         },
       ],
     };
-    const status = Schema.decodeUnknownSync(StatusPayloadSchema)(
-      json(await gyst(cwd, ["session", "apply", ...pinned], JSON.stringify(envelope))),
-    );
+    const status = Schema.decodeUnknownSync(StatusPayloadSchema)(json(await apply(envelope)));
     expect(status.revision).toBe(1);
     expect(status.groups.map(({ id }) => id)).toEqual(["group-1", "group-2"]);
+    expect(status.groups[0]?.notes).toEqual([
+      {
+        id: "note-1",
+        anchor: { snapshotId: session.snapshotId, ...addedLine(first) },
+        markdown: "**Why** this line.",
+        references: [],
+      },
+    ]);
+    expect(status.preparation.state).toBe("complete");
 
     await killDaemon(data);
 
     const changed = json(
-      await gyst(
-        cwd,
-        ["session", "apply", ...pinned],
-        JSON.stringify({
-          revision: 1,
-          idempotencyKey: "change",
-          ops: [
-            {
-              type: "group.update",
-              id: "group-2",
-              title: "updated",
-              notes: [{ hunkId: second.id, text: "updated" }],
-            },
-          ],
-        }),
-      ),
+      await apply({
+        revision: 1,
+        idempotencyKey: "change",
+        ops: [
+          { type: "group.update", id: "group-2", title: "updated", overview: "updated" },
+          { type: "note.update", id: "note-1", markdown: "Updated." },
+          { type: "walkthrough.update", groupOrder: ["group-2", "group-1"] },
+        ],
+      }),
     );
     expect(changed.revision).toBe(2);
-    expect(
-      json(await gyst(cwd, ["session", "apply", ...pinned], JSON.stringify(envelope))),
-    ).toEqual(status);
+    expect(changed.groups.map(({ id }: { id: string }) => id)).toEqual(["group-2", "group-1"]);
+    // The same key and batch replay the historical answer; a changed batch under it fails.
+    expect(json(await apply(envelope))).toEqual(status);
+    expect(failed(await apply({ ...envelope, ops: envelope.ops.slice(0, 3) })).message).toBe(
+      "idempotency key reused with a different batch",
+    );
     expect(json(await gyst(cwd, ["session", "status", ...pinned])).revision).toBe(2);
+    for (const stale of [{ revision: 1 }, { snapshotId: "0".repeat(64) }])
+      expect(
+        failed(
+          await apply({
+            revision: 2,
+            idempotencyKey: `stale-${Object.keys(stale)[0]}`,
+            ops: [],
+            ...stale,
+          }),
+        ).code,
+      ).toBe("stale_revision");
 
     const dissolved = json(
-      await gyst(
-        cwd,
-        ["session", "apply", ...pinned],
-        JSON.stringify({
-          revision: 2,
-          idempotencyKey: "dissolve",
-          ops: [{ type: "group.dissolve", id: "group-1" }],
-        }),
-      ),
+      await apply({
+        revision: 2,
+        idempotencyKey: "dissolve",
+        ops: [{ type: "group.dissolve", id: "group-1" }],
+      }),
     );
     expect(dissolved).toEqual(
       expect.objectContaining({
@@ -725,8 +773,11 @@ describe("gyst session CLI seam", () => {
     const batch = (idempotencyKey: string, title: string) =>
       JSON.stringify({
         revision: 0,
+        snapshotId: session.snapshotId,
         idempotencyKey,
-        ops: [{ type: "group.create", id: "group-1", memberHunkIds: [hunkId], title, notes: [] }],
+        ops: [
+          { type: "group.create", id: "group-1", memberHunkIds: [hunkId], title, overview: title },
+        ],
       });
 
     const results = await Promise.all([
@@ -763,13 +814,14 @@ describe("gyst session CLI seam", () => {
         ["session", "apply", ...pinned],
         JSON.stringify({
           revision: 0,
+          snapshotId: session.snapshotId,
           idempotencyKey: "fold",
           ops: [
             {
               type: "group.create",
               id: "group-1",
               title: "stable group",
-              notes: [{ hunkId: first.id, text: "intent and behavior" }],
+              overview: "intent and behavior",
               memberHunkIds: [first.id],
             },
             {
@@ -777,7 +829,14 @@ describe("gyst session CLI seam", () => {
               id: "group-2",
               memberHunkIds: [second.id],
               title: "stale group",
-              notes: [{ hunkId: second.id, text: "stale group" }],
+              overview: "stale group",
+            },
+            {
+              type: "note.create",
+              id: "note-1",
+              group: "group-1",
+              anchor: addedLine(first),
+              markdown: "Anchored to the first snapshot.",
             },
           ],
         }),
@@ -794,8 +853,14 @@ describe("gyst session CLI seam", () => {
     await writeFile(join(cwd, "second.txt"), "base\nreplacement change\n");
     await writeFile(join(cwd, "new.txt"), "brand new\n");
     const refreshed = json(await gyst(cwd, ["session", "refresh", ...pinned]));
+    // Until #91 reconciles guidance, a new snapshot keeps the overview but drops the note.
     expect(refreshed.groups[0]).toEqual(
-      expect.objectContaining({ id: "group-1", hunkIds: [first.id] }),
+      expect.objectContaining({
+        id: "group-1",
+        hunkIds: [first.id],
+        overview: { markdown: "intent and behavior", references: [] },
+        notes: [],
+      }),
     );
     expect(refreshed.groups).toHaveLength(1);
     // Only the unchanged hunk keeps Viewed; the replaced and the new hunk start unviewed.
@@ -808,6 +873,7 @@ describe("gyst session CLI seam", () => {
         ["session", "apply", ...pinned],
         JSON.stringify({
           revision: refreshed.revision,
+          snapshotId: refreshed.session.snapshotId,
           idempotencyKey: "update-group",
           ops: [{ type: "group.update", id: "group-1", title: "updated group" }],
         }),
@@ -993,6 +1059,7 @@ describe("gyst session CLI seam", () => {
         ["session", "apply", ...pinned],
         JSON.stringify({
           revision: 0,
+          snapshotId: opened.snapshotId,
           idempotencyKey: "before-upgrade",
           ops: [
             {
@@ -1000,7 +1067,7 @@ describe("gyst session CLI seam", () => {
               id: "group",
               memberHunkIds: [hunkId],
               title: "Review",
-              notes: [{ hunkId, text: "Keep this note." }],
+              overview: "Keep this overview.",
             },
           ],
         }),

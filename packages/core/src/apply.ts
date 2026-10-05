@@ -468,11 +468,11 @@ export function applyBatch(
       const anchored = anchoredHunkIds(draft.hunks, note.anchor);
       if (!anchored.some((id) => group.hunkIds.includes(id)))
         fail(noteOp, `note ${note.id} must cover a changed line of its group ${group.id}`);
-      for (const id of anchored.filter((id) => !group.hunkIds.includes(id))) {
-        const owner = owners.get(id);
+      for (const foreign of anchored.filter((id) => !group.hunkIds.includes(id))) {
+        const owner = owners.get(foreign);
         fail(
           noteOp,
-          `note ${note.id} covers changed lines of hunk ${id}, which is ${owner === undefined ? "ungrouped" : `in group ${owner}`}, not group ${group.id}`,
+          `note ${note.id} covers changed lines of hunk ${foreign}, which is ${owner === undefined ? "ungrouped" : `in group ${owner}`}, not group ${group.id}`,
         );
       }
     }

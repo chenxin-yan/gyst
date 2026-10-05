@@ -5,14 +5,14 @@ export const summaryOf = (session: Session): SessionSummary =>
   Struct.pick(session, ["id", "repoRoot", "scope", "snapshotId", "createdAt", "updatedAt"]);
 
 function preparationOf(session: Session): Preparation {
-  const hunkIds = new Set(session.hunks.map(({ id }) => id));
+  const current = new Set(session.hunks.map(({ id }) => id));
   const memberships = session.groups.flatMap(({ hunkIds }) => hunkIds);
-  const groupedHunks = new Set(memberships.filter((id) => hunkIds.has(id))).size;
+  const groupedHunks = new Set(memberships.filter((id) => current.has(id))).size;
   const overviewMissing = session.overview === null;
   const groupsMissingOverview = session.groups.flatMap(({ id, overview }) =>
     overview === null ? [id] : [],
   );
-  const covered = groupedHunks === hunkIds.size && memberships.length === groupedHunks;
+  const covered = groupedHunks === current.size && memberships.length === groupedHunks;
   return {
     state:
       session.groups.length === 0 && overviewMissing
@@ -21,7 +21,7 @@ function preparationOf(session: Session): Preparation {
           ? "complete"
           : "incomplete",
     groupedHunks,
-    totalHunks: hunkIds.size,
+    totalHunks: current.size,
     overviewMissing,
     groupsMissingOverview,
   };
