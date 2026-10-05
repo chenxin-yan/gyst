@@ -183,31 +183,34 @@ export function NoteCard(props: {
   };
   return (
     <div
+      data-annotation
       data-note={note.id}
       onMouseEnter={() => onHighlight(note.anchor)}
       onMouseLeave={() => onHighlight(undefined)}
       onFocus={() => onHighlight(note.anchor)}
       onBlur={leave}
-      {...stylex.props(noteStyles.box)}
+      {...stylex.props(noteStyles.slot)}
     >
-      <button
-        type="button"
-        aria-expanded={!props.collapsed}
-        onClick={props.onToggle}
-        {...stylex.props(noteStyles.chip)}
-      >
-        <span {...stylex.props(noteStyles.chevron, !props.collapsed && noteStyles.chevronOpen)} />
-        {rangeLabel(note.anchor)}
-      </button>
-      {!props.collapsed && (
-        <div {...stylex.props(noteStyles.body)}>
-          <RichText
-            markdown={note.markdown}
-            references={note.references}
-            onReference={props.onReference}
-          />
-        </div>
-      )}
+      <div {...stylex.props(noteStyles.box)}>
+        <button
+          type="button"
+          aria-expanded={!props.collapsed}
+          onClick={props.onToggle}
+          {...stylex.props(noteStyles.chip)}
+        >
+          <span {...stylex.props(noteStyles.chevron, !props.collapsed && noteStyles.chevronOpen)} />
+          {rangeLabel(note.anchor)}
+        </button>
+        {!props.collapsed && (
+          <div {...stylex.props(noteStyles.body)}>
+            <RichText
+              markdown={note.markdown}
+              references={note.references}
+              onReference={props.onReference}
+            />
+          </div>
+        )}
+      </div>
     </div>
   );
 }
@@ -215,7 +218,7 @@ export function NoteCard(props: {
 /** The owner of a change shown in a group view that another group, or none yet, explains. */
 export function ForeignHunkLabel(props: { owner: string | undefined }) {
   return (
-    <div role="note" {...stylex.props(noteStyles.foreign)}>
+    <div data-annotation role="note" {...stylex.props(noteStyles.foreign)}>
       {props.owner === undefined
         ? "Not yet in a group"
         : `Change from another group · ${props.owner}`}
@@ -223,9 +226,10 @@ export function ForeignHunkLabel(props: { owner: string | undefined }) {
   );
 }
 
+// Annotations pad rather than keep a margin, so the element's top is where its row begins.
 const noteStyles = stylex.create({
+  slot: { padding: "4px 10px 6px" },
   box: {
-    margin: "4px 10px 6px",
     padding: "6px 10px 8px",
     borderRadius: "6px",
     backgroundColor: theme.surface,
@@ -255,7 +259,7 @@ const noteStyles = stylex.create({
   chevronOpen: { transform: "rotate(45deg)" },
   body: { marginTop: "4px" },
   foreign: {
-    margin: "2px 10px 4px",
+    padding: "2px 10px 4px",
     fontFamily: theme.sans,
     fontSize: "12px",
     color: theme.changed,

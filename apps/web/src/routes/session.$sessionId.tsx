@@ -1454,10 +1454,17 @@ function ContinuousDiff(props: {
     if (rendered.type !== "diff") return undefined;
     const at = rendered.instance.getLinePosition(mark.line, mark.side);
     if (at === undefined) return undefined;
+    // A line's position includes the annotations under it; its own rows end where one begins.
+    let height = at.height;
+    for (const annotation of rendered.element.querySelectorAll("[data-annotation]")) {
+      const below =
+        annotation.getBoundingClientRect().top - outer.top + node.scrollTop - (top + at.top);
+      if (below > 0 && below < height) height = below;
+    }
     const half = rect.width / 2;
     return {
       top: top + at.top,
-      height: at.height,
+      height,
       left: mark.full || mark.side === "deletions" ? left : left + half,
       width: mark.full ? rect.width : half,
     };
