@@ -2,20 +2,13 @@ import type { Nodes } from "mdast";
 import { fromMarkdown } from "mdast-util-from-markdown";
 import { gfmFromMarkdown } from "mdast-util-gfm";
 import { gfm } from "micromark-extension-gfm";
-import { type CodeRange, parseReferenceHref } from "./guidance.ts";
+import { type CodeRange, isWebUrl, parseReferenceHref } from "./guidance.ts";
 
 /** What authored Markdown links to and what the shared rich-content policy refuses in it. */
 export type MarkdownInspection = {
   /** Every distinct `gyst:` reference, in document order of first appearance. */
   readonly references: CodeRange[];
   readonly problems: string[];
-};
-
-// The URL is already entity-decoded by the parser, so `&#106;avascript:` arrives as `javascript:`.
-const isWebUrl = (url: string) => {
-  if (!/^https?:\/\/[^/\s]/i.test(url) || !URL.canParse(url)) return false;
-  const { protocol } = new URL(url);
-  return protocol === "http:" || protocol === "https:";
 };
 
 // Mermaid reads its configuration from `%%{…}%%` directives and from leading `---` frontmatter.

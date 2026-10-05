@@ -13,9 +13,14 @@
     "@stylexjs/stylex": "0.19.1",
     "@tanstack/react-hotkeys": "0.12.1",
     "@tanstack/react-router": "1.170.40",
+    "dompurify": "3.4.16",
     "effect": "catalog:",
+    "hast-util-to-jsx-runtime": "2.3.6",
+    "mermaid": "11.17.2",
     "react": "19.3.0",
-    "react-dom": "19.3.0"
+    "react-dom": "19.3.0",
+    "react-markdown": "10.1.0",
+    "remark-gfm": "4.0.1"
   },
   "devDependencies": {
     "@stylexjs/unplugin": "0.19.1",

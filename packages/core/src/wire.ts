@@ -35,6 +35,7 @@ export {
   CodeSideSchema,
   type GuidanceText,
   GuidanceTextSchema,
+  isWebUrl,
   LineNumberSchema,
   MarkdownSchema,
   type Note,

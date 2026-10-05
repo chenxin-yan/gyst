@@ -107,6 +107,16 @@ export const anchoredHunkIds = (
     )
     .map(({ id }) => id);
 
+/**
+ * The only external links guidance may carry: absolute `http(s)` URLs. The URL must already be
+ * entity-decoded, as a Markdown parser leaves it, so `&#106;avascript:` arrives as `javascript:`.
+ */
+export const isWebUrl = (url: string) => {
+  if (!/^https?:\/\/[^/\s]/i.test(url) || !URL.canParse(url)) return false;
+  const { protocol } = new URL(url);
+  return protocol === "http:" || protocol === "https:";
+};
+
 const referenceHref = /^gyst:(old|new)\/([^#]+)#L([1-9]\d*)(?:-L([1-9]\d*))?$/;
 
 /** Parses a `gyst:<old|new>/<path>#L<start>[-L<end>]` link; anything else is not a reference. */
