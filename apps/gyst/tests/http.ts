@@ -1,6 +1,7 @@
 // For the bridge unit tests: a raw HTTP/1.1 client (full control of Host, duplicates and request
 // targets) and a throwaway packaged-SPA fixture.
 import { mkdir, mkdtemp, realpath, symlink, writeFile } from "node:fs/promises";
+import { request as httpRequest } from "node:http";
 import { connect } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -67,13 +68,16 @@ export function send(
 }
 
 export type RawStream = Omit<RawResponse, "body"> & {
-  /** Each SSE event's `data` payload in arrival order, ending when the server ends the response. */
+  /** Each SSE event's `data` payload in arrival order, ending when the response ends or breaks. */
   frames(): AsyncGenerator<string, void>;
   /** Hangs up, as a closed tab or a stopped browser would. */
   close(): void;
 };
 
-/** A raw streaming POST that resolves on the response head, then reads chunked SSE frames. */
+/**
+ * A streaming POST that resolves on the response head. Until `frames` is read nothing is taken off
+ * the socket, so a reader that stops reading backs the server up as a stalled browser would.
+ */
 export function openStream(
   port: number,
   request: {
@@ -82,82 +86,50 @@ export function openStream(
     readonly body: string;
   },
 ): Promise<RawStream> {
-  const lines = [
-    `POST ${request.target} HTTP/1.1`,
-    ...request.headers.map(([name, value]) => `${name}: ${value}`),
-    `content-length: ${Buffer.byteLength(request.body)}`,
-  ];
   return new Promise((resolve, reject) => {
-    const socket = connect({ port, host: "127.0.0.1" });
-    const payloads: string[] = [];
-    const waiters: Array<() => void> = [];
-    let ended = false;
-    const wake = () => {
-      for (const waiter of waiters.splice(0)) waiter();
-    };
-    let raw = Buffer.alloc(0);
-    let body = Buffer.alloc(0);
-    let head = false;
-    const parseBody = () => {
-      for (;;) {
-        const end = raw.indexOf("\r\n");
-        if (end < 0) return;
-        const size = Number.parseInt(raw.subarray(0, end).toString(), 16);
-        if (size === 0) {
-          ended = true;
-          return;
-        }
-        if (raw.length < end + 2 + size + 2) return;
-        body = Buffer.concat([body, raw.subarray(end + 2, end + 2 + size)]);
-        raw = raw.subarray(end + 4 + size);
-      }
-    };
-    const parseEvents = () => {
-      for (let split = body.indexOf("\n\n"); split >= 0; split = body.indexOf("\n\n")) {
-        for (const line of body.subarray(0, split).toString("utf8").split("\n"))
-          if (line.startsWith("data: ")) payloads.push(line.slice("data: ".length));
-        body = body.subarray(split + 2);
-      }
-    };
-    socket.on("data", (chunk) => {
-      raw = Buffer.concat([raw, chunk]);
-      if (!head) {
-        const split = raw.indexOf("\r\n\r\n");
-        if (split < 0) return;
-        const [statusLine = "", ...headerLines] = raw.subarray(0, split).toString().split("\r\n");
-        raw = raw.subarray(split + 4);
-        head = true;
-        const headers = headerLines.map((line) => {
-          const colon = line.indexOf(":");
-          return [line.slice(0, colon).toLowerCase(), line.slice(colon + 1).trim()] as const;
-        });
+    const outgoing = httpRequest(
+      {
+        host: "127.0.0.1",
+        port,
+        method: "POST",
+        path: request.target,
+        agent: false,
+        headers: [
+          ...request.headers.flat(),
+          "content-length",
+          String(Buffer.byteLength(request.body)),
+        ],
+      },
+      (response) => {
+        // A cut connection fails the response; `frames` reports it as the end, read or not.
+        response.on("error", () => {});
+        const { rawHeaders } = response;
+        const headers = rawHeaders.flatMap((name, index) =>
+          index % 2 === 0 ? [[name.toLowerCase(), rawHeaders[index + 1]!] as const] : [],
+        );
         resolve({
-          status: Number(statusLine.split(" ")[1]),
+          status: response.statusCode!,
           headers,
           header: (name) => headers.find(([header]) => header === name)?.[1],
           async *frames() {
-            for (;;) {
-              if (payloads.length > 0) yield payloads.shift()!;
-              else if (ended) return;
-              else await new Promise<void>((wakeUp) => waiters.push(wakeUp));
-            }
+            let text = "";
+            try {
+              for await (const chunk of response.setEncoding("utf8")) {
+                text += chunk;
+                for (let split = text.indexOf("\n\n"); split >= 0; split = text.indexOf("\n\n")) {
+                  for (const line of text.slice(0, split).split("\n"))
+                    if (line.startsWith("data: ")) yield line.slice("data: ".length);
+                  text = text.slice(split + 2);
+                }
+              }
+            } catch {}
           },
-          close: () => socket.destroy(),
+          close: () => outgoing.destroy(),
         });
-      }
-      parseBody();
-      parseEvents();
-      wake();
-    });
-    const finish = () => {
-      ended = true;
-      wake();
-    };
-    socket.once("error", (error) => (head ? finish() : reject(error)));
-    socket.once("close", () =>
-      head ? finish() : reject(new Error("closed before a response head")),
+      },
     );
-    socket.write(`${lines.join("\r\n")}\r\n\r\n${request.body}`);
+    outgoing.on("error", reject);
+    outgoing.end(request.body);
   });
 }
 
