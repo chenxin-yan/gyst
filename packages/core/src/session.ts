@@ -1,5 +1,9 @@
 import { Schema } from "effect";
-import { PullRequestContextSchema, PullRequestScopeSchema } from "./github.ts";
+import {
+  PullRequestContextSchema,
+  PullRequestScopeSchema,
+  PullRequestStatusSchema,
+} from "./github.ts";
 import {
   GuidanceTextSchema,
   guidanceTextFields,
@@ -90,7 +94,11 @@ const statusPayloadFields = <Text extends Schema.Top>(text: Text) => ({
     Schema.Struct({ path: Schema.String, hunkCount: Schema.Number, viewed: Schema.Boolean }),
   ),
 });
-export const StatusPayloadSchema = Schema.Struct(statusPayloadFields(MarkdownSchema));
+export const StatusPayloadSchema = Schema.Struct({
+  ...statusPayloadFields(MarkdownSchema),
+  /** A PR session's stack context; current, never part of a recorded receipt. */
+  pullRequest: Schema.optional(PullRequestStatusSchema),
+});
 export type StatusPayload = typeof StatusPayloadSchema.Type;
 const ReceiptStatusSchema = Schema.Struct(statusPayloadFields(Schema.Natural));
 export type ReceiptStatus = typeof ReceiptStatusSchema.Type;

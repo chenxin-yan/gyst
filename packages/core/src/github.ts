@@ -1,4 +1,5 @@
 import { Schema } from "effect";
+import type { Session } from "./session.ts";
 
 /**
  * `owner/name` on github.com, lowercased: GitHub names are case-insensitive, so one repository has
@@ -107,12 +108,7 @@ export const GitHubUnavailableReasonSchema = Schema.Literals([
 ]);
 export type GitHubUnavailableReason = typeof GitHubUnavailableReasonSchema.Type;
 
-/**
- * A PR session's GitHub context, kept apart from its snapshot. `stack` is the last successful
- * discovery and when it happened; `unavailable` is the latest attempt when it failed. A failure
- * never replaces `stack`, so unknown membership cannot read as verified removal or as fresh.
- */
-export const PullRequestContextSchema = Schema.Struct({
+const pullRequestContextFields = {
   pullRequest: PullRequestSchema,
   stack: Schema.NullOr(
     Schema.Union([
@@ -123,18 +119,92 @@ export const PullRequestContextSchema = Schema.Struct({
   unavailable: Schema.NullOr(
     Schema.Struct({ at: Schema.String, reason: GitHubUnavailableReasonSchema }),
   ),
-}).check(
-  Schema.makeFilter(
+};
+type PullRequestContextFields = Schema.Struct.Type<typeof pullRequestContextFields>;
+const discoveryOutcome = <T extends PullRequestContextFields>() =>
+  Schema.makeFilter<T>(
     ({ stack, unavailable }) =>
       stack !== null ||
       unavailable !== null ||
       "stack discovery has neither a result nor a failure",
-  ),
-  Schema.makeFilter(
+  );
+const stackContainsPullRequest = <T extends PullRequestContextFields>() =>
+  Schema.makeFilter<T>(
     ({ pullRequest, stack }) =>
       stack?.membership !== "stacked" ||
       stack.layers.some((layer) => layer.pullRequest.number === pullRequest.number) ||
       "a discovered stack must contain its PR",
-  ),
+  );
+
+/**
+ * A PR session's GitHub context, kept apart from its snapshot. `stack` is the last successful
+ * discovery and when it happened; `unavailable` is the latest attempt when it failed. A failure
+ * never replaces `stack`, so unknown membership cannot read as verified removal or as fresh.
+ */
+export const PullRequestContextSchema = Schema.Struct(pullRequestContextFields).check(
+  discoveryOutcome(),
+  stackContainsPullRequest(),
 );
 export type PullRequestContext = typeof PullRequestContextSchema.Type;
+
+/**
+ * A PR session's status context: its GitHub context, the selected PR, and the saved sessions of
+ * the selected PR and its known layers in layer order. A layer with no saved session has no entry,
+ * so unopened never reads as zero Viewed.
+ */
+export const PullRequestStatusSchema = Schema.Struct({
+  ...pullRequestContextFields,
+  selected: PullRequestNumberSchema,
+  // #92 adds unresolved-thread counts to these entries.
+  sessions: Schema.Array(
+    Schema.Struct({
+      number: PullRequestNumberSchema,
+      sessionId: Schema.String,
+      hunkCount: Schema.Natural,
+      viewedCount: Schema.Natural,
+    }),
+  ),
+}).check(discoveryOutcome(), stackContainsPullRequest());
+export type PullRequestStatus = typeof PullRequestStatusSchema.Type;
+
+/**
+ * Status context for a PR session, or undefined for any other. Only saved PR sessions of the same
+ * repository count, and only for the selected PR or a layer of its last verified stack: a layer
+ * GitHub has since removed stays reachable as a saved session, but not as part of this stack.
+ */
+export const pullRequestStatusOf = (
+  session: Session,
+  sessions: Iterable<Session>,
+): PullRequestStatus | undefined => {
+  const { scope, pullRequest: context } = session;
+  if (scope.kind !== "pr" || !context) return undefined;
+  const numbers =
+    context.stack?.membership === "stacked"
+      ? context.stack.layers.map((layer) => layer.pullRequest.number)
+      : [scope.number];
+  const saved = new Map<number, Session>();
+  for (const candidate of sessions)
+    if (
+      candidate.scope.kind === "pr" &&
+      candidate.scope.repository === scope.repository &&
+      !saved.has(candidate.scope.number)
+    )
+      saved.set(candidate.scope.number, candidate);
+  return {
+    ...context,
+    selected: scope.number,
+    sessions: numbers.flatMap((number) => {
+      const layer = saved.get(number);
+      return layer
+        ? [
+            {
+              number,
+              sessionId: layer.id,
+              hunkCount: layer.hunks.length,
+              viewedCount: layer.viewedHunkIds.length,
+            },
+          ]
+        : [];
+    }),
+  };
+};

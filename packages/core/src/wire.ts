@@ -6,6 +6,7 @@ import {
   SnapshotIdSchema,
 } from "./content.ts";
 import { ErrorPayloadSchema } from "./errors.ts";
+import { PullRequestNumberSchema, PullRequestStatusSchema } from "./github.ts";
 import { CodeSideSchema, LineNumberSchema } from "./guidance.ts";
 import { HunkSchema, ScopeSchema, SessionSummarySchema } from "./session.ts";
 
@@ -38,6 +39,8 @@ export {
   type PullRequestScope,
   PullRequestScopeSchema,
   PullRequestStateSchema,
+  type PullRequestStatus,
+  PullRequestStatusSchema,
   pullRequestUrlOf,
   type Repository,
   RepositorySchema,
@@ -176,6 +179,13 @@ export const CaptureProgressSchema = Schema.Struct({
 });
 export type CaptureProgress = typeof CaptureProgressSchema.Type;
 
+/** A PR session's stack context after an explicit metadata recheck. */
+export const StackPayloadSchema = Schema.Struct({
+  sessionId: Schema.String,
+  pullRequest: PullRequestStatusSchema,
+});
+export type StackPayload = typeof StackPayloadSchema.Type;
+
 /** Also the recorded answer to every retry of the same delete request. */
 export const DeletePayloadSchema = Schema.Struct({
   deleted: Schema.Literal(true),
@@ -196,6 +206,16 @@ export const BrowserRequestSchema = Schema.Union([
   Schema.Struct({ command: Schema.Literal("open"), ...exact }),
   Schema.Struct({ command: Schema.Literal("status"), ...exact }),
   Schema.Struct({ command: Schema.Literal("check"), ...exact }),
+  /**
+   * Explicitly rechecks a PR session's native stack metadata: membership, order, PR states and
+   * verification only. It never refreshes code or changes review state.
+   */
+  Schema.Struct({ command: Schema.Literal("stack"), ...exact }),
+  /**
+   * Opens, or resumes as it is, one layer of the PR session's known stack. The checkout and
+   * repository are the session's own, so a browser can name neither.
+   */
+  Schema.Struct({ command: Schema.Literal("layer"), ...exact, number: PullRequestNumberSchema }),
   Schema.Struct({
     command: Schema.Literal("diff"),
     ...exact,

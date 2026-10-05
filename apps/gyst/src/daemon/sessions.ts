@@ -10,6 +10,7 @@ import {
   type CodePayload,
   type DeletePayload,
   type FilesPayload,
+  GitHubUnavailableReasonSchema,
   InternalError,
   type DiffPayload,
   type ListPayload,
@@ -18,6 +19,7 @@ import {
   pageBytes,
   type PullRequest,
   type PullRequestContext,
+  pullRequestStatusOf,
   refreshSession,
   type Request,
   setViewed,
@@ -29,6 +31,7 @@ import {
   type SourceUnavailable,
   StaleRevision,
   type SourceCheckPayload,
+  type StackPayload,
   type StatusPayload,
   type SubscribeRequest,
   type SubscriptionEvent,
@@ -87,6 +90,8 @@ const contextOf = (
   unavailable: discovery.ok ? null : { at, reason: discovery.reason },
 });
 
+const isGitHubReason = Schema.is(GitHubUnavailableReasonSchema);
+
 const opened = (session: Session, created: boolean): OpenPayload => ({
   session: summaryOf(session),
   created,
@@ -128,8 +133,27 @@ export class Sessions extends Context.Service<
       onProgress?: OnProgress,
     ): Effect.Effect<OpenPayload, BadArgs | NoSession | SourceUnavailable | InternalError>;
     readonly list: Effect.Effect<ListPayload>;
+    /** A PR session's status also carries its stack context and its opened layers' sessions. */
     status(request: Input<"status">): Effect.Effect<StatusPayload, NoSession>;
     check(request: Input<"check">): Effect.Effect<SourceCheckPayload, NoSession>;
+    /**
+     * Rechecks a PR session's native stack metadata. Success replaces the PR and stack metadata
+     * and clears `unavailable`; a failure records `unavailable` and keeps the last verified stack.
+     * The snapshot, revision, review state, receipts and `updatedAt` never change, and no session
+     * is created or removed.
+     */
+    stack(request: Input<"stack">): Effect.Effect<StackPayload, BadArgs | NoSession>;
+    /**
+     * Opens one layer of the PR session's known stack from that session's checkout, or returns its
+     * saved session as it is. A number outside the known stack is `validation_failed`.
+     */
+    layer(
+      request: Input<"layer">,
+      onProgress?: OnProgress,
+    ): Effect.Effect<
+      OpenPayload,
+      BadArgs | NoSession | SourceUnavailable | ValidationFailed | InternalError
+    >;
     diff(
       request: Input<"diff">,
     ): Effect.Effect<DiffPayload, BadArgs | NoSession | ValidationFailed>;
@@ -335,8 +359,74 @@ export class Sessions extends Context.Service<
       })).pipe(Semaphore.withPermit(lock), Effect.withSpan("Sessions.list"));
 
       const status = Effect.fn("Sessions.status")(function* (request: Input<"status">) {
-        return statusOf(yield* selected(request));
+        const session = yield* selected(request);
+        const pullRequest = pullRequestStatusOf(session, sessions.values());
+        return { ...statusOf(session), ...(pullRequest && { pullRequest }) };
       }, Semaphore.withPermit(lock));
+
+      // GitHub reads run outside `lock`; `stackLock` keeps one recheck at a time.
+      const stackLock = yield* Semaphore.make(1);
+      const stack = Effect.fn("Sessions.stack")(function* (request: Input<"stack">) {
+        const { scope } = yield* underLock(selected(request));
+        if (scope.kind !== "pr")
+          return yield* new BadArgs({
+            message: "only a GitHub PR session has a native stack to recheck",
+          });
+        const read = yield* github.pullRequest(scope).pipe(
+          Effect.map(({ pullRequest }) => ({ ok: true as const, pullRequest })),
+          Effect.catch((error) =>
+            Effect.succeed({
+              ok: false as const,
+              reason: isGitHubReason(error.detail.reason) ? error.detail.reason : "github_failed",
+            }),
+          ),
+        );
+        const discovery: StackDiscovery = read.ok ? yield* github.stack(scope) : read;
+        const at = DateTime.formatIso(yield* DateTime.now);
+        return yield* underLock(
+          Effect.gen(function* () {
+            // Merge into the session as it is now; a deletion meanwhile wins.
+            const session = yield* selected(request);
+            const context = session.pullRequest!;
+            const rechecked: Session = {
+              ...session,
+              pullRequest: {
+                pullRequest: read.ok ? read.pullRequest : context.pullRequest,
+                stack: discovery.ok ? { verifiedAt: at, ...discovery.membership } : context.stack,
+                unavailable: discovery.ok ? null : { at, reason: discovery.reason },
+              },
+            };
+            yield* store.save(rechecked).pipe(Effect.orDie);
+            sessions.set(session.id, rechecked);
+            return {
+              sessionId: session.id,
+              pullRequest: pullRequestStatusOf(rechecked, sessions.values())!,
+            } satisfies StackPayload;
+          }),
+        );
+      }, Semaphore.withPermit(stackLock));
+
+      const layer = Effect.fn("Sessions.layer")(function* (
+        request: Input<"layer">,
+        onProgress?: OnProgress,
+      ) {
+        const { repoRoot, scope, pullRequest: context } = yield* underLock(selected(request));
+        if (scope.kind !== "pr")
+          return yield* new BadArgs({ message: "only a GitHub PR session has stack layers" });
+        const known =
+          context?.stack?.membership === "stacked" &&
+          context.stack.layers.some((entry) => entry.pullRequest.number === request.number);
+        if (!known)
+          return yield* new ValidationFailed({
+            message: `#${request.number} is not a layer of this session's known stack; recheck the stack first`,
+            detail: { number: request.number },
+          });
+        return yield* openScope(
+          repoRoot,
+          { kind: "pr", repository: scope.repository, number: request.number },
+          onProgress,
+        );
+      }, Semaphore.withPermit(sourceLock));
 
       const check = Effect.fn("Sessions.check")(function* (request: Input<"check">) {
         const target = yield* Effect.gen(function* () {
@@ -679,6 +769,8 @@ export class Sessions extends Context.Service<
         list,
         status,
         check,
+        stack,
+        layer,
         diff,
         files,
         code,

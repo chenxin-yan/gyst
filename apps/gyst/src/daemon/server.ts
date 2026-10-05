@@ -152,6 +152,10 @@ export class DaemonServer extends Context.Service<
             return sessions.status(request);
           case "check":
             return sessions.check(request);
+          case "stack":
+            return sessions.stack(request);
+          case "layer":
+            return sessions.layer(request, onProgress);
           case "diff":
             return sessions.diff(request);
           case "files":

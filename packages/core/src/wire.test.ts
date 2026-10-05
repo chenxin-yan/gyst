@@ -73,6 +73,8 @@ describe("daemon wire envelopes", () => {
         endLine: 2,
       },
       { command: "code", session: "s1", snapshotId, file: "a", side: "old", offset: 0, endLine: 9 },
+      { command: "stack", session: "s1" },
+      { command: "layer", session: "s1", number: 3 },
     ])
       expect(decodeBrowserRequest(valid)).toEqual(valid);
     for (const invalid of [
@@ -96,6 +98,23 @@ describe("daemon wire envelopes", () => {
         hunkIds: ["h1"],
         viewed: true,
         role: "agent",
+      },
+      // A stack recheck names only the session; a layer only a PR number of that session's stack.
+      { command: "stack", session: "s1", cwd: "/repo" },
+      { command: "stack", session: "s1", repository: "acme/widgets" },
+      { command: "layer", session: "s1" },
+      { command: "layer", session: "s1", number: 0 },
+      { command: "layer", session: "s1", number: 1.5 },
+      { command: "layer", session: "s1", number: "3" },
+      { command: "layer", session: "s1", number: 3, cwd: "/repo" },
+      { command: "layer", session: "s1", number: 3, repository: "acme/gadgets" },
+      { command: "layer", session: "s1", number: 3, repoRoot: "/repo" },
+      { command: "layer", session: "s1", number: 3, path: "/repo" },
+      {
+        command: "layer",
+        session: "s1",
+        number: 3,
+        scope: { kind: "pr", repository: "acme/widgets", number: 3 },
       },
       // Group verdicts and the review queue are gone, not aliased.
       { command: "verdict", session: "s1", itemId: "g1" },
@@ -183,6 +202,8 @@ describe("daemon wire envelopes", () => {
       "StackMembershipSchema",
       "GitHubUnavailableReasonSchema",
       "PullRequestContextSchema",
+      "PullRequestStatusSchema",
+      "StackPayloadSchema",
     ] as const;
     const wireExports: Record<string, unknown> = { ...publicWire };
     const rootExports: Record<string, unknown> = { ...publicRoot };

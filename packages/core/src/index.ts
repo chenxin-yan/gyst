@@ -64,6 +64,9 @@ export {
   type PullRequestScope,
   PullRequestScopeSchema,
   PullRequestStateSchema,
+  type PullRequestStatus,
+  PullRequestStatusSchema,
+  pullRequestStatusOf,
   pullRequestUrlOf,
   type Repository,
   RepositorySchema,
@@ -144,4 +147,6 @@ export {
   SubscribeRequestSchema,
   type SubscriptionEvent,
   SubscriptionEventSchema,
+  type StackPayload,
+  StackPayloadSchema,
 } from "./wire.ts";

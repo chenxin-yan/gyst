@@ -4,11 +4,13 @@ import {
   parsePullRequestUrl,
   type PullRequest,
   PullRequestContextSchema,
+  PullRequestStatusSchema,
+  pullRequestStatusOf,
   pullRequestUrlOf,
   RepositorySchema,
   StackMembershipSchema,
 } from "./github.ts";
-import { type Session, SessionSchema } from "./session.ts";
+import { type Hunk, type Session, SessionSchema, StatusPayloadSchema } from "./session.ts";
 
 const strict = { onExcessProperty: "error" } as const;
 const decodeMembership = Schema.decodeUnknownSync(StackMembershipSchema, strict);
@@ -189,5 +191,150 @@ describe("SessionSchema PR context", () => {
       expect(() => decodeSession({ ...base, scope: local, pullRequest: context })).toThrow(
         "GitHub PR context exactly",
       );
+  });
+});
+
+describe("pullRequestStatusOf", () => {
+  const at = "2026-01-01T00:00:00.000Z";
+  const hunk = (id: string): Hunk => ({
+    id,
+    file: `${id}.txt`,
+    header: "@@ -1 +1 @@",
+    patch: "@@ -1 +1 @@\n-a\n+b",
+    contentHash: id,
+  });
+  const session = (id: string, scope: Session["scope"], extra: Partial<Session> = {}): Session => ({
+    id,
+    repoRoot: "/repo",
+    scope,
+    snapshotId: "a".repeat(64),
+    createdAt: at,
+    updatedAt: at,
+    revision: 0,
+    hunks: [hunk(`${id}-1`), hunk(`${id}-2`)],
+    groups: [],
+    viewedHunkIds: [],
+    receiptNoteTexts: [],
+    applyReceipts: [],
+    viewedReceipts: [],
+    ...extra,
+  });
+  const pr = (number: number, repository = "acme/widgets") =>
+    ({ kind: "pr", repository, number }) as const;
+  const prSession = (id: string, number: number, extra: Partial<Session> = {}) =>
+    session(id, pr(number), {
+      pullRequest: {
+        pullRequest: pullRequest(number),
+        stack: { verifiedAt: at, ...stacked(1, 2, 3) },
+        unavailable: null,
+      } as Session["pullRequest"],
+      ...extra,
+    });
+  const decodeStatus = Schema.decodeUnknownSync(PullRequestStatusSchema, strict);
+
+  it("lists saved sessions of the selected PR and its known layers in layer order, never unopened ones", () => {
+    const b = prSession("b", 2, { viewedHunkIds: ["b-1"] });
+    const c = prSession("c", 3, { hunks: [hunk("c-1")], viewedHunkIds: ["c-1"] });
+    const others = [
+      session("range", { kind: "range", range: "layer-1...layer-2" }),
+      session("local", { kind: "uncommitted" }),
+      session("other-repo", pr(1, "acme/gadgets")),
+    ];
+    const status = pullRequestStatusOf(b, [c, ...others, b])!;
+    expect(status).toEqual({
+      ...b.pullRequest,
+      selected: 2,
+      sessions: [
+        { number: 2, sessionId: "b", hunkCount: 2, viewedCount: 1 },
+        { number: 3, sessionId: "c", hunkCount: 1, viewedCount: 1 },
+      ],
+    });
+    // Layer 1 has no session: it is absent, not 0 of 0.
+    expect(status.sessions.some(({ number }) => number === 1)).toBe(false);
+    expect(decodeStatus(status)).toEqual(status);
+    for (const local of others) expect(pullRequestStatusOf(local, [b, c])).toBeUndefined();
+  });
+
+  it("drops a layer removed from the verified stack but keeps the selected PR after its own removal", () => {
+    const b = prSession("b", 2, {
+      pullRequest: {
+        pullRequest: pullRequest(2),
+        stack: { verifiedAt: at, ...stacked(1, 2) },
+        unavailable: null,
+      } as Session["pullRequest"],
+    });
+    const c = prSession("c", 3);
+    expect(pullRequestStatusOf(b, [b, c])!.sessions.map(({ number }) => number)).toEqual([2]);
+    const removed = prSession("c", 3, {
+      pullRequest: {
+        pullRequest: pullRequest(3),
+        stack: { verifiedAt: at, membership: "none" },
+        unavailable: null,
+      },
+    });
+    expect(pullRequestStatusOf(removed, [b, removed])!.sessions).toEqual([
+      { number: 3, sessionId: "c", hunkCount: 2, viewedCount: 0 },
+    ]);
+    // Never verified: only the selected PR is known.
+    const unknown = prSession("b", 2, {
+      pullRequest: {
+        pullRequest: pullRequest(2),
+        stack: null,
+        unavailable: { at, reason: "gh_missing" },
+      },
+    });
+    expect(
+      pullRequestStatusOf(unknown, [unknown, c])!.sessions.map(({ number }) => number),
+    ).toEqual([2]);
+  });
+
+  it("is optional status context that a session status rejects in any other shape", () => {
+    const decodeStatusPayload = Schema.decodeUnknownSync(StatusPayloadSchema, strict);
+    const b = prSession("b", 2);
+    const payload = {
+      session: {
+        id: "b",
+        repoRoot: "/repo",
+        scope: pr(2),
+        snapshotId: "a".repeat(64),
+        createdAt: at,
+        updatedAt: at,
+      },
+      revision: 0,
+      groups: [],
+      viewedHunkIds: [],
+      files: [],
+      pullRequest: pullRequestStatusOf(b, [b]),
+    };
+    expect(decodeStatusPayload(payload)).toEqual(payload);
+    const { pullRequest: _, ...plain } = payload;
+    expect(decodeStatusPayload(plain)).toEqual(plain);
+    expect(() =>
+      decodeStatusPayload({ ...payload, pullRequest: { ...payload.pullRequest, sessions: [{}] } }),
+    ).toThrow();
+    expect(() =>
+      decodeStatusPayload({
+        ...payload,
+        pullRequest: { ...payload.pullRequest, stack: null, unavailable: null },
+      }),
+    ).toThrow("neither a result nor a failure");
+    // Apply receipts record review status only: stack context is never part of a replay.
+    const receipt = {
+      key: "k",
+      digest: "d",
+      status: { ...plain, pullRequest: payload.pullRequest },
+    };
+    expect(() =>
+      Schema.decodeUnknownSync(SessionSchema, strict)({ ...b, applyReceipts: [receipt] }),
+    ).toThrow();
+    expect(
+      Schema.decodeUnknownSync(
+        SessionSchema,
+        strict,
+      )({
+        ...b,
+        applyReceipts: [{ ...receipt, status: plain }],
+      }).applyReceipts,
+    ).toHaveLength(1);
   });
 });
