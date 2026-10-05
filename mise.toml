@@ -1,2 +1,7 @@
 [settings]
 idiomatic_version_file_enable_tools = ["node", "pnpm"]
+
+[env]
+# Inside this checkout, `gyst` is its source CLI (apps/gyst/dev/gyst), so agents working here review
+# with the code they are changing. See CONTRIBUTING's "Run gyst from source".
+_.path = ["apps/gyst/dev"]

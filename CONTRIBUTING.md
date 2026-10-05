@@ -33,24 +33,42 @@ opening a PR.
 ## Run gyst from source
 
 [`apps/gyst/dev/gyst`](apps/gyst/dev/gyst) is the checkout's `gyst`, run from source. Nothing is
-built for the CLI, the daemon or the viewer. Put its directory first on `PATH` in the terminal (or
-the agent session) you develop in:
+built for the CLI, the daemon or the viewer. It takes the same arguments as `gyst` and reviews the
+repository you run it in. With its directory first on `PATH`, plain `gyst` is the source CLI, for
+you and for agents and the skills they run:
 
-```sh
-export PATH="$PWD/apps/gyst/dev:$PATH"   # from the checkout root
-cd ~/some/repo
-gyst main...feature                      # or plain `gyst`, or `gyst --session <id>`
-```
+- **In this checkout:** [`mise.toml`](mise.toml) does it for everyone with mise activated, so
+  `gyst` here (and an agent started here) reviews with the code being changed. Run the released
+  CLI by its full path; `type -a gyst` lists both.
+- **In test repositories:** keep them under one personal directory with a `mise.toml` naming your
+  checkout, then trust it once with `mise trust ~/dev/gyst-playground/mise.toml`:
 
-It takes the same arguments as `gyst` and reviews the repository you run it in.
+  ```toml
+  # ~/dev/gyst-playground/mise.toml
+  [env]
+  _.path = ["~/dev/gyst/apps/gyst/dev"]
+
+  [tools]
+  node = "24" # the shim runs `node` from PATH
+  ```
+
+  A test repository's own Node pin still wins over this one; gyst needs Node 24.
+
+- **In any other repository, now and then:** wrap one command, such as `gyst-dev pi`, with
+  `gyst-dev() { PATH="$HOME/dev/gyst/apps/gyst/dev:$PATH" "$@"; }` in your shell profile.
+
+mise switches `PATH` when your shell changes directory. A process keeps the `PATH` it started
+with, so an agent started in one of these directories keeps the source `gyst` after it leaves,
+and one started elsewhere keeps the released one. Check with `command -v gyst`. Each checkout has
+its own `.dev/data`, so its sessions are separate from another checkout's.
 
 - **The viewer:** bare `gyst`, a range or `--session` starts the Vite dev server
   ([`apps/web/dev.ts`](apps/web/dev.ts)) with a source launcher behind it, and prints one URL,
   `  gyst  http://g-<hex>.localhost:3000/session/<id>#<secret>`. Open it; viewer edits apply with
   Fast Refresh. `pnpm dev` does the same for this checkout's own uncommitted changes.
 - **Everything else** (`gyst session ...`, `gyst skills ...`, `--help`) runs the source CLI
-  directly. An agent whose `PATH` starts with this directory publishes through the source CLI, so
-  you can watch its groups arrive in the dev viewer.
+  directly. An agent that resolves `gyst` to the source CLI publishes through it, so you can watch
+  its groups arrive in the dev viewer.
 - **Skills:** `gyst skills` links agents to the built skills in `apps/gyst/.crust/root/skills/`,
   which only `pnpm build` creates; the build also regenerates `gyst-cli` from the command
   definitions. Run `pnpm build` once and after each skill or command change, then
