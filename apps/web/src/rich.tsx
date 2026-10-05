@@ -149,7 +149,7 @@ export function RichText(props: {
 }
 
 // The theme the diff renderer highlights with, so fenced code matches the diff.
-const codeTheme = "catppuccin-mocha";
+export const codeTheme = "catppuccin-mocha";
 
 /**
  * Shiki tokens for `code` as React nodes, through the diff renderer's public shared highlighter;

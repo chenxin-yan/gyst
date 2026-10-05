@@ -2,7 +2,7 @@
 // and the note and foreign-change annotations inside the diff. Derivations live in walkthrough.ts.
 import type { CapturedRange, StatusPayload } from "@gyst/core/wire";
 import * as stylex from "@stylexjs/stylex";
-import type { FocusEvent } from "react";
+import type { FocusEvent, ReactNode } from "react";
 import { rangeLabel } from "./rich.ts";
 import { RichText } from "./rich.tsx";
 import { theme } from "./tokens.stylex.ts";
@@ -136,6 +136,8 @@ export function OverviewCard(props: {
   title?: string | undefined;
   overview: StatusGroup["overview"];
   onReference: (target: CapturedRange) => void;
+  /** A reference peek followed from this overview, read in flow below it. */
+  peek?: ReactNode;
 }) {
   return (
     <section aria-label={props.label} {...stylex.props(card.box)}>
@@ -149,6 +151,7 @@ export function OverviewCard(props: {
       ) : (
         <p {...stylex.props(card.missing)}>No overview yet.</p>
       )}
+      {props.peek}
     </section>
   );
 }

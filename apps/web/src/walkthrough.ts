@@ -88,11 +88,15 @@ export function coverageOf(status: StatusPayload): string[] | undefined {
   return lines;
 }
 
-/** What a diff annotation shows: a note, or the owner of a change another group explains. */
+/**
+ * What a diff annotation shows: a note, the owner of a change another group explains, or the row an
+ * open reference peek reserves under its note (peek.tsx).
+ */
 export type DiffAnnotation =
   | { kind: "note"; note: StatusNote }
   /** `owner` is the owning group's title; undefined while no group has the hunk. */
-  | { kind: "foreign"; hunkId: string; owner: string | undefined };
+  | { kind: "foreign"; hunkId: string; owner: string | undefined }
+  | { kind: "peek" };
 
 const sideOf = (side: CodeSide) => (side === "old" ? "deletions" : "additions");
 

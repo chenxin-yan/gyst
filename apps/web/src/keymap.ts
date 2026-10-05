@@ -30,6 +30,7 @@ export type CommandId =
   | "unfoldAll"
   | "foldAll"
   | "viewed"
+  | "back"
   | "split"
   | "stacked"
   | "auto"
@@ -96,6 +97,7 @@ export const commands: readonly Command[] = [
     keys: [["M"]],
     label: "Mark the cursor's file Viewed and go to the next unviewed one, or unmark it",
   },
+  { id: "back", keys: [["Backspace"]], label: "Back from captured code" },
   { id: "split", keys: [["1"]], label: "Split diff" },
   { id: "stacked", keys: [["2"]], label: "Stacked diff" },
   { id: "auto", keys: [["0"]], label: "Auto diff layout, by width" },
@@ -108,10 +110,11 @@ export const commands: readonly Command[] = [
 export const commandsFor = (mode: InputMode) =>
   mode === "vim" ? commands : commands.filter((command) => !command.vimOnly);
 
-/** Letters print as typed, Vim-style: `j`, `g g`, `Shift+g`. */
-export const keyLabels = Object.fromEntries(
-  [...LETTER_KEYS].map((key) => [key, key.toLowerCase()]),
-);
+/** Letters print as typed, Vim-style: `j`, `g g`, `Shift+g`; Backspace as `⌫`. */
+export const keyLabels = {
+  ...Object.fromEntries([...LETTER_KEYS].map((key) => [key, key.toLowerCase()])),
+  Backspace: "⌫",
+};
 
 /**
  * Whether the event typed the character the step names. The library matches letters in either case

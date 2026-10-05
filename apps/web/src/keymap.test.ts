@@ -97,6 +97,17 @@ describe("commands", () => {
     );
   });
 
+  // Back leaves captured code in either input mode.
+  it("binds Back to Backspace, printed as ⌫", () => {
+    for (const platform of ["linux", "mac"] as const)
+      expect(
+        keysOf("back").map((keys) =>
+          keys.map((key) => formatForDisplay(key, { platform, keyLabels })).join(" "),
+        ),
+      ).toEqual(["⌫"]);
+    expect(commandsFor("mouse").map(({ id }) => id)).toContain("back");
+  });
+
   // Mouse mode has no cursor: a command that acts at it is neither bound, listed nor offered there.
   it("leaves cursor-only commands, such as Open, to Vim mode", () => {
     const ids = (mode: "vim" | "mouse") => commandsFor(mode).map(({ id }) => id);
