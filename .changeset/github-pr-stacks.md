@@ -1,0 +1,5 @@
+---
+"@gyst/cli": minor
+---
+
+Review GitHub pull requests: `gyst <PR URL>` and `gyst session open <PR URL>`, run from a clone of the repository with an authenticated `gh` on the gyst host, open the PR as its own saved session, identified by repository and PR number. Each capture reads the PR's own merge-base-to-head range, fetched into private `refs/gyst/` refs without touching the checkout, its branches or its index. Opening also discovers the PR's native GitHub stack: `session status` reports its ordered layers, the selected PR and whether the stack was verified, and `gyst session check --session <id> --stack` rechecks that metadata without refreshing code or review state. The viewer's header switcher lists the layers and opens or resumes each one's own session. A missing or signed-out `gh`, a PR the account cannot read, a checkout without the repository's remote and unfetchable commits each fail with a distinct `source_unavailable` reason; local and range sessions never need GitHub.
