@@ -3,6 +3,7 @@ import {
   DaemonUnreachable,
   InternalError,
   NoSession,
+  SourceUnavailable,
   StaleRevision,
   ValidationFailed,
 } from "@gyst/core/wire";
@@ -279,6 +280,7 @@ describe("isExpectedFailure", () => {
     new NoSession({ message: "m" }),
     new DaemonUnreachable({ message: "m" }),
     new StaleRevision({ message: "m" }),
+    new SourceUnavailable({ message: "m", detail: { reason: "gh_missing" } }),
   ])("explains %s in place without a diagnostic", (error) => {
     expect(isExpectedFailure(error)).toBe(true);
   });

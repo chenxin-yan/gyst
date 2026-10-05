@@ -3,7 +3,7 @@ import { Schema } from "effect";
 import { readFileSync } from "node:fs";
 import * as publicRoot from "@gyst/core";
 import * as publicWire from "@gyst/core/wire";
-import { BadArgs, ErrorPayloadSchema, NoSession } from "./errors.ts";
+import { BadArgs, ErrorPayloadSchema, NoSession, SourceUnavailable } from "./errors.ts";
 import { BrowserRequestSchema, ReplySchema, RequestSchema } from "./wire.ts";
 
 const strict = { onExcessProperty: "error" } as const;
@@ -169,7 +169,20 @@ describe("daemon wire envelopes", () => {
       "NoSession",
       "DaemonUnreachable",
       "BadArgs",
+      "SourceUnavailable",
+      "SourceUnavailableReasonSchema",
       "InternalError",
+      "RepositorySchema",
+      "PullRequestNumberSchema",
+      "PullRequestScopeSchema",
+      "parsePullRequestUrl",
+      "pullRequestUrlOf",
+      "PullRequestStateSchema",
+      "PullRequestSchema",
+      "StackLayerSchema",
+      "StackMembershipSchema",
+      "GitHubUnavailableReasonSchema",
+      "PullRequestContextSchema",
     ] as const;
     const wireExports: Record<string, unknown> = { ...publicWire };
     const rootExports: Record<string, unknown> = { ...publicRoot };
@@ -237,6 +250,7 @@ describe("daemon wire envelopes", () => {
     expect([...seen].map((href) => href.slice(packageDir.href.length)).sort()).toEqual([
       "src/content.ts",
       "src/errors.ts",
+      "src/github.ts",
       "src/guidance.ts",
       "src/metadata.ts",
       "src/session.ts",
@@ -292,5 +306,31 @@ describe("daemon wire envelopes", () => {
     expect(JSON.stringify(encodeError(new BadArgs({ message: "x", detail: ["y"] })))).toBe(
       '{"code":"bad_args","message":"x","detail":["y"]}',
     );
+  });
+
+  it("round-trips a source_unavailable reason and diagnostic, rejecting unknown reasons", () => {
+    const unavailable = new SourceUnavailable({
+      message: "run gh auth login",
+      detail: { reason: "gh_unauthenticated", diagnostic: "gh: Bad credentials (HTTP 401)" },
+    });
+    const encoded = encodeError(unavailable);
+    expect(encoded).toEqual({
+      code: "source_unavailable",
+      message: "run gh auth login",
+      detail: { reason: "gh_unauthenticated", diagnostic: "gh: Bad credentials (HTTP 401)" },
+    });
+    const decoded = Schema.decodeUnknownSync(ErrorPayloadSchema)(
+      JSON.parse(JSON.stringify(encoded)),
+    );
+    expect(decoded).toBeInstanceOf(SourceUnavailable);
+    expect(decoded).toMatchObject({ message: unavailable.message, detail: unavailable.detail });
+    for (const detail of [undefined, { reason: "offline" }, {}])
+      expect(() =>
+        Schema.decodeUnknownSync(ErrorPayloadSchema)({
+          code: "source_unavailable",
+          message: "m",
+          detail,
+        }),
+      ).toThrow();
   });
 });

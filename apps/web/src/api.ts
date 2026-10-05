@@ -36,7 +36,7 @@ const isDaemonError = Schema.is(DaemonError);
 
 /**
  * Failures the viewer explains in place and that say nothing about a gyst defect: sign-in, host,
- * outage, a missing session and a snapshot a refresh replaced. Everything else (an unreadable
+ * outage, a missing session, a snapshot a refresh replaced and a PR source the host cannot read. Everything else (an unreadable
  * reply, internal_error, rejected input, render exceptions) also deserves a console diagnostic.
  */
 export const isExpectedFailure = (error: unknown) =>
@@ -45,7 +45,8 @@ export const isExpectedFailure = (error: unknown) =>
     : isDaemonError(error) &&
       (error._tag === "no_session" ||
         error._tag === "daemon_unreachable" ||
-        error._tag === "stale_revision");
+        error._tag === "stale_revision" ||
+        error._tag === "source_unavailable");
 
 /**
  * Whether a failed write may still have been applied: its reply was lost on the way, so only a

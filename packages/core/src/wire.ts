@@ -20,9 +20,32 @@ export {
   ErrorPayloadSchema,
   InternalError,
   NoSession,
+  SourceUnavailable,
+  type SourceUnavailableReason,
+  SourceUnavailableReasonSchema,
   StaleRevision,
   ValidationFailed,
 } from "./errors.ts";
+export {
+  type GitHubUnavailableReason,
+  GitHubUnavailableReasonSchema,
+  parsePullRequestUrl,
+  type PullRequest,
+  type PullRequestContext,
+  PullRequestContextSchema,
+  PullRequestNumberSchema,
+  PullRequestSchema,
+  type PullRequestScope,
+  PullRequestScopeSchema,
+  PullRequestStateSchema,
+  pullRequestUrlOf,
+  type Repository,
+  RepositorySchema,
+  type StackLayer,
+  StackLayerSchema,
+  type StackMembership,
+  StackMembershipSchema,
+} from "./github.ts";
 export { type ContentSide, type ManifestFile } from "./content.ts";
 export {
   anchoredHunkIds,
