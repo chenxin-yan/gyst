@@ -1,10 +1,19 @@
-import type { Cursor } from "./cursor.ts";
+import type { Cursor, Opened, Side } from "./cursor.ts";
+import type { InputMode } from "./keymap.ts";
 
-/** Where a reader left a session: its file selection, Vim cursor and the file at the panel's top. */
+/** Where the reader is: a file and, inside its diff, the side and line at the top of the panel. */
+export type ReadingPosition = { file: string; side: Side | undefined; line: number | undefined };
+
+/**
+ * Where a reader left a session: its file selection, input mode, Vim cursor, the hidden lines it
+ * opened (a place inside them exists only once they open again) and the position at the panel's top.
+ */
 export type ReadingPlace = {
   selection: string;
+  inputMode: InputMode;
   cursor: Cursor | undefined;
-  file: string | undefined;
+  opened: Map<string, Map<number, Opened>>;
+  top: ReadingPosition | undefined;
 };
 
 /**

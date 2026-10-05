@@ -295,6 +295,31 @@ const barOn = (page: Page, text: string) =>
     }
     return false;
   }, `the cursor bar on ${text}`);
+/** The number of the first src/long.ts line wholly below the sticky file header at the panel's top. */
+const topLine = async (page: Page) => {
+  const pane = page.getByRole("main");
+  const panel = (await pane.boundingBox())!;
+  const lines = await pane
+    .getByText(/^export const line\d+ = /)
+    .evaluateAll((copies) =>
+      copies.map((copy) => [
+        Number(/line(\d+)/.exec(copy.textContent ?? "")![1]),
+        copy.getBoundingClientRect().top,
+      ]),
+    );
+  const below = lines.filter(([, top]) => top! >= panel.y + 34 - 2).sort(([, a], [, b]) => a! - b!);
+  return below[0]?.[0];
+};
+/** Waits until `read` gives the same value twice, 200 ms apart, as once a scroll settled. */
+const settled = async <T>(read: () => Promise<T>) => {
+  let last = await read();
+  for (;;) {
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    const next = await read();
+    if (next === last) return next;
+    last = next;
+  }
+};
 /** A file header's fold toggle, whichever way it points. */
 const foldToggle = (page: Page, path: string) =>
   page
@@ -1735,6 +1760,63 @@ describe("installed gyst in a sandboxed browser", () => {
     await says(page, "3 lines selected");
     await keys(page, "Escape");
     await statusLine(page).getByText("3 lines selected").waitFor({ state: "detached" });
+  }, 30_000);
+
+  it("resumes a session's reading place inside opened hidden lines and in Mouse mode after leaving it", async () => {
+    const page = await newPage();
+    await page.setViewportSize({ width: 1280, height: 800 });
+    await page.goto(`${one.origin}${one.path}`);
+    const pane = page.getByRole("main");
+    const mouse = page
+      .getByRole("radiogroup", { name: "Input mode" })
+      .getByRole("radio", { name: "Mouse" });
+    // Away to the session list and back, client-side, as a switch to another session would.
+    const leaveAndReturn = async () => {
+      await page.waitForLoadState("networkidle");
+      await page.getByRole("link", { name: "All sessions" }).click();
+      await page.getByRole("heading", { name: "Saved sessions" }).waitFor();
+      await page.goBack();
+      await pane.getByRole("heading", { name: "src/long.ts" }).waitFor();
+    };
+    const panel = async () => (await pane.boundingBox())!;
+
+    await page.getByRole("button", { name: "src/", exact: true }).click();
+    await pane.getByRole("heading", { name: "src/long.ts" }).waitFor();
+    await keys(page, "g", "g", "j");
+    await says(page, "long.ts · hidden lines");
+    await keys(page, "Enter");
+    await says(page, "long.ts:1 · new");
+    await keys(page, ...Array.from({ length: 40 }, () => "j"));
+    await says(page, "long.ts:41 · new");
+    await barOn(page, "export const line41 = 41;");
+    const vimTop = await settled(() => topLine(page));
+    expect(vimTop).toBeGreaterThan(1);
+
+    // The cursor stands inside the opened lines again, at the same place in the panel, and the
+    // selection under src/ is kept.
+    await leaveAndReturn();
+    expect(await fileHeadings(page)).toEqual(["src/long.ts"]);
+    await says(page, "long.ts:41 · new");
+    await barOn(page, "export const line41 = 41;");
+    await waitFor(async () => (await topLine(page)) === vimTop, `line ${vimTop} at the top again`);
+    const bar = (await cursorBar(page).boundingBox())!;
+    const box = await panel();
+    expect(bar.y >= box.y && bar.y + bar.height <= box.y + box.height).toBe(true);
+
+    // Mouse mode, scrolled by hand past the opened lines: the mode and the line at the top return.
+    await mouse.check();
+    await pane.hover();
+    await page.mouse.wheel(0, 2400);
+    const mouseTop = await settled(() => topLine(page));
+    expect(mouseTop).toBeGreaterThan(vimTop! + 40);
+    await leaveAndReturn();
+    expect(await mouse.isChecked()).toBe(true);
+    expect(await cursorBar(page).isVisible()).toBe(false);
+    await waitFor(
+      async () => (await topLine(page)) === mouseTop,
+      `line ${mouseTop} at the top again`,
+    );
+    await page.waitForLoadState("networkidle");
   }, 30_000);
 
   it("runs commands from a keyboard-operable ⌘K menu and lists the implemented keys in ? help, ignoring review keys while typing", async () => {

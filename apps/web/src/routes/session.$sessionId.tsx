@@ -70,6 +70,7 @@ import {
   edge,
   fileStep,
   hiddenRanges,
+  lineOn,
   type Model,
   moved,
   type Opened,
@@ -121,7 +122,7 @@ import {
   treeOf,
   wholeFileType,
 } from "../reader.ts";
-import { type ReadingPlace, recall, remember } from "../reading-memory.ts";
+import { type ReadingPlace, type ReadingPosition, recall, remember } from "../reading-memory.ts";
 import { StackSwitcher } from "../stack.tsx";
 import { media, theme } from "../tokens.stylex.ts";
 import {
@@ -477,14 +478,14 @@ function SessionReader(props: {
   const [mode, setMode] = useState<LayoutMode>("auto");
   const [width, setWidth] = useState(0);
   const [loads, setLoads] = useState<ReadonlyMap<string, FileLoad>>(new Map());
-  const [inputMode, setInputMode] = useState<InputMode>("vim");
+  const [inputMode, setInputMode] = useState<InputMode>(recalled?.inputMode ?? "vim");
   const [cursor, setCursor] = useState<Cursor | undefined>(recalled?.cursor);
   const [lines, setLines] = useState<CodeViewLineSelection | null>(null);
   const [folded, setFolded] = useState<ReadonlySet<string>>(new Set());
   const [dialog, setDialog] = useState<"menu" | "help">();
   // Hidden lines opened per file. They live here, not in the renderer, which forgets them with
   // an item it drops; bumping the version re-reads the cursor model after the renderer opened some.
-  const [opened] = useState(() => new Map<string, Map<number, Opened>>());
+  const [opened] = useState(() => recalled?.opened ?? new Map<string, Map<number, Opened>>());
   const [, setOpenedVersion] = useState(0);
   const viewer = useRef<Viewer>(null);
   const live = useLiveSession(session.id);
@@ -722,19 +723,33 @@ function SessionReader(props: {
     );
   }, [loader, hydratable, diffs]);
   useEffect(followWindow, [followWindow]);
-  // This session's reading place, kept for a return from another session. The file at the top
-  // changes by scrolling alone, without a render, so the window report keeps it too.
-  const readingPlace = useRef<ReadingPlace>({ selection, cursor, file: recalled?.file });
-  readingPlace.current = { ...readingPlace.current, selection, cursor };
-  useEffect(() => remember(session.id, snapshotId, readingPlace.current));
   const onWindow = useCallback(
     (shownNow: readonly string[]) => {
       visible.current = shownNow;
       followWindow();
-      readingPlace.current = { ...readingPlace.current, file: viewer.current?.fileInView() };
+    },
+    [followWindow],
+  );
+  // This session's reading place, kept for a return from another session. The position at the top
+  // changes by scrolling alone, without a render, so the panel reports it. Until a return has put
+  // the recalled position back, the panel's own start is not the reader's place.
+  const readingPlace = useRef<ReadingPlace>({
+    selection,
+    inputMode,
+    cursor,
+    opened,
+    top: recalled?.top,
+  });
+  readingPlace.current = { ...readingPlace.current, selection, inputMode, cursor };
+  useEffect(() => remember(session.id, snapshotId, readingPlace.current));
+  const restoring = useRef(recalled !== undefined);
+  const onPosition = useCallback(
+    (top: ReadingPosition) => {
+      if (restoring.current) return;
+      readingPlace.current = { ...readingPlace.current, top };
       remember(session.id, snapshotId, readingPlace.current);
     },
-    [followWindow, session.id, snapshotId],
+    [session.id, snapshotId],
   );
 
   const tree = useMemo(
@@ -809,19 +824,50 @@ function SessionReader(props: {
     return row && { file: target.file, side: "additions", line: row.new, full: true };
   };
 
-  // A return to this session puts its cursor, or else the file it showed, back at the top. Once the
-  // panel has a width: until then the layout may still switch, which resets the panel to its top.
-  const revealed = useRef(recalled === undefined);
+  // A return to this session puts the position it showed back at the top, or else its cursor. Once
+  // the panel has a width: until then the layout may still switch, which resets the panel to its
+  // top. A line in hidden lines the reader had opened waits until its file loaded and the renderer
+  // opened them again, its file brought into view meanwhile so it loads. Moving the cursor or
+  // scrolling by hand first leaves the reader where they went.
+  const fileRevealed = useRef(false);
   useEffect(() => {
-    if (revealed.current || width === 0 || recalled === undefined) return;
-    revealed.current = true;
-    const mark =
-      recalled.cursor && here
-        ? markOf(here)
-        : recalled.file !== undefined && model.files.includes(recalled.file)
-          ? { file: recalled.file, side: "additions" as const }
-          : undefined;
-    if (mark) viewer.current?.reveal(mark, "top");
+    if (!restoring.current || width === 0 || recalled === undefined) return;
+    const view = viewer.current;
+    if (!view) return;
+    if (cursor !== recalled.cursor) return void (restoring.current = false);
+    const { top } = recalled;
+    if (top === undefined || !model.files.includes(top.file)) {
+      restoring.current = false;
+      const mark = recalled.cursor && here ? markOf(here) : undefined;
+      if (mark) view.reveal(mark, "top");
+      return;
+    }
+    const side = top.side ?? "additions";
+    const diff = diffs.get(top.file);
+    // Until the renderer opened the file's hidden lines again, the line may be hidden, or sit
+    // lower once lines above it open.
+    const reopened = [...(opened.get(top.file) ?? [])].every(([index, open]) => {
+      if (diff === undefined || diff.isPartial) return false;
+      const range = hiddenRanges(diff).find((candidate) => candidate.index === index);
+      return (
+        range === undefined ||
+        ((open.fromStart === 0 || view.renders(top.file, range.new)) &&
+          (open.fromEnd === 0 || view.renders(top.file, range.new + range.size - 1)))
+      );
+    });
+    const ready =
+      reopened &&
+      (top.line === undefined ||
+        model.rows(top.file).some((row) => row.kind === "line" && lineOn(row, side) === top.line));
+    if (ready) {
+      restoring.current = false;
+      const mark = { file: top.file, side, ...(top.line !== undefined && { line: top.line }) };
+      // After the renderer's next frame, which lays out the lines it has just opened again.
+      requestAnimationFrame(() => requestAnimationFrame(() => viewer.current?.reveal(mark, "top")));
+    } else if (!fileRevealed.current) {
+      fileRevealed.current = true;
+      view.reveal({ file: top.file, side }, "top");
+    }
   });
 
   /** Moves the cursor (and a selection's moving end) and keeps it in view. */
@@ -1563,7 +1609,11 @@ function SessionReader(props: {
             }
             setLines(vim && single ? null : next);
           }}
-          onManualScroll={pullBack}
+          onManualScroll={() => {
+            restoring.current = false;
+            pullBack();
+          }}
+          onPosition={onPosition}
           renderHeader={(path) => {
             const file = shownByPath.get(path) ?? byPath.get(path)!;
             const hunkIds = hunkIdsOf(path);
@@ -1721,6 +1771,8 @@ type Viewer = {
   /** The header or line at the panel's top or bottom edge. */
   visibleAt(end: "top" | "bottom"): Cursor | undefined;
   fileInView(): string | undefined;
+  /** Whether a rendered file shows this new-side line rather than keeping it in a hidden range. */
+  renders(file: string, line: number): boolean;
   height(): number;
   scrollBy(pixels: number): void;
   scrollToEdge(end: "top" | "bottom"): void;
@@ -1776,6 +1828,8 @@ function ContinuousDiff(props: {
   loadDiffFiles: FileDiffContentsLoader;
   /** The files the panel shows now, after each render and scroll. */
   onWindow: (visible: readonly string[]) => void;
+  /** The position at the panel's top, after each render and scroll that read it. */
+  onPosition: (position: ReadingPosition) => void;
   onWidth: (width: number) => void;
   onOpened: () => void;
   onLineClick: (cursor: Cursor) => void;
@@ -1814,6 +1868,7 @@ function ContinuousDiff(props: {
       if (top === undefined || seen < top || seen >= top + instance.height) continue;
       const anchor = instance.getNumericScrollAnchor(seen - top);
       position.current = { file: id, side: anchor?.side, line: anchor?.lineNumber };
+      latest.current.onPosition(position.current);
       return;
     }
   }, []);
@@ -1998,6 +2053,13 @@ function ContinuousDiff(props: {
         return undefined;
       },
       fileInView: () => position.current?.file ?? props.files[0]?.path,
+      renders(file, line) {
+        const rendered = view.current
+          ?.getInstance()
+          ?.getRenderedItems()
+          .find((item) => item.id === file);
+        return rendered?.type === "diff" && rendered.instance.isLineRenderable(line);
+      },
       height: () => node().clientHeight,
       scrollBy(pixels) {
         scrollTop((pendingTop.current ?? node().scrollTop) + pixels);
@@ -2041,6 +2103,7 @@ function ContinuousDiff(props: {
     const { opened, onOpened } = latest.current;
     const byRange = opened.get(file) ?? new Map<number, Opened>();
     let changed = false;
+    let reopened = false;
     for (const range of hiddenRanges(diff)) {
       if (range.size <= 1) continue;
       const mine = byRange.get(range.index) ?? { fromStart: 0, fromEnd: 0 };
@@ -2051,6 +2114,7 @@ function ContinuousDiff(props: {
       ) {
         if (mine.fromStart > 0) instance.expandHunk(range.index, "up", mine.fromStart);
         if (mine.fromEnd > 0) instance.expandHunk(range.index, "down", mine.fromEnd);
+        reopened = true;
         continue;
       }
       let { fromStart, fromEnd } = mine;
@@ -2060,9 +2124,9 @@ function ContinuousDiff(props: {
       byRange.set(range.index, { fromStart, fromEnd });
       changed = true;
     }
-    if (!changed) return;
-    opened.set(file, byRange);
-    onOpened();
+    if (changed) opened.set(file, byRange);
+    // Opened again too: a return to a reading place inside these lines waits for them.
+    if (changed || reopened) onOpened();
   }, []);
 
   // One item per file, reused while its fold and metadata are unchanged so the renderer keeps its
