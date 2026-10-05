@@ -887,6 +887,97 @@ describe("gyst session CLI seam", () => {
     succeeded(await gyst(cwd, ["session", "delete", ...pinned, "--request-id", "cleanup"]));
   }, 20_000);
 
+  it("pins references to captured files, refusing live-only paths and stale snapshots", async () => {
+    const box = await sandbox();
+    const { gyst } = box;
+    const cwd = await repo(box, "references");
+    await writeFile(join(cwd, "helper.ts"), "export const a = 1;\nexport const b = 2;\n");
+    git(box, cwd, "add", ".");
+    git(box, cwd, "commit", "-qm", "helper");
+    await writeFile(join(cwd, "tracked.txt"), "one\ntwo\n");
+    const { session } = json(await gyst(cwd, ["session", "open"]));
+    const pinned = ["--session", session.id];
+    onTestFinished(async () => {
+      await gyst(cwd, ["session", "delete", ...pinned, "--request-id", "references-cleanup"]);
+    });
+    const [hunk] = json(await gyst(cwd, ["session", "diff", ...pinned])).hunks;
+    // The unchanged supporting file is part of the capture.
+    const helper = ["--snapshot", session.snapshotId, "--file", "helper.ts", "--side", "new"];
+    expect(json(await gyst(cwd, ["session", "code", ...pinned, ...helper])).content.text).toBe(
+      "export const a = 1;\nexport const b = 2;\n",
+    );
+    // Created after capture: it exists in the checkout but not in the snapshot.
+    await writeFile(join(cwd, "live.ts"), "export const live = true;\n");
+    const apply = (snapshotId: string, revision: number, idempotencyKey: string, ops: object[]) =>
+      gyst(
+        cwd,
+        ["session", "apply", ...pinned],
+        JSON.stringify({ revision, snapshotId, idempotencyKey, ops }),
+      );
+    const group = (overview: string) => ({
+      type: "group.create",
+      id: "group-1",
+      title: "uses the helper",
+      overview,
+      memberHunkIds: [hunk.id],
+    });
+
+    const live = failed(
+      await apply(session.snapshotId, 0, "live", [group("Mirrors [live](gyst:new/live.ts#L1).")]),
+    );
+    expect(live).toMatchObject({
+      code: "validation_failed",
+      detail: [
+        {
+          opIndex: 0,
+          message: "reference gyst:new/live.ts#L1: live.ts is not in the captured snapshot",
+        },
+      ],
+    });
+    const unchanged = json(await gyst(cwd, ["session", "status", ...pinned]));
+    expect(unchanged).toMatchObject({ revision: 0, overview: null, groups: [] });
+
+    const ops = [
+      { type: "walkthrough.update", overview: "Built on [`b`](gyst:new/helper.ts#L2)." },
+      group("Calls [the helper](gyst:new/helper.ts#L1-L2)."),
+      {
+        type: "note.create",
+        id: "note-1",
+        group: "group-1",
+        anchor: addedLine(hunk),
+        markdown: "Same as [`a`](<gyst:new/helper.ts#L1>), see [docs](https://example.com).",
+      },
+    ];
+    const published = await apply(session.snapshotId, 0, "publish", ops);
+    const status = json(published);
+    const at = (startLine: number, endLine = startLine) => ({
+      snapshotId: session.snapshotId,
+      path: "helper.ts",
+      side: "new",
+      startLine,
+      endLine,
+    });
+    expect(status.overview.references).toEqual([at(2)]);
+    expect(status.groups[0].overview.references).toEqual([at(1, 2)]);
+    expect(status.groups[0].notes[0].references).toEqual([at(1)]);
+    // Same key, same batch: the exact recorded answer.
+    expect((await apply(session.snapshotId, 0, "publish", ops)).stdout).toBe(published.stdout);
+
+    const refreshed = json(await gyst(cwd, ["session", "refresh", ...pinned]));
+    expect(refreshed.session.snapshotId).not.toBe(session.snapshotId);
+    // Authored pins name the snapshot they were checked against, not the refreshed one.
+    expect(refreshed.overview.references).toEqual([at(2)]);
+    const stale = failed(
+      await apply(session.snapshotId, refreshed.revision, "stale", [
+        { type: "walkthrough.update", overview: "Again [live](gyst:new/live.ts#L1)." },
+      ]),
+    );
+    expect(stale.code).toBe("stale_revision");
+    expect(json(await gyst(cwd, ["session", "status", ...pinned])).overview.references).toEqual([
+      at(2),
+    ]);
+  }, 20_000);
+
   it("lists and reads captured code by snapshot after the checkout is deleted", async () => {
     const box = await sandbox();
     const { gyst } = box;

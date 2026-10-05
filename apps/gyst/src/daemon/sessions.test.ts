@@ -1885,7 +1885,7 @@ describe("Sessions captured reads over real captures", () => {
     );
   });
 
-  it("checks applied note anchors against the captured lines, not the checkout", async () => {
+  it("checks applied note anchors and references against the captured lines, not the checkout", async () => {
     const cwd = await repo("anchors", {
       "changed.txt": "one\ntwo\nthree\n",
       "deleted.txt": "going away\n",
@@ -1958,6 +1958,35 @@ describe("Sessions captured reads over real captures", () => {
         expect((yield* sessions.status({ command: "status", session: session.id })).revision).toBe(
           1,
         );
+
+        // References in Markdown are indexed from the same captured content.
+        const referenced = yield* apply(1, "references", [
+          {
+            type: "walkthrough.update",
+            overview:
+              "Uses [the helper](gyst:new/helper.ts#L1-L2) and [gone](gyst:old/deleted.txt#L1).",
+          },
+        ]);
+        expect(referenced.overview?.references).toEqual([
+          { snapshotId: session.snapshotId, ...anchor("helper.ts", "new", 1, 2) },
+          { snapshotId: session.snapshotId, ...anchor("deleted.txt", "old", 1, 1) },
+        ]);
+        for (const [href, message] of [
+          [
+            "gyst:new/helper.ts#L2-L3",
+            "lines 2-3 are outside the new side of helper.ts, which has 2 lines",
+          ],
+          ["gyst:new/deleted.txt#L1", "the new side of deleted.txt does not exist"],
+          ["gyst:new/live.txt#L1", "live.txt is not in the captured snapshot"],
+        ] as const) {
+          const rejected = yield* Effect.flip(
+            apply(2, `bad-${href}`, [{ type: "walkthrough.update", overview: `[x](${href})` }]),
+          );
+          expect(rejected).toMatchObject({
+            _tag: "validation_failed",
+            detail: [{ opIndex: 0, message: `reference ${href}: ${message}` }],
+          });
+        }
       }),
     );
   });
