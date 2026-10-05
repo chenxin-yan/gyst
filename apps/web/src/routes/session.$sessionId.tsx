@@ -1,4 +1,5 @@
 import type {
+  CapturedRange,
   ContentSide,
   DaemonError,
   FilesPayload,
@@ -9,6 +10,7 @@ import type {
 import {
   type CodeViewItem,
   type CodeViewLineSelection,
+  type DiffLineAnnotation,
   FileDiff,
   type FileDiffContentsLoader,
   type FileDiffMetadata,
@@ -86,7 +88,6 @@ import {
   changedFiles,
   PagingStopped,
   fileDiffOf,
-  isUnder,
   lateWholeFiles,
   type LayoutMode,
   layoutOf,
@@ -112,6 +113,16 @@ import {
   viewedReducer,
   type ViewedState,
 } from "../viewed.ts";
+import {
+  annotationsOf,
+  type DiffAnnotation,
+  type NoteFrom,
+  noteSequence,
+  noteStep,
+  type ReviewView,
+  viewFiles,
+} from "../walkthrough.ts";
+import { ForeignHunkLabel, NoteCard, OverviewCard, WalkthroughNav } from "../walkthrough.tsx";
 
 export const Route = createFileRoute("/session/$sessionId")({
   loader: async ({ params: { sessionId } }) => {
@@ -135,6 +146,9 @@ export const Route = createFileRoute("/session/$sessionId")({
   component: SessionPage,
   notFoundComponent: SessionNotFound,
 });
+
+// Following a reference opens it inline (#90 slice 5); until then its link does nothing.
+const followReference = (_target: CapturedRange) => {};
 
 const isDaemonError = (error: unknown, tag: DaemonError["_tag"]) =>
   typeof error === "object" && error !== null && "_tag" in error && error._tag === tag;
@@ -417,7 +431,7 @@ function SessionReader(props: {
   const navigate = useNavigate();
   const router = useRouter();
   const [pages, setPages] = useState([props.firstPage]);
-  const [selection, setSelection] = useState("");
+  const [review, setReview] = useState<ReviewView>({ kind: "files", path: "" });
   const [mode, setMode] = useState<LayoutMode>("auto");
   const [width, setWidth] = useState(0);
   const [loads, setLoads] = useState<ReadonlyMap<string, FileLoad>>(new Map());
@@ -462,10 +476,19 @@ function SessionReader(props: {
   const files = useMemo(() => changedFiles(hunks, manifest), [hunks, manifest]);
   const byPath = useMemo(() => new Map(files.map((file) => [file.path, file])), [files]);
   // Memoized: a new list makes the renderer reconcile its items and restore the reading position.
-  const shown = useMemo(
-    () => files.filter((file) => isUnder(file.path, selection)),
-    [files, selection],
+  const inView = useMemo(
+    () => viewFiles(review, files, props.status),
+    [review, files, props.status],
   );
+  const shown = inView.files;
+  const notes = useMemo(() => noteSequence(inView, props.status), [inView, props.status]);
+  const annotations = useMemo(
+    () => annotationsOf(inView, notes, props.status),
+    [inView, notes, props.status],
+  );
+  const [collapsedNotes, setCollapsedNotes] = useState<ReadonlySet<string>>(new Set());
+  // The note Mouse mode last scrolled to, which its scrolled-to place no longer names.
+  const lastNote = useRef<number>(undefined);
   const layout = layoutOf(mode, width);
 
   // The metadata each file shows, and the one place its full contents are kept: its partial
@@ -609,9 +632,12 @@ function SessionReader(props: {
     () => treeOf([...manifest.map((file) => file.path), ...files.map((file) => file.path)]),
     [manifest, files],
   );
-  const hunkCount = shown.reduce((count, file) => count + file.hunks.length, 0);
+  // A view's Viewed sections: a file's hunks in a files view, the group's own in a group view.
+  const hunkIdsOf = (path: string) => inView.hunkIds.get(path) ?? [];
+  const hunkCount = shown.reduce((count, file) => count + hunkIdsOf(file.path).length, 0);
   const viewedCount = shown.reduce(
-    (count, file) => count + file.hunks.filter((hunk) => progress.state.viewed.has(hunk.id)).length,
+    (count, file) =>
+      count + hunkIdsOf(file.path).filter((id) => progress.state.viewed.has(id)).length,
     0,
   );
 
@@ -701,8 +727,6 @@ function SessionReader(props: {
     });
   };
 
-  const hunkIdsOf = (path: string) => byPath.get(path)?.hunks.map((hunk) => hunk.id) ?? [];
-
   /**
    * Checks or unchecks a file section's Viewed box. Checking folds the file and goes to the next
    * unviewed file; unchecking unfolds it. Only the section's hunks change.
@@ -733,9 +757,58 @@ function SessionReader(props: {
   /** The file a Mouse-mode command acts on: the one at the top of the panel. */
   const fileInView = () => viewer.current?.fileInView() ?? first;
 
+  /** Where a cursor stands, to step from to a note: header lines count as before the file's code. */
+  const noteFrom = (target: Cursor): NoteFrom => ({
+    fileIndex: model.files.indexOf(target.file),
+    side: target.side,
+    line: markOf(target)?.line ?? 0,
+  });
+
+  /** Goes to the next or previous note: the Vim cursor moves to its line, Mouse mode scrolls to it. */
+  const stepNote = (direction: 1 | -1) => {
+    if (vim) {
+      if (here === undefined || selecting) return;
+      const index = noteStep(notes, noteFrom(here), direction);
+      const at = index === undefined ? undefined : notes[index]!;
+      if (at === undefined) return;
+      if (folded.has(at.file)) setFolds([at.file], false);
+      return go({ file: at.file, kind: "line", side: at.side, line: at.line });
+    }
+    const top = viewer.current?.visibleAt("top");
+    const index = noteStep(notes, top && noteFrom(top), direction, lastNote.current);
+    const at = index === undefined ? undefined : notes[index]!;
+    if (at === undefined) return;
+    lastNote.current = index;
+    if (folded.has(at.file)) setFolds([at.file], false);
+    viewer.current?.reveal(
+      { file: at.file, side: at.side, line: at.line, full: layout !== "split" },
+      "top",
+    );
+  };
+
   const run = (id: CommandId) => {
     const view = viewer.current;
+    if (id !== "nextNote" && id !== "previousNote") lastNote.current = undefined;
     if (id === "menu" || id === "help") return setDialog(id);
+    if (id === "nextNote" || id === "previousNote") return stepNote(id === "nextNote" ? 1 : -1);
+    if (id === "nextGroup" || id === "previousGroup") {
+      const { groups } = props.status;
+      const at = inView.group ? groups.indexOf(inView.group) : -1;
+      const next = groups[id === "nextGroup" ? at + 1 : at === -1 ? groups.length - 1 : at - 1];
+      return next && setReview({ kind: "group", id: next.id });
+    }
+    if (id === "toggleNotes") {
+      const ids = notes.map(({ note }) => note.id);
+      const collapse = ids.some((note) => !collapsedNotes.has(note));
+      return setCollapsedNotes((before) => {
+        const after = new Set(before);
+        for (const note of ids) {
+          if (collapse) after.add(note);
+          else after.delete(note);
+        }
+        return after;
+      });
+    }
     if (id === "mode") {
       setLines(null);
       return setInputMode(vim ? "mouse" : "vim");
@@ -901,6 +974,7 @@ function SessionReader(props: {
 
   /** Scrolling by hand pulls a cursor that left the panel back onto its first or last line. */
   const pullBack = () => {
+    lastNote.current = undefined;
     if (!vim || here === undefined || selecting) return;
     const mark = markOf(here);
     const where = mark ? viewer.current?.where(mark) : undefined;
@@ -947,12 +1021,21 @@ function SessionReader(props: {
       }
       side={
         <>
-          <p {...stylex.props(styles.sideHead)}>Walkthrough</p>
-          <p {...stylex.props(styles.sideNote)}>No walkthrough for this session yet.</p>
+          <WalkthroughNav
+            status={props.status}
+            viewed={progress.state.viewed}
+            view={review}
+            onView={setReview}
+          />
           <p {...stylex.props(styles.sideHead, styles.filesHead)}>
             Files <span {...stylex.props(styles.muted)}>{files.length} changed</span>
           </p>
-          <FileTree nodes={tree} files={byPath} selection={selection} onSelect={setSelection} />
+          <FileTree
+            nodes={tree}
+            files={byPath}
+            selection={review.kind === "files" ? review.path : undefined}
+            onSelect={(path) => setReview({ kind: "files", path })}
+          />
           <MoreFiles
             sessionId={session.id}
             snapshotId={snapshotId}
@@ -1024,10 +1107,12 @@ function SessionReader(props: {
         <p {...stylex.props(styles.empty)}>
           {files.length === 0 ? (
             "This session's snapshot has no changes."
-          ) : (
+          ) : review.kind === "files" ? (
             <>
-              No captured changes under <code>{selection}</code>.
+              No captured changes under <code>{review.path}</code>.
             </>
+          ) : (
+            "This group has no changes in this snapshot."
           )}
         </p>
       ) : (
@@ -1041,6 +1126,46 @@ function SessionReader(props: {
           opened={opened}
           mark={vim && here ? markOf(here) : undefined}
           lines={lines}
+          header={
+            inView.group ? (
+              <OverviewCard
+                label="Group overview"
+                title={inView.group.title}
+                overview={inView.group.overview}
+                onReference={followReference}
+              />
+            ) : (
+              review.kind === "files" &&
+              review.path === "" &&
+              props.status.overview && (
+                <OverviewCard
+                  label="Walkthrough overview"
+                  overview={props.status.overview}
+                  onReference={followReference}
+                />
+              )
+            )
+          }
+          annotations={annotations}
+          renderAnnotation={(annotation) =>
+            annotation.kind === "foreign" ? (
+              <ForeignHunkLabel owner={annotation.owner} />
+            ) : (
+              <NoteCard
+                note={annotation.note}
+                collapsed={collapsedNotes.has(annotation.note.id)}
+                onToggle={() =>
+                  setCollapsedNotes((before) => {
+                    const after = new Set(before);
+                    if (!after.delete(annotation.note.id)) after.add(annotation.note.id);
+                    return after;
+                  })
+                }
+                onHighlight={(range) => viewer.current?.highlight(range)}
+                onReference={followReference}
+              />
+            )
+          }
           loadDiffFiles={loadDiffFiles}
           onWindow={onWindow}
           onWidth={setWidth}
@@ -1060,7 +1185,7 @@ function SessionReader(props: {
           onManualScroll={pullBack}
           renderHeader={(path) => {
             const file = byPath.get(path)!;
-            const hunkIds = file.hunks.map((hunk) => hunk.id);
+            const hunkIds = hunkIdsOf(path);
             const box = checkboxOf(progress.state, path, hunkIds);
             return (
               <FileHeader
@@ -1118,7 +1243,6 @@ const styles = stylex.create({
     color: theme.muted,
   },
   filesHead: { marginTop: "14px" },
-  sideNote: { padding: "0 10px", fontSize: "12px", color: theme.faint },
   empty: { padding: { default: "24px 32px", [media.narrow]: "16px 12px" }, color: theme.muted },
   kbd: {
     display: "inline-grid",
@@ -1200,6 +1324,9 @@ const liveStyles = stylex.create({
 
 // ─── continuous diff ─────────────────────────────────────────────────────
 
+/** A rendered box in the panel's scroll coordinates. */
+type Box = { top: number; height: number; left: number; width: number };
+
 /** What the reader asks of the diff view: geometry and scrolling, by logical place. */
 type Viewer = {
   /** Keeps a mark in view with a margin, or puts it at the top of the panel. */
@@ -1218,6 +1345,8 @@ type Viewer = {
   scrollToEdge(end: "top" | "bottom"): void;
   /** Opens `count` hidden lines of a rendered file's range from both ends. */
   expand(file: string, range: number, count: number): void;
+  /** Highlights a captured range of a shown file, as a note's hover does, or clears it. */
+  highlight(range: CapturedRange | undefined): void;
 };
 
 /** How far the cursor stays from the panel's edges, and how far in a pulled-back cursor lands. */
@@ -1244,6 +1373,11 @@ function ContinuousDiff(props: {
   opened: Map<string, Map<number, Opened>>;
   mark: Mark | undefined;
   lines: CodeViewLineSelection | null;
+  /** Above the first file: the view's overview. */
+  header: ReactNode;
+  /** Each file's notes and labels; a file without any has no entry. */
+  annotations: ReadonlyMap<string, DiffLineAnnotation<DiffAnnotation>[]>;
+  renderAnnotation: (annotation: DiffAnnotation) => ReactNode;
   loadDiffFiles: FileDiffContentsLoader;
   /** The files the panel shows now, after each render and scroll. */
   onWindow: (visible: readonly string[]) => void;
@@ -1255,7 +1389,7 @@ function ContinuousDiff(props: {
   renderHeader: (path: string) => ReactNode;
 }) {
   const { diffs, layout, onWidth } = props;
-  const view = useRef<CodeViewHandle<undefined, undefined>>(null);
+  const view = useRef<CodeViewHandle<DiffAnnotation, undefined>>(null);
   const root = useRef<HTMLDivElement>(null);
   const position = useRef<ReadingPosition>(undefined);
   // While a restoration is in flight, and while the reader stays where it put them, the renderer's
@@ -1305,7 +1439,7 @@ function ContinuousDiff(props: {
   }, []);
 
   /** A mark's box in the panel's scroll coordinates, while its file is rendered. */
-  const boxOf = useCallback((mark: Mark) => {
+  const boxOf = useCallback((mark: Mark): Box | undefined => {
     const viewer = view.current?.getInstance();
     const node = root.current;
     const rendered = viewer?.getRenderedItems().find((item) => item.id === mark.file);
@@ -1329,19 +1463,39 @@ function ContinuousDiff(props: {
     };
   }, []);
 
-  // ─── the Vim cursor bar ───
+  // ─── the Vim cursor bar and the highlighted range ───
   const bar = useRef<HTMLDivElement>(null);
+  const rangeBox = useRef<HTMLDivElement>(null);
+  const highlighted = useRef<CapturedRange>(undefined);
   const paint = useCallback(() => {
-    const element = bar.current;
-    if (element === null) return;
-    const { mark } = latest.current;
-    const box = mark?.line === undefined ? undefined : boxOf(mark);
-    element.hidden = box === undefined;
-    if (box === undefined) return;
-    element.style.top = `${box.top}px`;
-    element.style.left = `${box.left}px`;
-    element.style.width = `${box.width}px`;
-    element.style.height = `${box.height}px`;
+    const show = (element: HTMLElement | null, box: Box | undefined) => {
+      if (element === null) return;
+      element.hidden = box === undefined;
+      if (box === undefined) return;
+      element.style.top = `${box.top}px`;
+      element.style.left = `${box.left}px`;
+      element.style.width = `${box.width}px`;
+      element.style.height = `${box.height}px`;
+    };
+    const { mark, layout: shape } = latest.current;
+    show(bar.current, mark?.line === undefined ? undefined : boxOf(mark));
+    // The range's rendered lines; its hidden ones have no box.
+    const range = highlighted.current;
+    let union: Box | undefined;
+    if (range)
+      for (let line = range.startLine; line <= range.endLine; line++) {
+        const box = boxOf({
+          file: range.path,
+          side: range.side === "old" ? "deletions" : "additions",
+          line,
+          full: shape !== "split",
+        });
+        if (box === undefined) continue;
+        const bottom = Math.max(box.top + box.height, union ? union.top + union.height : 0);
+        const top = Math.min(box.top, union?.top ?? box.top);
+        union = { ...box, top, height: bottom - top };
+      }
+    show(rangeBox.current, union);
   }, [boxOf]);
 
   // ─── scrolling ───
@@ -1448,6 +1602,10 @@ function ContinuousDiff(props: {
           .find((item) => item.id === file);
         if (rendered?.type === "diff") rendered.instance.expandHunk(range, "both", count);
       },
+      highlight(range) {
+        highlighted.current = range;
+        paint();
+      },
     };
   });
 
@@ -1456,7 +1614,7 @@ function ContinuousDiff(props: {
    * the renderer opened (a click) are recorded, and lines it forgot (it dropped and rebuilt the
    * item) are opened again. Loaded sides only: a partial diff opens nothing yet.
    */
-  const syncOpened = useCallback((file: string, instance: FileDiff) => {
+  const syncOpened = useCallback((file: string, instance: FileDiff<DiffAnnotation>) => {
     const diff = instance.fileDiff;
     if (diff === undefined || diff.isPartial) return;
     const { opened, onOpened } = latest.current;
@@ -1489,26 +1647,35 @@ function ContinuousDiff(props: {
   // One item per file, reused while its fold and metadata are unchanged so the renderer keeps its
   // state. A replaced item carries a new version: the renderer reads an item again only then. Only
   // the shown files' items stay cached, so an unselected file's contents are not kept here.
-  const itemCache = useRef(new Map<string, CodeViewItem<undefined>>());
+  const itemCache = useRef(new Map<string, CodeViewItem<DiffAnnotation>>());
   const itemVersion = useRef(0);
   const items = useMemo(() => {
     const cache = itemCache.current;
     itemCache.current = new Map();
-    return props.files.map((file): CodeViewItem<undefined> => {
+    return props.files.map((file): CodeViewItem<DiffAnnotation> => {
       const fileDiff = diffs.get(file.path);
       const collapsed = fileDiff === undefined || props.folded.has(file.path);
+      const annotations = props.annotations.get(file.path);
       const cached = cache.get(file.path);
       if (
         cached &&
         cached.collapsed === collapsed &&
-        (cached.type !== "diff" || cached.fileDiff === fileDiff)
+        (cached.type !== "diff" ||
+          (cached.fileDiff === fileDiff && cached.annotations === annotations))
       ) {
         itemCache.current.set(file.path, cached);
         return cached;
       }
       const version = ++itemVersion.current;
-      const item: CodeViewItem<undefined> = fileDiff
-        ? { id: file.path, type: "diff", fileDiff, collapsed, version }
+      const item: CodeViewItem<DiffAnnotation> = fileDiff
+        ? {
+            id: file.path,
+            type: "diff",
+            fileDiff,
+            collapsed,
+            version,
+            ...(annotations && { annotations }),
+          }
         : // No captured text to show: the header alone says why.
           {
             id: file.path,
@@ -1520,10 +1687,10 @@ function ContinuousDiff(props: {
       itemCache.current.set(file.path, item);
       return item;
     });
-  }, [props.files, diffs, props.folded]);
+  }, [props.files, diffs, props.folded, props.annotations]);
 
   const options = useMemo(
-    (): CodeViewReactOptions<undefined, undefined> => ({
+    (): CodeViewReactOptions<DiffAnnotation, undefined> => ({
       theme: "catppuccin-mocha",
       themeType: "dark",
       diffStyle: layout === "split" ? "split" : "unified",
@@ -1658,8 +1825,15 @@ function ContinuousDiff(props: {
         reportWindow();
         if (performance.now() - manualAt.current < 1000) latest.current.onManualScroll();
       }}
-      renderCodeViewHeader={() => <CursorOverlay ref={bar} />}
+      renderCodeViewHeader={() => (
+        <>
+          {props.header}
+          <CursorOverlay ref={bar} />
+          <RangeOverlay ref={rangeBox} />
+        </>
+      )}
       renderCustomHeader={(item) => props.renderHeader(item.id)}
+      renderAnnotation={(annotation) => props.renderAnnotation(annotation.metadata)}
     />
   );
 }
@@ -1674,6 +1848,16 @@ function CursorOverlay(props: { ref: Ref<HTMLDivElement> }) {
   return <div ref={props.ref} hidden data-cursor aria-hidden {...stylex.props(cursorStyles.bar)} />;
 }
 
+/**
+ * A highlighted note range over its rendered lines, placed like the cursor overlay from the
+ * renderer's public geometry.
+ */
+function RangeOverlay(props: { ref: Ref<HTMLDivElement> }) {
+  return (
+    <div ref={props.ref} hidden data-range aria-hidden {...stylex.props(cursorStyles.range)} />
+  );
+}
+
 const cursorStyles = stylex.create({
   bar: {
     position: "absolute",
@@ -1681,6 +1865,13 @@ const cursorStyles = stylex.create({
     pointerEvents: "none",
     backgroundColor: `color-mix(in srgb, ${theme["--accent"]} 14%, transparent)`,
     boxShadow: `inset 2px 0 0 ${theme["--accent"]}`,
+  },
+  range: {
+    position: "absolute",
+    zIndex: 1,
+    pointerEvents: "none",
+    backgroundColor: `color-mix(in srgb, ${theme["--accent"]} 8%, transparent)`,
+    boxShadow: `inset 0 0 0 1px color-mix(in srgb, ${theme["--accent"]} 60%, transparent)`,
   },
 });
 /** The file header bar's height, which FileHeader's style repeats. */
@@ -2021,7 +2212,8 @@ const statusNames = { A: "added", D: "deleted", M: "modified", R: "renamed" } as
 function FileTree(props: {
   nodes: readonly TreeNode[];
   files: ReadonlyMap<string, ReaderFile>;
-  selection: string;
+  /** The selected path; undefined while a walkthrough group is shown. */
+  selection: string | undefined;
   onSelect: (path: string) => void;
 }) {
   const [toggled, setToggled] = useState<ReadonlySet<string>>(new Set());

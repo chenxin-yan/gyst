@@ -30,9 +30,12 @@ export function linkOf(href: string | undefined, references: readonly CapturedRa
   return isWebUrl(href) ? { kind: "external", href } : { kind: "inert" };
 }
 
+/** `L40–52 · new` */
+export const rangeLabel = (range: CodeRange) =>
+  `L${range.startLine}${range.endLine > range.startLine ? `–${range.endLine}` : ""} · ${range.side}`;
+
 /** `src/a.ts:L40–52 · new` */
-export const referenceLabel = (range: CodeRange) =>
-  `${range.path}:L${range.startLine}${range.endLine > range.startLine ? `–${range.endLine}` : ""} · ${range.side}`;
+export const referenceLabel = (range: CodeRange) => `${range.path}:${rangeLabel(range)}`;
 
 // Mermaid reads frontmatter only at the very start, but a removed directive can expose one there.
 const frontmatter = /^\s*---[^\n]*\n(?:[\s\S]*?\n)?[^\S\n]*---[^\S\n]*(?:\n|$)/;

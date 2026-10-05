@@ -17,6 +17,11 @@ export type CommandId =
   | "previousChange"
   | "nextFile"
   | "previousFile"
+  | "nextNote"
+  | "previousNote"
+  | "nextGroup"
+  | "previousGroup"
+  | "toggleNotes"
   | "open"
   | "unfold"
   | "cancel"
@@ -65,6 +70,11 @@ export const commands: readonly Command[] = [
   { id: "previousChange", keys: [["[", "C"]], label: "Previous change" },
   { id: "nextFile", keys: [["]", "F"]], label: "Next file" },
   { id: "previousFile", keys: [["[", "F"]], label: "Previous file" },
+  { id: "nextNote", keys: [["]", "N"]], label: "Next note" },
+  { id: "previousNote", keys: [["[", "N"]], label: "Previous note" },
+  { id: "nextGroup", keys: [["Shift+J"]], label: "Next walkthrough group" },
+  { id: "previousGroup", keys: [["Shift+K"]], label: "Previous walkthrough group" },
+  { id: "toggleNotes", keys: [["I"]], label: "Show or collapse every note" },
   {
     id: "open",
     keys: [["Enter"]],
