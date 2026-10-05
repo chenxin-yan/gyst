@@ -28,6 +28,7 @@ import { join } from "node:path";
 import { CapturedContent } from "./content.ts";
 import { Git, nulFraming } from "./git.ts";
 import { Paths } from "./paths.ts";
+import { githubOrigin, githubRepository, privateRefs, refState } from "../../tests/github.ts";
 
 let root: string;
 let dataDir: string;
@@ -879,5 +880,149 @@ describe("Git.capture", () => {
       detail: expect.stringContaining("no space left on device"),
     });
     expect(await staging()).toEqual([]);
+  });
+});
+
+describe("Git.pullRequestRange", () => {
+  const scope = (number: number) => ({ kind: "pr", repository: githubRepository, number }) as const;
+  const range = (cwd: string, number: number, baseRefName: string, headRefOid: string) =>
+    run(Git.use((g) => g.pullRequestRange(cwd, scope(number), { baseRefName, headRefOid })));
+  const rangeError = (cwd: string, number: number, baseRefName: string, headRefOid: string) =>
+    run(
+      Effect.flip(
+        Git.use((g) => g.pullRequestRange(cwd, scope(number), { baseRefName, headRefOid })),
+      ),
+    );
+
+  /**
+   * main m1 <- layer-a (PR 1) <- layer-b (PR 2), and feature (PR 4) branched from m1 before main
+   * moved on to m2 without restacking it.
+   */
+  async function stacked(name: string) {
+    const github = await githubOrigin(join(root, name));
+    const m1 = git(github.author, "rev-parse", "main");
+    const a1 = await github.commit("layer-a", { "a.txt": "layer a\n" }, { from: "main" });
+    github.publish("layer-a", 1);
+    const b1 = await github.commit("layer-b", { "b.txt": "layer b\n" }, { from: "layer-a" });
+    github.publish("layer-b", 2);
+    const f1 = await github.commit("feature", { "f.txt": "feature\n" }, { from: "main" });
+    github.publish("feature", 4);
+    const m2 = await github.commit("main", { "README.md": "widgets, moved on\n" });
+    github.publish("main");
+    return { ...github, m1: m1.trim(), m2, a1, b1, f1 };
+  }
+
+  it("resolves a stacked layer against its own base branch, never the stack base", async () => {
+    const github = await stacked("pr-stacked");
+    expect(await range(github.checkout, 2, "layer-a", github.b1)).toEqual({
+      base: github.a1,
+      head: github.b1,
+      mergeBase: github.a1,
+    });
+    expect(await range(github.checkout, 1, "main", github.a1)).toEqual({
+      base: github.m2,
+      head: github.a1,
+      mergeBase: github.m1,
+    });
+  });
+
+  it("uses a non-restacked PR's true merge base, not its base branch's newer tip", async () => {
+    const github = await stacked("pr-not-restacked");
+    const resolved = await range(github.checkout, 4, "main", github.f1);
+    expect(resolved).toEqual({ base: github.m2, head: github.f1, mergeBase: github.m1 });
+    expect(resolved.mergeBase).not.toBe(github.m2);
+  });
+
+  it("fetches only into private refs: HEAD, branches, remote refs, index, worktree and FETCH_HEAD stay", async () => {
+    const github = await stacked("pr-no-mutation");
+    const { checkout } = github;
+    git(checkout, "switch", "-q", "-c", "local-work");
+    await writeFile(join(checkout, "staged.txt"), "staged\n");
+    git(checkout, "add", "staged.txt");
+    await writeFile(join(checkout, "README.md"), "edited in the worktree\n");
+    await writeFile(join(checkout, "untracked.txt"), "untracked\n");
+    const marker = join(root, "pr-no-mutation-hook-ran");
+    await writeFile(
+      join(checkout, ".git", "hooks", "reference-transaction"),
+      `#!/bin/sh\ntouch '${marker}'\n`,
+    );
+    await chmod(join(checkout, ".git", "hooks", "reference-transaction"), 0o755);
+    const before = refState(checkout);
+
+    await range(checkout, 2, "layer-a", github.b1);
+
+    expect(refState(checkout)).toEqual(before);
+    expect(before.fetchHead).toBeNull();
+    expect(privateRefs(checkout)).toEqual([
+      `refs/gyst/github/acme/widgets/pull/2/base ${github.a1}`,
+      `refs/gyst/github/acme/widgets/pull/2/head ${github.b1}`,
+    ]);
+    expect(existsSync(marker)).toBe(false);
+    // Again after the PR moved: the private refs are overwritten, nothing else changes.
+    const b2 = await github.commit("layer-b", { "b.txt": "layer b, again\n" });
+    github.publish("layer-b", 2);
+    expect((await range(checkout, 2, "layer-a", b2)).head).toBe(b2);
+    expect(refState(checkout)).toEqual(before);
+  });
+
+  it("reports PR objects the remote does not have as objects_missing", async () => {
+    const github = await stacked("pr-missing-objects");
+    const error = await rangeError(github.checkout, 5, "main", github.f1);
+    expect(error).toMatchObject({
+      _tag: "source_unavailable",
+      message: expect.stringContaining("could not fetch https://github.com/acme/widgets/pull/5"),
+      detail: {
+        reason: "objects_missing",
+        diagnostic: expect.stringContaining("refs/pull/5/head"),
+      },
+    });
+    const deletedBase = await rangeError(github.checkout, 2, "gone", github.b1);
+    expect(deletedBase).toMatchObject({ detail: { reason: "objects_missing" } });
+    expect(privateRefs(github.checkout)).toEqual([]);
+  });
+
+  it("refuses a head that moved since GitHub reported it, retryably", async () => {
+    const github = await stacked("pr-head-moved");
+    const error = await rangeError(github.checkout, 2, "layer-a", github.a1);
+    expect(error).toMatchObject({
+      _tag: "source_unavailable",
+      message: expect.stringContaining("open it again"),
+      detail: { reason: "head_moved" },
+    });
+  });
+
+  it("requires a checkout with a remote whose raw URL names the repository", async () => {
+    const github = await stacked("pr-checkout");
+    const elsewhere = await repo("pr-checkout-elsewhere");
+    git(elsewhere, "remote", "add", "origin", "https://github.com/acme/other.git");
+    git(elsewhere, "config", `url.${github.origin}.insteadOf`, "https://github.com/acme/other.git");
+    for (const cwd of [elsewhere, await repo("pr-checkout-no-remote")])
+      expect(await rangeError(cwd, 2, "layer-a", github.b1)).toMatchObject({
+        _tag: "source_unavailable",
+        message: expect.stringContaining("no remote for github.com/acme/widgets"),
+        detail: { reason: "checkout_mismatch" },
+      });
+
+    // Any spelling of the repository's URL matches, on whichever remote carries it.
+    git(elsewhere, "remote", "add", "upstream", "https://github.com/acme/elsewhere.git");
+    for (const url of [
+      "git@github.com:Acme/Widgets.git",
+      "ssh://git@github.com/acme/widgets",
+      "https://github.com/acme/widgets/",
+    ]) {
+      git(elsewhere, "remote", "set-url", "upstream", url);
+      git(elsewhere, "config", `url.${github.origin}.insteadOf`, url);
+      expect((await range(elsewhere, 2, "layer-a", github.b1)).head, url).toBe(github.b1);
+    }
+  });
+
+  it("rejects a base branch name Git would not accept before fetching", async () => {
+    const github = await stacked("pr-bad-base");
+    for (const name of ["-x", "a..b", "x:y", "has space", ""])
+      expect(await rangeError(github.checkout, 2, name, github.b1), name).toMatchObject({
+        _tag: "source_unavailable",
+        detail: { reason: "github_failed", diagnostic: name },
+      });
+    expect(privateRefs(github.checkout)).toEqual([]);
   });
 });

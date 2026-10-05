@@ -51,6 +51,7 @@ const paths = Layer.sync(Paths, () => ({
 const git = Layer.succeed(Git, {
   repoRoot: (cwd) => Effect.succeed(cwd),
   capture: (_root, scope) => Effect.succeed(manifestOf(patch, scope)),
+  pullRequestRange: () => Effect.die("no PR ranges in this test"),
 });
 const receipts: Array<{ requestId: string; sessionId: string }> = [];
 const store = Layer.succeed(SessionStore, {

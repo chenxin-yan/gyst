@@ -116,6 +116,7 @@ const git = Layer.succeed(Git, {
           )
         : delayed;
     }),
+  pullRequestRange: () => Effect.die("no PR ranges in this test"),
 });
 
 const content = publishingContent((manifest) =>

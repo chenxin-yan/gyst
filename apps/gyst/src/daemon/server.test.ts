@@ -74,6 +74,7 @@ const git = Layer.succeed(Git, {
         Effect.as(manifestOf(patch, scope)),
       );
     }),
+  pullRequestRange: () => Effect.die("no PR ranges in this test"),
 });
 const store = Layer.succeed(SessionStore, {
   loadAll: Effect.sync(() => [...files.values()]),
