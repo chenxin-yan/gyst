@@ -79,6 +79,7 @@ import {
   liveReducer,
   type LiveState,
   retryDelay,
+  synchronizing,
 } from "../live.ts";
 import {
   capturedFiles,
@@ -249,10 +250,11 @@ function useLiveSession(sessionId: string): LiveSession {
 
 /**
  * Viewed progress, shared by every view of the snapshot: the reader's one copy of the Viewed hunk
- * ids and its writes. A write is refused while another is sent or status is read again, and while
- * gyst can't be reached: nothing is queued. The live link keeps it current: progress committed
- * elsewhere is read once more (one read at a time), and a write whose reply was lost is resent
- * with its request id once gyst answers again.
+ * ids and its writes. A write is refused while another is sent or status is read again, while
+ * gyst can't be reached and until a reconnect has read what it missed: nothing is queued. The live
+ * link keeps it current: progress committed elsewhere is read once more (one read at a time, for
+ * the current connection only), and a write whose reply was lost is resent with its request id
+ * once gyst answers again.
  */
 function useViewedProgress(
   sessionId: string,
@@ -279,16 +281,6 @@ function useViewedProgress(
     loaded.current = status;
     if (latest.current.busy === undefined) apply({ type: "status", status: statusRead(status) });
   });
-  const settle = async (next: ViewedState) => {
-    if (next.busy?.kind !== "rereading") return;
-    try {
-      const read = await operation({ command: "status", session: sessionId });
-      if (mounted.current) apply({ type: "status", status: statusRead(read) });
-    } catch (error) {
-      if (!isExpectedFailure(error)) console.error(error);
-      if (mounted.current) apply({ type: "unread", error });
-    }
-  };
   const send = (intent: ViewedIntent) => {
     apply({ type: "send", intent });
     void (async () => {
@@ -302,64 +294,77 @@ function useViewedProgress(
           hunkIds: [...intent.hunkIds],
           viewed: intent.viewed,
         });
-        if (mounted.current) await settle(apply({ type: "applied", result }));
+        if (mounted.current) apply({ type: "applied", result });
       } catch (error) {
         if (!isExpectedFailure(error)) console.error(error);
-        if (mounted.current) await settle(apply({ type: "failed", error }));
+        if (mounted.current) apply({ type: "failed", error });
       }
     })();
   };
   const write = (file: string, hunkIds: readonly string[], viewed: boolean) => {
-    const { phase } = linked.current.state;
+    const { state: now } = linked.current;
+    const { phase } = now;
     if (phase === "recovering" || phase === "deleted" || phase === "refused") return false;
+    if (synchronizing(now, latest.current)) return false;
     const intent = intentFor(latest.current, { file, hunkIds, viewed }, newRequestId);
     if (intent === undefined) return false;
     send(intent);
     return true;
   };
-  // The connection whose status read is on the wire. A read for a connection since given up
-  // neither holds off the next connection's read nor applies.
-  const reading = useRef<number>(undefined);
+  // The status read on the wire, for the connection it was sent over: one a write's answer asks
+  // for before any new write (`required`), or one of progress announced elsewhere. A read for a
+  // connection since given up neither holds off the next connection's read nor applies.
+  const reading = useRef<{ generation: number; required: boolean }>(undefined);
   // At most one automatic resend per announced version, so a reply lost again waits for Retry or
   // the next announcement rather than looping.
   const replayedAt = useRef<LiveState["known"]>(undefined);
+  const read = (generation: number, required: boolean) => {
+    const mine = { generation, required };
+    reading.current = mine;
+    const current = () => mounted.current && linked.current.now().generation === generation;
+    let recovering = false;
+    void operation({ command: "status", session: sessionId })
+      .then(
+        // A write sent meanwhile answers for itself, and a read sent before a write's answer asked
+        // for one says nothing of that answer; either is checked again once this read settles.
+        (answer) => {
+          const { busy } = latest.current;
+          if (current() && (busy === undefined || (required && busy.kind === "rereading")))
+            apply({ type: "status", status: statusRead(answer) });
+        },
+        (error: unknown) => {
+          if (!isExpectedFailure(error)) console.error(error);
+          if (!current()) return;
+          // A required read that fails blocks writes until a session reload; any other is not
+          // this file's failure: the link recovers, then reads again from its `ready`.
+          if (required) apply({ type: "unread", error });
+          else recovering = linked.current.lost(generation, error);
+        },
+      )
+      .finally(() => {
+        if (reading.current !== mine) return;
+        reading.current = undefined;
+        // The loss isn't rendered yet, so checking again now would read over the given-up link.
+        if (!recovering) sync();
+      });
+  };
   const sync = () => {
     const current = latest.current;
-    const { state: now, lost } = linked.current;
-    const { generation } = now;
-    if (!mounted.current || current.busy || reading.current === generation || now.phase !== "live")
+    const { state: now } = linked.current;
+    const { generation, phase } = now;
+    if (!mounted.current || reading.current?.generation === generation) return;
+    // Required even before the first connection is live; a lost one reads again from its `ready`.
+    if (current.busy?.kind === "rereading") {
+      if (phase === "connecting" || phase === "live") read(generation, true);
       return;
+    }
+    if (current.busy || phase !== "live") return;
     const replay = replayOf(current);
     if (replay && replayedAt.current !== now.known) {
       replayedAt.current = now.known;
       return send(replay);
     }
-    if (behind(now, current) !== "read") return;
-    reading.current = generation;
-    let recovering = false;
-    void operation({ command: "status", session: sessionId })
-      .then(
-        // A write sent meanwhile answers for itself; this read is checked again after it settles.
-        (read) => {
-          if (
-            mounted.current &&
-            linked.current.now().generation === generation &&
-            latest.current.busy === undefined
-          )
-            apply({ type: "status", status: statusRead(read) });
-        },
-        // Not this file's failure: the link recovers, then reads again from its `ready`.
-        (error: unknown) => {
-          if (!isExpectedFailure(error)) console.error(error);
-          if (mounted.current) recovering = lost(generation, error);
-        },
-      )
-      .finally(() => {
-        if (reading.current !== generation) return;
-        reading.current = undefined;
-        // The loss isn't rendered yet, so checking again now would read over the given-up link.
-        if (!recovering) sync();
-      });
+    if (behind(now, current) === "read") read(generation, false);
   };
   useEffect(sync, [live.state, state]);
   return { state, write };
@@ -975,6 +980,7 @@ function SessionReader(props: {
           <LiveStatus
             live={live.state}
             replaced={behind(live.state, progress.state) === "replaced"}
+            catchingUp={synchronizing(live.state, progress.state)}
           />
           <span {...stylex.props(styles.grow)} />
           <button
@@ -1110,7 +1116,15 @@ const styles = stylex.create({
  * Whether the reader follows the session's committed state, and what to do when it can't. Said in
  * the status line, so a change never shifts the diff being read.
  */
-function LiveStatus({ live, replaced }: { live: LiveState; replaced: boolean }) {
+function LiveStatus({
+  live,
+  replaced,
+  catchingUp,
+}: {
+  live: LiveState;
+  replaced: boolean;
+  catchingUp: boolean;
+}) {
   const router = useRouter();
   if (live.phase === "deleted")
     return (
@@ -1126,16 +1140,23 @@ function LiveStatus({ live, replaced }: { live: LiveState; replaced: boolean }) 
     );
   return (
     <>
-      <span {...stylex.props(live.phase === "live" && styles.ink)}>
-        {live.phase === "live"
-          ? "Live"
-          : live.phase === "connecting"
-            ? "Connecting…"
-            : "Reconnecting…"}
+      <span {...stylex.props(live.phase === "live" && !catchingUp && styles.ink)}>
+        {catchingUp
+          ? "Synchronizing…"
+          : live.phase === "live"
+            ? "Live"
+            : live.phase === "connecting"
+              ? "Connecting…"
+              : "Reconnecting…"}
       </span>
       {live.phase === "recovering" && (
         <span {...stylex.props(liveStyles.alert)}>
           Can't reach gyst; retrying. Viewed changes are paused.
+        </span>
+      )}
+      {catchingUp && (
+        <span {...stylex.props(liveStyles.alert)}>
+          Reading what changed meanwhile. Viewed changes are paused.
         </span>
       )}
       {replaced && (

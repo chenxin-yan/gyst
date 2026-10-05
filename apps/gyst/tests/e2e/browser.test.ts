@@ -201,6 +201,33 @@ async function settled(page: Page) {
 /** Leaves the page's session streams unanswered, so it never hears of changes made elsewhere. */
 const holdEvents = (page: Page) => page.route(isEventsUrl, () => {});
 
+/**
+ * Holds the page's first `count` status reads once `armed`: each is sent to the real bridge, and
+ * its answer waits until released.
+ */
+async function heldStatusReads(page: Page, count: number, armed: () => boolean) {
+  const gates = Array.from({ length: count }, () => Promise.withResolvers<void>());
+  const fetched = new Set<number>();
+  let reads = 0;
+  await page.route(isOperationUrl, async (route) => {
+    if (!armed() || route.request().postDataJSON()?.command !== "status") return route.fallback();
+    const n = reads++;
+    if (n >= count) return route.fallback();
+    const response = await route.fetch();
+    fetched.add(n);
+    await gates[n]!.promise;
+    await route.fulfill({ response });
+  });
+  return {
+    reads: () => reads,
+    fetched: (n: number, what: string) => waitFor(() => fetched.has(n), what),
+    release: (n: number) => gates[n]!.resolve(),
+    releaseAll: () => {
+      for (const gate of gates) gate.resolve();
+    },
+  };
+}
+
 /** Sends the page's next delete to the real bridge, then drops its reply like a cut connection. */
 async function loseNextDeleteReply(page: Page) {
   let lost = false;
@@ -2200,6 +2227,25 @@ describe("installed gyst in a sandboxed browser", () => {
   ];
   const pause = (page: Page, ms: number) =>
     page.evaluate((wait) => new Promise((resolve) => setTimeout(resolve, wait)), ms);
+  /**
+   * The page is connected again but still shows `progress` from before: it says so, and a click
+   * on `file`'s Viewed box sends and queues nothing.
+   */
+  const synchronizingWithout = async (
+    page: Page,
+    writes: unknown[],
+    file: string,
+    progress: string,
+  ) => {
+    await says(page, "Synchronizing…");
+    await says(page, "Reading what changed meanwhile. Viewed changes are paused.");
+    await says(page, progress);
+    const sent = writes.length;
+    await viewedBox(page, file).click();
+    await pause(page, 300);
+    expect(writes).toHaveLength(sent);
+    expect(await viewedBox(page, file).isChecked()).toBe(false);
+  };
 
   it("shares committed Viewed progress live between two viewers and the CLI, leaving the other viewer's cursor, selection and scroll", async () => {
     const id = await freshSession();
@@ -2469,24 +2515,15 @@ describe("installed gyst in a sandboxed browser", () => {
     expect(await positionOf(page)).toEqual(position);
   }, 60_000);
 
-  it("reads status for the connection a daemon restart brought while a read for the connection it ended is still held", async () => {
+  it("synchronizes the connection a daemon restart brought, Viewed changes paused, while a read for the connection it ended is still held", async () => {
     const id = await freshSession();
     const launched = await launchFor(id);
     const [a, b] = [await newPage(), await newPage()];
     for (const page of [a, b]) await page.setViewportSize({ width: 1280, height: 800 });
-    let reads = 0;
+    const writes = viewedOf(b);
     let armed = false;
-    let fetched = false;
-    const { promise: released, resolve: release } = Promise.withResolvers<void>();
-    await b.route(isOperationUrl, async (route) => {
-      if (!armed || route.request().postDataJSON()?.command !== "status") return route.continue();
-      if (++reads > 1) return route.continue();
-      // Read before the restart, answered only after B is live on the new daemon.
-      const response = await route.fetch();
-      fetched = true;
-      await released;
-      await route.fulfill({ response });
-    });
+    // B's first two status reads: one of A's change, then the new connection's.
+    const held = await heldStatusReads(b, 2, () => armed);
     await go(a, launched.url);
     await b.goto(`${launched.origin}${launched.path}`);
     for (const page of [a, b]) {
@@ -2497,21 +2534,81 @@ describe("installed gyst in a sandboxed browser", () => {
     try {
       await viewedBox(a, "README.md").check();
       await says(a, "1/3 hunks viewed in 3 files");
-      await waitFor(() => fetched, "B's status read of the change");
+      await held.fetched(0, "B's status read of the change");
       const daemon = await killDaemon(data, "SIGTERM");
-      // B's resubscription is a new connection, whose own read catches it up.
-      await says(b, "1/3 hunks viewed in 3 files");
-      await says(b, "Live");
+      // B's resubscription is a new connection, which reads status of its own.
+      await held.fetched(1, "the new connection's status read");
       expect(await daemonPid(data)).not.toBe(daemon);
-      expect(reads).toBe(2);
+      await synchronizingWithout(b, writes, "app.ts", "0/3 hunks viewed in 3 files");
+      held.release(1);
+      await says(b, "Live");
+      await says(b, "1/3 hunks viewed in 3 files");
       expect(await viewedBox(b, "README.md").isChecked()).toBe(true);
+      // The given-up connection's answer changes nothing.
+      held.release(0);
+      await settled(b);
+      await says(b, "1/3 hunks viewed in 3 files");
+      expect(held.reads()).toBe(2);
     } finally {
-      release();
+      held.releaseAll();
     }
-    await settled(b);
     await viewedBox(a, "app.ts").check();
     await says(b, "2/3 hunks viewed in 3 files");
-    expect(reads).toBe(3);
+    expect(held.reads()).toBe(3);
+    expect(writes).toEqual([]);
+  }, 60_000);
+
+  it("rereads for the connection a daemon restart brought while the read after a lost write's resend is held, Viewed changes paused until it lands", async () => {
+    const id = await freshSession();
+    const launched = await launchFor(id);
+    const page = await newPage(context, { problems: ["requestfailed /api/operation"] });
+    await page.setViewportSize({ width: 1280, height: 800 });
+    const writes = viewedOf(page);
+    let lost = false;
+    await page.route(isOperationUrl, async (route) => {
+      if (lost || route.request().postDataJSON()?.command !== "viewed") return route.fallback();
+      lost = true;
+      // The daemon applies it; only its reply is cut off.
+      await route.fetch();
+      await route.abort();
+    });
+    // The resend's receipt asks for a status read before any new write; it and the new
+    // connection's read are held.
+    const held = await heldStatusReads(page, 2, () => lost);
+    await go(page, launched.url);
+    await says(page, "Live");
+    await settled(page);
+    const before = (await gyst("session", "status", "--session", id)).revision;
+    try {
+      await viewedBox(page, "README.md").click();
+      await held.fetched(0, "the status read after the resend");
+      expect(writes).toHaveLength(2);
+      expect(writes[1]).toEqual(writes[0]);
+      const daemon = await killDaemon(data, "SIGTERM");
+      // Committed while the page reconnects; the new connection's ready names it.
+      const revision = await applyFromCli(id);
+      expect(revision).toBe(before + 2);
+      await held.fetched(1, "the new connection's status read");
+      expect(await daemonPid(data)).not.toBe(daemon);
+      await synchronizingWithout(page, writes, "app.ts", "0/3 hunks viewed in 3 files");
+      held.release(1);
+      await says(page, "Live");
+      await says(page, "1/3 hunks viewed in 3 files");
+      held.release(0);
+      await settled(page);
+      await says(page, "1/3 hunks viewed in 3 files");
+      expect(held.reads()).toBe(2);
+
+      // A new change is a fresh intent against the revision the new connection read.
+      await viewedBox(page, "app.ts").check();
+      await says(page, "2/3 hunks viewed in 3 files");
+      expect(writes).toHaveLength(3);
+      expect(writes[2]).toMatchObject({ revision, hunkIds: await idsIn(id, "app.ts") });
+      expect(writes[2].requestId).not.toBe(writes[0].requestId);
+      expect((await gyst("session", "status", "--session", id)).revision).toBe(revision + 1);
+    } finally {
+      held.releaseAll();
+    }
   }, 60_000);
 
   it("resends a Viewed write whose reply was lost once, with the same request id and payload, then reads status", async () => {

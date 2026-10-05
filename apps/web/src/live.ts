@@ -20,6 +20,11 @@ export type LiveState = {
   daemon?: string | undefined;
   /** The newest committed version announced; a status read catches the reader up to it. */
   known?: Version | undefined;
+  /**
+   * The version the current connection's `ready` named. Until the reader shows it, a reconnect is
+   * not over: being reachable again is not yet being current.
+   */
+  ready?: Version | undefined;
   /** Connections lost in a row since the last `ready`, which sets the backoff. */
   attempts: number;
   failure?: unknown;
@@ -62,14 +67,17 @@ export function liveReducer(state: LiveState, event: LiveEvent): LiveState {
         };
   const frame = event.event;
   switch (frame.kind) {
-    case "ready":
+    case "ready": {
+      const version = { snapshotId: frame.snapshotId, revision: frame.revision };
       return {
         generation: state.generation,
         phase: "live",
         daemon: frame.daemon,
-        known: { snapshotId: frame.snapshotId, revision: frame.revision },
+        known: version,
+        ready: version,
         attempts: 0,
       };
+    }
     case "changed":
       if (state.known !== undefined && frame.revision < state.known.revision) return state;
       return { ...state, known: { snapshotId: frame.snapshotId, revision: frame.revision } };
@@ -94,3 +102,14 @@ export function behind(live: LiveState, shown: Version): "current" | "read" | "r
   if (known.snapshotId !== shown.snapshotId) return "replaced";
   return known.revision > shown.revision ? "read" : "current";
 }
+
+/**
+ * Whether the reader is connected but not yet showing what its connection's `ready` named, so
+ * Viewed changes stay paused until status is read. Only `ready` counts, not later announcements,
+ * so ordinary changes elsewhere never pause the reader; a replaced snapshot is `behind`'s to say.
+ */
+export const synchronizing = (live: LiveState, shown: Version) =>
+  live.phase === "live" &&
+  live.ready !== undefined &&
+  behind(live, shown) !== "replaced" &&
+  shown.revision < live.ready.revision;

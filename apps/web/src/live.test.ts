@@ -8,6 +8,7 @@ import {
   liveReducer,
   type LiveState,
   retryDelay,
+  synchronizing,
 } from "./live.ts";
 
 const [a, b] = ["a".repeat(64), "b".repeat(64)];
@@ -38,6 +39,7 @@ describe("liveReducer", () => {
       phase: "live",
       daemon: "d1",
       known: { snapshotId: a, revision: 4 },
+      ready: { snapshotId: a, revision: 4 },
       attempts: 0,
     });
   });
@@ -93,6 +95,7 @@ describe("liveReducer", () => {
       phase: "live",
       daemon: "d2",
       known: { snapshotId: a, revision: 3 },
+      ready: { snapshotId: a, revision: 3 },
       attempts: 0,
     });
   });
@@ -131,5 +134,26 @@ describe("behind", () => {
     expect(behind(run(connect, ready(1, 3)), shown)).toBe("current");
     expect(behind(run(connect, ready(1, 4), changed(1, 5)), shown)).toBe("read");
     expect(behind(run(connect, ready(1, 4), changed(1, 5, b)), shown)).toBe("replaced");
+  });
+});
+
+describe("synchronizing", () => {
+  it("holds from a ready the reader trails until it shows that version, never for later changes", () => {
+    const shown = { snapshotId: a, revision: 4 };
+    // Not yet connected: the reader isn't live, which the phase says.
+    expect(synchronizing(run(connect), shown)).toBe(false);
+    expect(synchronizing(run(connect, ready(1, 4)), shown)).toBe(false);
+    expect(synchronizing(run(connect, ready(1, 3)), shown)).toBe(false);
+    // Changes after ready are ordinary invalidations, read without pausing the reader.
+    expect(synchronizing(run(connect, ready(1, 4), changed(1, 6)), shown)).toBe(false);
+    const reconnected = run(connect, ready(1, 4), { type: "lost", generation: 1 }, connect);
+    expect(synchronizing(reconnected, shown)).toBe(false);
+    const behindReady = liveReducer(reconnected, ready(reconnected.generation, 6, "d2"));
+    expect(synchronizing(behindReady, shown)).toBe(true);
+    expect(synchronizing(behindReady, { snapshotId: a, revision: 6 })).toBe(false);
+    // A refresh that replaced the shown snapshot asks for a reload instead.
+    expect(
+      synchronizing(liveReducer(behindReady, changed(behindReady.generation, 7, b)), shown),
+    ).toBe(false);
   });
 });
