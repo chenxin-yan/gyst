@@ -7,7 +7,17 @@ import {
   type Request,
   type TextPoint,
 } from "@gyst/core";
-import { ConfigProvider, Deferred, Effect, Fiber, Layer, Stream } from "effect";
+import {
+  ConfigProvider,
+  Deferred,
+  Effect,
+  Exit,
+  Fiber,
+  Layer,
+  Schedule,
+  Scope,
+  Stream,
+} from "effect";
 import { ChildProcessSpawner } from "effect/process";
 import { execFileSync } from "node:child_process";
 import { existsSync, realpathSync } from "node:fs";
@@ -27,7 +37,12 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { CapturedContent } from "./content.ts";
 import { Git } from "./git.ts";
-import { Navigation } from "./navigation.ts";
+import {
+  Navigation,
+  navigationPolicy,
+  NavigationPolicy,
+  type NavigationPolicy as Policy,
+} from "./navigation.ts";
 import { Paths } from "./paths.ts";
 import { daemonVersion } from "./protocol.ts";
 import { Sessions } from "./sessions.ts";
@@ -79,9 +94,18 @@ const alive = (pid: number) => {
   }
 };
 
-/** When set, captured-content reads after the first `skip` signal `started` and wait for `release`. */
+/**
+ * When set, captured-content reads (of the `only` blobs, if given) after the first `skip` signal
+ * `started`, count themselves in `held` and wait for `release`.
+ */
 let readGate:
-  | { skip: number; started: Deferred.Deferred<void>; release: Deferred.Deferred<void> }
+  | {
+      skip: number;
+      only?: ReadonlySet<string>;
+      held?: number;
+      started: Deferred.Deferred<void>;
+      release: Deferred.Deferred<void>;
+    }
   | undefined;
 const gatedContent = Layer.effect(
   CapturedContent,
@@ -89,7 +113,9 @@ const gatedContent = Layer.effect(
     ...real,
     readBlob: (blob: string, range: ByteRange) => {
       const gate = readGate;
-      if (gate === undefined || gate.skip-- > 0) return real.readBlob(blob, range);
+      if (gate === undefined || (gate.only && !gate.only.has(blob)) || gate.skip-- > 0)
+        return real.readBlob(blob, range);
+      gate.held = (gate.held ?? 0) + 1;
       return Stream.unwrap(
         Deferred.succeed(gate.started, undefined).pipe(
           Effect.andThen(Deferred.await(gate.release)),
@@ -101,8 +127,9 @@ const gatedContent = Layer.effect(
 ).pipe(Layer.provide(CapturedContent.layer));
 
 /** The daemon's real stack over a private data dir: Git, captured content, store, sessions. */
-const stack = (dataDir: string) =>
+const stack = (dataDir: string, policy: Policy = navigationPolicy) =>
   Navigation.layer.pipe(
+    Layer.provide(Layer.succeed(NavigationPolicy, policy)),
     Layer.provideMerge(Sessions.layer),
     Layer.provide(Layer.mergeAll(Git.layer, SessionStore.layer)),
     Layer.provideMerge(gatedContent),
@@ -119,10 +146,14 @@ const stack = (dataDir: string) =>
 const runReal = async <A, E>(
   dataDir: string,
   effect: Effect.Effect<A, E, Navigation | Sessions | CapturedContent | Paths>,
+  policy?: Policy,
 ) => {
   spawned.length = 0;
   const result = await Effect.runPromise(
-    Effect.provide(Sessions.use((s) => s.load).pipe(Effect.andThen(effect)), stack(dataDir)),
+    Effect.provide(
+      Sessions.use((s) => s.load).pipe(Effect.andThen(effect)),
+      stack(dataDir, policy),
+    ),
   );
   expect(engines().filter(({ pid }) => alive(pid))).toEqual([]);
   const navigation = join(dataDir, "navigation");
@@ -623,5 +654,352 @@ describe("Navigation over real captures and the workspace add-on", () => {
         expect(existsSync(leftover)).toBe(false);
       }),
     );
+  }, 60_000);
+});
+
+const readiness = (session: string, snapshotId: string, discovery: AddonDiscovery = addon) =>
+  Navigation.use((n) => n.status({ command: "navigation", session, snapshotId, addon: discovery }));
+/** Repeats `check` until it holds, failing the test after 20 seconds. */
+const until = <E, R>(check: Effect.Effect<boolean, E, R>) =>
+  check.pipe(
+    Effect.repeat({ until: (done) => done, schedule: Schedule.spaced("10 millis") }),
+    Effect.timeout("20 seconds"),
+  );
+const liveEngines = () => engines().filter(({ pid }) => alive(pid));
+const hold = Effect.fnUntraced(function* (only?: ReadonlySet<string>, skip = 0) {
+  const gate: NonNullable<typeof readGate> = {
+    skip,
+    ...(only ? { only } : {}),
+    started: yield* Deferred.make<void>(),
+    release: yield* Deferred.make<void>(),
+  };
+  readGate = gate;
+  return gate;
+});
+/** A session over a repository whose `src/math.ts` and `src/use.ts` changed: both sides exist. */
+const changedSession = Effect.fnUntraced(function* (cwd: string) {
+  const sessions = yield* Sessions;
+  const { session } = yield* sessions.open({
+    command: "open",
+    cwd,
+    scope: { kind: "uncommitted" },
+  });
+  const { manifest } = yield* sessions.snapshot({
+    session: session.id,
+    snapshotId: session.snapshotId,
+  });
+  const blob = (file: string, side: "old" | "new") => {
+    const captured = manifest.files.find(({ path }) => path === file)![side];
+    if (captured.kind !== "text") throw new Error(`${file} has no ${side} text`);
+    return captured.blob;
+  };
+  const target = (side: "old" | "new") =>
+    ({ session: session.id, snapshotId: session.snapshotId, file: "src/use.ts", side }) as const;
+  return { session, blob, target };
+});
+const changedRepo = async (name: string) => {
+  const cwd = await repo(name, { "src/math.ts": oldMath, "src/use.ts": oldUse });
+  await write(cwd, { "src/math.ts": newMath, "src/use.ts": newUse });
+  return cwd;
+};
+const plusAt = (side: "old" | "new") => at(side === "old" ? oldUse : newUse, 2, "plus");
+
+describe("Navigation lifecycle", () => {
+  it("defaults to two engines, a 60 second idle expiry and a 2 minute query bound", () => {
+    expect(navigationPolicy).toEqual({ engines: 2, idle: "60 seconds", query: "2 minutes" });
+  });
+
+  it("reports readiness without starting anything", async () => {
+    const dataDir = join(dir, "data-status");
+    const cwd = await changedRepo("status");
+    await runReal(
+      dataDir,
+      Effect.gen(function* () {
+        const sessions = yield* Sessions;
+        const { session } = yield* changedSession(cwd);
+        expect(yield* readiness(session.id, session.snapshotId)).toEqual({
+          sessionId: session.id,
+          snapshotId: session.snapshotId,
+          addon: { kind: "available", version: daemonVersion },
+          sides: { old: { kind: "stopped" }, new: { kind: "stopped" } },
+        });
+        const missing = { kind: "addon", addon: { kind: "missing", install } } as const;
+        expect(yield* readiness(session.id, session.snapshotId, { kind: "missing" })).toEqual({
+          sessionId: session.id,
+          snapshotId: session.snapshotId,
+          addon: { kind: "missing", install },
+          sides: {
+            old: { kind: "unavailable", reason: missing },
+            new: { kind: "unavailable", reason: missing },
+          },
+        });
+        expect(
+          (yield* readiness(session.id, session.snapshotId, { ...addon, version: "0.0.1" })).addon,
+        ).toEqual({ kind: "mismatched", found: "0.0.1", install });
+        const historical = { kind: "unavailable", reason: { kind: "historical" } };
+        expect((yield* readiness(session.id, "f".repeat(64))).sides).toEqual({
+          old: historical,
+          new: historical,
+        });
+        expect(spawned).toEqual([]);
+        expect(existsSync(join(dataDir, "navigation"))).toBe(false);
+        yield* sessions.delete({ command: "delete", session: session.id, requestId: "r1" });
+        expect(yield* Effect.flip(readiness(session.id, session.snapshotId))).toMatchObject({
+          _tag: "no_session",
+        });
+      }),
+    );
+  }, 60_000);
+
+  it("keeps at most two engines across sessions, evicting the least recently used idle one and queueing while both are busy", async () => {
+    const dataDir = join(dir, "data-capacity");
+    const [cwdA, cwdB] = [await changedRepo("capacity-a"), await changedRepo("capacity-b")];
+    await runReal(
+      dataDir,
+      Effect.gen(function* () {
+        let most = 0;
+        const monitor = yield* Effect.forkChild(
+          Effect.sync(() => {
+            most = Math.max(most, liveEngines().length);
+          }).pipe(Effect.repeat(Schedule.spaced("2 millis"))),
+        );
+        const a = yield* changedSession(cwdA);
+        const b = yield* changedSession(cwdB);
+        const sides = (of: typeof a) =>
+          Effect.map(readiness(of.session.id, of.session.snapshotId), ({ sides }) => sides);
+        const engineOf = (args: number) => engines()[args]!.pid;
+
+        // The old side of A is used first, so it is the least recently used once both are idle.
+        expect(located(yield* definition(a.target("old"), plusAt("old"))).locations).toHaveLength(
+          1,
+        );
+        expect(located(yield* definition(a.target("new"), plusAt("new"))).locations).toHaveLength(
+          1,
+        );
+        const [aOld, aNew] = [engineOf(0), engineOf(1)];
+        expect(yield* sides(a)).toEqual({
+          old: {
+            kind: "ready",
+            files: 2,
+            bytes: oldMath.length + oldUse.length,
+            gaps: [{ kind: "no-project-config" }],
+          },
+          new: {
+            kind: "ready",
+            files: 2,
+            bytes: newMath.length + newUse.length,
+            gaps: [{ kind: "no-project-config" }],
+          },
+        });
+        // A third key stops A's old engine rather than starting a third.
+        expect(located(yield* definition(b.target("new"), plusAt("new"))).locations).toHaveLength(
+          1,
+        );
+        const bNew = engineOf(2);
+        expect(alive(aOld)).toBe(false);
+        expect(liveEngines().map(({ pid }) => pid)).toEqual([aNew, bNew]);
+        expect((yield* sides(a)).old).toEqual({ kind: "stopped" });
+
+        // Both engines busy (each query held reading its target's text): a third key waits.
+        const busy = yield* hold(
+          new Set([a.blob("src/math.ts", "new"), b.blob("src/math.ts", "new")]),
+        );
+        const q1 = yield* Effect.forkChild(definition(a.target("new"), plusAt("new")));
+        const q2 = yield* Effect.forkChild(definition(b.target("new"), plusAt("new")));
+        yield* until(Effect.sync(() => busy.held === 2));
+        readGate = undefined;
+        const q3 = yield* Effect.forkChild(definition(a.target("old"), plusAt("old")));
+        yield* until(Effect.map(sides(a), ({ old }) => old.kind === "queued"));
+        yield* Effect.sleep("200 millis");
+        expect((yield* sides(a)).old).toEqual({ kind: "queued" });
+        expect(liveEngines().map(({ pid }) => pid)).toEqual([aNew, bNew]);
+        // Review reads are not held up meanwhile.
+        yield* (yield* Sessions)
+          .status({ command: "status", session: a.session.id })
+          .pipe(Effect.timeout("2 seconds"));
+
+        yield* Deferred.succeed(busy.release, undefined);
+        for (const query of [q1, q2, q3])
+          expect(located(yield* Fiber.join(query)).locations).toHaveLength(1);
+        expect(engines()).toHaveLength(4);
+        expect(liveEngines()).toHaveLength(2);
+        expect((yield* sides(a)).old).toMatchObject({ kind: "ready" });
+        yield* Fiber.interrupt(monitor);
+        expect(most).toBe(2);
+      }),
+    );
+  }, 120_000);
+
+  it("expires an idle engine, but never while a query is active", async () => {
+    const dataDir = join(dir, "data-idle");
+    const cwd = await changedRepo("idle");
+    await runReal(
+      dataDir,
+      Effect.gen(function* () {
+        const { session, blob, target } = yield* changedSession(cwd);
+        const sideNew = Effect.map(
+          readiness(session.id, session.snapshotId),
+          ({ sides }) => sides.new,
+        );
+        expect(located(yield* definition(target("new"), plusAt("new"))).locations).toHaveLength(1);
+        const first = engines()[0]!.pid;
+        expect((yield* sideNew).kind).toBe("ready");
+        yield* until(Effect.map(sideNew, ({ kind }) => kind === "stopped"));
+        // Its teardown finishes just after: the engine exits, then its copy is removed.
+        yield* until(
+          Effect.promise(() => readdir(join(dataDir, "navigation"))).pipe(
+            Effect.map((left) => left.length === 0 && !alive(first)),
+          ),
+        );
+
+        // A query that starts on an idle engine and is held well past the idle time keeps it.
+        expect(located(yield* definition(target("new"), plusAt("new"))).locations).toHaveLength(1);
+        const second = engines()[1]!.pid;
+        const held = yield* hold(new Set([blob("src/math.ts", "new")]));
+        const query = yield* Effect.forkChild(definition(target("new"), plusAt("new")));
+        yield* Deferred.await(held.started);
+        readGate = undefined;
+        yield* Effect.sleep("900 millis");
+        expect(engines()).toHaveLength(2);
+        expect(alive(second)).toBe(true);
+        expect((yield* sideNew).kind).toBe("ready");
+        yield* Deferred.succeed(held.release, undefined);
+        expect(located(yield* Fiber.join(query)).locations).toEqual([
+          { file: "src/math.ts", range: span(newMath, 3, "add") },
+        ]);
+        expect(alive(second)).toBe(true);
+        yield* until(Effect.sync(() => !alive(second)));
+        expect((yield* sideNew).kind).toBe("stopped");
+      }),
+      { engines: 2, idle: "300 millis", query: "2 minutes" },
+    );
+  }, 60_000);
+
+  it("stops an engine whose query outlasts the query bound and reports it until the next query", async () => {
+    const dataDir = join(dir, "data-timeout");
+    const cwd = await changedRepo("timeout");
+    await runReal(
+      dataDir,
+      Effect.gen(function* () {
+        const { session, blob, target } = yield* changedSession(cwd);
+        const held = yield* hold(new Set([blob("src/math.ts", "new")]), 1);
+        const query = yield* Effect.forkChild(definition(target("new"), plusAt("new")));
+        yield* Deferred.await(held.started);
+        readGate = undefined;
+        const engine = engines()[0]!.pid;
+        const engineFailure = {
+          kind: "unavailable",
+          reason: { kind: "engine", message: "the engine did not answer in time and was stopped" },
+        };
+        expect((yield* Fiber.join(query)).outcome).toEqual(engineFailure);
+        expect(alive(engine)).toBe(false);
+        expect(yield* Effect.promise(() => readdir(join(dataDir, "navigation")))).toEqual([]);
+        expect((yield* readiness(session.id, session.snapshotId)).sides.new).toEqual(engineFailure);
+        yield* Deferred.succeed(held.release, undefined);
+        // The next query retries on a fresh engine.
+        expect(located(yield* definition(target("new"), plusAt("new"))).locations).toHaveLength(1);
+        expect((yield* readiness(session.id, session.snapshotId)).sides.new.kind).toBe("ready");
+      }),
+      { engines: 2, idle: "60 seconds", query: "1 second" },
+    );
+  }, 60_000);
+
+  it("cancels a preparation a refresh overtakes without holding up review", async () => {
+    const dataDir = join(dir, "data-refresh");
+    const cwd = await changedRepo("refresh");
+    await runReal(
+      dataDir,
+      Effect.gen(function* () {
+        const sessions = yield* Sessions;
+        const navigation = yield* Navigation;
+        const { session, target } = yield* changedSession(cwd);
+        // The query reads its own text, then its preparation is held copying the side.
+        const held = yield* hold(undefined, 1);
+        const query = yield* Effect.forkChild(definition(target("new"), plusAt("new")));
+        yield* Deferred.await(held.started);
+        readGate = undefined;
+        expect((yield* readiness(session.id, session.snapshotId)).sides).toEqual({
+          old: { kind: "stopped" },
+          new: { kind: "preparing" },
+        });
+
+        // Review operations answer promptly while preparation is held.
+        const diff = yield* sessions.diff({ command: "diff", session: session.id });
+        const status = yield* sessions
+          .status({ command: "status", session: session.id })
+          .pipe(Effect.timeout("2 seconds"));
+        yield* sessions
+          .code({
+            command: "code",
+            session: session.id,
+            snapshotId: session.snapshotId,
+            file: "src/use.ts",
+            side: "new",
+          })
+          .pipe(Effect.timeout("2 seconds"));
+        yield* sessions
+          .viewed({
+            command: "viewed",
+            session: session.id,
+            snapshotId: session.snapshotId,
+            revision: status.revision,
+            requestId: "v1",
+            hunkIds: [diff.hunks[0]!.id],
+            viewed: true,
+          })
+          .pipe(Effect.timeout("2 seconds"));
+
+        yield* Effect.promise(() =>
+          writeFile(join(cwd, "src/use.ts"), `${newUse}export const five = 5;\n`),
+        );
+        const refreshed = yield* sessions.refresh({ command: "refresh", session: session.id });
+        yield* navigation.retire(session.id, refreshed.session.snapshotId);
+        expect((yield* Fiber.join(query)).outcome).toEqual({
+          kind: "unavailable",
+          reason: { kind: "historical" },
+        });
+        yield* Deferred.succeed(held.release, undefined);
+        expect(engines()).toEqual([]);
+        expect(yield* Effect.promise(() => readdir(join(dataDir, "navigation")))).toEqual([]);
+        expect((yield* readiness(session.id, session.snapshotId)).sides.new).toEqual({
+          kind: "unavailable",
+          reason: { kind: "historical" },
+        });
+        expect((yield* readiness(session.id, refreshed.session.snapshotId)).sides).toEqual({
+          old: { kind: "stopped" },
+          new: { kind: "stopped" },
+        });
+      }),
+    );
+  }, 60_000);
+
+  it("stops engines and publishes nothing when the daemon shuts down mid-query", async () => {
+    const dataDir = join(dir, "data-shutdown");
+    const cwd = await changedRepo("shutdown");
+    spawned.length = 0;
+    const scope = Effect.runSync(Scope.make());
+    const context = await Effect.runPromise(Layer.buildWithScope(stack(dataDir), scope));
+    const run = <A, E>(effect: Effect.Effect<A, E, Navigation | Sessions>) =>
+      Effect.runPromise(Effect.provideContext(effect, context));
+    await run(Sessions.use((s) => s.load));
+    const { blob, target } = await run(changedSession(cwd));
+    const held = await Effect.runPromise(hold(new Set([blob("src/math.ts", "new")]), 1));
+    const query = Effect.runFork(
+      Effect.provideContext(definition(target("new"), plusAt("new")), context),
+    );
+    await Effect.runPromise(Deferred.await(held.started));
+    readGate = undefined;
+    const engine = engines()[0]!.pid;
+    expect(alive(engine)).toBe(true);
+
+    await Effect.runPromise(Scope.close(scope, Exit.void));
+    expect(alive(engine)).toBe(false);
+    expect(await readdir(join(dataDir, "navigation"))).toEqual([]);
+    await Effect.runPromise(Deferred.succeed(held.release, undefined));
+    const outcome = await Effect.runPromise(Fiber.await(query));
+    expect(Exit.isSuccess(outcome) ? outcome.value.outcome : { failed: true }).not.toMatchObject({
+      kind: "locations",
+    });
+    expect(liveEngines()).toEqual([]);
   }, 60_000);
 });

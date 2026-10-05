@@ -134,6 +134,16 @@ const navigation = Layer.succeed(
       }),
     retire: (sessionId, keep) =>
       Effect.sync(() => void navigationCalls.push({ retire: sessionId, keep })),
+    status: (request) =>
+      Effect.sync(() => {
+        navigationCalls.push(request);
+        return {
+          sessionId: request.session,
+          snapshotId: request.snapshotId,
+          addon: { kind: "available" as const, version: "1" },
+          sides: { old: { kind: "stopped" as const }, new: { kind: "queued" as const } },
+        };
+      }),
   }),
 );
 const serverLayerOver = (platform: Layer.Layer<Layer.Success<typeof NodeServices.layer>>) =>
@@ -331,6 +341,7 @@ describe("DaemonServer", () => {
           { command: "definition", ...target, position, addon },
           { command: "references", ...target, position, addon },
           { command: "identifiers", ...target, line: 1, addon },
+          { command: "navigation", session, snapshotId, addon },
         ] as const;
         for (const request of requests) expect(ok(yield* send(request))).toBe(true);
         expect(navigationCalls).toEqual(requests);
@@ -340,6 +351,13 @@ describe("DaemonServer", () => {
           snapshotId,
           outcome: { kind: "no-symbol" },
         });
+        const readiness = yield* send(requests[3]);
+        expect(readiness.ok && readiness.value).toEqual({
+          sessionId: session,
+          snapshotId,
+          addon: { kind: "available", version: "1" },
+          sides: { old: { kind: "stopped" }, new: { kind: "queued" } },
+        });
 
         navigationCalls.length = 0;
         const refreshed = yield* send({ command: "refresh", session });
@@ -347,11 +365,13 @@ describe("DaemonServer", () => {
         const current = (refreshed.value as { session: { snapshotId: string } }).session.snapshotId;
         expect(navigationCalls).toEqual([{ retire: session, keep: current }]);
         // A browser-shaped request without the launcher's discovery is refused before dispatch.
-        const { addon: _, ...unbound } = requests[0];
-        expect(yield* send(unbound as unknown as Request)).toMatchObject({
-          ok: false,
-          error: { _tag: "bad_args" },
-        });
+        for (const request of [requests[0], requests[3]]) {
+          const { addon: _, ...unbound } = request;
+          expect(yield* send(unbound as unknown as Request)).toMatchObject({
+            ok: false,
+            error: { _tag: "bad_args" },
+          });
+        }
         expect(ok(yield* remove(session))).toBe(true);
         expect(navigationCalls).toEqual([
           { retire: session, keep: current },

@@ -1,10 +1,12 @@
 import * as NodeHttpServerRequest from "@effect/platform-node/NodeHttpServerRequest";
 import {
   BadArgs,
+  type BrowserRequest,
   BrowserRequestSchema,
   type DaemonError,
   InternalError,
   ReplySchema,
+  type Request,
   SubscribeRequestSchema,
   type SubscriptionEvent,
   SubscriptionEventSchema,
@@ -25,6 +27,7 @@ import {
   isSameOrigin,
   type Launch,
 } from "./auth.ts";
+import type { NavigationAddon } from "./navigation-addon.ts";
 import { webPaths } from "@gyst/core/web";
 
 /** The packaged SPA (`dist/web-ui`) beside the bundled `bin/gyst.js`; never the cwd or checkout. */
@@ -123,28 +126,53 @@ const reply = (code: number, body: typeof ReplySchema.Type) =>
 const isForwarding = (name: string) => name === "forwarded" || name.startsWith("x-forwarded-");
 const under = (path: string, prefix: string) => path === prefix || path.startsWith(`${prefix}/`);
 
-const operation = Effect.gen(function* () {
-  const request = yield* HttpServerRequest;
-  const text = yield* request.text.pipe(
-    Effect.provideService(HttpIncomingMessage.MaxBodySize, maxOperationBytes),
-    Effect.option,
-  );
-  if (text._tag === "None")
-    return reply(400, { ok: false, error: new BadArgs({ message: "unreadable request body" }) });
-  const input = yield* decodeOperation(text.value).pipe(Effect.option);
-  if (input._tag === "None")
-    return reply(400, {
-      ok: false,
-      error: new BadArgs({ message: "expected one browser operation as JSON" }),
-    });
-  const client = yield* DaemonClient;
-  return yield* client.request(input.value).pipe(
-    Effect.map((value) => reply(200, { ok: true, value })),
-    Effect.catch((error: DaemonError) =>
-      Effect.succeed(reply(error._tag === "daemon_unreachable" ? 503 : 200, { ok: false, error })),
-    ),
-  );
-});
+/**
+ * The daemon request for a browser operation: navigation gets this launcher's add-on discovery
+ * (discovered again first for Check again), and every other operation is forwarded as decoded.
+ */
+const trusted = (input: BrowserRequest, addon: NavigationAddon): Effect.Effect<Request> => {
+  switch (input.command) {
+    case "navigation": {
+      const { recheck, ...readiness } = input;
+      return Effect.map(recheck ? addon.recheck : addon.current, (discovery) => ({
+        ...readiness,
+        addon: discovery,
+      }));
+    }
+    case "definition":
+    case "references":
+    case "identifiers":
+      return Effect.map(addon.current, (discovery) => ({ ...input, addon: discovery }));
+    default:
+      return Effect.succeed(input);
+  }
+};
+
+const operation = (addon: NavigationAddon) =>
+  Effect.gen(function* () {
+    const request = yield* HttpServerRequest;
+    const text = yield* request.text.pipe(
+      Effect.provideService(HttpIncomingMessage.MaxBodySize, maxOperationBytes),
+      Effect.option,
+    );
+    if (text._tag === "None")
+      return reply(400, { ok: false, error: new BadArgs({ message: "unreadable request body" }) });
+    const input = yield* decodeOperation(text.value).pipe(Effect.option);
+    if (input._tag === "None")
+      return reply(400, {
+        ok: false,
+        error: new BadArgs({ message: "expected one browser operation as JSON" }),
+      });
+    const client = yield* DaemonClient;
+    return yield* client.request(yield* trusted(input.value, addon)).pipe(
+      Effect.map((value) => reply(200, { ok: true, value })),
+      Effect.catch((error: DaemonError) =>
+        Effect.succeed(
+          reply(error._tag === "daemon_unreachable" ? 503 : 200, { ok: false, error }),
+        ),
+      ),
+    );
+  });
 
 /**
  * One session's daemon subscription as SSE frames, forwarded unchanged until the daemon ends it.
@@ -180,12 +208,13 @@ const events = Effect.gen(function* () {
 /**
  * One launch's HTTP surface. Every request needs this launch's exact `Host`; POSTs also need a
  * matching `Origin`. The bootstrap exchanges the fragment secret for the host-only auth cookie,
- * operations are strict `BrowserRequest`s forwarded unchanged to the daemon, whose `Reply` is
- * returned as is, and events stream one session's daemon subscription under the same checks.
- * Everything else is the packaged SPA: exact files, then the shell for client routes, while
- * `/api`, `/bootstrap` and `/assets` misses stay real errors.
+ * operations are strict `BrowserRequest`s forwarded unchanged to the daemon, except that
+ * navigation carries this launcher's `addon` discovery, and the daemon's `Reply` is returned as is;
+ * events stream one session's daemon subscription under the same checks. Everything else is the
+ * packaged SPA: exact files, then the shell for client routes, while `/api`, `/bootstrap` and
+ * `/assets` misses stay real errors.
  */
-export const browserApp = (launch: Launch, assets: WebAssets) =>
+export const browserApp = (launch: Launch, assets: WebAssets, addon: NavigationAddon) =>
   Effect.gen(function* () {
     const request = yield* HttpServerRequest;
     const raw = NodeHttpServerRequest.toIncomingMessage(request).rawHeaders;
@@ -221,7 +250,7 @@ export const browserApp = (launch: Launch, assets: WebAssets) =>
           : status(401);
       // Authenticate before reading the body.
       if (!hasAuthCookie(launch, request.headers.cookie)) return status(401);
-      return yield* path === webPaths.events ? events : operation;
+      return yield* path === webPaths.events ? events : operation(addon);
     }
     if (under(decoded, "/api") || under(decoded, "/bootstrap")) return status(404);
     if (request.method !== "GET" && request.method !== "HEAD")

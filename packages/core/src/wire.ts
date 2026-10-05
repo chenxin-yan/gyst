@@ -241,6 +241,35 @@ export const IdentifiersPayloadSchema = Schema.Struct({
 });
 export type IdentifiersPayload = typeof IdentifiersPayloadSchema.Type;
 
+/**
+ * The daemon's analysis of one side, as last tracked: never started by asking. `queued` waits for
+ * an engine slot, `preparing` lays out the side and starts its engine, `ready` reports that
+ * layout's cost and known gaps, and `unavailable` is why the side cannot be analysed, or the last
+ * failure, which the next query retries.
+ */
+export const NavigationSideStateSchema = Schema.Union([
+  Schema.Struct({ kind: Schema.Literal("stopped") }),
+  Schema.Struct({ kind: Schema.Literal("queued") }),
+  Schema.Struct({ kind: Schema.Literal("preparing") }),
+  Schema.Struct({
+    kind: Schema.Literal("ready"),
+    files: Schema.Natural,
+    bytes: Schema.Natural,
+    gaps: Schema.Array(NavigationGapSchema),
+  }),
+  Schema.Struct({ kind: Schema.Literal("unavailable"), reason: NavigationUnavailableSchema }),
+]);
+export type NavigationSideState = typeof NavigationSideStateSchema.Type;
+
+/** Navigation readiness for one snapshot: the launcher's add-on and each side's analysis. */
+export const NavigationStatusPayloadSchema = Schema.Struct({
+  sessionId: Schema.String,
+  snapshotId: SnapshotIdSchema,
+  addon: AddonStateSchema,
+  sides: Schema.Struct({ old: NavigationSideStateSchema, new: NavigationSideStateSchema }),
+});
+export type NavigationStatusPayload = typeof NavigationStatusPayloadSchema.Type;
+
 /** One page of the current snapshot's captured files, in path order; `next` is the next `after`. */
 export const FilesPayloadSchema = Schema.Struct({
   sessionId: Schema.String,
@@ -315,13 +344,29 @@ const navigationTarget = {
   side: SideSchema,
   file: LogicalPathSchema,
 };
+const navigationStatus = {
+  command: Schema.Literal("navigation"),
+  ...exact,
+  snapshotId: SnapshotIdSchema,
+};
+const definitionQuery = {
+  command: Schema.Literal("definition"),
+  ...navigationTarget,
+  position: TextPointSchema,
+};
+const referencesQuery = {
+  command: Schema.Literal("references"),
+  ...navigationTarget,
+  position: TextPointSchema,
+};
+const identifiersQuery = {
+  command: Schema.Literal("identifiers"),
+  ...navigationTarget,
+  line: LineNumberSchema,
+};
 
-/**
- * The operations a browser may request: exact saved-session ids and read filters only. Checkout
- * paths, Git input, executables and caller roles are not expressible, so a bridge decodes browser
- * input with this schema and forwards it unchanged.
- */
-export const BrowserRequestSchema = Schema.Union([
+/** Browser operations a bridge forwards to the daemon exactly as decoded. */
+const reviewRequests = [
   Schema.Struct({ command: Schema.Literal("list") }),
   Schema.Struct({ command: Schema.Literal("open"), ...exact }),
   Schema.Struct({ command: Schema.Literal("status"), ...exact }),
@@ -395,6 +440,26 @@ export const BrowserRequestSchema = Schema.Union([
     hunkIds: Schema.Array(Schema.String),
     viewed: Schema.Boolean,
   }),
+] as const;
+
+/**
+ * The operations a browser may request: exact saved-session ids and read filters only. Checkout
+ * paths, Git input, executables, add-on locations and caller roles are not expressible. A bridge
+ * decodes browser input with this schema and forwards it unchanged, except that it binds its own
+ * add-on discovery into navigation operations.
+ */
+export const BrowserRequestSchema = Schema.Union([
+  ...reviewRequests,
+  /**
+   * Navigation readiness of the session's current snapshot. `recheck` (Check again) has the
+   * launcher look for the add-on on its launch PATH again first.
+   */
+  Schema.Struct({ ...navigationStatus, recheck: Schema.optional(Schema.Boolean) }),
+  /** Definitions or references of the symbol at `position` on one side of a snapshot file. */
+  Schema.Struct(definitionQuery),
+  Schema.Struct(referencesQuery),
+  /** The identifiers on one line that can be queried. */
+  Schema.Struct(identifiersQuery),
 ]);
 export type BrowserRequest = typeof BrowserRequestSchema.Type;
 
@@ -405,32 +470,18 @@ export const RequestSchema = Schema.Union([
    * selects the repository; the recorded scope then creates or reuses that repository's session.
    */
   Schema.Struct({ command: Schema.Literal("open"), cwd: Schema.String, scope: ScopeSchema }),
-  ...BrowserRequestSchema.members,
+  ...reviewRequests,
   /** `batch` is the JSON apply envelope text; the use case validates it against `ApplyEnvelopeSchema`. */
   Schema.Struct({ command: Schema.Literal("apply"), ...exact, batch: Schema.String }),
   Schema.Struct({ command: Schema.Literal("refresh"), ...exact }),
   /**
-   * Navigation over one side of a file in the session's current snapshot. `addon` is what the
-   * launcher discovered on its own PATH, bound by that trusted entry point like `open.cwd`.
+   * The browser's navigation operations over the session's current snapshot, with `addon`: what
+   * the launcher discovered on its own PATH, bound by that trusted entry point like `open.cwd`.
    */
-  Schema.Struct({
-    command: Schema.Literal("definition"),
-    ...navigationTarget,
-    position: TextPointSchema,
-    addon: AddonDiscoverySchema,
-  }),
-  Schema.Struct({
-    command: Schema.Literal("references"),
-    ...navigationTarget,
-    position: TextPointSchema,
-    addon: AddonDiscoverySchema,
-  }),
-  Schema.Struct({
-    command: Schema.Literal("identifiers"),
-    ...navigationTarget,
-    line: LineNumberSchema,
-    addon: AddonDiscoverySchema,
-  }),
+  Schema.Struct({ ...navigationStatus, addon: AddonDiscoverySchema }),
+  Schema.Struct({ ...definitionQuery, addon: AddonDiscoverySchema }),
+  Schema.Struct({ ...referencesQuery, addon: AddonDiscoverySchema }),
+  Schema.Struct({ ...identifiersQuery, addon: AddonDiscoverySchema }),
 ]);
 export type Request = typeof RequestSchema.Type;
 

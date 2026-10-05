@@ -23,6 +23,7 @@ const launch = (request: ViewerOpen, stdout: (line: string) => void) =>
     webUiDir: installedWebUiDir,
     opener: browserOpener(process.platform, process.env, process.stdout.isTTY),
     stdout,
+    launchPath: process.env.PATH,
     progress: terminalProgress(process.stderr),
   });
 

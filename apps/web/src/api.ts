@@ -6,7 +6,10 @@ import {
   DeletePayloadSchema,
   DiffPayloadSchema,
   FilesPayloadSchema,
+  IdentifiersPayloadSchema,
   ListPayloadSchema,
+  NavigationResultPayloadSchema,
+  NavigationStatusPayloadSchema,
   OpenPayloadSchema,
   type Reply,
   ReplySchema,
@@ -108,6 +111,10 @@ const payloadSchemas = {
   code: CodePayloadSchema,
   delete: DeletePayloadSchema,
   viewed: ViewedPayloadSchema,
+  navigation: NavigationStatusPayloadSchema,
+  definition: NavigationResultPayloadSchema,
+  references: NavigationResultPayloadSchema,
+  identifiers: IdentifiersPayloadSchema,
 } satisfies Record<BrowserRequest["command"], Schema.Top>;
 export type Payload<Command extends BrowserRequest["command"]> =
   (typeof payloadSchemas)[Command]["Type"];

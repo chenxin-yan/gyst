@@ -1,18 +1,25 @@
 import { afterAll, beforeAll, describe, expect, it } from "vite-plus/test";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as NodeSocket from "@effect/platform-node/NodeSocket";
-import type { Session } from "@gyst/core";
+import {
+  navigationAddon,
+  navigationInstallCommand,
+  type Session,
+  type SnapshotManifest,
+} from "@gyst/core";
 import { Crypto, Effect, Fiber, Layer, Schedule, Tracer } from "effect";
 import * as Socket from "effect/socket/Socket";
-import { mkdtemp, rm } from "node:fs/promises";
+import { chmod, mkdtemp, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { connect } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DaemonClient } from "../daemon/client.ts";
 import { manifestOf, noGitHub, publishingContent } from "../daemon/capture-doubles.ts";
+import { CapturedContent } from "../daemon/content.ts";
 import { Git } from "../daemon/git.ts";
 import { Navigation } from "../daemon/navigation.ts";
 import { Paths } from "../daemon/paths.ts";
+import { daemonVersion } from "../daemon/protocol.ts";
 import { DaemonServer } from "../daemon/server.ts";
 import { Sessions } from "../daemon/sessions.ts";
 import { SessionStore } from "../daemon/store.ts";
@@ -63,6 +70,19 @@ const store = Layer.succeed(SessionStore, {
   loadDeleteReceipts: Effect.sync(() => receipts),
   saveDeleteReceipts: (next) => Effect.sync(() => void receipts.splice(0, Infinity, ...next)),
 });
+// Published manifests stay readable, so snapshot reads (navigation readiness) see them.
+const manifests = new Map<string, SnapshotManifest>();
+const content = Layer.effect(
+  CapturedContent,
+  Effect.map(CapturedContent, (publishing) => ({
+    ...publishing,
+    putManifest: (manifest: SnapshotManifest) =>
+      Effect.tap(publishing.putManifest(manifest), (id) =>
+        Effect.sync(() => void manifests.set(id, manifest)),
+      ),
+    loadManifest: (id: string) => Effect.sync(() => manifests.get(id)!),
+  })),
+).pipe(Layer.provide(publishingContent()));
 const crypto = Layer.succeed(
   Crypto.Crypto,
   Crypto.make({
@@ -100,11 +120,16 @@ const daemonAnswers = Effect.gen(function* () {
 const viewerUrl = /^(http:\/\/(g-[0-9a-f]{32}\.localhost):(\d+))(\/session\/[^#\s]+)#(\S+)$/m;
 
 /** Starts a viewer and reads its printed private URL (kept out of assertion messages). */
-const startViewer = (open: ViewerOpen, opener?: string) =>
+const startViewer = (open: ViewerOpen, opener?: string, launchPath?: string) =>
   Effect.gen(function* () {
     const printed: string[] = [];
     const fiber = yield* Effect.forkChild(
-      serveViewer(open, { webUiDir: fixture.dir, opener, stdout: (text) => printed.push(text) }),
+      serveViewer(open, {
+        webUiDir: fixture.dir,
+        opener,
+        stdout: (text) => printed.push(text),
+        launchPath,
+      }),
     );
     yield* Effect.sync(() => printed.length > 0).pipe(
       Effect.repeat({ until: (done) => done, schedule: Schedule.spaced("10 millis") }),
@@ -226,7 +251,12 @@ describe("serveViewer", () => {
         // Without the packaged SPA the launch fails before touching the daemon.
         const missing = yield* serveViewer(
           { command: "open", cwd: "/repo-a", scope: { kind: "uncommitted" } },
-          { webUiDir: join(fixture.root, "absent"), opener: undefined, stdout: () => {} },
+          {
+            webUiDir: join(fixture.root, "absent"),
+            opener: undefined,
+            stdout: () => {},
+            launchPath: undefined,
+          },
         ).pipe(Effect.flip);
         expect(missing._tag).toBe("internal_error");
         expect(files.size).toBe(0);
@@ -503,4 +533,94 @@ describe("serveViewer", () => {
       }).pipe(Effect.withTracer(tracer), Effect.scoped, Effect.provide(layer)),
     );
   }, 90_000);
+
+  it("looks for the add-on only when navigation is asked, and only on its launch PATH", async () => {
+    const bin = await mkdtemp(join(dataDir, "bin-"));
+    const log = join(dataDir, "handshakes.log");
+    // A stand-in add-on that records each handshake; the handshake runs with an empty environment.
+    const script = join(dataDir, "fake-addon.js");
+    await writeFile(
+      script,
+      `require("node:fs").appendFileSync(${JSON.stringify(log)}, "ran\\n");\n` +
+        `process.stdout.write(JSON.stringify(${JSON.stringify({
+          name: navigationAddon.name,
+          version: daemonVersion,
+          protocol: navigationAddon.protocol,
+          engine: { ok: true, version: "7.0.2" },
+        })}) + "\\n");\n`,
+    );
+    await chmod(script, 0o755);
+    const handshakes = () =>
+      readFile(log, "utf8").then(
+        (text) => text.split("\n").filter(Boolean).length,
+        () => 0,
+      );
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        const server = yield* DaemonServer;
+        const daemon = yield* Effect.forkChild(server.run);
+        yield* Effect.retry(daemonAnswers, { schedule: Schedule.spaced("10 millis"), times: 200 });
+        const viewer = yield* startViewer(
+          { command: "open", cwd: "/repo-navigation", scope: { kind: "uncommitted" } },
+          undefined,
+          `/nonexistent:${bin}`,
+        );
+        expect((yield* viewer.bootstrap()).status).toBe(204);
+        const id = viewer.sessionPath!.slice("/session/".length);
+        const status = yield* viewer.operation({ command: "status", session: id });
+        const snapshotId: string = status.reply.value.session.snapshotId;
+        yield* viewer.operation({ command: "diff", session: id });
+        // Launching, opening and reviewing never look for the add-on.
+        expect(yield* Effect.promise(handshakes)).toBe(0);
+
+        const readiness = { command: "navigation", session: id, snapshotId };
+        expect((yield* viewer.operation(readiness)).reply).toEqual({
+          ok: true,
+          value: {
+            sessionId: id,
+            snapshotId,
+            addon: { kind: "missing", install: navigationInstallCommand(daemonVersion) },
+            sides: {
+              old: {
+                kind: "unavailable",
+                reason: {
+                  kind: "addon",
+                  addon: { kind: "missing", install: navigationInstallCommand(daemonVersion) },
+                },
+              },
+              new: {
+                kind: "unavailable",
+                reason: {
+                  kind: "addon",
+                  addon: { kind: "missing", install: navigationInstallCommand(daemonVersion) },
+                },
+              },
+            },
+          },
+        });
+        yield* Effect.promise(() => symlink(script, join(bin, navigationAddon.bin)));
+        const rechecked = yield* viewer.operation({ ...readiness, recheck: true });
+        expect(rechecked.reply).toEqual({
+          ok: true,
+          value: {
+            sessionId: id,
+            snapshotId,
+            addon: { kind: "available", version: daemonVersion },
+            sides: { old: { kind: "stopped" }, new: { kind: "stopped" } },
+          },
+        });
+        // The daemon's reply never names where the add-on is.
+        expect(JSON.stringify(rechecked.reply)).not.toContain(
+          yield* Effect.promise(() => realpath(script)),
+        );
+        expect(yield* Effect.promise(handshakes)).toBe(1);
+        // The discovery is kept for later navigation.
+        yield* viewer.operation(readiness);
+        expect(yield* Effect.promise(handshakes)).toBe(1);
+
+        yield* Fiber.interrupt(viewer.fiber);
+        yield* Fiber.interrupt(daemon);
+      }).pipe(Effect.scoped, Effect.provide(layer)),
+    );
+  }, 20_000);
 });

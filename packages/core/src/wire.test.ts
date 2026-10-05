@@ -9,6 +9,7 @@ import {
   IdentifiersPayloadSchema,
   NavigationGapSchema,
   NavigationResultPayloadSchema,
+  NavigationStatusPayloadSchema,
   ReplySchema,
   RequestSchema,
   TextRangeSchema,
@@ -223,6 +224,8 @@ describe("daemon wire envelopes", () => {
       "NavigationUnavailableSchema",
       "NavigationResultPayloadSchema",
       "IdentifiersPayloadSchema",
+      "NavigationSideStateSchema",
+      "NavigationStatusPayloadSchema",
     ] as const;
     const wireExports: Record<string, unknown> = { ...publicWire };
     const rootExports: Record<string, unknown> = { ...publicRoot };
@@ -389,11 +392,78 @@ describe("daemon wire envelopes", () => {
       { command: "references", ...target, position: { line: 0, character: 0 }, addon },
       { command: "identifiers", ...target, line: 0, addon },
       { command: "identifiers", ...target, line: 1, position, addon },
+      { command: "navigation", session: "s1", snapshotId },
+      { command: "navigation", session: "s1", snapshotId, addon, recheck: true },
+      { command: "navigation", session: "s1", snapshotId, addon, side: "new" },
     ])
       expect(() => decodeRequest(invalid)).toThrow();
-    // Browsers cannot send them, add-on or not, until the bridge binds the launcher's discovery.
-    for (const command of ["definition", "references", "identifiers"])
-      expect(() => decodeBrowserRequest({ command, ...target, position, addon })).toThrow();
+    expect(
+      decodeRequest({
+        command: "navigation",
+        session: "s1",
+        snapshotId,
+        addon: { kind: "missing" },
+      }),
+    ).toEqual({ command: "navigation", session: "s1", snapshotId, addon: { kind: "missing" } });
+
+    // Browsers name only the target: the bridge binds the add-on, which they cannot express.
+    const browserValid = [
+      { command: "definition", ...target, position },
+      { command: "references", ...target, side: "old", position },
+      { command: "identifiers", ...target, line: 3 },
+      { command: "navigation", session: "s1", snapshotId },
+      { command: "navigation", session: "s1", snapshotId, recheck: true },
+    ];
+    for (const valid of browserValid) expect(decodeBrowserRequest(valid)).toEqual(valid);
+    for (const valid of browserValid) {
+      expect(() => decodeBrowserRequest({ ...valid, addon })).toThrow();
+      expect(() => decodeBrowserRequest({ ...valid, entry: "/bin/sh" })).toThrow();
+    }
+    for (const invalid of [
+      { command: "definition", ...target, file: "/etc/passwd", position },
+      { command: "identifiers", ...target, line: 0 },
+      { command: "navigation", session: "s1" },
+      { command: "navigation", session: "s1", snapshotId, recheck: "yes" },
+    ])
+      expect(() => decodeBrowserRequest(invalid)).toThrow();
+  });
+
+  it("reports navigation readiness per side without host paths", () => {
+    const decodeStatus = Schema.decodeUnknownSync(NavigationStatusPayloadSchema, strict);
+    const install = "npm install -g @gyst/navigation-typescript@1.0.0";
+    const gaps = [{ kind: "no-project-config" }];
+    for (const [old, current] of [
+      [{ kind: "stopped" }, { kind: "queued" }],
+      [{ kind: "preparing" }, { kind: "ready", files: 3, bytes: 120, gaps }],
+      [
+        { kind: "unavailable", reason: { kind: "historical" } },
+        { kind: "unavailable", reason: { kind: "engine", message: "stopped" } },
+      ],
+    ]) {
+      const payload = {
+        sessionId: "s1",
+        snapshotId,
+        addon: { kind: "missing", install },
+        sides: { old, new: current },
+      };
+      expect(decodeStatus(payload)).toEqual(payload);
+    }
+    const ready = { sessionId: "s1", snapshotId, addon: { kind: "available", version: "1.0.0" } };
+    for (const invalid of [
+      { ...ready, sides: { old: { kind: "stopped" } } },
+      {
+        ...ready,
+        sides: { old: { kind: "stopped" }, new: { kind: "ready", files: -1, bytes: 0, gaps } },
+      },
+      { ...ready, sides: { old: { kind: "stopped" }, new: { kind: "ready", files: 1, bytes: 1 } } },
+      { ...ready, sides: { old: { kind: "stopped" }, new: { kind: "stopped", dir: "/tmp/x" } } },
+      {
+        ...ready,
+        addon: { kind: "available", version: "1.0.0", entry: "/opt/gyst-navigation-typescript" },
+        sides: { old: { kind: "stopped" }, new: { kind: "stopped" } },
+      },
+    ])
+      expect(() => decodeStatus(invalid)).toThrow();
   });
 
   it("restates query identity in navigation results and names only captured locations", () => {

@@ -8,6 +8,8 @@ import {
   type NavigationGap,
   type NavigationLocation,
   type NavigationResultPayload,
+  type NavigationSideState,
+  type NavigationStatusPayload,
   type NavigationUnavailable,
   type NoSession,
   type Request,
@@ -21,11 +23,13 @@ import {
   Context,
   Data,
   Deferred,
+  type Duration,
   Effect,
   Exit,
   Fiber,
   FileSystem,
   Layer,
+  Option,
   Path,
   Schema,
   Scope,
@@ -53,6 +57,7 @@ import { Sessions } from "./sessions.ts";
 type Input<C extends Request["command"]> = Extract<Request, { readonly command: C }>;
 type Target = Input<"definition" | "references" | "identifiers">;
 type Available = Extract<AddonDiscovery, { readonly kind: "available" }>;
+type Side = "old" | "new";
 type NavigationSymbol = { readonly text: string; readonly range: TextRange };
 
 /** Navigation cannot answer this request; the reason becomes the reply's `unavailable` outcome. */
@@ -64,6 +69,45 @@ class Stopped extends Data.TaggedError("Stopped") {}
 
 const unavailable = (reason: NavigationUnavailable) => ({ kind: "unavailable", reason }) as const;
 const engineProblem = (message: string) => new Unavailable({ reason: { kind: "engine", message } });
+
+/**
+ * How many engines may exist across the daemon (from materialization to teardown), how long one may
+ * sit with no active query before it stops, and how long one query may wait for its engine and
+ * answer before that engine is stopped.
+ */
+export interface NavigationPolicy {
+  readonly engines: number;
+  readonly idle: Duration.Input;
+  readonly query: Duration.Input;
+}
+export const navigationPolicy = {
+  engines: 2,
+  idle: "60 seconds",
+  query: "2 minutes",
+} as const satisfies NavigationPolicy;
+/** The policy `Navigation.layer` runs under: `navigationPolicy` unless a test provides another. */
+export const NavigationPolicy = Context.Reference<NavigationPolicy>(
+  "gyst/daemon/NavigationPolicy",
+  {
+    defaultValue: () => navigationPolicy,
+  },
+);
+
+/** The add-on discovery a query can run, or why navigation cannot use it. */
+const usableAddon = (
+  addon: AddonDiscovery,
+): Available | Extract<NavigationUnavailable, { kind: "addon" }> =>
+  addon.kind === "available" && addon.version === daemonVersion
+    ? addon
+    : {
+        kind: "addon",
+        addon: addonStateOf(
+          addon.kind === "available" ? { kind: "mismatched", found: addon.version } : addon,
+          daemonVersion,
+        ),
+      };
+const analysisKey = (sessionId: string, snapshotId: string, side: Side, addon: Available) =>
+  JSON.stringify([sessionId, snapshotId, side, addon.entry, addon.version]);
 
 /** An ECMAScript identifier-shaped word, `#private` names included. */
 const identifierPattern =
@@ -193,16 +237,27 @@ export class Navigation extends Context.Service<
      * once their engines are stopped and their materializations removed.
      */
     retire(sessionId: string, keep?: string): Effect.Effect<void>;
+    /**
+     * The add-on and each side's tracked analysis for the session's current snapshot, as a query
+     * with `addon` would find them. Never starts, waits for or materializes anything; a snapshot
+     * that is not current is historical on both sides.
+     */
+    status(
+      request: Input<"navigation">,
+    ): Effect.Effect<NavigationStatusPayload, NoSession | InternalError>;
   }
 >()("gyst/daemon/Navigation") {
   /**
    * Engines start only on a navigation request, one per session, snapshot, side and add-on, each
-   * over its own disposable copy of that side's captured files under `dataDir/navigation/`.
-   * Closing the layer stops every engine and removes its copy.
+   * over its own disposable copy of that side's captured files under `dataDir/navigation/`. At most
+   * `policy.engines` exist across the daemon: a query needing another stops the least recently used
+   * engine with no active query, or waits (queued) while every engine is busy. Closing the layer
+   * stops every engine and removes its copy.
    */
   static readonly layer = Layer.effect(
     Navigation,
     Effect.gen(function* () {
+      const policy = yield* NavigationPolicy;
       const sessions = yield* Sessions;
       const content = yield* CapturedContent;
       const fs = yield* FileSystem.FileSystem;
@@ -231,6 +286,8 @@ export class Navigation extends Context.Service<
         readonly engine: Engine;
         readonly project: string;
         readonly gaps: ReadonlyArray<NavigationGap>;
+        readonly files: number;
+        readonly bytes: number;
       }
       interface Analysis {
         readonly key: string;
@@ -240,34 +297,88 @@ export class Navigation extends Context.Service<
         readonly prepared: Deferred.Deferred<Prepared, Unavailable | Stopped>;
         readonly opened: Set<string>;
         readonly openLock: Semaphore.Semaphore;
+        state: Extract<NavigationSideState, { kind: "preparing" | "ready" }>;
+        /** Queries holding this analysis, from acquiring it to answering. */
+        active: number;
+        /** When it was last acquired or released, for least-recently-used eviction. */
+        used: number;
+        /** Holds its engine slot until its teardown finishes. */
+        holdsSlot: boolean;
         fiber?: Fiber.Fiber<void>;
+        idleTimer: Fiber.Fiber<void> | undefined;
       }
       const analyses = new Map<string, Analysis>();
       /** Per retired session, the one snapshot still allowed to start analysis (none once deleted). */
       const allowed = new Map<string, string | undefined>();
+      /** Analyses from their creation until their teardown has finished: running engines. */
+      let slots = 0;
+      /** Queries waiting for an engine slot, per key. */
+      const queued = new Map<string, number>();
+      /** The last failure per key, reported until the next query for that key retries it. */
+      const failures = new Map<
+        string,
+        {
+          readonly sessionId: string;
+          readonly snapshotId: string;
+          readonly reason: NavigationUnavailable;
+        }
+      >();
+      let uses = 0;
+      /**
+       * Completed (then replaced) whenever a waiting query should look again: a slot freed, an
+       * analysis went idle, or a retirement or shutdown stopped what it waits for.
+       */
+      let changed = Deferred.makeUnsafe<void>();
+      const wake = () => {
+        Deferred.doneUnsafe(changed, Exit.void);
+        changed = Deferred.makeUnsafe();
+      };
       let shutDown = false;
       const lock = Semaphore.withPermit(yield* Semaphore.make(1));
 
+      /** Stops the engine and removes the materialization, then frees the engine slot once. */
+      const teardown = (analysis: Analysis) =>
+        Scope.close(analysis.scope, Exit.void).pipe(
+          Effect.ensuring(
+            Effect.sync(() => {
+              if (!analysis.holdsSlot) return;
+              analysis.holdsSlot = false;
+              slots--;
+              wake();
+            }),
+          ),
+        );
       const close = (analysis: Analysis) =>
-        Deferred.fail(analysis.prepared, new Stopped()).pipe(
+        Effect.sync(() => {
+          analysis.idleTimer?.interruptUnsafe();
+          analysis.idleTimer = undefined;
+        }).pipe(
+          Effect.andThen(Deferred.fail(analysis.prepared, new Stopped())),
           Effect.andThen(analysis.fiber ? Fiber.interrupt(analysis.fiber) : Effect.void),
-          Effect.andThen(Scope.close(analysis.scope, Exit.void)),
+          Effect.andThen(teardown(analysis)),
           Effect.uninterruptible,
         );
       const closeAll = (stale: ReadonlyArray<Analysis>) =>
         Effect.forEach(stale, close, { concurrency: "unbounded", discard: true });
       /** Unregisters an analysis, unless it was already retired or replaced. */
-      const forget = (analysis: Analysis) =>
+      const forget = (analysis: Analysis, failure?: NavigationUnavailable) =>
         lock(
           Effect.sync(() => {
             const current = analyses.get(analysis.key) === analysis;
-            if (current) analyses.delete(analysis.key);
-            return current;
+            if (!current) return false;
+            analyses.delete(analysis.key);
+            if (failure)
+              failures.set(analysis.key, {
+                sessionId: analysis.sessionId,
+                snapshotId: analysis.snapshotId,
+                reason: failure,
+              });
+            return true;
           }),
         );
       /** Stops an analysis whose engine failed, so the next request starts a fresh one. */
-      const discard = (analysis: Analysis) =>
-        forget(analysis).pipe(
+      const discard = (analysis: Analysis, failure: NavigationUnavailable) =>
+        forget(analysis, failure).pipe(
           Effect.flatMap((current) => (current ? close(analysis) : Effect.void)),
         );
 
@@ -299,7 +410,7 @@ export class Navigation extends Context.Service<
           ),
         );
 
-      const prepare = (manifest: SnapshotManifest, side: "old" | "new", addon: Available) =>
+      const prepare = (manifest: SnapshotManifest, side: Side, addon: Available) =>
         Effect.gen(function* () {
           yield* ready;
           const dir = yield* fs.makeTempDirectoryScoped({ directory: root });
@@ -317,7 +428,13 @@ export class Navigation extends Context.Service<
               ),
             ),
           );
-          return { engine, project, gaps: inputs.gaps } satisfies Prepared;
+          return {
+            engine,
+            project,
+            gaps: inputs.gaps,
+            files: inputs.files,
+            bytes: inputs.bytes,
+          } satisfies Prepared;
         }).pipe(
           Effect.catchTags({
             PlatformError: () =>
@@ -328,68 +445,173 @@ export class Navigation extends Context.Service<
           }),
         );
 
-      /** The analysis for this key, starting its preparation in the background if there is none. */
-      const acquire = (
-        request: Target,
-        manifest: SnapshotManifest,
-        addon: Available,
-      ): Effect.Effect<Analysis, Stopped> =>
+      /** Counts one more query on an analysis, which cancels its idle expiry. */
+      const claim = (analysis: Analysis) => {
+        analysis.active++;
+        analysis.used = ++uses;
+        analysis.idleTimer?.interruptUnsafe();
+        analysis.idleTimer = undefined;
+        return analysis;
+      };
+
+      /**
+       * Ends one query on an analysis. The last one starts its idle expiry, which stops it unless a
+       * query acquires it first, and lets a queued query evict it.
+       */
+      const release = (analysis: Analysis) =>
         lock(
           Effect.suspend(() => {
-            const key = JSON.stringify([
-              request.session,
-              request.snapshotId,
-              request.side,
-              addon.entry,
-              addon.version,
-            ]);
-            const existing = analyses.get(key);
-            if (existing) return Effect.succeed(existing);
-            const keep = allowed.get(request.session);
-            if (shutDown || (allowed.has(request.session) && keep !== request.snapshotId))
-              return Effect.fail(new Stopped());
-            const analysis: Analysis = {
-              key,
-              sessionId: request.session,
-              snapshotId: request.snapshotId,
-              scope: Scope.makeUnsafe(),
-              prepared: Deferred.makeUnsafe(),
-              opened: new Set(),
-              openLock: Semaphore.makeUnsafe(1),
-            };
-            analyses.set(key, analysis);
-            // Preparation runs in its own fiber and scope, so closing the analysis cancels it at any
-            // point and a slow preparation never holds up anything else.
-            return prepare(manifest, request.side, addon).pipe(
-              Scope.provide(analysis.scope),
-              Effect.catchDefect(() => Effect.fail(engineProblem("navigation could not start"))),
-              Effect.onExit((exit) =>
-                Deferred.done(
-                  analysis.prepared,
-                  Exit.isFailure(exit) && Cause.hasInterruptsOnly(exit.cause)
-                    ? Exit.fail(new Stopped())
-                    : exit,
-                ).pipe(
-                  // A failed preparation is not kept: the next request tries again. Its own fiber
-                  // is ending, so only its scope is closed here.
-                  Effect.andThen(
-                    Exit.isSuccess(exit)
-                      ? Effect.void
-                      : forget(analysis).pipe(
-                          Effect.andThen(Scope.close(analysis.scope, Exit.void)),
-                        ),
-                  ),
+            analysis.active--;
+            analysis.used = ++uses;
+            if (analysis.active > 0 || analyses.get(analysis.key) !== analysis) return Effect.void;
+            wake();
+            return Effect.sleep(policy.idle).pipe(
+              Effect.andThen(
+                lock(
+                  Effect.sync(() => {
+                    const expired =
+                      analyses.get(analysis.key) === analysis && analysis.active === 0;
+                    if (expired) {
+                      analyses.delete(analysis.key);
+                      analysis.idleTimer = undefined;
+                    }
+                    return expired;
+                  }),
                 ),
               ),
-              Effect.ignore,
+              Effect.flatMap((expired) => (expired ? close(analysis) : Effect.void)),
               Effect.forkDetach,
               Effect.map((fiber) => {
-                analysis.fiber = fiber;
-                return analysis;
+                analysis.idleTimer = fiber;
               }),
             );
           }),
         );
+
+      /**
+       * Prepares an analysis in its own fiber and scope, so closing the analysis cancels it at any
+       * point and a slow preparation never holds up anything else.
+       */
+      const startPreparing = (
+        analysis: Analysis,
+        manifest: SnapshotManifest,
+        side: Side,
+        addon: Available,
+      ) =>
+        prepare(manifest, side, addon).pipe(
+          Scope.provide(analysis.scope),
+          Effect.catchDefect(() => Effect.fail(engineProblem("navigation could not start"))),
+          Effect.onExit((exit) =>
+            Deferred.done(
+              analysis.prepared,
+              Exit.isFailure(exit) && Cause.hasInterruptsOnly(exit.cause)
+                ? Exit.fail(new Stopped())
+                : exit,
+            ).pipe(
+              // A failed preparation is not kept: the next request tries again. Its own fiber is
+              // ending, so only its scope is closed here.
+              Effect.andThen(
+                Exit.isSuccess(exit)
+                  ? Effect.sync(() => {
+                      const { files, bytes, gaps } = exit.value;
+                      analysis.state = { kind: "ready", files, bytes, gaps };
+                    })
+                  : forget(
+                      analysis,
+                      Exit.findErrorOption(exit).pipe(
+                        Option.filter((error) => error._tag === "Unavailable"),
+                        Option.map(({ reason }) => reason),
+                        Option.getOrUndefined,
+                      ),
+                    ).pipe(Effect.andThen(teardown(analysis))),
+              ),
+            ),
+          ),
+          Effect.ignore,
+          Effect.forkDetach,
+          Effect.map((fiber) => {
+            analysis.fiber = fiber;
+            return analysis;
+          }),
+        );
+
+      /**
+       * The analysis for this key, claimed for one query, starting its preparation in the background
+       * if there is none. At capacity it first stops the least recently used analysis no query
+       * holds, or waits (queued) until a slot frees or an analysis goes idle.
+       */
+      const acquire = (
+        request: Target,
+        manifest: SnapshotManifest,
+        addon: Available,
+      ): Effect.Effect<Analysis, Stopped> => {
+        const key = analysisKey(request.session, request.snapshotId, request.side, addon);
+        let waiting = false;
+        const setWaiting = (next: boolean) => {
+          if (waiting === next) return;
+          waiting = next;
+          const count = (queued.get(key) ?? 0) + (next ? 1 : -1);
+          if (count === 0) queued.delete(key);
+          else queued.set(key, count);
+        };
+        type Step = { readonly analysis: Analysis } | { readonly retryAfter: Effect.Effect<void> };
+        const attempt: Effect.Effect<Analysis, Stopped> = lock(
+          Effect.suspend((): Effect.Effect<Step, Stopped> => {
+            const existing = analyses.get(key);
+            if (existing) {
+              setWaiting(false);
+              return Effect.succeed({ analysis: claim(existing) });
+            }
+            const keep = allowed.get(request.session);
+            if (shutDown || (allowed.has(request.session) && keep !== request.snapshotId))
+              return Effect.fail(new Stopped());
+            if (slots < policy.engines) {
+              setWaiting(false);
+              slots++;
+              failures.delete(key);
+              const analysis: Analysis = {
+                key,
+                sessionId: request.session,
+                snapshotId: request.snapshotId,
+                scope: Scope.makeUnsafe(),
+                prepared: Deferred.makeUnsafe(),
+                opened: new Set(),
+                openLock: Semaphore.makeUnsafe(1),
+                state: { kind: "preparing" },
+                active: 0,
+                used: 0,
+                holdsSlot: true,
+                idleTimer: undefined,
+              };
+              analyses.set(key, claim(analysis));
+              return Effect.map(
+                startPreparing(analysis, manifest, request.side, addon),
+                (started) => ({
+                  analysis: started,
+                }),
+              );
+            }
+            let victim: Analysis | undefined;
+            for (const analysis of analyses.values())
+              if (analysis.active === 0 && (victim === undefined || analysis.used < victim.used))
+                victim = analysis;
+            if (victim !== undefined) {
+              analyses.delete(victim.key);
+              // Closing waits for its preparation fiber, whose exit takes this lock: close outside.
+              return Effect.succeed({ retryAfter: close(victim) });
+            }
+            setWaiting(true);
+            return Effect.succeed({ retryAfter: Effect.interruptible(Deferred.await(changed)) });
+          }),
+        ).pipe(
+          Effect.flatMap((step: Step) =>
+            "analysis" in step
+              ? Effect.succeed(step.analysis)
+              : Effect.andThen(step.retryAfter, attempt),
+          ),
+        );
+        return attempt.pipe(Effect.ensuring(Effect.sync(() => setWaiting(false))));
+      };
 
       /** NoSession when deleted, and `historical` once the snapshot is no longer current. */
       const stillCurrent = (request: Target) =>
@@ -433,24 +655,16 @@ export class Navigation extends Context.Service<
               detail: `${request.file} is not a TypeScript or JavaScript source`,
             },
           });
-        const { addon } = request;
-        if (addon.kind !== "available" || addon.version !== daemonVersion)
-          return yield* new Unavailable({
-            reason: {
-              kind: "addon",
-              addon: addonStateOf(
-                addon.kind === "available" ? { kind: "mismatched", found: addon.version } : addon,
-                daemonVersion,
-              ),
-            },
-          });
+        const addon = usableAddon(request.addon);
+        if (addon.kind !== "available") return yield* new Unavailable({ reason: addon });
         const text = yield* readText(request.file, captured.blob, captured.size);
         return { manifest, text, addon };
       });
 
       /**
-       * Runs `use` on the ready engine for the request's key. Whatever happens, nothing is returned
-       * unless the snapshot is still the session's current one once the engine has answered.
+       * Runs `use` on the ready engine for the request's key, waiting for its preparation and answer
+       * at most `policy.query`. Whatever happens, nothing is returned unless the snapshot is still
+       * the session's current one once the engine has answered.
        */
       const analysed = <A>(
         request: Target,
@@ -462,15 +676,30 @@ export class Navigation extends Context.Service<
         ) => Effect.Effect<A, EngineFailure | InternalError>,
       ) =>
         Effect.gen(function* () {
-          const result = yield* Effect.gen(function* () {
-            const analysis = yield* acquire(request, manifest, addon);
-            const prepared = yield* Deferred.await(analysis.prepared);
-            return yield* use(prepared, analysis).pipe(
-              Effect.catchTag("EngineFailure", (failure) =>
-                discard(analysis).pipe(Effect.andThen(Effect.fail(engineProblem(failure.message)))),
-              ),
+          const stop = (analysis: Analysis, reason: NavigationUnavailable) =>
+            discard(analysis, reason).pipe(
+              Effect.andThen(Effect.fail(new Unavailable({ reason }))),
             );
-          }).pipe(
+          const result = yield* Effect.acquireUseRelease(
+            acquire(request, manifest, addon),
+            (analysis) =>
+              Deferred.await(analysis.prepared).pipe(
+                Effect.flatMap((prepared) => use(prepared, analysis)),
+                Effect.catchTag("EngineFailure", ({ message }) =>
+                  stop(analysis, { kind: "engine", message }),
+                ),
+                // A stuck engine is stopped rather than left holding its slot.
+                Effect.timeoutOrElse({
+                  duration: policy.query,
+                  orElse: () =>
+                    stop(analysis, {
+                      kind: "engine",
+                      message: "the engine did not answer in time and was stopped",
+                    }),
+                }),
+              ),
+            release,
+          ).pipe(
             Effect.catchTag("Stopped", () => Effect.fail(engineProblem("navigation was stopped"))),
             Effect.exit,
           );
@@ -687,23 +916,55 @@ export class Navigation extends Context.Service<
         lock(
           Effect.sync(() => {
             allowed.set(sessionId, keep);
-            const stale = [...analyses.values()].filter(
-              (analysis) => analysis.sessionId === sessionId && analysis.snapshotId !== keep,
-            );
+            const retired = (owner: { sessionId: string; snapshotId: string }) =>
+              owner.sessionId === sessionId && owner.snapshotId !== keep;
+            const stale = [...analyses.values()].filter(retired);
             for (const analysis of stale) analyses.delete(analysis.key);
+            for (const [key, failure] of failures) if (retired(failure)) failures.delete(key);
+            // Queued queries for a retired snapshot stop waiting.
+            wake();
             return stale;
           }),
         ).pipe(Effect.flatMap(closeAll), Effect.withSpan("Navigation.retire"));
 
+      const status = Effect.fn("Navigation.status")(function* (request: Input<"navigation">) {
+        const current = yield* sessions.snapshot(request).pipe(
+          Effect.as(true),
+          Effect.catchTag("stale_revision", () => Effect.succeed(false)),
+        );
+        const addon = usableAddon(request.addon);
+        const sideState = (side: Side): NavigationSideState => {
+          if (!current) return unavailable({ kind: "historical" });
+          if (addon.kind !== "available") return unavailable(addon);
+          const key = analysisKey(request.session, request.snapshotId, side, addon);
+          const analysis = analyses.get(key);
+          if (analysis) return analysis.state;
+          if (queued.has(key)) return { kind: "queued" };
+          const failure = failures.get(key);
+          return failure ? unavailable(failure.reason) : { kind: "stopped" };
+        };
+        return {
+          sessionId: request.session,
+          snapshotId: request.snapshotId,
+          addon: addon.kind === "available" ? addonStateOf(addon, daemonVersion) : addon.addon,
+          sides: { old: sideState("old"), new: sideState("new") },
+        } satisfies NavigationStatusPayload;
+      });
+
+      /** Resolves once every engine slot is free: no teardown (idle, evicted, failed) is running. */
+      const drained: Effect.Effect<void> = Effect.suspend(() =>
+        slots === 0 ? Effect.void : Effect.andThen(Deferred.await(changed), drained),
+      );
       yield* Effect.addFinalizer(() =>
         lock(
           Effect.sync(() => {
             shutDown = true;
+            wake();
             const all = [...analyses.values()];
             analyses.clear();
             return all;
           }),
-        ).pipe(Effect.flatMap(closeAll)),
+        ).pipe(Effect.flatMap(closeAll), Effect.andThen(drained)),
       );
 
       return Navigation.of({
@@ -711,6 +972,7 @@ export class Navigation extends Context.Service<
         references: located("references"),
         identifiers,
         retire,
+        status,
       });
     }),
   );

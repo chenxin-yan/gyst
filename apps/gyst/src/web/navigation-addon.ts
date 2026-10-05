@@ -1,5 +1,6 @@
 import { type AddonDiscovery, navigationAddon } from "@gyst/core";
-import { Effect, FileSystem, Option } from "effect";
+import { Effect, FileSystem, Option, Semaphore } from "effect";
+import type { ChildProcessSpawner } from "effect/process";
 import { delimiter, isAbsolute, join } from "node:path";
 import { handshakeAddon } from "../daemon/addon-handshake.ts";
 
@@ -32,4 +33,40 @@ export const discoverAddon = Effect.fn("discoverAddon")(function* (
       reason: `the ${navigationAddon.bin} found on PATH could not be resolved`,
     } satisfies AddonDiscovery;
   return yield* handshakeAddon(entry.value, runningVersion);
+});
+
+/** One launcher's add-on, discovered on the PATH it was launched with. */
+export interface NavigationAddon {
+  /** The latest discovery, made on first use: a launch that never navigates never looks. */
+  readonly current: Effect.Effect<AddonDiscovery>;
+  /**
+   * Discovers again on the same launch PATH (Check again), so an install into one of its existing
+   * directories is seen without restarting; later navigation uses the result. A changed PATH or
+   * npm prefix needs a new launch.
+   */
+  readonly recheck: Effect.Effect<AddonDiscovery>;
+}
+
+export const makeNavigationAddon = Effect.fnUntraced(function* (
+  launchPath: string | undefined,
+  runningVersion: string,
+) {
+  const context = yield* Effect.context<
+    FileSystem.FileSystem | ChildProcessSpawner.ChildProcessSpawner
+  >();
+  // Discoveries run one at a time, so a slower earlier one never overwrites a recheck.
+  const serialized = Semaphore.withPermit(yield* Semaphore.make(1));
+  let latest: AddonDiscovery | undefined;
+  const discover = discoverAddon(launchPath, runningVersion).pipe(
+    Effect.provideContext(context),
+    Effect.tap((found) =>
+      Effect.sync(() => {
+        latest = found;
+      }),
+    ),
+  );
+  return {
+    current: serialized(Effect.suspend(() => (latest ? Effect.succeed(latest) : discover))),
+    recheck: serialized(discover),
+  } satisfies NavigationAddon;
 });

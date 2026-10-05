@@ -183,6 +183,8 @@ export class DaemonServer extends Context.Service<
             return navigation.references(request);
           case "identifiers":
             return navigation.identifiers(request);
+          case "navigation":
+            return navigation.status(request);
         }
       };
       // Accepted connections that have not replied yet; idle shutdown must not interrupt them.

@@ -10,6 +10,7 @@ import {
   IdentifiersPayloadSchema,
   ListPayloadSchema,
   NavigationResultPayloadSchema,
+  NavigationStatusPayloadSchema,
   OpenPayloadSchema,
   StatusPayloadSchema,
   SourceCheckPayloadSchema,
@@ -329,6 +330,7 @@ export class DaemonClient extends Context.Service<
           definition: NavigationResultPayloadSchema,
           references: NavigationResultPayloadSchema,
           identifiers: IdentifiersPayloadSchema,
+          navigation: NavigationStatusPayloadSchema,
         }[input.command];
         return yield* Schema.decodeUnknownEffect(payload, { onExcessProperty: "error" })(
           reply.value,
