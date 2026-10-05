@@ -197,6 +197,10 @@ type FileLoad = "loading" | { failure: unknown };
  */
 type Mark = { file: string; side: Side; line?: number; full?: boolean };
 
+/** What of a status the reader draws as guidance, compared as one value. */
+const guidanceOf = ({ overview, groups, preparation }: StatusPayload) =>
+  JSON.stringify({ overview, groups, preparation });
+
 const statusRead = (status: StatusPayload): StatusRead => ({
   snapshotId: status.session.snapshotId,
   revision: status.revision,
@@ -298,6 +302,19 @@ function useViewedProgress(
 ) {
   const [state, setState] = useState(() => initialViewed(statusRead(status)));
   const latest = useRef<ViewedState>(state);
+  // The newest status read for this snapshot: guidance an agent publishes while the reader is
+  // open arrives with the read its announcement causes, not only with a session reload. Loader
+  // and live reads are ordered by the newest revision accepted, which moves even when the
+  // guidance object is kept, so a late answer never brings back older guidance. Only a change of
+  // guidance replaces it: a read for Viewed alone keeps the views and the renderer's items, and
+  // so the reading position, as they were.
+  const [shown, setShown] = useState(status);
+  const accepted = useRef(status.revision);
+  const show = (next: StatusPayload) => {
+    if (next.session.snapshotId !== snapshotId || next.revision < accepted.current) return;
+    accepted.current = next.revision;
+    setShown((before) => (guidanceOf(next) === guidanceOf(before) ? before : next));
+  };
   const linked = useRef(live);
   linked.current = live;
   const mounted = useMounted();
@@ -313,6 +330,7 @@ function useViewedProgress(
   useEffect(() => {
     if (loaded.current === status) return;
     loaded.current = status;
+    show(status);
     if (latest.current.busy === undefined) apply({ type: "status", status: statusRead(status) });
   });
   // The connection the write on the wire was sent over, and how many writes were sent: a status
@@ -376,8 +394,9 @@ function useViewedProgress(
         // again once this read settles.
         (answer) => {
           const { busy } = latest.current;
+          if (!current()) return;
+          show(answer);
           if (
-            current() &&
             sends.current === since &&
             (busy === undefined || (required && busy.kind === "rereading"))
           )
@@ -422,7 +441,7 @@ function useViewedProgress(
     if (behind(now, current) === "read") read(generation, false);
   };
   useEffect(sync, [live.state, state]);
-  return { state, write };
+  return { state, write, status: shown };
 }
 
 /** Keydowns that type text rather than command the reader. */
@@ -466,6 +485,7 @@ function SessionReader(props: {
   const viewer = useRef<Viewer>(null);
   const live = useLiveSession(session.id);
   const progress = useViewedProgress(session.id, snapshotId, props.status, live);
+  const status = progress.status;
   const mounted = useMounted();
   // Captured-code navigation: the reference expanded in the main panel, the open peek, the places
   // Back returns to, and the panel's restart key with where it starts. Never Viewed.
@@ -535,15 +555,15 @@ function SessionReader(props: {
             hunkIds: new Map(),
             group: undefined,
           }
-        : viewFiles(review, files, props.status),
-    [captured, capturedFile, capturedEntry, review, files, props.status],
+        : viewFiles(review, files, status),
+    [captured, capturedFile, capturedEntry, review, files, status],
   );
   const shown = inView.files;
   const shownByPath = useMemo(() => new Map(shown.map((file) => [file.path, file])), [shown]);
-  const notes = useMemo(() => noteSequence(inView, props.status), [inView, props.status]);
+  const notes = useMemo(() => noteSequence(inView, status), [inView, status]);
   const noteAnnotations = useMemo(
-    () => annotationsOf(inView, notes, props.status),
-    [inView, notes, props.status],
+    () => annotationsOf(inView, notes, status),
+    [inView, notes, status],
   );
   // A peek under a note reserves its row after the note.
   const peekNote = peek?.origin.kind === "note" ? peek.origin.noteId : undefined;
@@ -1050,7 +1070,7 @@ function SessionReader(props: {
       return setNotice("Viewed doesn't change while a captured file is expanded.");
     if (id === "nextNote" || id === "previousNote") return stepNote(id === "nextNote" ? 1 : -1);
     if (id === "nextGroup" || id === "previousGroup") {
-      const { groups } = props.status;
+      const { groups } = status;
       const at = inView.group ? groups.indexOf(inView.group) : -1;
       const next = groups[id === "nextGroup" ? at + 1 : at === -1 ? groups.length - 1 : at - 1];
       return next && chooseView({ kind: "group", id: next.id });
@@ -1289,7 +1309,7 @@ function SessionReader(props: {
       side={
         <>
           <WalkthroughNav
-            status={props.status}
+            status={status}
             viewed={progress.state.viewed}
             view={review}
             onView={chooseView}
@@ -1425,10 +1445,10 @@ function SessionReader(props: {
               ) : (
                 review.kind === "files" &&
                 review.path === "" &&
-                props.status.overview && (
+                status.overview && (
                   <OverviewCard
                     label="Walkthrough overview"
-                    overview={props.status.overview}
+                    overview={status.overview}
                     onReference={(target) => follow(target, { kind: "overview" })}
                     peek={peek?.origin.kind === "overview" && peekOf()}
                   />

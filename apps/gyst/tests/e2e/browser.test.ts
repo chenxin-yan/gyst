@@ -2313,7 +2313,7 @@ describe("installed gyst in a sandboxed browser", () => {
     expect(await fileHeadings(page)).toEqual(["walk/a.ts", "walk/b.ts", "walk/c.ts"]);
   }, 30_000);
 
-  it("shows a walkthrough the CLI publishes progressively: incomplete coverage, then complete, in the agent's group and file order", async () => {
+  it("shows a walkthrough the CLI publishes progressively, live and without a reload: incomplete coverage, then complete, in the agent's group and file order", async () => {
     const walk = await openWalk();
     const page = await newPage();
     await page.setViewportSize({ width: 1280, height: 1200 });
@@ -2332,8 +2332,6 @@ describe("installed gyst in a sandboxed browser", () => {
       groupedHunks: 3,
       totalHunks: 5,
     });
-    await settled(page);
-    await page.reload();
     await coverage.getByText("3 of 5 hunks are in groups; the rest are under Files.").waitFor();
     expect(await walkthroughRows(page)).toEqual([
       "Overview",
@@ -2361,8 +2359,6 @@ describe("installed gyst in a sandboxed browser", () => {
       { type: "walkthrough.update", groupOrder: ["edge", "core"] },
     ]);
     expect(second.preparation.state).toBe("complete");
-    await settled(page);
-    await page.reload();
     await side.getByRole("button", { name: /^Handle the edge/ }).waitFor();
     expect(await walkthroughRows(page)).toEqual([
       "Overview",
@@ -2370,7 +2366,9 @@ describe("installed gyst in a sandboxed browser", () => {
       "Parse the config, 0 of 3 hunks viewed",
     ]);
     expect(await coverage.count()).toBe(0);
-    // Shift+J and Shift+K walk the groups in the agent's order, each in its own file order.
+    // From the files view, Shift+J and Shift+K walk the groups in the agent's order, each in its
+    // own file order.
+    await side.getByRole("button", { name: "Overview", exact: true }).click();
     await keys(page, "Shift+J");
     await headingsAre(page, ["walk/c.ts", "walk/a.ts"]);
     expect(
