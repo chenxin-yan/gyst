@@ -185,7 +185,7 @@ export class DaemonServer extends Context.Service<
        * overflows the subscription: the connection is dropped rather than left silently stale, so
        * the subscriber knows to resynchronize.
        */
-      const serveSubscription = Effect.fnUntraced(function* (
+      const serveSubscription = Effect.fn("DaemonServer.subscription")(function* (
         message: Extract<DaemonMessage, { readonly subscribe: unknown }>,
         pull: Effect.Effect<unknown, Socket.SocketError>,
         writer: Socket.Writer,

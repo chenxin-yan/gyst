@@ -2,7 +2,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vite-plus/test";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as NodeSocket from "@effect/platform-node/NodeSocket";
 import type { Session } from "@gyst/core";
-import { Crypto, Effect, Fiber, Layer, Schedule } from "effect";
+import { Crypto, Effect, Fiber, Layer, Schedule, Tracer } from "effect";
 import * as Socket from "effect/socket/Socket";
 import { mkdtemp, rm } from "node:fs/promises";
 import { connect } from "node:net";
@@ -69,7 +69,7 @@ const crypto = Layer.succeed(
 );
 /** One daemon generation: each build has its own instance id and loads the saved sessions anew. */
 const daemonLayer = DaemonServer.layer.pipe(
-  Layer.provide(
+  Layer.provideMerge(
     Sessions.layer.pipe(Layer.provide(Layer.mergeAll(git, store, crypto, publishingContent()))),
   ),
   Layer.provide(paths),
@@ -434,4 +434,65 @@ describe("serveViewer", () => {
       }).pipe(Effect.scoped, Effect.provide(clientLayer)),
     );
   }, 30_000);
+
+  it("ends a launch's stream that stops reading, then resubscribes at the latest revision", async () => {
+    // The daemon's subscription span ending tells the test it dropped the stalled stream.
+    const subscription = { dropped: false };
+    const tracer = Tracer.make({
+      span(options) {
+        const span = new Tracer.NativeSpan(options);
+        const end = span.end.bind(span);
+        span.end = (time, exit) => {
+          if (span.name === "DaemonServer.subscription") subscription.dropped = true;
+          end(time, exit);
+        };
+        return span;
+      },
+    });
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        const server = yield* DaemonServer;
+        const sessions = yield* Sessions;
+        const daemon = yield* Effect.forkChild(server.run);
+        yield* Effect.retry(daemonAnswers, { schedule: Schedule.spaced("10 millis"), times: 200 });
+        const a = yield* startViewer({
+          command: "open",
+          cwd: "/repo-stalled",
+          scope: { kind: "uncommitted" },
+        });
+        const id = decodeURIComponent(a.sessionPath!.slice("/session/".length));
+        expect((yield* a.bootstrap()).status).toBe(204);
+
+        // Never read: the bridge waits on the browser, its daemon subscription backs up, and the
+        // daemon drops it once a change can't be written within a second.
+        const stalled = yield* a.events(id);
+        expect(stalled.status).toBe(200);
+        const deadline = Date.now() + 60_000;
+        for (let n = 0; !subscription.dropped && Date.now() < deadline; n++) {
+          yield* sessions.viewed(toggleViewed(id, `stalled-${n}`));
+          // A turn of the event loop, so each change is written as it commits.
+          yield* Effect.promise(() => new Promise((done) => setImmediate(done)));
+        }
+        expect(subscription.dropped).toBe(true);
+
+        // What was already on the way still arrives, then the stream ends short of the latest
+        // revision, so the browser resubscribes rather than staying silently stale.
+        const latest = versionOf(id);
+        const frames = yield* Effect.promise(async () => {
+          const read: Array<{ kind: string; revision: number }> = [];
+          for await (const frame of stalled.frames()) read.push(JSON.parse(frame));
+          return read;
+        });
+        expect(frames[0]).toMatchObject({ kind: "ready", sessionId: id });
+        expect(frames.slice(1).every((frame) => frame.kind === "changed")).toBe(true);
+        expect(frames.at(-1)!.revision).toBeLessThan(latest.revision);
+        const again = framesOf(yield* a.events(id));
+        expect(yield* again).toMatchObject({ kind: "ready", ...latest });
+
+        yield* Fiber.interrupt(a.fiber);
+        expect(yield* again).toBeUndefined();
+        yield* Fiber.interrupt(daemon);
+      }).pipe(Effect.withTracer(tracer), Effect.scoped, Effect.provide(layer)),
+    );
+  }, 90_000);
 });
