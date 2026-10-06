@@ -27,7 +27,7 @@ Gyst helps a human build the mental model needed to judge agent-generated change
 3. `/gyst` uses headless session opening, inspects the whole scoped change and relevant context, plans full coverage/order, then publishes complete groups progressively. The human can read immediately. Live publication preserves reading position and drafts.
 4. The human reads the walkthrough, files or folders, expands context, follows captured links, optionally uses semantic navigation, marks hunks Viewed and comments on code or replies to notes. Navigation never changes Viewed.
 5. The human invokes `/gyst-respond` in the existing harness for the exact session. A copyable instruction names that skill and session, never a token. There is no agent launch, polling wait, automatic wake or persistent handoff UI. The workflow retrieves one bounded-at-invocation pending set, responds and stops; later messages wait for another invocation.
-6. Questions alone authorize explanations, not fixes. Explicitly requested fixes authorize refresh and guidance repair once the fix is represented by the recorded scope. A local edit is not automatically part of a committed range/remote PR: do not retarget, commit, push or restack to make it fit.
+6. Questions alone authorize explanations, not fixes. A message the human marks Change request authorizes the fix, and refresh and guidance repair once the fix is represented by the recorded scope. A local edit is not automatically part of a committed range/remote PR: do not retarget, commit, push or restack to make it fit.
 7. Explicit refresh atomically replaces the snapshot and reconciles progress/guidance/conversations. The human re-reads changed guidance and resolves threads independently of Viewed. All-viewed and unresolved-thread counts are distinct; no extra review-complete state or automatic session deletion.
 8. A ready walkthrough can be exported as a standalone read-only HTML file after disclosure approval. Closing the browser/launcher leaves the saved session intact.
 
@@ -51,6 +51,8 @@ Gyst helps a human build the mental model needed to judge agent-generated change
 - Review text hunks; do not introduce binary, mode-only or rename-metadata review as an implicit extension of this plan. Report unsupported content explicitly rather than implying it was reviewed. Preserve available text changes and the existing text-hunk validation intent.
 - Derive reviewed changes from the same captured bytes used for full-file reading and analysis. Detect concurrent working-tree changes and refuse publication with retry guidance. This is best-effort detection, not a filesystem-wide atomicity guarantee.
 - Capture itself does not install dependencies, execute project scripts or fetch missing supporting source. PR acquisition may fetch required Git objects without switching the checkout. Keep that separate from demand-loading a missing reference or analysis dependency, which is forbidden.
+- Record whether `.gitattributes` marks each changed file `linguist-generated` or `linguist-vendored`, as `git check-attr` resolves it at capture for the new side (the old side for a deleted file), and freeze it in the snapshot. Git's standard attributes are the only source: no built-in file list, heuristics or gyst-specific ignore file.
+- A recorded Git range scope captures the commit messages of the commits it contains, oldest first, with the snapshot. Uncommitted and PR scopes capture none; a PR's description is stack metadata (section 7).
 - Persist captured bytes independently of the checkout/Git object database. Ordinary review reads must still work after that source changes, disappears or becomes inaccessible. Source check/refresh may then report unavailable.
 
 ### Availability, storage and retention
@@ -113,6 +115,7 @@ Overviews have no independent reading state. Merely marking an overview Outdated
 - Each human message is Pending until actually retrieved by the agent. The author can edit/delete only while Pending. Read freezes immediately, not when answered; corrections become new replies. Posted agent replies are immutable. Deletion does not cascade; an empty thread disappears without deleting its note.
 - Show Pending only while unread, no Read badge. Read is not answered, resolved or Viewed. Only the human resolves/reopens. A resolved thread leaves the diff but stays in Comments. Explicitly reopen before a new human reply.
 - Resolved threads are excluded from pending pickup; reopening exposes still-unread messages. A late agent answer is retained in the same resolved thread without reopening it.
+- Each human message has a kind: Question (the default) or Change request. The author may change it while the message is Pending; it freezes with the body. Only a Change request authorizes a fix. Agent replies have no kind.
 - Replies are free-form: no required verdict wording or structured Fixed/Deferred field. If the next reader would ask the same question, improve reusable guidance and reply briefly; otherwise reply only. Guidance remains the record, threads the conversation.
 - Each human note reply retains the wording it refers to, not just the thread's first version. A clickable per-reply Outdated marker reveals that wording when it differs from the current note or the note was removed. No full history panel/version-number UI. Pending and Outdated can coexist.
 - Retain the code/wording the human began composing against across rewrites, pending-message edits, refresh and disconnection; never silently rebind. Sending retains that context. The agent receives the same historical context.
@@ -149,6 +152,8 @@ The header shows the exact scope and compact PR-layer switcher when applicable. 
 
 A file's hunks read as one continuous diff over captured full contents. Touching hunks have no artificial gap. Each hidden range displays its line count and expands independently. A hidden range with other groups' hunks says “N lines, with changes from another group”; expansion shows those as real changes, never fake unchanged lines. Notes collapse to a bare chevron chip, without an “Agent note” heading or Ask button.
 
+A file the snapshot records as generated or vendored starts folded in every view, labelled Generated, and unfolds like any other file. It stays part of grouping, Viewed and preparation completeness; the agent groups it like any other change.
+
 Layouts: split, stacked and auto; auto uses the existing roughly 120-column split threshold based on available diff width. Notes and inline navigation span the appropriate reading width, including both columns for peek. Keep narrow layouts usable.
 
 ### Input contract
@@ -165,10 +170,10 @@ Disable review shortcuts while typing. Provide discoverable controls, visible ke
 | `j` / `k`, `Ctrl-d` / `Ctrl-u`, `gg` / `G`         | Move in Vim / scroll in Mouse                                                                                     |
 | `h` / `l`                                          | Old/new side in split view                                                                                        |
 | `V` / `v`                                          | Select lines; `c` comments on selected range                                                                      |
+| `/`, `n` / `N`                                     | Search the current view; next/previous match                                                                      |
 | `c`                                                | Comment on code line/range only                                                                                   |
 | `r`                                                | Reply to note/thread at cursor                                                                                    |
 | `x`                                                | Resolve/reopen open thread, human only                                                                            |
-| `n` / `p`                                          | Next/previous note or open thread                                                                                 |
 | `]c` / `[c`, `]n` / `[n`, `]t` / `[t`, `]f` / `[f` | Next/previous change, note, open thread, file                                                                     |
 | `J` / `K`                                          | Next/previous group                                                                                               |
 | `Enter` / `zo`                                     | Open one level: hidden range, note, replies/thread; Enter on file header toggles file                             |
@@ -182,6 +187,8 @@ Disable review shortcuts while typing. Provide discoverable controls, visible ke
 | `1` / `2` / `0`                                    | Split / stacked / auto layout                                                                                     |
 | `R`, `⌘K`, `?`                                     | Explicit refresh, command menu, help                                                                              |
 | Composer `Enter` / `Shift+Enter`                   | Send / newline                                                                                                    |
+
+Search covers the diff lines of the current view, including context the reader expanded but not collapsed hidden ranges, notes or overviews. It matches literal text, case-sensitive only when the query contains a capital letter, and searches the captured content rather than the rendered page, so virtualized rows are found. Matches are highlighted with a current/total count; `n` / `N` step through them and wrap. `Esc` clears the highlight and keeps the query for `n` / `N`. Search works in Vim and Mouse modes and leaves the browser's own find untouched.
 
 Context-specific interaction wins over global keys: in the navigation selector `j`/`k` changes live preview, Enter chooses/expands and Esc dismisses; text entry uses composer semantics. Mouse actions expose the same review operations. No key silently applies a mutation to a hidden underlying diff while an expanded captured file has focus.
 
@@ -202,6 +209,8 @@ V1 supports GitHub-native linear stacks only. Require authenticated `gh` on the 
 Opening a PR attempts native discovery. Distinguish absent stack membership from unavailable discovery; standalone review can continue if the PR range resolves. No branch-name/base-chain inference or alternate harness-defined stack format. Metadata has verification/freshness context; failure must not look like confirmed removal.
 
 The compact, keyboard-accessible ordered switcher shows titles, position, PR open/merged/closed state and existing Viewed/unresolved counts for opened sessions. Unopened is explicit, not zero/complete. Selecting an unopened layer captures its then-current PR range as a plain diff session; selecting an existing one resumes it without refresh. Retain each session's position/drafts.
+
+A PR session shows its PR description as a Description entry above the walkthrough in the sidebar, with a link to the PR on GitHub, whether or not a walkthrough exists: the author's intent and the agent's explanation are different things. The description is untrusted content in the shared rich renderer: raw HTML stays text, images do not render and unsafe links are inert. It follows stack rechecks like the title and has no review state. A recorded range session shows its captured commit messages in the same place; an uncommitted session has neither.
 
 An explicit stack recheck updates metadata only. Removed layers remain reachable as saved sessions. Restacks/topology changes do not delete sessions, coordinate refresh or automatically invalidate guidance. Refresh affects only the selected session; layers may be captured at different times.
 
@@ -237,7 +246,7 @@ These are requirements for revising the shared core schemas, not a claim that th
 | Snapshot/manifest | Immutable ID, recorded/resolved Git provenance, old/new full-file content identities/availability and derived text hunks; independent of review revisions                               |
 | Group/guidance    | Stable group/note identities; overall/group Markdown overviews; explicit file order and membership; range-anchored notes, pinned references and Outdated/revalidation context           |
 | Code target       | Snapshot, path, side and contiguous line range validated against captured content; mapping to current code does not destroy original context                                            |
-| Thread/message    | Stable IDs, code or note target, flat ordered messages/author, per-human-message Pending/read, immutable agent replies, human resolution and per-reply wording                          |
+| Thread/message    | Stable IDs, code or note target, flat ordered messages/author, per-human-message kind and Pending/read, immutable agent replies, human resolution and per-reply wording                 |
 | Draft context pin | Retained code/explanation identity protecting composition from refresh/cleanup; independent of mounted rows or cache eviction                                                           |
 | Stack metadata    | Native membership/order/PR status, whole-stack descriptions and verification state; separate from session/snapshot endpoints                                                            |
 | Receipt           | Caller-stable request identity, payload identity and exact durable response consistent with committed effects, including pickup/deletion                                                |
@@ -246,16 +255,16 @@ Status reports session/snapshot/revision, scope, structure/order, preparation co
 
 ### Operation families and authority
 
-| Family                           | Contract                                                                                                                                                                     |
-| -------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Open/list/status/diff/code/check | Create-or-reuse selection; exact-ID reads afterward; captured filtered content; source checks never mutate review progress                                                   |
-| Agent apply                      | One JSON batch: overall/group overviews/order/membership/file order; note create/edit/remove/re-anchor; checked-snapshot revalidation; immutable replies to existing threads |
-| Human actions                    | Viewed, comment/reply, pending edit/delete, resolve/reopen; validate actor, target and revision; no browser-selected authority                                               |
-| Thread pickup/history            | Pending pickup or selected/open-thread recovery, freezing only unread bodies actually returned; include history and original code/wording                                    |
-| Refresh/delete                   | Explicit exact-session operations, atomic capture reconciliation or destructive saved-session removal, retry-safe even after lost acknowledgement                            |
-| Subscribe                        | Committed-state invalidations with session/snapshot/state version and connection generation; no event-history replay                                                         |
-| Navigation                       | Snapshot/side/target-identified queries, preparation/results/availability; never live fallback                                                                               |
-| Export                           | Freeze ready state, preview disclosure, bind human approval to that state, generate read-only artifact                                                                       |
+| Family                           | Contract                                                                                                                                                                                         |
+| -------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Open/list/status/diff/code/check | Create-or-reuse selection; exact-ID reads afterward; captured filtered content; source checks never mutate review progress                                                                       |
+| Agent apply                      | One JSON batch: overall/group overviews/order/membership/file order; note create/edit/remove/re-anchor; checked-snapshot revalidation; immutable replies to existing threads                     |
+| Human actions                    | Viewed, comment/reply, pending edit/delete, resolve/reopen; validate actor, target and revision; no browser-selected authority                                                                   |
+| Thread pickup/history            | Pending pickup or selected/open-thread recovery, freezing only unread bodies actually returned; include history, original code/wording, message kinds, Viewed progress and the open-thread count |
+| Refresh/delete                   | Explicit exact-session operations, atomic capture reconciliation or destructive saved-session removal, retry-safe even after lost acknowledgement                                                |
+| Subscribe                        | Committed-state invalidations with session/snapshot/state version and connection generation; no event-history replay                                                                             |
+| Navigation                       | Snapshot/side/target-identified queries, preparation/results/availability; never live fallback                                                                                                   |
+| Export                           | Freeze ready state, preview disclosure, bind human approval to that state, generate read-only artifact                                                                                           |
 
 Validate the whole resulting batch and persist all-or-nothing. A complete group with notes/order can publish atomically; a reply and guidance improvement can publish together. Preserve stable identities rather than recreate guidance to edit it. Reject obsolete authoring fields, not silently translate them.
 
@@ -314,7 +323,7 @@ The export spelling above integrates the later export decision into the minimal 
 Ship two workflows plus generated `gyst-cli` reference:
 
 - `/gyst`: prepare/revisit selected scope, understand the whole change, publish complete groups progressively; reopening alone does not refresh/rewrite.
-- `/gyst-respond`: one retry-safe pending bundle, existing-thread responses and requested fixes; repair reusable guidance where needed, report unfinished work and stop.
+- `/gyst-respond`: one retry-safe pending bundle, existing-thread responses and fixes the human marked Change request; repair reusable guidance where needed, report unfinished work and stop. An empty bundle is reported from the returned progress: with every hunk Viewed, the review is finished with nothing to answer; otherwise the human is still reading. Either way the workflow stops rather than asking or polling.
 - Both reach one authoritative bundled authoring reference and examples on demand. No per-harness copies or dependency on private skills. `gyst skills` installs the package's own artifacts.
 
 Remove old workflow registrations/files/examples and tests for `/gyst-ask` and `/gyst-refresh`, create-only `session create`, `close`, stdin/pathspec ingestion, queue/verdict operations and TUI-specific controls. Retain useful structural, packaging, failure and concurrency tests rather than blindly deleting legacy coverage.
@@ -441,7 +450,7 @@ Known implementation gates remain: native full-width rendering (#106; a temporar
 
 ### Out of scope
 
-Hosted deployment/local uploads, multi-user review, GitHub comment sync, external editor opening, agent spawning/auto-wake, stdin patches/pathspec capture, TUI preservation, schema migration/compatibility aliases, dedicated Guide me mode, dependency capture/install/reconstruction, extra language/framework support, historical semantic environments, stack orchestration/cumulative review, standalone binaries/npx/project-local launch/Windows/musl/Deno/Bun, LAN/proxy access, importable exports/selective exports/redaction/automatic publication. Reopen scope explicitly rather than smuggle these into an implementation phase.
+Hosted deployment/local uploads, multi-user review, GitHub review submission and comment sync (specified for after v1 in [Review GitHub PRs from gyst](forge-review.md)), external editor opening, agent spawning/auto-wake, stdin patches/pathspec capture, TUI preservation, schema migration/compatibility aliases, dedicated Guide me mode, dependency capture/install/reconstruction, extra language/framework support, historical semantic environments, stack orchestration/cumulative review, standalone binaries/npx/project-local launch/Windows/musl/Deno/Bun, LAN/proxy access, importable exports/selective exports/redaction/automatic publication. Reopen scope explicitly rather than smuggle these into an implementation phase.
 
 ### Decision register
 
