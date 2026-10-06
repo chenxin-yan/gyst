@@ -6,7 +6,7 @@ const placeAt = (path: string, file: string | undefined): ReadingPlace => ({
   inputMode: "vim",
   cursor: undefined,
   opened: new Map(),
-  top: file === undefined ? undefined : { file, side: undefined, line: undefined },
+  top: file === undefined ? undefined : { position: { file, side: undefined, line: undefined } },
 });
 
 describe("reading memory", () => {
@@ -16,7 +16,7 @@ describe("reading memory", () => {
       inputMode: "mouse",
       cursor: { file: "src/b.ts", kind: "line", side: "additions", line: 12 },
       opened: new Map([["src/b.ts", new Map([[0, { fromStart: 20, fromEnd: 0 }]])]]),
-      top: { file: "src/b.ts", side: "additions", line: 9 },
+      top: { position: { file: "src/b.ts", side: "additions", line: 9 } },
     };
     remember("b", "snap-b", b);
     remember("c", "snap-c", placeAt("", "c.ts"));
@@ -28,7 +28,9 @@ describe("reading memory", () => {
   it("ignores a place read in another snapshot of the session, as after a refresh", () => {
     remember("d", "old", placeAt("lib", "lib/x.ts"));
     expect(recall("d", "new")).toBeUndefined();
-    remember("d", "new", placeAt("", undefined));
-    expect(recall("d", "new")).toEqual(placeAt("", undefined));
+    // An overview at the top is kept as the panel's offset.
+    const overview: ReadingPlace = { ...placeAt("", undefined), top: { scrollTop: 40 } };
+    remember("d", "new", overview);
+    expect(recall("d", "new")).toEqual(overview);
   });
 });

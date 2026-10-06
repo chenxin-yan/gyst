@@ -1,18 +1,19 @@
 import type { Cursor, Opened } from "./cursor.ts";
 import type { InputMode } from "./keymap.ts";
-import type { ReadingPosition } from "./navigation.ts";
+import type { Restore } from "./navigation.ts";
 import type { ReviewView } from "./walkthrough.ts";
 
 /**
  * Where a reader left a session: its view, input mode, Vim cursor, the hidden lines it
- * opened (a place inside them exists only once they open again) and the position at the panel's top.
+ * opened (a place inside them exists only once they open again) and what was at the panel's top: a
+ * reading position, or an overview's offset.
  */
 export type ReadingPlace = {
   review: ReviewView;
   inputMode: InputMode;
   cursor: Cursor | undefined;
   opened: Map<string, Map<number, Opened>>;
-  top: ReadingPosition | undefined;
+  top: Restore | undefined;
 };
 
 /**

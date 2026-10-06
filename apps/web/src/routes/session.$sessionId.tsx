@@ -755,7 +755,7 @@ function SessionReader(props: {
   useEffect(() => remember(session.id, snapshotId, readingPlace.current));
   const returning = useRef(recalled !== undefined);
   const onPosition = useCallback(
-    (top: ReadingPosition) => {
+    (top: Restore) => {
       if (returning.current) return;
       readingPlace.current = { ...readingPlace.current, top };
       remember(session.id, snapshotId, readingPlace.current);
@@ -835,18 +835,28 @@ function SessionReader(props: {
     return row && { file: target.file, side: "additions", line: row.new, full: true };
   };
 
-  // A return to this session puts the position it showed back at the top, or else its cursor. Once
-  // the panel has a width: until then the layout may still switch, which resets the panel to its
-  // top. A line in hidden lines the reader had opened waits until its file loaded and the renderer
-  // opened them again, its file brought into view meanwhile so it loads. Moving the cursor or
-  // scrolling by hand first leaves the reader where they went.
+  // A return to this session puts the position it showed back at the top (an overview's offset, or
+  // a reading position), or else its cursor. Once the panel has a width: until then the layout may
+  // still switch, which resets the panel to its top. A line in hidden lines the reader had opened
+  // waits until its file loaded and the renderer opened them again, its file brought into view
+  // meanwhile so it loads. Moving the cursor or scrolling by hand first leaves the reader where
+  // they went.
   const fileRevealed = useRef(false);
   useEffect(() => {
     if (!returning.current || width === 0 || recalled === undefined) return;
     const view = viewer.current;
     if (!view) return;
     if (cursor !== recalled.cursor) return void (returning.current = false);
-    const { top } = recalled;
+    const restore = recalled.top;
+    if (restore !== undefined && "scrollTop" in restore) {
+      returning.current = false;
+      // After the renderer's first frames, which lay out the panel it starts at its top.
+      requestAnimationFrame(() =>
+        requestAnimationFrame(() => viewer.current?.scrollTo(restore.scrollTop)),
+      );
+      return;
+    }
+    const top = restore?.position;
     if (top === undefined || !model.files.includes(top.file)) {
       returning.current = false;
       const mark = recalled.cursor && here ? markOf(here) : undefined;
@@ -1786,6 +1796,8 @@ type Viewer = {
   renders(file: string, line: number): boolean;
   height(): number;
   scrollBy(pixels: number): void;
+  /** Scrolls to a pixel offset, as an overview's place is kept. */
+  scrollTo(top: number): void;
   scrollToEdge(end: "top" | "bottom"): void;
   /** Opens `count` hidden lines of a rendered file's range from both ends. */
   expand(file: string, range: number, count: number): void;
@@ -1839,8 +1851,11 @@ function ContinuousDiff(props: {
   loadDiffFiles: FileDiffContentsLoader;
   /** The files the panel shows now, after each render and scroll. */
   onWindow: (visible: readonly string[]) => void;
-  /** The position at the panel's top, after each render and scroll that read it. */
-  onPosition: (position: ReadingPosition) => void;
+  /**
+   * What is at the panel's top after each render and scroll that read it: a reading position, or
+   * above the first file (an overview) the panel's offset.
+   */
+  onPosition: (top: Restore) => void;
   onWidth: (width: number) => void;
   onOpened: () => void;
   onLineClick: (cursor: Cursor) => void;
@@ -1874,12 +1889,20 @@ function ContinuousDiff(props: {
     restoredTop.current = undefined;
     // The first line below the sticky file header is the one a reader sees at the top.
     const seen = scrollTop + headerHeight;
+    const first = latest.current.files[0];
+    const firstTop = first && viewer.getTopForItem(first.path);
+    if (firstTop !== undefined && seen < firstTop) {
+      // Above every file: no code position is the reader's any more, so none is restored.
+      position.current = undefined;
+      latest.current.onPosition({ scrollTop });
+      return;
+    }
     for (const { id, instance } of viewer.getRenderedItems()) {
       const top = viewer.getTopForItem(id);
       if (top === undefined || seen < top || seen >= top + instance.height) continue;
       const anchor = instance.getNumericScrollAnchor(seen - top);
       position.current = { file: id, side: anchor?.side, line: anchor?.lineNumber };
-      latest.current.onPosition(position.current);
+      latest.current.onPosition({ position: position.current });
       return;
     }
   }, []);
@@ -2075,6 +2098,7 @@ function ContinuousDiff(props: {
       scrollBy(pixels) {
         scrollTop((pendingTop.current ?? node().scrollTop) + pixels);
       },
+      scrollTo: scrollTop,
       scrollToEdge(end) {
         scrollTop(end === "top" ? 0 : node().scrollHeight);
       },

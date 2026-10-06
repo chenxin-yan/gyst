@@ -502,6 +502,24 @@ const referenceOps = [
     overview: "Two independent edits over [the constants](gyst:new/src/long.ts#L10-L12).",
   },
 ];
+/**
+ * Leaves the page's session for `other`'s page and comes back, client-side through the session
+ * list and history, as a switch between stack layers remounts the reader.
+ */
+async function toSessionAndBack(page: Page, other: string) {
+  const from = new URL(page.url()).pathname;
+  await settled(page);
+  await page.getByRole("link", { name: "All sessions" }).click();
+  await page.locator(`a[href="/session/${other}"]`).click();
+  await page.waitForURL((url) => url.pathname === `/session/${other}`);
+  await page.getByRole("main").getByRole("heading", { level: 2 }).first().waitFor();
+  await settled(page);
+  await page.goBack();
+  await page.getByRole("heading", { name: "Saved sessions" }).waitFor();
+  await page.goBack();
+  await page.waitForURL((url) => url.pathname === from);
+}
+
 /** The open reference peek, and its renderer row when it opened under a note. */
 const peekOf = (page: Page) => page.getByRole("main").locator("[data-peek]");
 const spacerOf = (page: Page) => page.getByRole("main").locator("[data-peek-spacer]");
@@ -1816,6 +1834,42 @@ describe("installed gyst in a sandboxed browser", () => {
       async () => (await topLine(page)) === mouseTop,
       `line ${mouseTop} at the top again`,
     );
+    await settled(page);
+  }, 30_000);
+
+  it("resumes a session last read at its overview at that offset, not at the code read before it", async () => {
+    const walk = await openWalk();
+    await publishWalk(walk);
+    const other = await freshSession();
+    const page = await newPage();
+    await page.setViewportSize({ width: 1280, height: 600 });
+    await page.goto(`${one.origin}/session/${walk.id}`);
+    const pane = page.getByRole("main");
+    const overview = pane.getByRole("region", { name: "Walkthrough overview" });
+    await overview.waitFor();
+    await pane.getByRole("heading", { name: "walk/a.ts" }).waitFor();
+    // Mouse mode: no cursor to fall back on, only what was at the panel's top.
+    await page
+      .getByRole("radiogroup", { name: "Input mode" })
+      .getByRole("radio", { name: "Mouse" })
+      .check();
+    await pane.hover();
+    // Down into the code, past the whole overview, then back up into the overview.
+    await page.mouse.wheel(0, 2000);
+    const inCode = (await steady(() => panelTop(page)))!;
+    expect(inCode).toBeGreaterThan((await overview.boundingBox())!.height);
+    await page.mouse.wheel(0, 60 - inCode);
+    const inOverview = (await steady(() => panelTop(page)))!;
+    expect(inOverview).toBeGreaterThan(0);
+    expect(inOverview).toBeLessThan(inCode / 2);
+
+    await toSessionAndBack(page, other);
+    await overview.waitFor();
+    await waitFor(
+      async () => Math.abs(((await panelTop(page)) ?? 0) - inOverview) < 2,
+      "the overview's offset again",
+    );
+    expect(Math.abs((await steady(() => panelTop(page)))! - inOverview)).toBeLessThan(2);
     await settled(page);
   }, 30_000);
 
