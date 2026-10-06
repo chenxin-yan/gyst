@@ -4529,7 +4529,7 @@ describe("installed gyst in a sandboxed browser", () => {
 
   it("opens a GitHub PR from the root launch and lists its native stack in a keyboard-operable header switcher", async () => {
     deletePullRequestSessionsAfter();
-    const b = await launchIn(github.checkout, pullRequestUrl(2));
+    const b = await launchIn(github.checkout, "--pr", pullRequestUrl(2));
     const page = await newPage();
     await go(page, b.url);
     await page.getByRole("main").getByText("b two").waitFor();
@@ -4576,7 +4576,7 @@ describe("installed gyst in a sandboxed browser", () => {
 
   it("opens another layer from the switcher and returns, each session keeping its own Viewed and reading place", async () => {
     deletePullRequestSessionsAfter();
-    const b = await launchIn(github.checkout, pullRequestUrl(2));
+    const b = await launchIn(github.checkout, "--pr", pullRequestUrl(2));
     const page = await newPage();
     const refreshes: unknown[] = [];
     page.on("request", (request) => {
@@ -4662,7 +4662,7 @@ describe("installed gyst in a sandboxed browser", () => {
       stderr: "gh: Server Error (HTTP 502)\n",
     };
     await github.fake.fail("stack", 2, failure);
-    const b = await launchIn(github.checkout, pullRequestUrl(2));
+    const b = await launchIn(github.checkout, "--pr", pullRequestUrl(2));
     const page = await newPage();
     const operations: any[] = [];
     page.on("request", (request) => {
@@ -4723,7 +4723,7 @@ describe("installed gyst in a sandboxed browser", () => {
   it("updates another viewer's stack switcher live after a CLI recheck and a layer opened elsewhere, without a reload or moving its reader", async () => {
     deletePullRequestSessionsAfter();
     onTestFinished(() => github.stack());
-    const b = await launchIn(github.checkout, pullRequestUrl(2));
+    const b = await launchIn(github.checkout, "--pr", pullRequestUrl(2));
     const [opener, viewer] = [await newPage(), await newPage()];
     for (const page of [opener, viewer]) await page.setViewportSize({ width: 1280, height: 800 });
     // Every loader read of the viewer: a reload would read the session's diff again.

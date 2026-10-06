@@ -197,19 +197,32 @@ describe("gyst session CLI seam", () => {
     });
     expect(await failure(["open", "HEAD..HEAD", "--session", opened.session.id])).toEqual({
       code: "bad_args",
-      message: "choose a Git range or --session, not both",
+      message: "choose one of a Git range, --pr or --session",
+    });
+    expect(await failure(["open", "HEAD..HEAD", "--pr", "2"])).toEqual({
+      code: "bad_args",
+      message: "choose one of a Git range, --pr or --session",
     });
     expect(await failure(["open", "--stdin"])).toMatchObject({ code: "bad_args" });
-    // A URL is a PR or refused, never read as a Git range.
-    for (const url of [
+    // A URL is never read as a Git range; --pr takes a PR number or a GitHub PR URL only.
+    expect(await failure(["open", "https://github.com/acme/widgets/pull/2"])).toEqual({
+      code: "bad_args",
+      message: "expected a Git range such as main...feature; pass a GitHub PR with --pr",
+      detail: "https://github.com/acme/widgets/pull/2",
+    });
+    for (const pr of [
       "https://gitlab.com/acme/widgets/pull/2",
       "http://github.com/acme/widgets/pull/2",
       "https://github.com/acme/widgets/issues/2",
+      "0",
+      "#2",
+      "main...feature",
     ])
-      expect(await failure(["open", url])).toMatchObject({
+      expect(await failure(["open", "--pr", pr])).toEqual({
         code: "bad_args",
-        message: "expected a GitHub PR URL such as https://github.com/owner/name/pull/123",
-        detail: url,
+        message:
+          "expected a PR number or a GitHub PR URL such as https://github.com/owner/name/pull/123",
+        detail: pr,
       });
     expect(await failure(["status"])).toEqual({
       code: "bad_args",

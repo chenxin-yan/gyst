@@ -100,7 +100,7 @@ describe("GitHub PR sessions through the installed CLI", () => {
     const before = refState(checkout);
 
     // 1. Open B with only B prepared: the whole stack is context, the diff and work are B's.
-    const openedB = json(await gyst("open", url(2)));
+    const openedB = json(await gyst("open", "--pr", url(2)));
     expect(openedB).toMatchObject({
       created: true,
       session: { scope: { kind: "pr", repository: githubRepository, number: 2 } },
@@ -188,7 +188,7 @@ describe("GitHub PR sessions through the installed CLI", () => {
     ]);
 
     // 2. Open C plain: its own range, no guidance carried over.
-    const openedC = json(await gyst("open", url(3)));
+    const openedC = json(await gyst("open", "--pr", url(3)));
     expect(openedC.created).toBe(true);
     const c = openedC.session.id;
     expect(await files(c)).toEqual(["c.txt"]);
@@ -200,7 +200,7 @@ describe("GitHub PR sessions through the installed CLI", () => {
 
     // 3. Return to B: the saved session as it was, with no refresh and no GitHub call.
     const calls = (await fake.calls()).length;
-    const resumed = json(await gyst("open", url(2)));
+    const resumed = json(await gyst("open", "--pr", url(2)));
     expect(resumed).toEqual({ ...openedB, session: prepared.session, created: false });
     expect(resumed.session.snapshotId).toBe(snapshotB);
     expect(await status(b)).toMatchObject({
@@ -208,6 +208,11 @@ describe("GitHub PR sessions through the installed CLI", () => {
       groups: [{ id: "layer-b", notes: [{ markdown: "Read this on top of layer A." }] }],
     });
     expect((await fake.calls()).length).toBe(calls);
+    // By number, gh names this checkout's repository: the same saved session, no PR read.
+    expect(json(await gyst("open", "--pr", "2"))).toEqual(resumed);
+    expect((await fake.calls()).slice(calls)).toEqual([
+      ["repo", "view", "--json", "nameWithOwner", "--jq", ".nameWithOwner"],
+    ]);
 
     // 4. Restack in origin, then explicitly refresh B: B's new merge base; C and A untouched.
     const statusC = await status(c);
@@ -282,7 +287,7 @@ describe("GitHub PR sessions through the installed CLI", () => {
     const gyst = (...args: string[]) => box.gyst(repo.checkout, ["session", ...args]);
 
     // 6. #4's range starts where it branched (m1), so main's later change (m2) is not in it.
-    const opened = json(await gyst("open", url(4)));
+    const opened = json(await gyst("open", "--pr", url(4)));
     const id = opened.session.id;
     expect(await savedSessions(box)).toEqual([`${id}.json`]);
     expect((await manifestOf(box, opened.session.snapshotId)).provenance).toEqual({
@@ -307,7 +312,7 @@ describe("GitHub PR sessions through the installed CLI", () => {
       stdout: '{"errors":[{"message":"Field \'stack\' doesn\'t exist on type \'PullRequest\'"}]}',
       stderr: "gh: Field 'stack' doesn't exist on type 'PullRequest'\n",
     });
-    const reopened = json(await gyst("open", url(4)));
+    const reopened = json(await gyst("open", "--pr", url(4)));
     expect(reopened.created).toBe(true);
     expect(reopened.session.snapshotId).toBe(opened.session.snapshotId);
     expect(json(await gyst("status", "--session", reopened.session.id)).pullRequest).toMatchObject({
@@ -324,7 +329,7 @@ describe("GitHub PR sessions through the installed CLI", () => {
     const { checkout, fake } = repo;
     const before = refState(checkout);
     const refused = async (cwd: string, number: number) => {
-      const error = failed(await box.gyst(cwd, ["session", "open", url(number)]));
+      const error = failed(await box.gyst(cwd, ["session", "open", "--pr", url(number)]));
       expect(await savedSessions(box)).toEqual([]);
       return error;
     };
@@ -376,6 +381,15 @@ describe("GitHub PR sessions through the installed CLI", () => {
       message: expect.stringContaining("github.com/acme/widgets"),
       detail: { reason: "checkout_mismatch" },
     });
+
+    // A number needs gh to name the checkout's repository.
+    await fake.repository({ exitCode: 1, stderr: "no git remotes found\n" });
+    expect(failed(await box.gyst(checkout, ["session", "open", "--pr", "3"]))).toMatchObject({
+      code: "source_unavailable",
+      message: expect.stringContaining("gh repo set-default, or pass the PR URL"),
+      detail: { reason: "checkout_mismatch", diagnostic: "no git remotes found" },
+    });
+    expect(await savedSessions(box)).toEqual([]);
     expect(refState(checkout)).toEqual(before);
   }, 60_000);
 
@@ -385,11 +399,12 @@ describe("GitHub PR sessions through the installed CLI", () => {
     box.env.PATH = await noGhPath(box.root);
     const { checkout } = github;
 
-    expect(failed(await box.gyst(checkout, ["session", "open", url(2)]))).toMatchObject({
-      code: "source_unavailable",
-      message: expect.stringContaining("install it, run gh auth login"),
-      detail: { reason: "gh_missing" },
-    });
+    for (const pr of [url(2), "2"])
+      expect(failed(await box.gyst(checkout, ["session", "open", "--pr", pr]))).toMatchObject({
+        code: "source_unavailable",
+        message: expect.stringContaining("install it, run gh auth login"),
+        detail: { reason: "gh_missing" },
+      });
     expect(await savedSessions(box)).toEqual([]);
 
     git(checkout, "switch", "-q", "-c", "local");

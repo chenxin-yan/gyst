@@ -138,15 +138,16 @@ export async function fakeGh(root: string) {
     `#!/bin/sh\nexec '${process.execPath}' '${fakeGhScript}' "$@"\n`,
     { mode: 0o755 },
   );
-  const reply = (
-    kind: "pull" | "stack",
-    number: number,
-    { exitCode, stdout, stderr }: FakeGhReply,
-  ) =>
+  const write = (name: string, { exitCode, stdout, stderr }: FakeGhReply) =>
     writeFile(
-      join(dir, `${kind}-acme-widgets-${number}.json`),
+      join(dir, name),
       JSON.stringify({ exitCode, stdout: stdout ?? "", stderr: stderr ?? "" }),
     );
+  const reply = (kind: "pull" | "stack", number: number, answer: FakeGhReply) =>
+    write(`${kind}-acme-widgets-${number}.json`, answer);
+  /** What `gh repo view` answers for every checkout; acme/widgets unless a test says otherwise. */
+  const repository = (answer: FakeGhReply) => write("repository.json", answer);
+  await repository({ exitCode: 0, stdout: `${githubRepository}\n` });
   const answer = (pullRequest: unknown) =>
     JSON.stringify({ data: { repository: { pullRequest } } });
   const fieldsOf = (recorded: FakePullRequest) => {
@@ -197,6 +198,7 @@ export async function fakeGh(root: string) {
         }),
       }),
     fail: reply,
+    repository,
     /** Every argv gh was run with, in order. */
     calls: async (): Promise<string[][]> => {
       const log = join(dir, "calls.jsonl");

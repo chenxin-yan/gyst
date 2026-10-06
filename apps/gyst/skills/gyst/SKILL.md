@@ -13,7 +13,7 @@ Resolve the requested scope; fetch remote refs when needed. Use the `gyst-cli` s
 
 - Working changes, including untracked files: `gyst session open`.
 - Git range: `gyst session open <range>`, such as `main...feature` or `main..feature`; the range is recorded as written and covers the whole repository.
-- GitHub PR: `gyst session open <PR URL>`, such as `https://github.com/owner/name/pull/123`, from a clone of that repository; it captures the PR's own merge-base-to-head range.
+- GitHub PR: `gyst session open --pr <number>`, or `--pr <PR URL>` such as `https://github.com/owner/name/pull/123`, from a clone of that repository; a number is in the repository `gh` resolves for the checkout; it captures the PR's own merge-base-to-head range.
 - A saved session the user names: `gyst session open --session <id>`.
 
 Opening returns the saved session for this repository and scope unchanged when one exists (`created: false`); it never refreshes the snapshot or rewrites groups. Ask before changing scope. For a requested snapshot update or regrouping, use `gyst-refresh`.

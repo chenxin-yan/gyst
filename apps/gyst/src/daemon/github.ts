@@ -5,6 +5,7 @@ import {
   PullRequestNumberSchema,
   type PullRequestScope,
   pullRequestUrlOf,
+  RepositorySchema,
   SourceUnavailable,
   type StackMembership,
   StackMembershipSchema,
@@ -134,11 +135,83 @@ const messages: Record<GitHubUnavailableReason, (url: string) => string> = {
   no_access: (url) => `${url} was not found or is not readable by the gyst host's gh account`,
   github_failed: (url) => `GitHub could not be asked about ${url}; try again later`,
 };
-const unavailable = (scope: PullRequestScope, { reason, diagnostic }: GhFailed) =>
+const unavailable = (subject: string, { reason, diagnostic }: GhFailed) =>
   new SourceUnavailable({
-    message: messages[reason](pullRequestUrlOf(scope)),
+    message: messages[reason](subject),
     detail: { reason, ...(diagnostic !== undefined && { diagnostic }) },
   });
+
+/** Runs the host's `gh` with explicit argv and no prompts, bounded in time. */
+const gh = Effect.fn("GitHub.gh")(
+  function* (args: ReadonlyArray<string>, cwd?: string) {
+    const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+    const handle = yield* spawner.spawn(
+      ChildProcess.make("gh", args, {
+        ...(cwd !== undefined && { cwd }),
+        env: {
+          GH_PROMPT_DISABLED: "1",
+          GH_NO_UPDATE_NOTIFIER: "1",
+          GH_NO_EXTENSION_UPDATE_NOTIFIER: "1",
+          NO_COLOR: "1",
+        },
+        extendEnv: true,
+        stdin: "ignore",
+        forceKillAfter: "500 millis",
+      }),
+    );
+    const [stdout, stderr, exitCode] = yield* Effect.all(
+      [
+        Stream.mkString(Stream.decodeText(handle.stdout)),
+        diagnostics(handle.stderr),
+        handle.exitCode,
+      ],
+      { concurrency: "unbounded" },
+    );
+    return { exitCode, stdout, stderr } satisfies GhOutput;
+  },
+  Effect.scoped,
+  Effect.timeoutOrElse({
+    duration: "20 seconds",
+    orElse: () =>
+      Effect.fail(new GhFailed({ reason: "github_failed", diagnostic: "gh timed out" })),
+  }),
+  Effect.catchTag("PlatformError", (error) =>
+    Effect.fail(
+      new GhFailed({
+        reason:
+          error.reason._tag === "NotFound" && error.reason.method === "spawn"
+            ? "gh_missing"
+            : "github_failed",
+        diagnostic: error.message,
+      }),
+    ),
+  ),
+);
+
+const isRepository = Schema.is(RepositorySchema);
+
+/**
+ * The GitHub repository `gh` resolves for the checkout at `cwd`, as `gh pr view <number>` there
+ * would: its `gh repo set-default` choice, else its remotes.
+ */
+export const checkoutRepository = Effect.fn("GitHub.checkoutRepository")(function* (cwd: string) {
+  const subject = "this checkout's GitHub repository";
+  const output = yield* gh(
+    ["repo", "view", "--json", "nameWithOwner", "--jq", ".nameWithOwner"],
+    cwd,
+  ).pipe(Effect.mapError((failure) => unavailable(subject, failure)));
+  const repository = output.stdout.trim().toLowerCase();
+  if (output.exitCode === 0 && isRepository(repository)) return repository;
+  const failure = failureOf(output, undefined);
+  if (failure.reason === "gh_unauthenticated") return yield* unavailable(subject, failure);
+  return yield* new SourceUnavailable({
+    message: `${subject} could not be resolved: run gyst from a clone of it, choose one with gh repo set-default, or pass the PR URL`,
+    detail: {
+      reason: "checkout_mismatch",
+      ...(failure.diagnostic && { diagnostic: failure.diagnostic }),
+    },
+  });
+});
 
 /** Reads github.com through the host's authenticated `gh`; never prompts, never writes. */
 export class GitHub extends Context.Service<
@@ -160,71 +233,27 @@ export class GitHub extends Context.Service<
     Effect.gen(function* () {
       const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
 
-      const gh = Effect.fn("GitHub.gh")(
-        function* (scope: PullRequestScope, query: string) {
-          const [owner, repo] = scope.repository.split("/");
-          const handle = yield* spawner.spawn(
-            ChildProcess.make(
-              "gh",
-              [
-                "api",
-                "graphql",
-                "--hostname",
-                "github.com",
-                "-f",
-                `owner=${owner}`,
-                "-f",
-                `repo=${repo}`,
-                "-F",
-                `number=${scope.number}`,
-                "-f",
-                `query=${query}`,
-              ],
-              {
-                env: {
-                  GH_PROMPT_DISABLED: "1",
-                  GH_NO_UPDATE_NOTIFIER: "1",
-                  GH_NO_EXTENSION_UPDATE_NOTIFIER: "1",
-                  NO_COLOR: "1",
-                },
-                extendEnv: true,
-                stdin: "ignore",
-                forceKillAfter: "500 millis",
-              },
-            ),
-          );
-          const [stdout, stderr, exitCode] = yield* Effect.all(
-            [
-              Stream.mkString(Stream.decodeText(handle.stdout)),
-              diagnostics(handle.stderr),
-              handle.exitCode,
-            ],
-            { concurrency: "unbounded" },
-          );
-          return { exitCode, stdout, stderr } satisfies GhOutput;
-        },
-        Effect.scoped,
-        Effect.timeoutOrElse({
-          duration: "20 seconds",
-          orElse: () =>
-            Effect.fail(new GhFailed({ reason: "github_failed", diagnostic: "gh timed out" })),
-        }),
-        Effect.catchTag("PlatformError", (error) =>
-          Effect.fail(
-            new GhFailed({
-              reason:
-                error.reason._tag === "NotFound" && error.reason.method === "spawn"
-                  ? "gh_missing"
-                  : "github_failed",
-              diagnostic: error.message,
-            }),
-          ),
-        ),
-      );
+      const graphql = (scope: PullRequestScope, query: string) => {
+        const [owner, repo] = scope.repository.split("/");
+        return gh([
+          "api",
+          "graphql",
+          "--hostname",
+          "github.com",
+          "-f",
+          `owner=${owner}`,
+          "-f",
+          `repo=${repo}`,
+          "-F",
+          `number=${scope.number}`,
+          "-f",
+          `query=${query}`,
+        ]).pipe(Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner));
+      };
 
       const pullRequest = Effect.fn("GitHub.pullRequest")(function* (scope: PullRequestScope) {
-        const output = yield* gh(scope, pullRequestQuery).pipe(
-          Effect.mapError((failure) => unavailable(scope, failure)),
+        const output = yield* graphql(scope, pullRequestQuery).pipe(
+          Effect.mapError((failure) => unavailable(pullRequestUrlOf(scope), failure)),
         );
         const reply = Option.getOrUndefined(decodePullRequestResponse(output.stdout));
         const found = reply?.data?.repository?.pullRequest;
@@ -234,13 +263,13 @@ export class GitHub extends Context.Service<
           !found ||
           found.number !== scope.number
         )
-          return yield* unavailable(scope, failureOf(output, reply));
+          return yield* unavailable(pullRequestUrlOf(scope), failureOf(output, reply));
         const { headRefOid, ...rest } = found;
         return { pullRequest: pullRequestOf(rest), headRefOid };
       });
 
       const stack = Effect.fn("GitHub.stack")(function* (scope: PullRequestScope) {
-        const output = yield* gh(scope, stackQuery);
+        const output = yield* graphql(scope, stackQuery);
         const reply = Option.getOrUndefined(decodeStackResponse(output.stdout));
         const found = reply?.data?.repository?.pullRequest;
         if (

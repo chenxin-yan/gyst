@@ -142,15 +142,25 @@ describe("installed gyst CLI", () => {
     });
     expect(failed(await gyst(root, ["main...feature", "--session", "s1"]))).toEqual({
       code: "bad_args",
-      message: "choose a Git range or --session, not both",
+      message: "choose one of a Git range, --pr or --session",
+    });
+    expect(failed(await gyst(root, ["--pr", "2", "--session", "s1"]))).toEqual({
+      code: "bad_args",
+      message: "choose one of a Git range, --pr or --session",
     });
     expect(failed(await gyst(root, ["main...feature", "extra"]))).toMatchObject({
       code: "bad_args",
     });
-    expect(failed(await gyst(root, ["https://example.com/acme/widgets/pull/2"]))).toEqual({
+    expect(failed(await gyst(root, ["https://github.com/acme/widgets/pull/2"]))).toEqual({
       code: "bad_args",
-      message: "expected a GitHub PR URL such as https://github.com/owner/name/pull/123",
-      detail: "https://example.com/acme/widgets/pull/2",
+      message: "expected a Git range such as main...feature; pass a GitHub PR with --pr",
+      detail: "https://github.com/acme/widgets/pull/2",
+    });
+    expect(failed(await gyst(root, ["--pr", "main...feature"]))).toEqual({
+      code: "bad_args",
+      message:
+        "expected a PR number or a GitHub PR URL such as https://github.com/owner/name/pull/123",
+      detail: "main...feature",
     });
     expect(failed(await gyst(root, ["session", "status", "--no-such-flag"]))).toEqual({
       code: "bad_args",
