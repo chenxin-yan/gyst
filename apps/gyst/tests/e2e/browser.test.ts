@@ -529,7 +529,8 @@ describe("installed gyst in a sandboxed browser", () => {
       ...(chromiumPath ? { executablePath: chromiumPath } : { channel: "chrome" }),
       chromiumSandbox: true,
       headless: true,
-      timeout: 20_000,
+      // A cold Chrome on a shared CI runner can take longer than 20 s to start.
+      timeout: 60_000,
       // Proxy bypass selects direct transport; .localhost resolves natively (no hosts/resolver maps).
       proxy: { server: "http://127.0.0.1:9", bypass: ".localhost,127.0.0.1" },
       env: { ...env, TMPDIR: join(root, "tmp") },
