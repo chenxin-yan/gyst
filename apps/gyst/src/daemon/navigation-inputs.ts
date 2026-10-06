@@ -80,8 +80,7 @@ export const materializeSide = Effect.fn("materializeSide")(function* (
     );
     const dependencies =
       basename(file.path) === "package.json" && declaresPackages(yield* fs.readFileString(target));
-    const extended = projectConfig(file.path) ? extendsOf(yield* fs.readFileString(target)) : [];
-    return { bytes, dependencies, extended };
+    return { path: file.path, bytes, dependencies };
   });
 
   const results = yield* Effect.forEach(
@@ -114,28 +113,39 @@ export const materializeSide = Effect.fn("materializeSide")(function* (
       (basename(file.path) === "tsconfig.json" || basename(file.path) === "jsconfig.json"),
   );
   if (!configured) gaps.push({ kind: "no-project-config" });
-  // The engine reports an unreadable `extends` only for the config, never for a queried file. A
-  // relative target resolves within the capture, `.json` added when missing; a package's never.
-  const captured = new Set(
-    manifest.files.flatMap((file) => (file[side].kind === "text" ? [file.path] : [])),
-  );
-  for (const [index, file] of manifest.files.entries())
-    for (const target of results[index]?.copied?.extended ?? []) {
-      const relative = /^\.\.?\//.test(target)
-        ? posix.normalize(posix.join(posix.dirname(file.path), target))
-        : undefined;
-      const found =
-        relative !== undefined &&
-        (captured.has(relative) ||
-          (!relative.endsWith(".json") && captured.has(`${relative}.json`)));
-      if (!found)
+  const written = results.flatMap(({ copied }) => (copied ? [copied] : []));
+  // The engine reports an unreadable `extends` only for the config, never for a queried file, and
+  // reads a config an `extends` names whatever its file name. A relative target resolves within
+  // the layout, `.json` added when missing; a package's never.
+  const laidOut = new Set(written.map((copied) => copied.path));
+  const extendedBy = (config: string, target: string) => {
+    if (!/^\.\.?\//.test(target)) return undefined;
+    const relative = posix.normalize(posix.join(posix.dirname(config), target));
+    if (laidOut.has(relative)) return relative;
+    return !relative.endsWith(".json") && laidOut.has(`${relative}.json`)
+      ? `${relative}.json`
+      : undefined;
+  };
+  const extendsTargets = new Map<string, ReadonlyArray<string>>();
+  const configs = [...laidOut].filter(projectConfig);
+  // Each config is read once, so an `extends` cycle ends.
+  for (let config = configs.pop(); config !== undefined; config = configs.pop()) {
+    if (extendsTargets.has(config)) continue;
+    const targets = extendsOf(yield* fs.readFileString(path.join(project, ...config.split("/"))));
+    extendsTargets.set(config, targets);
+    for (const target of targets) {
+      const base = extendedBy(config, target);
+      if (base !== undefined) configs.push(base);
+    }
+  }
+  for (const file of manifest.files)
+    for (const target of extendsTargets.get(file.path) ?? [])
+      if (extendedBy(file.path, target) === undefined)
         gaps.push({
           kind: "unresolved-import",
           file: file.path,
           message: `cannot resolve extends ${JSON.stringify(target).slice(0, 200)}`,
         });
-    }
-  const written = results.flatMap(({ copied }) => (copied ? [copied] : []));
   return {
     project,
     files: written.length,

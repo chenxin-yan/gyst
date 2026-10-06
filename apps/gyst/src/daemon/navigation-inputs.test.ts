@@ -216,6 +216,31 @@ describe("materializeSide", () => {
     ]);
   });
 
+  it("follows extends through configs of any name, naming a missing grandparent and ending cycles", async () => {
+    const manifest = manifestOf([
+      {
+        path: "tsconfig.json",
+        old: absent,
+        new: await text('{ "extends": "./config/base.json" }'),
+      },
+      {
+        path: "config/base.json",
+        old: absent,
+        new: await text('{ "extends": ["./missing.json", "./cycle"] }'),
+      },
+      { path: "config/cycle.json", old: absent, new: await text('{ "extends": "./base.json" }') },
+      // Reached by no project config, so never read for its `extends`.
+      { path: "config/unused.json", old: absent, new: await text('{ "extends": "./gone.json" }') },
+    ]);
+    expect((await materialize(manifest, "new", (await freshRoot()).root)).gaps).toEqual([
+      {
+        kind: "unresolved-import",
+        file: "config/base.json",
+        message: 'cannot resolve extends "./missing.json"',
+      },
+    ]);
+  });
+
   it("copies rather than links durable blobs, and writes nothing outside root", async () => {
     const manifest = await snapshot();
     const { outer, root } = await freshRoot();
