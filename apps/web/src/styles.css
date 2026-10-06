@@ -7,6 +7,12 @@
   *::after {
     box-sizing: border-box;
   }
+  /* The reader moves by keys, wheel and trackpad; panels neither show scrollbars nor bounce past
+     their ends. */
+  * {
+    scrollbar-width: none;
+    overscroll-behavior: none;
+  }
   html,
   body,
   #app {
