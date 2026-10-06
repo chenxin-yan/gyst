@@ -147,7 +147,7 @@ export async function fakeGh(root: string) {
     write(`${kind}-acme-widgets-${number}.json`, answer);
   /** What `gh repo view` answers for every checkout; acme/widgets unless a test says otherwise. */
   const repository = (answer: FakeGhReply) => write("repository.json", answer);
-  await repository({ exitCode: 0, stdout: `${githubRepository}\n` });
+  await repository({ exitCode: 0, stdout: `https://github.com/${githubRepository}\n` });
   const answer = (pullRequest: unknown) =>
     JSON.stringify({ data: { repository: { pullRequest } } });
   const fieldsOf = (recorded: FakePullRequest) => {

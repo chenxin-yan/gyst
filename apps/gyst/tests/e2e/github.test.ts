@@ -211,7 +211,7 @@ describe("GitHub PR sessions through the installed CLI", () => {
     // By number, gh names this checkout's repository: the same saved session, no PR read.
     expect(json(await gyst("open", "--pr", "2"))).toEqual(resumed);
     expect((await fake.calls()).slice(calls)).toEqual([
-      ["repo", "view", "--json", "nameWithOwner", "--jq", ".nameWithOwner"],
+      ["repo", "view", "--json", "url", "--jq", ".url"],
     ]);
 
     // 4. Restack in origin, then explicitly refresh B: B's new merge base; C and A untouched.
@@ -389,6 +389,26 @@ describe("GitHub PR sessions through the installed CLI", () => {
       message: expect.stringContaining("gh repo set-default, or pass the PR URL"),
       detail: { reason: "checkout_mismatch", diagnostic: "no git remotes found" },
     });
+    // An Enterprise repository of the same name is not read as acme/widgets on github.com.
+    await fake.repository({ exitCode: 0, stdout: "https://ghe.example.com/acme/widgets\n" });
+    expect(failed(await box.gyst(checkout, ["session", "open", "--pr", "3"]))).toMatchObject({
+      code: "source_unavailable",
+      detail: {
+        reason: "checkout_mismatch",
+        diagnostic: "gh resolved https://ghe.example.com/acme/widgets",
+      },
+    });
+    // GitHub failing to answer is not a checkout problem.
+    for (const [stderr, reason] of [
+      ["gh: HTTP 502: Bad Gateway\n", "github_failed"],
+      ["gh: API rate limit exceeded (HTTP 403)\n", "github_failed"],
+      ["GraphQL: Could not resolve to a Repository with the name 'acme/widgets'.\n", "no_access"],
+    ] as const) {
+      await fake.repository({ exitCode: 1, stderr });
+      expect(failed(await box.gyst(checkout, ["session", "open", "--pr", "3"])).detail.reason).toBe(
+        reason,
+      );
+    }
     expect(await savedSessions(box)).toEqual([]);
     expect(refState(checkout)).toEqual(before);
   }, 60_000);

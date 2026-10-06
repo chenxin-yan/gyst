@@ -121,7 +121,7 @@ const failureOf = (output: GhOutput, reply: Reply | undefined) => {
         : (reply?.errors ?? []).some(({ type }) => type === "NOT_FOUND" || type === "FORBIDDEN") ||
             reply?.status === "403" ||
             reply?.status === "404" ||
-            /\bHTTP 40[34]\b/.test(output.stderr)
+            /\bHTTP 40[34]\b|Could not resolve to a Repository/.test(output.stderr)
           ? "no_access"
           : "github_failed";
   return new GhFailed({ reason, ...(said && { diagnostic: said }) });
@@ -190,26 +190,31 @@ const gh = Effect.fn("GitHub.gh")(
 
 const isRepository = Schema.is(RepositorySchema);
 
+/** gh's own refusals to pick a repository for a checkout, as opposed to GitHub failing. */
+const unresolvedCheckout = /not a git repository|no git remotes found|none of the git remotes/;
+
 /**
- * The GitHub repository `gh` resolves for the checkout at `cwd`, as `gh pr view <number>` there
- * would: its `gh repo set-default` choice, else its remotes.
+ * The github.com repository `gh` resolves for the checkout at `cwd`, as `gh pr view <number>` there
+ * would: its `gh repo set-default` choice, else its remotes. Its URL is asked for, not its
+ * owner/name, so a repository `gh` resolves on another host (`GH_HOST`, an Enterprise remote) is
+ * refused rather than read as the same name on github.com.
  */
 export const checkoutRepository = Effect.fn("GitHub.checkoutRepository")(function* (cwd: string) {
   const subject = "this checkout's GitHub repository";
-  const output = yield* gh(
-    ["repo", "view", "--json", "nameWithOwner", "--jq", ".nameWithOwner"],
-    cwd,
-  ).pipe(Effect.mapError((failure) => unavailable(subject, failure)));
-  const repository = output.stdout.trim().toLowerCase();
-  if (output.exitCode === 0 && isRepository(repository)) return repository;
+  const output = yield* gh(["repo", "view", "--json", "url", "--jq", ".url"], cwd).pipe(
+    Effect.mapError((failure) => unavailable(subject, failure)),
+  );
+  const resolved = output.stdout.trim();
+  const url = output.exitCode === 0 ? URL.parse(resolved) : null;
+  const repository = url?.pathname.slice(1).toLowerCase();
+  if (url?.hostname === "github.com" && isRepository(repository)) return repository;
   const failure = failureOf(output, undefined);
-  if (failure.reason === "gh_unauthenticated") return yield* unavailable(subject, failure);
+  if (url === null && !unresolvedCheckout.test(output.stderr))
+    return yield* unavailable(subject, failure);
+  const diagnostic = url === null ? failure.diagnostic : `gh resolved ${resolved}`;
   return yield* new SourceUnavailable({
-    message: `${subject} could not be resolved: run gyst from a clone of it, choose one with gh repo set-default, or pass the PR URL`,
-    detail: {
-      reason: "checkout_mismatch",
-      ...(failure.diagnostic && { diagnostic: failure.diagnostic }),
-    },
+    message: `${subject} could not be resolved on github.com: run gyst from a clone of it, choose one with gh repo set-default, or pass the PR URL`,
+    detail: { reason: "checkout_mismatch", ...(diagnostic && { diagnostic }) },
   });
 });
 

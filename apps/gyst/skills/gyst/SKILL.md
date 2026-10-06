@@ -20,7 +20,7 @@ Opening returns the saved session for this repository and scope unchanged when o
 
 Record `session.id` from the reply; every later session command requires `--session <id>`.
 
-A PR session's status `pullRequest` gives its whole native stack: ordered layers with titles, descriptions, bases and states, the selected PR, and verification (`stack.verifiedAt`, or `unavailable` when the latest discovery failed). Prepare and respond only in the selected PR's session. Other layers' titles and descriptions are context, not proof of behavior: before relying on a claim about another layer, open its session (`gyst session open <its PR URL>`) and inspect its code. `gyst session check --session <id> --stack` rechecks stack metadata only.
+A PR session's status `pullRequest` gives its whole native stack: ordered layers with titles, descriptions, bases and states, the selected PR, and verification (`stack.verifiedAt`, or `unavailable` when the latest discovery failed). Prepare and respond only in the selected PR's session. Other layers' titles and descriptions are context, not proof of behavior: before relying on a claim about another layer, open its session (`gyst session open --pr <its PR URL>`) and inspect its code. `gyst session check --session <id> --stack` rechecks stack metadata only.
 
 ## 2. Plan full coverage
 
