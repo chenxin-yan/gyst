@@ -3006,6 +3006,64 @@ describe("installed gyst in a sandboxed browser", () => {
     expect(writes).toEqual([]);
   }, 30_000);
 
+  it("returns to a session with its expanded reference at the same place, its open peek and its Back places, never touching Viewed", async () => {
+    const walk = await openWalk();
+    await publishWalk(walk);
+    await walk.publish(1, "refs", referenceOps);
+    const other = await freshSession();
+    const page = await newPage();
+    await page.setViewportSize({ width: 1280, height: 800 });
+    const writes = viewedOf(page);
+    await page.goto(`${one.origin}/session/${walk.id}`);
+    const pane = page.getByRole("main");
+    const side = page.getByRole("navigation", { name: "gyst" });
+    const identity = pane.getByRole("region", { name: "Captured file" });
+    const peekIsLong = () =>
+      waitFor(
+        async () =>
+          (await peekOf(page).getAttribute("aria-label")) === "Reference src/long.ts:L40–44 · new",
+        "the src/long.ts peek",
+      );
+    await side.getByRole("button", { name: /^Parse the config/ }).click();
+    await headingsAre(page, ["walk/b.ts", "walk/a.ts"]);
+    await pane.locator("[data-note=b-note]").getByRole("button", { name: "line 40" }).click();
+    await peekOf(page).getByRole("button", { name: "Expand" }).click();
+    await identity.getByText("src/long.ts", { exact: true }).waitFor();
+    await says(page, "long.ts:40 · new");
+    await keys(page, ...Array.from({ length: 30 }, () => "j"));
+    await says(page, "long.ts:70 · new");
+    await barOn(page, "export const line70 = 70;");
+    const top = await steady(() => topLine(page));
+    expect(top).toBeGreaterThan(1);
+
+    // The unchanged file is still expanded, its cursor and the line at the top where they were.
+    await toSessionAndBack(page, other);
+    await identity.getByText("src/long.ts", { exact: true }).waitFor();
+    await headingsAre(page, ["src/long.ts"]);
+    await says(page, "Captured file");
+    await says(page, "long.ts:70 · new");
+    await barOn(page, "export const line70 = 70;");
+    await waitFor(async () => (await topLine(page)) === top, `line ${top} at the top again`);
+
+    // Back still returns to the group and the peek Expand left.
+    await keys(page, "Backspace");
+    await headingsAre(page, ["walk/b.ts", "walk/a.ts"]);
+    await peekIsLong();
+    await says(page, "0/3 hunks viewed in 2 files");
+
+    // An open peek returns too, and Back has nowhere further to go.
+    await toSessionAndBack(page, other);
+    await headingsAre(page, ["walk/b.ts", "walk/a.ts"]);
+    await peekIsLong();
+    await keys(page, "Backspace");
+    await headingsAre(page, ["walk/b.ts", "walk/a.ts"]);
+    await side
+      .getByRole("button", { name: "Parse the config, 0 of 3 hunks viewed", exact: true })
+      .waitFor();
+    expect(writes).toEqual([]);
+    await settled(page);
+  }, 30_000);
+
   it("opens an overview's reference in flow inside the overview card, Back returns there, and closing the peek focuses the reference again", async () => {
     const walk = await openWalk();
     await publishWalk(walk);

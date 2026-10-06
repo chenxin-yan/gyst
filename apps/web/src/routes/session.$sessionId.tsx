@@ -504,10 +504,11 @@ function SessionReader(props: {
   const status = progress.status;
   const mounted = useMounted();
   // Captured-code navigation: the reference expanded in the main panel, the open peek, the places
-  // Back returns to, and the panel's restart key with where it starts. Never Viewed.
-  const [captured, setCaptured] = useState<CapturedRange>();
-  const [peek, setPeek] = useState<Peek>();
-  const [back, setBack] = useState<BackStack>([]);
+  // Back returns to, and the panel's restart key with where it starts. Never Viewed. A return from
+  // another session starts them as they were left.
+  const [captured, setCaptured] = useState<CapturedRange | undefined>(recalled?.captured);
+  const [peek, setPeek] = useState<Peek | undefined>(recalled?.peek);
+  const [back, setBack] = useState<BackStack>(recalled?.back ?? []);
   const [panel, setPanel] = useState<{ key: number; restore: Restore | undefined }>({
     key: 0,
     restore: undefined,
@@ -520,7 +521,7 @@ function SessionReader(props: {
   const peekOpener = useRef<HTMLElement | null>(null);
   const [refocus, setRefocus] = useState<{ origin: PeekOrigin; target: CapturedRange }>();
   // An expanded file opens its hidden lines in its own map, so Back finds the origin's as it was.
-  const expandedOpened = useRef(new Map<string, Map<number, Opened>>());
+  const expandedOpened = useRef(recalled?.expandedOpened ?? new Map<string, Map<number, Opened>>());
   const [notice, setNotice] = useState<string>();
   const readCode = useCallback<CodeRead>(
     (request) => operation({ ...request, session: session.id }),
@@ -746,12 +747,25 @@ function SessionReader(props: {
   // the recalled position back, the panel's own start is not the reader's place.
   const readingPlace = useRef<ReadingPlace>({
     review,
+    captured,
+    expandedOpened: expandedOpened.current,
+    peek,
+    back,
     inputMode,
     cursor,
     opened,
     top: recalled?.top,
   });
-  readingPlace.current = { ...readingPlace.current, review, inputMode, cursor };
+  readingPlace.current = {
+    ...readingPlace.current,
+    review,
+    captured,
+    expandedOpened: expandedOpened.current,
+    peek,
+    back,
+    inputMode,
+    cursor,
+  };
   useEffect(() => remember(session.id, snapshotId, readingPlace.current));
   const returning = useRef(recalled !== undefined);
   const onPosition = useCallback(
@@ -867,7 +881,7 @@ function SessionReader(props: {
     const diff = diffs.get(top.file);
     // Until the renderer opened the file's hidden lines again, the line may be hidden, or sit
     // lower once lines above it open.
-    const reopened = [...(opened.get(top.file) ?? [])].every(([index, open]) => {
+    const reopened = [...(openedNow.get(top.file) ?? [])].every(([index, open]) => {
       if (diff === undefined || diff.isPartial) return false;
       const range = hiddenRanges(diff).find((candidate) => candidate.index === index);
       return (

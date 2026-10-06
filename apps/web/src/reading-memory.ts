@@ -1,15 +1,21 @@
+import type { CapturedRange } from "@gyst/core/wire";
 import type { Cursor, Opened } from "./cursor.ts";
 import type { InputMode } from "./keymap.ts";
-import type { Restore } from "./navigation.ts";
+import type { BackStack, Peek, Restore } from "./navigation.ts";
 import type { ReviewView } from "./walkthrough.ts";
 
 /**
- * Where a reader left a session: its view, input mode, Vim cursor, the hidden lines it
- * opened (a place inside them exists only once they open again) and what was at the panel's top: a
- * reading position, or an overview's offset.
+ * Where a reader left a session: its view, the captured target expanded over it with that file's
+ * opened lines, the open peek and the places Back returns to, its input mode, Vim cursor, the hidden
+ * lines it opened (a place inside them exists only once they open again) and what was at the
+ * panel's top: a reading position, or an overview's offset.
  */
 export type ReadingPlace = {
   review: ReviewView;
+  captured: CapturedRange | undefined;
+  expandedOpened: Map<string, Map<number, Opened>>;
+  peek: Peek | undefined;
+  back: BackStack;
   inputMode: InputMode;
   cursor: Cursor | undefined;
   opened: Map<string, Map<number, Opened>>;
