@@ -49,7 +49,7 @@ import {
   startEngine,
   toLspPosition,
 } from "./lsp.ts";
-import { materializeSide } from "./navigation-inputs.ts";
+import { lookupAboveLayout, materializeSide } from "./navigation-inputs.ts";
 import { Paths } from "./paths.ts";
 import { daemonVersion } from "./protocol.ts";
 import { Sessions } from "./sessions.ts";
@@ -447,6 +447,13 @@ export class Navigation extends Context.Service<
         Effect.gen(function* () {
           yield* ready;
           const dir = yield* fs.makeTempDirectoryScoped({ directory: root });
+          // An answer must not depend on what the host holds beyond the captured files.
+          const above = yield* services(lookupAboveLayout(dir));
+          if (above !== undefined)
+            return yield* engineProblem(
+              `the engine would read a ${above} in or above gyst's data directory, which is not ` +
+                "captured; remove it, or set GYST_DATA_DIR elsewhere",
+            );
           const home = path.join(dir, "home");
           yield* fs.makeDirectory(home, { mode: 0o700 });
           const inputs = yield* services(materializeSide(manifest, side, dir));
@@ -758,9 +765,8 @@ export class Navigation extends Context.Service<
 
       /**
        * Keeps only locations in this side's captured text, with ranges converted through that
-       * text. Anything else (the engine's own libraries, host files reached through a relative
-       * import, `paths` or an ancestor `node_modules`) is only counted: no path or byte of it is
-       * returned.
+       * text. Anything else (the engine's own libraries, a host file a relative or absolute import
+       * reaches) is only counted: no path or byte of it is returned.
        */
       const fence = Effect.fnUntraced(function* (
         manifest: SnapshotManifest,

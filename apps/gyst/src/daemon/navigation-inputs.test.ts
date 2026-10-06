@@ -211,8 +211,8 @@ describe("materializeSide", () => {
     ]);
     expect((await materialize(manifest, "new", (await freshRoot()).root)).gaps).toEqual([
       unresolved("app/jsconfig.web.json", "/etc/x"),
-      unresolved("app/tsconfig.json", "../config/base"),
       unresolved("app/tsconfig.json", "@tsconfig/strictest"),
+      unresolved("app/tsconfig.json", "../config/base"),
     ]);
   });
 
@@ -241,6 +241,86 @@ describe("materializeSide", () => {
     ]);
   });
 
+  it("drops every config value naming an input outside the layout, and leaves out an unreadable config", async () => {
+    const config = (value: unknown) => JSON.stringify(value, null, 2) + "\n";
+    const appConfig = {
+      extends: ["./base.json", "../../outside.json", "pkg/tsconfig.json"],
+      files: ["main.ts", "../../escape.ts"],
+      include: ["src/**/*", "../../shared/**/*", "/abs/**/*"],
+      references: [{ path: "../lib" }, { path: "../../other" }, "bad"],
+      compilerOptions: {
+        strict: true,
+        baseUrl: "/ignored/by/the/engine",
+        paths: {
+          dep: ["/tmp/live-dep.ts", "./dep.ts"],
+          "host/*": ["../../host/*"],
+          "self/*": ["${configDir}/src/*", "${configDir}/../../*"],
+        },
+        rootDirs: ["src", "C:\\gen"],
+        typeRoots: ["../../types"],
+        types: ["node", "./local-types", "../../global-types"],
+      },
+    };
+    const manifest = manifestOf([
+      {
+        path: "app/tsconfig.json",
+        old: absent,
+        // Comments and trailing commas, as the engine accepts them.
+        new: await text(`// app\n${JSON.stringify(appConfig).replace(/}$/, ",}")}\n`),
+      },
+      { path: "app/base.json", old: absent, new: await text('{ /* fine */ "include": [], }\n') },
+      { path: "web/jsconfig.json", old: absent, new: await text("{ include: ['src'] }\n") },
+      { path: "web/src/a.js", old: absent, new: await text("export {};\n") },
+    ]);
+    const layout = await materialize(manifest, "new", (await freshRoot()).root);
+    const drop = (value: string) => ({
+      kind: "unresolved-import",
+      file: "app/tsconfig.json",
+      message: `cannot resolve ${value}`,
+    });
+    expect(layout.gaps).toEqual([
+      drop('extends "../../outside.json"'),
+      drop('extends "pkg/tsconfig.json"'),
+      drop('files "../../escape.ts"'),
+      drop('include "../../shared/**/*"'),
+      drop('include "/abs/**/*"'),
+      drop('references {"path":"../../other"}'),
+      drop('references "bad"'),
+      drop('paths "dep" "/tmp/live-dep.ts"'),
+      drop('paths "host/*" "../../host/*"'),
+      drop('paths "self/*" "${configDir}/../../*"'),
+      drop('rootDirs "C:\\\\gen"'),
+      drop('typeRoots "../../types"'),
+      drop('types "../../global-types"'),
+      {
+        kind: "unresolved-import",
+        file: "web/jsconfig.json",
+        message: "this config is not JSON with comments, so the engine reads none of it",
+      },
+    ]);
+    const files = await tree(layout.project);
+    expect(files["app/tsconfig.json"]!.toString()).toBe(
+      config({
+        extends: ["./base.json"],
+        files: ["main.ts"],
+        include: ["src/**/*"],
+        references: [{ path: "../lib" }],
+        compilerOptions: {
+          strict: true,
+          baseUrl: "/ignored/by/the/engine",
+          paths: { dep: ["./dep.ts"], "self/*": ["${configDir}/src/*"] },
+          rootDirs: ["src"],
+          typeRoots: [],
+          types: ["node", "./local-types"],
+        },
+      }),
+    );
+    // Nothing to drop: left byte for byte.
+    expect(files["app/base.json"]!.toString()).toBe('{ /* fine */ "include": [], }\n');
+    expect(files["web/jsconfig.json"]).toBeUndefined();
+    expect(layout.files).toBe(3);
+  });
+
   it("copies rather than links durable blobs, and writes nothing outside root", async () => {
     const manifest = await snapshot();
     const { outer, root } = await freshRoot();
@@ -253,7 +333,8 @@ describe("materializeSide", () => {
     expect(copy.nlink).toBe(1);
     expect(blob.nlink).toBe(1);
     expect(await readdir(outer)).toEqual(["root"]);
-    expect(await readdir(root)).toEqual(["project"]);
+    expect((await readdir(root)).sort()).toEqual(["package.json", "project"]);
+    expect(await readFile(join(root, "package.json"), "utf8")).toBe("{}\n");
     expect(await readdir(join(dataDir, "content", "staging"))).toEqual([]);
   });
 
@@ -266,7 +347,7 @@ describe("materializeSide", () => {
     const error = await run(Effect.flip(materializeSide(escaping, "old", root)));
     expect(error).toMatchObject({ _tag: "internal_error", detail: "../escape.ts" });
     expect(await readdir(outer)).toEqual(["root"]);
-    expect(await readdir(root)).toEqual(["project"]);
+    expect((await readdir(root)).sort()).toEqual(["package.json", "project"]);
     expect(await readdir(join(root, "project"))).toEqual([]);
   });
 

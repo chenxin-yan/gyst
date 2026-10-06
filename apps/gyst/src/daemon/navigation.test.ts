@@ -734,6 +734,111 @@ describe("Navigation over real captures and the workspace add-on", () => {
     );
   }, 60_000);
 
+  it("answers alike whatever the host holds outside the capture, or refuses what it cannot keep out", async () => {
+    // The test owns every directory between the data dir and the shared temporary directory.
+    const host = join(dir, "isolation");
+    const dataDir = join(host, "data");
+    const live = join(host, "live-dep.ts");
+    const use =
+      'import { value } from "dep";\n' +
+      'import { scoped } from "#scoped";\n' +
+      'import { left } from "left";\n' +
+      "export const result = value + scoped + left;\n";
+    const dep = "export const value = 1;\n";
+    const cwd = await repo("isolation-repo", { "README.md": "# fixture\n" });
+    await write(cwd, {
+      // A `paths` fallback the engine would try first, outside the capture.
+      "tsconfig.json": JSON.stringify({
+        compilerOptions: {
+          module: "esnext",
+          moduleResolution: "bundler",
+          paths: { dep: [live, "./dep.ts"] },
+        },
+      }),
+      "dep.ts": dep,
+      "use.ts": use,
+    });
+    const { session } = await runReal(
+      dataDir,
+      Effect.flatMap(Sessions, (sessions) =>
+        sessions.open({ command: "open", cwd, scope: { kind: "uncommitted" } }),
+      ),
+    );
+    const target = {
+      session: session.id,
+      snapshotId: session.snapshotId,
+      file: "use.ts",
+      side: "new",
+    } as const;
+    // Each state of the host gets fresh engines.
+    const answers = () =>
+      runReal(
+        dataDir,
+        Effect.all(
+          [
+            definition(target, at(use, 4, "value")),
+            definition(target, at(use, 4, "scoped")),
+            references(target, at(use, 4, "left")),
+            identifiers(target, 4),
+          ],
+          { concurrency: 1 },
+        ).pipe(Effect.map((payloads) => payloads.map(({ outcome }) => outcome))),
+      );
+
+    const clean = await answers();
+    expect(located({ outcome: clean[0]! })).toEqual({
+      kind: "locations",
+      symbol: { text: "value", range: span(use, 4, "value") },
+      locations: [{ file: "dep.ts", range: span(dep, 1, "value") }],
+      outside: 0,
+      gaps: [
+        {
+          kind: "unresolved-import",
+          file: "tsconfig.json",
+          message: `cannot resolve paths "dep" ${JSON.stringify(live)}`,
+        },
+        {
+          kind: "unresolved-import",
+          file: "use.ts",
+          message: 'cannot resolve "#scoped" (TS2307)',
+        },
+        { kind: "unresolved-import", file: "use.ts", message: 'cannot resolve "left" (TS2307)' },
+      ],
+    });
+
+    // A host file the config names, and a package.json above the layout scoping `#scoped`.
+    await writeFile(live, "export const value = 2;\n");
+    await writeFile(
+      join(host, "package.json"),
+      JSON.stringify({ type: "module", imports: { "#scoped": "./scoped.ts" } }),
+    );
+    await writeFile(join(host, "scoped.ts"), "export const scoped = 1;\n");
+    expect(await answers()).toEqual(clean);
+    await writeFile(live, "export const other = 2;\nexport const value = 3;\n");
+    await writeFile(join(host, "scoped.ts"), "export const scoped = 2;\n");
+    expect(await answers()).toEqual(clean);
+    for (const file of [live, join(host, "package.json"), join(host, "scoped.ts")]) await rm(file);
+    expect(await answers()).toEqual(clean);
+
+    // No option stops the engine looking up `node_modules` above the layout: navigation refuses.
+    for (const lookup of ["node_modules/left/index.d.ts", "tsconfig.json"]) {
+      await write(host, { [lookup]: lookup.endsWith(".ts") ? "export const left = 1;\n" : "{}\n" });
+      const refused = {
+        kind: "unavailable",
+        reason: {
+          kind: "engine",
+          message:
+            `the engine would read a ${lookup.split("/")[0]} in or above gyst's data ` +
+            "directory, which is not captured; remove it, or set GYST_DATA_DIR elsewhere",
+        },
+      };
+      expect(await answers()).toEqual([refused, refused, refused, refused]);
+      expect(engines()).toEqual([]);
+      await rm(join(host, lookup.split("/")[0]!), { recursive: true });
+    }
+    expect(await answers()).toEqual(clean);
+  }, 120_000);
+
   it("removes a crashed daemon's leftovers on first use, not when the layer is built", async () => {
     const dataDir = join(dir, "data-leftovers");
     const cwd = await repo("leftovers", { "src/math.ts": oldMath, "src/use.ts": oldUse });

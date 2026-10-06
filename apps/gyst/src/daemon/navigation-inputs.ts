@@ -17,11 +17,127 @@ const navigationInput = (path: string) =>
 const basename = (path: string) => path.slice(path.lastIndexOf("/") + 1);
 const projectConfig = (path: string) => /^[jt]sconfig(?:\..+)?\.json$/.test(basename(path));
 
-/** The `extends` targets of a project config, which is JSON with comments, as written. */
-const extendsOf = (text: string) =>
-  [...text.matchAll(/"extends"\s*:\s*("(?:[^"\\]|\\.)*"|\[[^\]]*\])/g)].flatMap(({ 1: value }) =>
-    [...value!.matchAll(/"((?:[^"\\]|\\.)*)"/g)].map(({ 1: target }) => target!),
+/**
+ * A config as the engine reads it: JSON with comments and trailing commas. Undefined when it is not
+ * an object in that syntax.
+ */
+const parseConfig = (text: string): Record<string, unknown> | undefined => {
+  let json = "";
+  for (let index = text.charCodeAt(0) === 0xfeff ? 1 : 0; index < text.length; index++) {
+    const char = text[index]!;
+    if (char === '"') {
+      let end = index + 1;
+      while (end < text.length && text[end] !== '"') end += text[end] === "\\" ? 2 : 1;
+      json += text.slice(index, end + 1);
+      index = end;
+    } else if (char === "/" && text[index + 1] === "/") {
+      const lineEnd = text.indexOf("\n", index);
+      index = lineEnd === -1 ? text.length : lineEnd - 1;
+    } else if (char === "/" && text[index + 1] === "*") {
+      const close = text.indexOf("*/", index + 2);
+      if (close === -1) return undefined;
+      json += " ";
+      index = close + 1;
+    } else if (char === "}" || char === "]") json = json.replace(/,\s*$/, "") + char;
+    else json += char;
+  }
+  if (json.trim() === "") return {};
+  try {
+    const config: unknown = JSON.parse(json);
+    return isRecord(config) ? config : undefined;
+  } catch {
+    return undefined;
+  }
+};
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === "object" && value !== null && !Array.isArray(value);
+
+const configDir = "${configDir}";
+/**
+ * Whether a path a config option names stays in the layout: relative to the config's directory,
+ * or for `${configDir}` to whichever config is built, which is in the layout too and at least as
+ * deep as its root.
+ */
+const staysInLayout = (config: string, value: string) => {
+  const slashed = value.replaceAll("\\", "/");
+  if (slashed.startsWith("/") || /^[A-Za-z]:/.test(slashed)) return false;
+  const from = slashed.startsWith(configDir) ? "" : posix.dirname(config);
+  const relative = slashed.startsWith(configDir) ? `.${slashed.slice(configDir.length)}` : slashed;
+  const resolved = posix.normalize(posix.join(from, relative));
+  return resolved !== ".." && !resolved.startsWith("../");
+};
+const relativeTarget = (target: string) => /^\.\.?\//.test(target);
+
+/**
+ * A config without the option values that could name an input outside the layout, which the engine
+ * would read from the host: a `paths` fallback, an `include`d directory, a package's base config.
+ * `extended` lists the `extends` targets kept, relative ones in the layout; `dropped` names each
+ * removed value. An emptied list stays empty rather than falling back to its default. The engine
+ * ignores `baseUrl`, and a `types` name resolves only through `typeRoots` or `node_modules`, so
+ * neither is a path here.
+ */
+const confineConfig = (file: string, config: Record<string, unknown>) => {
+  const dropped: Array<string> = [];
+  const inLayout = (entry: unknown) => typeof entry === "string" && staysInLayout(file, entry);
+  /** Keeps the entries of `owner[key]` that `stays` accepts, a lone value as it is or not at all. */
+  const confine = (
+    owner: Record<string, unknown>,
+    key: string,
+    option: string,
+    stays: (entry: unknown) => boolean = inLayout,
+  ) => {
+    if (!Object.hasOwn(owner, key)) return [];
+    const value = owner[key];
+    const entries = Array.isArray(value) ? value : [value];
+    const staying = entries.filter((entry) => {
+      if (stays(entry)) return true;
+      dropped.push(`${option} ${JSON.stringify(entry).slice(0, 200)}`);
+      return false;
+    });
+    if (staying.length === 0 && (!Array.isArray(value) || key === "extends")) delete owner[key];
+    else if (Array.isArray(value)) owner[key] = staying;
+    return staying;
+  };
+
+  const kept = { ...config };
+  const extended = confine(
+    kept,
+    "extends",
+    "extends",
+    (target) => typeof target === "string" && relativeTarget(target) && inLayout(target),
+  ) as Array<string>;
+  confine(kept, "files", "files");
+  confine(kept, "include", "include");
+  confine(
+    kept,
+    "references",
+    "references",
+    (reference) => isRecord(reference) && inLayout(reference.path),
   );
+  if (isRecord(kept.compilerOptions)) {
+    const options = { ...kept.compilerOptions };
+    kept.compilerOptions = options;
+    if (isRecord(options.paths)) {
+      const paths = { ...options.paths };
+      options.paths = paths;
+      for (const pattern of Object.keys(paths)) {
+        confine(paths, pattern, `paths ${JSON.stringify(pattern).slice(0, 200)}`);
+        if (Array.isArray(paths[pattern]) && paths[pattern].length === 0) delete paths[pattern];
+      }
+    }
+    confine(options, "rootDirs", "rootDirs");
+    confine(options, "typeRoots", "typeRoots");
+    confine(
+      options,
+      "types",
+      "types",
+      (name) =>
+        typeof name === "string" &&
+        (!/^(?:\.|\/|\\|[A-Za-z]:|\$\{configDir\})/.test(name) || inLayout(name)),
+    );
+  }
+  return { config: kept, extended, dropped };
+};
 
 const DependencyFields = Schema.Record(Schema.String, Schema.Unknown);
 const decodePackageJson = Schema.decodeUnknownOption(
@@ -47,7 +163,9 @@ const declaresPackages = (text: string) => {
  * names the inputs it knows are missing. Only that side's captured TS/JS/JSON text is written, as
  * private copies streamed from captured content: never links, so an engine write cannot reach a
  * durable blob, and never the checkout, installed packages or anything a script would produce.
- * `root` must exist and `root/project` must not. `files` and `bytes` are the cost of the layout.
+ * Configs are confined to the layout (see `confineConfig`), and `root/package.json` bounds the
+ * package scope. `root` must exist and `root/project` must not. `files` and `bytes` are the cost of
+ * the layout.
  */
 export const materializeSide = Effect.fn("materializeSide")(function* (
   manifest: SnapshotManifest,
@@ -59,6 +177,9 @@ export const materializeSide = Effect.fn("materializeSide")(function* (
   const path = yield* Path.Path;
   const project = path.join(root, "project");
   yield* fs.makeDirectory(project, { mode: 0o700 });
+  // Above a file no captured package.json covers, the engine takes the nearest host one as its
+  // package scope (`type`, `imports`). An empty one stops that search and reads as none at all.
+  yield* fs.writeFileString(path.join(root, "package.json"), "{}\n", { flag: "wx", mode: 0o600 });
 
   const copy = Effect.fnUntraced(function* (file: ManifestFile, blob: string, size: number) {
     const target = path.join(project, ...file.path.split("/"));
@@ -114,42 +235,76 @@ export const materializeSide = Effect.fn("materializeSide")(function* (
   );
   if (!configured) gaps.push({ kind: "no-project-config" });
   const written = results.flatMap(({ copied }) => (copied ? [copied] : []));
-  // The engine reports an unreadable `extends` only for the config, never for a queried file, and
-  // reads a config an `extends` names whatever its file name. A relative target resolves within
-  // the layout, `.json` added when missing; a package's never.
+  // A relative `extends` target resolves within the layout, `.json` added when missing.
   const laidOut = new Set(written.map((copied) => copied.path));
   const extendedBy = (config: string, target: string) => {
-    if (!/^\.\.?\//.test(target)) return undefined;
     const relative = posix.normalize(posix.join(posix.dirname(config), target));
     if (laidOut.has(relative)) return relative;
     return !relative.endsWith(".json") && laidOut.has(`${relative}.json`)
       ? `${relative}.json`
       : undefined;
   };
-  const extendsTargets = new Map<string, ReadonlyArray<string>>();
+  // The engine reads each project config and every config an `extends` reaches, whatever its name.
+  // Each is read once, so an `extends` cycle ends.
+  const confined = new Map<string, ReturnType<typeof confineConfig> | undefined>();
   const configs = [...laidOut].filter(projectConfig);
-  // Each config is read once, so an `extends` cycle ends.
   for (let config = configs.pop(); config !== undefined; config = configs.pop()) {
-    if (extendsTargets.has(config)) continue;
-    const targets = extendsOf(yield* fs.readFileString(path.join(project, ...config.split("/"))));
-    extendsTargets.set(config, targets);
-    for (const target of targets) {
-      const base = extendedBy(config, target);
-      if (base !== undefined) configs.push(base);
+    if (confined.has(config)) continue;
+    const target = path.join(project, ...config.split("/"));
+    const parsed = parseConfig(yield* fs.readFileString(target));
+    if (parsed === undefined) {
+      // What the engine would make of it is unknown, so it gets none of it.
+      yield* fs.remove(target);
+      laidOut.delete(config);
+      confined.set(config, undefined);
+      continue;
+    }
+    const kept = confineConfig(config, parsed);
+    if (kept.dropped.length > 0)
+      yield* fs.writeFileString(target, `${JSON.stringify(kept.config, null, 2)}\n`);
+    confined.set(config, kept);
+    for (const base of kept.extended) {
+      const found = extendedBy(config, base);
+      if (found !== undefined) configs.push(found);
     }
   }
-  for (const file of manifest.files)
-    for (const target of extendsTargets.get(file.path) ?? [])
-      if (extendedBy(file.path, target) === undefined)
-        gaps.push({
-          kind: "unresolved-import",
-          file: file.path,
-          message: `cannot resolve extends ${JSON.stringify(target).slice(0, 200)}`,
-        });
+  // The engine reports an unreadable `extends` only for the config, never for a queried file.
+  for (const file of manifest.files) {
+    if (!confined.has(file.path)) continue;
+    const kept = confined.get(file.path);
+    const messages =
+      kept === undefined
+        ? ["this config is not JSON with comments, so the engine reads none of it"]
+        : [
+            ...kept.dropped.map((dropped) => `cannot resolve ${dropped}`),
+            ...kept.extended
+              .filter((target) => extendedBy(file.path, target) === undefined)
+              .map((target) => `cannot resolve extends ${JSON.stringify(target).slice(0, 200)}`),
+          ];
+    for (const message of messages)
+      gaps.push({ kind: "unresolved-import", file: file.path, message });
+  }
+  const layout = written.filter((copied) => laidOut.has(copied.path));
   return {
     project,
-    files: written.length,
-    bytes: written.reduce((total, { bytes }) => total + bytes, 0),
+    files: layout.length,
+    bytes: layout.reduce((total, { bytes }) => total + bytes, 0),
     gaps,
   };
+});
+
+const hostLookups = ["node_modules", "tsconfig.json", "jsconfig.json"];
+/**
+ * The first name the engine would look up in a directory above `root`, up to the file system's
+ * root, that exists there: `node_modules` for a bare specifier or type package, or a
+ * `tsconfig.json` or `jsconfig.json` as the config of a file no captured config includes. No option
+ * the engine honours stops either search, so a layout can only be checked for them.
+ */
+export const lookupAboveLayout = Effect.fn("lookupAboveLayout")(function* (root: string) {
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  let dir = yield* fs.realPath(root);
+  for (let parent = path.dirname(dir); parent !== dir; dir = parent, parent = path.dirname(dir))
+    for (const name of hostLookups) if (yield* fs.exists(path.join(parent, name))) return name;
+  return undefined;
 });
