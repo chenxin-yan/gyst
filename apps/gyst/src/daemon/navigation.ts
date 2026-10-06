@@ -20,10 +20,11 @@ import {
 } from "@gyst/core";
 import {
   Cause,
+  Clock,
   Context,
   Data,
   Deferred,
-  type Duration,
+  Duration,
   Effect,
   Exit,
   Fiber,
@@ -72,8 +73,9 @@ const engineProblem = (message: string) => new Unavailable({ reason: { kind: "en
 
 /**
  * How many engines may exist across the daemon (from materialization to teardown), how long one may
- * sit with no active query before it stops, and how long one query may wait for its engine and
- * answer before that engine is stopped.
+ * sit with no active query before it stops, and how long one query may take from asking for an
+ * engine slot to its answer: past it, a query still queued stops waiting, and an engine still
+ * preparing or answering it is stopped.
  */
 export interface NavigationPolicy {
   readonly engines: number;
@@ -578,13 +580,16 @@ export class Navigation extends Context.Service<
       /**
        * The analysis for this key, claimed for one query, starting its preparation in the background
        * if there is none. At capacity it first stops the least recently used analysis no query
-       * holds, or waits (queued) until a slot frees or an analysis goes idle.
+       * holds, or waits (queued) until a slot frees or an analysis goes idle, but not past
+       * `deadline` (epoch milliseconds). A wait ending there has claimed nothing, so it stops no
+       * engine.
        */
       const acquire = (
         request: Target,
         manifest: SnapshotManifest,
         addon: Available,
-      ): Effect.Effect<Analysis, Stopped> => {
+        deadline: number,
+      ): Effect.Effect<Analysis, Stopped | Unavailable> => {
         const key = analysisKey(request.session, request.snapshotId, request.side, addon);
         let waiting = false;
         const setWaiting = (next: boolean) => {
@@ -594,8 +599,10 @@ export class Navigation extends Context.Service<
           if (count === 0) queued.delete(key);
           else queued.set(key, count);
         };
-        type Step = { readonly analysis: Analysis } | { readonly retryAfter: Effect.Effect<void> };
-        const attempt: Effect.Effect<Analysis, Stopped> = lock(
+        type Step =
+          | { readonly analysis: Analysis }
+          | { readonly retryAfter: Effect.Effect<void, Unavailable> };
+        const attempt: Effect.Effect<Analysis, Stopped | Unavailable> = lock(
           Effect.suspend((): Effect.Effect<Step, Stopped> => {
             const existing = analyses.get(key);
             if (existing) {
@@ -641,7 +648,17 @@ export class Navigation extends Context.Service<
               return Effect.succeed({ retryAfter: close(victim) });
             }
             setWaiting(true);
-            return Effect.succeed({ retryAfter: Effect.interruptible(Deferred.await(changed)) });
+            const next = Deferred.await(changed);
+            return Effect.succeed({
+              retryAfter: Effect.flatMap(Clock.currentTimeMillis, (now) =>
+                Effect.interruptible(next).pipe(
+                  Effect.timeoutOrElse({
+                    duration: Math.max(0, deadline - now),
+                    orElse: () => Effect.fail(engineProblem("no engine was free in time")),
+                  }),
+                ),
+              ),
+            });
           }),
         ).pipe(
           Effect.flatMap((step: Step) =>
@@ -702,9 +719,10 @@ export class Navigation extends Context.Service<
       });
 
       /**
-       * Runs `use` on the ready engine for the request's key, waiting for its preparation and answer
-       * at most `policy.query`. Whatever happens, nothing is returned unless the snapshot is still
-       * the session's current one once the engine has answered.
+       * Runs `use` on the ready engine for the request's key, waiting for an engine slot, its
+       * preparation and answer at most `policy.query` altogether. Whatever happens, nothing is
+       * returned unless the snapshot is still the session's current one once the engine has
+       * answered.
        */
       const analysed = <A>(
         request: Target,
@@ -720,23 +738,26 @@ export class Navigation extends Context.Service<
             discard(analysis, reason).pipe(
               Effect.andThen(Effect.fail(new Unavailable({ reason }))),
             );
+          const deadline = (yield* Clock.currentTimeMillis) + Duration.toMillis(policy.query);
           const result = yield* Effect.acquireUseRelease(
-            acquire(request, manifest, addon),
+            acquire(request, manifest, addon, deadline),
             (analysis) =>
-              Deferred.await(analysis.prepared).pipe(
-                Effect.flatMap((prepared) => use(prepared, analysis)),
-                Effect.catchTag("EngineFailure", ({ message }) =>
-                  stop(analysis, { kind: "engine", message }),
+              Effect.flatMap(Clock.currentTimeMillis, (now) =>
+                Deferred.await(analysis.prepared).pipe(
+                  Effect.flatMap((prepared) => use(prepared, analysis)),
+                  Effect.catchTag("EngineFailure", ({ message }) =>
+                    stop(analysis, { kind: "engine", message }),
+                  ),
+                  // A stuck engine is stopped rather than left holding its slot.
+                  Effect.timeoutOrElse({
+                    duration: Math.max(0, deadline - now),
+                    orElse: () =>
+                      stop(analysis, {
+                        kind: "engine",
+                        message: "the engine did not answer in time and was stopped",
+                      }),
+                  }),
                 ),
-                // A stuck engine is stopped rather than left holding its slot.
-                Effect.timeoutOrElse({
-                  duration: policy.query,
-                  orElse: () =>
-                    stop(analysis, {
-                      kind: "engine",
-                      message: "the engine did not answer in time and was stopped",
-                    }),
-                }),
               ),
             release,
           ).pipe(

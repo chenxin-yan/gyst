@@ -1112,6 +1112,49 @@ describe("Navigation lifecycle", () => {
     );
   }, 60_000);
 
+  it("counts waiting for an engine slot against the query bound, and drops a query that expires queued", async () => {
+    const dataDir = join(dir, "data-queue-deadline");
+    const cwd = await changedRepo("queue-deadline");
+    await runReal(
+      dataDir,
+      Effect.gen(function* () {
+        const { session, blob, target } = yield* changedSession(cwd);
+        const sides = Effect.map(readiness(session.id, session.snapshotId), ({ sides }) => sides);
+        expect(located(yield* definition(target("new"), plusAt("new"))).locations).toHaveLength(1);
+        const engine = engines()[0]!.pid;
+
+        // The only engine is busy with a query held reading its answer's text, and frozen, so
+        // stopping it once that query times out takes well over a second.
+        const held = yield* hold(new Set([blob("src/math.ts", "new")]));
+        const busy = yield* Effect.forkChild(definition(target("new"), plusAt("new")));
+        yield* Deferred.await(held.started);
+        readGate = undefined;
+        process.kill(engine, "SIGSTOP");
+        const asked = Date.now();
+        const queued = yield* Effect.forkChild(definition(target("old"), plusAt("old")));
+        yield* until(Effect.map(sides, ({ old }) => old.kind === "queued"));
+
+        expect((yield* Fiber.join(queued)).outcome).toEqual({
+          kind: "unavailable",
+          reason: { kind: "engine", message: "no engine was free in time" },
+        });
+        // Its own one second, not the busy query's second and then another.
+        expect(Date.now() - asked).toBeLessThan(1_800);
+        expect((yield* sides).old).toEqual({ kind: "stopped" });
+        expect((yield* Fiber.join(busy)).outcome).toEqual({
+          kind: "unavailable",
+          reason: { kind: "engine", message: "the engine did not answer in time and was stopped" },
+        });
+        yield* Deferred.succeed(held.release, undefined);
+        expect(alive(engine)).toBe(false);
+        // Nothing of the expired wait is left: the next query takes the freed slot.
+        expect(located(yield* definition(target("old"), plusAt("old"))).locations).toHaveLength(1);
+        expect((yield* sides).old.kind).toBe("ready");
+      }),
+      { engines: 1, idle: "60 seconds", query: "1 second" },
+    );
+  }, 60_000);
+
   it("cancels a preparation a refresh overtakes without holding up review", async () => {
     const dataDir = join(dir, "data-refresh");
     const cwd = await changedRepo("refresh");
