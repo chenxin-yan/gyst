@@ -22,14 +22,14 @@ Gyst helps a human build the mental model needed to judge agent-generated change
 
 ## 1. End-to-end experience
 
-1. `gyst` selects uncommitted changes; `gyst main...feature` selects the recorded Git range; `gyst <PR URL>` resolves a GitHub PR. The foreground launcher serves the local web app and opens the browser, or prints a private bootstrap URL when a local browser is unavailable. `gyst --session <id>` resumes a saved session.
+1. `gyst` selects uncommitted changes; `gyst main...feature` selects the recorded Git range; `gyst --pr <number | PR URL>` resolves a GitHub PR, a number in the repository `gh` resolves for the checkout. `gyst --session <id>` resumes a saved session. The command prints the session's link and opens it in a local browser when there is one, then exits; the daemon serves the web app ([ADR 0002](../adr/0002-daemon-serves-the-viewer.md)).
 2. Create or reuse the session for that repository/scope. Reuse never implicitly refreshes, overwrites guidance or deletes another session. Initial capture completes safely before publishing its snapshot; show capture progress. A new session opens as a plain diff viewer.
-3. `/gyst` uses headless session opening, inspects the whole scoped change and relevant context, plans full coverage/order, then publishes complete groups progressively. The human can read immediately. Live publication preserves reading position and drafts.
+3. `/gyst` uses headless session opening, inspects the whole scoped change and relevant context, plans full coverage/order, then publishes complete groups progressively, sending the human the session's link once the first groups are published. The human can read immediately. Live publication preserves reading position and drafts.
 4. The human reads the walkthrough, files or folders, expands context, follows captured links, optionally uses semantic navigation, marks hunks Viewed and comments on code or replies to notes. Navigation never changes Viewed.
-5. The human invokes `/gyst-respond` in the existing harness for the exact session. A copyable instruction names that skill and session, never a token. There is no agent launch, polling wait, automatic wake or persistent handoff UI. The workflow retrieves one bounded-at-invocation pending set, responds and stops; later messages wait for another invocation.
+5. The human invokes `/gyst-respond` in the existing harness for the exact session. A copyable instruction names that skill and session. There is no agent launch, polling wait, automatic wake or persistent handoff UI. The workflow retrieves one bounded-at-invocation pending set, responds and stops; later messages wait for another invocation.
 6. Questions alone authorize explanations, not fixes. A message the human marks Change request authorizes the fix, and refresh and guidance repair once the fix is represented by the recorded scope. A local edit is not automatically part of a committed range/remote PR: do not retarget, commit, push or restack to make it fit.
 7. Explicit refresh atomically replaces the snapshot and reconciles progress/guidance/conversations. The human re-reads changed guidance and resolves threads independently of Viewed. All-viewed and unresolved-thread counts are distinct; no extra review-complete state or automatic session deletion.
-8. A ready walkthrough can be exported as a standalone read-only HTML file after disclosure approval. Closing the browser/launcher leaves the saved session intact.
+8. A ready walkthrough can be exported as a standalone read-only HTML file after disclosure approval. Closing the browser leaves the saved session intact.
 
 ## 2. Session, scope and source acquisition
 
@@ -221,18 +221,17 @@ The agent gets whole-stack ordered identities, titles/descriptions, relationship
 ### Module ownership
 
 ```text
-browser ── HTTP reads/commands + SSE invalidations ── foreground gyst
-                                                        │
-harness ── gyst session … ── daemon client ── Unix socket ┤
-                                                        ▼
-                              authoritative daemon / Sessions
-                               ├─ pure core review operations
+browser ── HTTP reads/commands + SSE invalidations ──┐
+                                                     ▼
+harness ── gyst session … ── Unix socket ── authoritative daemon / Sessions
+                                             ├─ HTTP adapter: SPA, browser operations, SSE
+                                             ├─ pure core review operations
                                ├─ source acquisition (Git / gh)
                                ├─ SessionStore + captured content
                                └─ on-demand frozen-project analysis
 ```
 
-Retain Effect services/layers and crust command handling, porting the platform adapters to Node. Do not move persisted review state into the bridge or duplicate use cases across transports. The frontend never reads live Git/filesystem data directly. Source acquisition, immutable captured inputs, mutable review state and disposable analysis have different lifetimes; keep those seams explicit without speculative storage/hosting frameworks.
+Retain Effect services/layers and crust command handling, porting the platform adapters to Node. The HTTP and socket adapters call the same review operations; browser-specific validation and human authority live in the HTTP adapter. Do not duplicate use cases across transports. The frontend never reads live Git/filesystem data directly. Source acquisition, immutable captured inputs, mutable review state and disposable analysis have different lifetimes; keep those seams explicit without speculative storage/hosting frameworks.
 
 CLI parsing ends at the CLI entry point. Replace today's `{command, cwd, args, stdin}` forwarding with validated structured operation payloads beneath it. A browser may not submit arbitrary CLI arguments, paths, Git options or executables. Caller authority comes from the entry point/authenticated context, never a user-supplied role field. Agent batches cannot impersonate humans, mark Viewed or resolve/reopen threads.
 
@@ -281,29 +280,28 @@ Validate the whole resulting batch and persist all-or-nothing. A complete group 
 
 Production currently polls; implement native daemon subscriptions forwarded as SSE. They are invalidations after commit, not an append-only event log. Initial subscribe + authoritative read must close the missed-update race. Reconnect, daemon restart, overflow or stream failure triggers latest-state resynchronization. Coalescing is allowed; silent staleness is not.
 
-Responses/notifications identify session, snapshot where relevant, state version and connection/daemon generation. Old responses cannot overwrite a newer selection, snapshot or generation. Foreground recovery resubscribes rather than recreating state. Closing one foreground server stops its HTTP/SSE lifetime only, not saved sessions or independent CLI clients. Keep the daemon's existing inode-aware hard-link ownership/reclaim guarantees when porting sockets; the packaging fixture's simpler ownership is not a substitute.
+Responses/notifications identify session, snapshot where relevant, state version and connection/daemon generation. Old responses cannot overwrite a newer selection, snapshot or generation. Browser recovery resubscribes rather than recreating state. Closing a tab ends only its subscription, not saved sessions or independent CLI clients. Keep the daemon's existing inode-aware hard-link ownership/reclaim guarantees when porting sockets; the packaging fixture's simpler ownership is not a substitute.
 
 ## 9. Optional TS/JS navigation
 
 - Official optional package `@gyst/navigation-typescript`, executable `gyst-navigation-typescript`; these are planned release artifacts, not claims of current availability. Core and add-on publish in lockstep with exact matching release versions. Pin the tested native TypeScript engine (prototype candidate 7.0.2), not the project's compiler or an arbitrary configured server.
 - Install on the daemon host: `npm install -g @gyst/navigation-typescript@<running-gyst-version>`, substituting the actual release in UI instructions. No in-app downloader, dependency installation, project scripts or arbitrary server configuration.
-- Discover executable using the launching CLI's PATH and pass its validated location/version to the daemon; resident-daemon PATH may be stale. Spawn with explicit arguments, not a shell string. Browser requests cannot nominate executables.
-- Missing add-on offers the exact command, Check again and Continue without navigation. Check again sees installation into the launch PATH's existing global bin directory without restarting. A changed Node/npm prefix/PATH needs a launcher restart. Mismatch gets an exact-version update instruction, distinct from project-input problems.
+- Discover the executable using the PATH of the latest CLI invocation that opened the session, sent over the socket with its validated location/version; resident-daemon PATH may be stale. Spawn with explicit arguments, not a shell string. Browser requests cannot nominate executables.
+- Missing add-on offers the exact command, Check again and Continue without navigation. Check again sees installation into the launch PATH's existing global bin directory without restarting. A changed Node/npm prefix/PATH takes effect when `gyst` or `session open` runs again from the new environment. Mismatch gets an exact-version update instruction, distinct from project-input problems.
 - Start only on semantic demand, not diff opening. Daemon owns preparation over isolated old/new captured project inputs for the **current snapshot**. No live-workspace mode. Retained historical code is readable but has no promised semantic environment.
 - Project-only inputs exclude `node_modules`; missing dependencies/generated source produce potentially incomplete results with named gaps, or Unavailable with a reason. Zero incomplete results do not mean no usages. Results outside captured content cannot read arbitrary host files. No arbitrary TS/JS/framework virtual-file compatibility promise.
 - Diff/guidance/authored links remain usable during Preparing or failure. Label query symbol/snapshot/side. Delayed results retain their original identity and cannot become results for a refreshed snapshot.
-- Starting lifecycle policy: at most two engines across the daemon, stop after 60 seconds idle (not during an active query). Queue preparation without blocking review operations; cancel obsolete snapshot work/discard stale results. Delete session/stop daemon tears down its analysis; closing a launcher leaves unneeded analysis to expire. Reconstructible materializations may be reclaimed without deleting durable captured content. These limits are tunable policy, not measured latency/memory guarantees.
+- Starting lifecycle policy: at most two engines across the daemon, stop after 60 seconds idle (not during an active query). Queue preparation without blocking review operations; cancel obsolete snapshot work/discard stale results. Delete session/stop daemon tears down its analysis; closing a tab leaves unneeded analysis to expire. Reconstructible materializations may be reclaimed without deleting durable captured content. These limits are tunable policy, not measured latency/memory guarantees.
 
 ## 10. CLI and portable skills
 
 Target command surface (not current commands):
 
 ```text
-gyst [<Git range> | <PR URL>]
-gyst --session <id>
+gyst [<Git range> | --pr <number | PR URL> | --session <id>]
 gyst skills
 
-gyst session open [<scope>]
+gyst session open [<Git range> | --pr <number | PR URL> | --session <id>]
 gyst session list
 gyst session status --session <id>
 gyst session diff --session <id> [read filter]
@@ -318,11 +316,11 @@ gyst session export --session <id>      # disclosure preview and human approval
 
 The export spelling above integrates the later export decision into the minimal command family; exact target/filter/approval flag spelling is implementation-owned. It must not create a silent approval bypass. Every durable mutation exposes caller-stable request identity (including pickup; do not mint a new one on manual retry) and applicable revision/snapshot preconditions. Generate precise schemas/help/examples together during implementation, not separately maintained protocol documentation.
 
-`session open` returns JSON with stable session/snapshot identity and launch/inspection information, without starting a foreground server/browser. Session commands use machine-readable JSON successes and structured stderr errors; export's explicit human disclosure flow must remain usable by a human without confusing the harness JSON interface. Keep daemon lifecycle automatic/internal. No public daemon-management or hosted connection/auth flags.
+`gyst` and `session open` take the same selection, built by one shared request builder, and both exit once the session is open. `gyst` prints the session's link and opens a local browser when there is one; `session open` returns JSON with stable session/snapshot identity and the same link, never opening a browser. Session commands use machine-readable JSON successes and structured stderr errors; export's explicit human disclosure flow must remain usable by a human without confusing the harness JSON interface. Keep daemon lifecycle automatic/internal. No public daemon-management or hosted connection/auth flags.
 
 Ship two workflows plus generated `gyst-cli` reference:
 
-- `/gyst`: prepare/revisit selected scope, understand the whole change, publish complete groups progressively; reopening alone does not refresh/rewrite.
+- `/gyst`: prepare/revisit selected scope, understand the whole change, publish complete groups progressively and send the human the session's link once the first groups are published; reopening alone does not refresh/rewrite.
 - `/gyst-respond`: one retry-safe pending bundle, existing-thread responses and fixes the human marked Change request; repair reusable guidance where needed, report unfinished work and stop. An empty bundle is reported from the returned progress: with every hunk Viewed, the review is finished with nothing to answer; otherwise the human is still reading. Either way the workflow stops rather than asking or polling.
 - Both reach one authoritative bundled authoring reference and examples on demand. No per-harness copies or dependency on private skills. `gyst skills` installs the package's own artifacts.
 
@@ -354,17 +352,17 @@ Client-render React with standalone TanStack Router, assets located relative to 
 
 ### Local and SSH security
 
-Bind loopback only. Use a per-launch bootstrap token exchanged for a scoped cookie, remove it from the address bar, never log it or copy it into harness instructions, and send `Referrer-Policy: no-referrer`. Printing the private launch URL for the operator is the intentional bootstrap, not permission for request/access logs to capture the token. Protect reads, mutations and SSE, not just initial HTML. Enforce strict Host/Origin checks and safe captured-path resolution. Do not trust forwarded-host headers. Scope authentication to the launcher; cookie names alone are not a port-isolation guarantee. Verify bootstrap lifecycle and cross-launch isolation as security gates.
+The daemon serves the viewer on loopback only, at port 4978, trying each next port up to 4987 when one is taken and keeping the port it bound for its lifetime; every link names the actual port. `GYST_PORT` sets the starting port for development and tests. There is no login: links are plain `http://localhost:<port>/session/<id>` URLs that the agent may relay. Accept only loopback `Host` names (any port), require `Origin` to match `Host` on every mutation, refuse forwarding headers and resolve captured paths safely; send `Referrer-Policy: no-referrer`. These stop other origins, including DNS rebinding. Gyst assumes a single-user machine: any local OS user can reach the port, and same-user processes can act as the human ([ADR 0002](../adr/0002-daemon-serves-the-viewer.md)). This replaces the per-launch bootstrap token and cookie Phase 1 delivered; a login for shared hosts is future work.
 
 Remote development uses SSH forwarding only:
 
 ```text
-ssh -N -o ExitOnForwardFailure=yes -L 127.0.0.1:LOCAL:127.0.0.1:REMOTE user@remote
+ssh -N -o ExitOnForwardFailure=yes -L 127.0.0.1:4978:127.0.0.1:4978 user@remote
 ```
 
-Open the printed URL using LOCAL. Validate Origin against the request Host, not blindly against the listening port; unequal local/remote ports must work. No LAN/reverse-proxy/Tailscale Serve mode. The prototype's public tunnel is not a production access policy.
+One forward serves every session for the daemon's lifetime. Forward to the port the printed link names; a different local port works, using it in the link. No LAN/reverse-proxy/Tailscale Serve mode. The prototype's public tunnel is not a production access policy.
 
-A future hosted deployment uses server-managed workspaces and the same review operations/UI. Do not build it now: remote CLI authentication, provisioning, credentials and tenant/process isolation remain future work, not configuration of local tokens. No initial local-workspace upload parity promise.
+A future hosted deployment uses server-managed workspaces and the same review operations/UI. Do not build it now: remote CLI authentication, provisioning, credentials and tenant/process isolation remain future work. No initial local-workspace upload parity promise.
 
 ### Progressive loading and measured performance
 
@@ -386,7 +384,7 @@ Phases are dependency-ordered increments, not separate competing models. Within 
 
 **Change:** port retained runtime/platform/daemon/CLI infrastructure and tooling to Node/Vite+; replace the root TUI entry with the foreground SPA bridge; remove TUI/OpenTUI/Solid/editor dependencies and tests. Preserve inode-aware daemon ownership and error/cancellation behavior. Build/package skills and SPA via supported Bun-free interfaces. Introduce structured daemon requests beneath CLI parsing and HTTP/SSE without duplicating review logic.
 
-**Gates:** Bun absent from build/runtime PATH; minimum and current Node 24 patch; globally install packed artifact outside checkout; help, parser errors, installed skills, root/deep routes/static assets and unknown-route handling; no uncaught browser errors. Exercise daemon start/reuse/stale-socket relaunch, persistence/restart and independent launcher lifetime. Preserve single-instance race checks. Authenticate HTTP/SSE; hostile Host/Origin/path/executable attempts fail; actual unequal-port SSH forwarding works. Test subscribe/read race, overflow, reconnect/restart, stale generations and coalesced updates.
+**Gates:** Bun absent from build/runtime PATH; minimum and current Node 24 patch; globally install packed artifact outside checkout; help, parser errors, installed skills, root/deep routes/static assets and unknown-route handling; no uncaught browser errors. Exercise daemon start/reuse/stale-socket relaunch, persistence/restart and independent launcher lifetime. Preserve single-instance race checks. Authenticate HTTP/SSE; hostile Host/Origin/path/executable attempts fail; actual unequal-port SSH forwarding works. Test subscribe/read race, overflow, reconnect/restart, stale generations and coalesced updates. [ADR 0002](../adr/0002-daemon-serves-the-viewer.md) later replaces this phase's foreground bridge and per-launch authentication; its ticket owns the replacement gates.
 
 ### Phase 2 — Captured-source and session foundation
 
@@ -477,3 +475,4 @@ Hosted deployment/local uploads, multi-user review, GitHub review submission and
 | [Evaluating the quality of agent guidance](https://github.com/chenxin-yan/gyst/issues/80#issuecomment-5875701403)                        | Four-fixture human quality gate                                  |
 | [Responsiveness and large-diff navigation](https://github.com/chenxin-yan/gyst/issues/82#issuecomment-5876552163)                        | No preset quotas, progressive loading, measured release gates    |
 | [Sharing a walkthrough as a standalone HTML export](https://github.com/chenxin-yan/gyst/issues/83#issuecomment-5877026544)               | Export, disclosure/privacy/offline gates                         |
+| [The daemon serves the viewer, without login](../adr/0002-daemon-serves-the-viewer.md)                                                   | Journey, transport, CLI, local/SSH security, add-on discovery    |
