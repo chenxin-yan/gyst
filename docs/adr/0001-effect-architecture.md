@@ -1,7 +1,8 @@
 # ADR 0001: Effect as the application runtime
 
 Status: accepted (2026-09-20); platform and UI assumptions revised by the
-[web review handoff](../plans/web-review-ui.md). The Node/web target below is an accepted plan,
+[web review handoff](../plans/web-review-ui.md); the foreground bridge and its per-launch login are
+replaced by [ADR 0002](0002-daemon-serves-the-viewer.md). The Node/web target below is an accepted plan,
 not a claim that the current Bun/TUI implementation has migrated.
 
 ## Context
