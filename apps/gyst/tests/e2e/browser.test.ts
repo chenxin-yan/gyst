@@ -4607,4 +4607,80 @@ describe("installed gyst in a sandboxed browser", () => {
     await settled(page);
     expect(await stop(b.proc, "SIGINT")).toBe(130);
   }, 30_000);
+
+  it("updates another viewer's stack switcher live after a CLI recheck and a layer opened elsewhere, without a reload or moving its reader", async () => {
+    deletePullRequestSessionsAfter();
+    onTestFinished(() => github.stack());
+    const b = await launchIn(github.checkout, pullRequestUrl(2));
+    const [opener, viewer] = [await newPage(), await newPage()];
+    for (const page of [opener, viewer]) await page.setViewportSize({ width: 1280, height: 800 });
+    // Every loader read of the viewer: a reload would read the session's diff again.
+    const reloads: unknown[] = [];
+    viewer.on("request", (request) => {
+      if (operationOf(request)?.command === "diff") reloads.push(operationOf(request));
+    });
+    await go(opener, b.url);
+    await viewer.goto(`${b.origin}${b.path}`);
+    for (const page of [opener, viewer]) {
+      await page.getByRole("main").getByText("b two").waitFor();
+      await says(page, "Live");
+    }
+    await says(viewer, "b.txt · file");
+    await keys(viewer, "j", "j");
+    await says(viewer, "b.txt:2 · new");
+    await settled(viewer);
+    const position = await positionOf(viewer);
+    const { revision } = await gyst("session", "status", "--session", b.id);
+    reloads.length = 0;
+
+    const { trigger, dialog } = switcher(viewer);
+    await trigger.click();
+    await dialog.waitFor();
+    const verification = dialog.getByRole("status");
+    expect(await verification.textContent()).toBe("Verified just now");
+    expect((await stackRowsOf(viewer))[2]).toEqual([
+      null,
+      "3",
+      "#3 Add layer C",
+      "open",
+      "Not openedOpen #3",
+    ]);
+
+    // The CLI's recheck fails at GitHub: the viewer says so, keeping the last verified layers.
+    await github.fake.fail("stack", 2, {
+      exitCode: 1,
+      stdout: '{"message":"Server Error","status":"502"}',
+      stderr: "gh: Server Error (HTTP 502)\n",
+    });
+    await gyst("session", "check", "--session", b.id, "--stack");
+    await verification
+      .getByText(
+        "Couldn't verify the stack (the GitHub request failed, just now); showing it as of just now",
+        { exact: true },
+      )
+      .waitFor();
+    expect(await trigger.textContent()).toBe("Stack 2/3");
+
+    // The other page opens C from its own switcher: the viewer's row for C counts its session.
+    const other = switcher(opener);
+    await other.trigger.click();
+    await other.dialog.getByRole("button", { name: "Open #3" }).click();
+    await opener.waitForURL((url) => url.pathname !== b.path);
+    await opener.getByRole("main").getByText("layer c").waitFor();
+    await waitFor(
+      async () =>
+        JSON.stringify((await stackRowsOf(viewer))[2]) ===
+        JSON.stringify([null, "3", "#3 Add layer C", "open", "Viewed 0/1 hunk"]),
+      "C's session in the viewer's switcher",
+    );
+    expect(await dialog.getByRole("link", { name: "#3 Add layer C" }).count()).toBe(1);
+
+    // Metadata only: the viewer read status, never its session again, and reads where it was.
+    await settled(viewer);
+    expect(reloads).toEqual([]);
+    expect(await positionOf(viewer)).toEqual(position);
+    expect((await gyst("session", "status", "--session", b.id)).revision).toBe(revision);
+    await settled(opener);
+    expect(await stop(b.proc, "SIGINT")).toBe(130);
+  }, 30_000);
 });

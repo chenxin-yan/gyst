@@ -312,12 +312,21 @@ function useViewedProgress(
   // guidance replaces it: a read for Viewed alone keeps the views and the renderer's items, and
   // so the reading position, as they were.
   const [shown, setShown] = useState(status);
+  // A PR session's stack context, kept apart so a change of it never rebuilds the guidance views.
+  const [pullRequest, setPullRequest] = useState(status.pullRequest);
   const accepted = useRef(status.revision);
   const show = (next: StatusPayload) => {
-    if (next.session.snapshotId !== snapshotId || next.revision < accepted.current) return;
+    if (next.session.snapshotId !== snapshotId || next.revision < accepted.current) return false;
     accepted.current = next.revision;
     setShown((before) => (guidanceOf(next) === guidanceOf(before) ? before : next));
+    setPullRequest((before) =>
+      JSON.stringify(before) === JSON.stringify(next.pullRequest) ? before : next.pullRequest,
+    );
+    return true;
   };
+  // The announced stack context the shown status was read at: the revision doesn't version it, and
+  // the loader's read comes before any announcement, so until a live read it is unknown.
+  const contextRead = useRef<string>(undefined);
   const linked = useRef(live);
   linked.current = live;
   const mounted = useMounted();
@@ -388,6 +397,7 @@ function useViewedProgress(
     const mine = { generation, required };
     reading.current = mine;
     const since = sends.current;
+    const context = linked.current.now().known?.context;
     const current = () => mounted.current && linked.current.now().generation === generation;
     let recovering = false;
     void operation({ command: "status", session: sessionId })
@@ -398,7 +408,7 @@ function useViewedProgress(
         (answer) => {
           const { busy } = latest.current;
           if (!current()) return;
-          show(answer);
+          if (show(answer)) contextRead.current = context;
           if (
             sends.current === since &&
             (busy === undefined || (required && busy.kind === "rereading"))
@@ -441,10 +451,11 @@ function useViewedProgress(
       replayedAt.current = now.known;
       return send(replay);
     }
-    if (behind(now, current) === "read") read(generation, false);
+    if (behind(now, { ...current, context: contextRead.current }) === "read")
+      read(generation, false);
   };
   useEffect(sync, [live.state, state]);
-  return { state, write, status: shown };
+  return { state, write, status: shown, pullRequest };
 }
 
 /** Keydowns that type text rather than command the reader. */
@@ -1365,10 +1376,10 @@ function SessionReader(props: {
       top={
         <>
           <Crumb session={session} />
-          {props.status.pullRequest && (
+          {progress.pullRequest && (
             <StackSwitcher
               sessionId={session.id}
-              pullRequest={props.status.pullRequest}
+              pullRequest={progress.pullRequest}
               viewedCount={progress.state.viewed.size}
             />
           )}

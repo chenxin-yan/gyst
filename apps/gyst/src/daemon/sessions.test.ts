@@ -1144,6 +1144,57 @@ describe("Sessions PR stacks", () => {
     ]);
   });
 
+  it("announces a recheck and other layers' changes to a stack's open sessions at their revision, by context alone", async () => {
+    const { session: b } = await run(openScope(scopeOf(2)));
+    await run(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const s = yield* Sessions;
+          const { version, events } = yield* s.subscribe({ session: b.id });
+          expect(version).toMatchObject({ revision: 0, context: expect.any(String) });
+          const nothing = Queue.poll(events).pipe(Effect.map(Option.isNone));
+          // Each frame is B's whole version now, as a new subscriber would read it.
+          const announced = Effect.gen(function* () {
+            const change = yield* Queue.take(events);
+            const now = (yield* s.subscribe({ session: b.id })).version;
+            expect(change).toEqual({ kind: "changed", ...now });
+            expect(yield* nothing).toBe(true);
+            return now;
+          });
+          const contexts = [version.context];
+          const heard = (revision: number) =>
+            Effect.gen(function* () {
+              const now = yield* announced;
+              expect(now.revision).toBe(revision);
+              expect(now.context).not.toBe(contexts.at(-1));
+              contexts.push(now.context);
+            });
+
+          discovery = stacked(3, 2, 1);
+          yield* s.stack({ command: "stack", session: b.id });
+          yield* heard(0);
+          // Opening C, from B's stack or anywhere else, changes B's layer sessions.
+          const { session: c } = yield* s.layer({ command: "layer", session: b.id, number: 3 });
+          yield* heard(0);
+          const [first] = (yield* s.diff({ command: "diff", session: c.id })).hunks;
+          yield* viewedNow(c.id, [first!.id], "c-viewed");
+          yield* heard(0);
+          yield* s.delete({ command: "delete", session: c.id, requestId: "c-gone" });
+          yield* heard(0);
+          // Without C, B's context is the rechecked one again.
+          expect(contexts.at(-1)).toBe(contexts[1]);
+          // B's own Viewed moves its revision; its context, apart from its own counts, stays.
+          const [own] = (yield* s.diff({ command: "diff", session: b.id })).hunks;
+          yield* viewedNow(b.id, [own!.id], "b-viewed");
+          expect((yield* announced).context).toBe(contexts.at(-1));
+          // Sessions outside the stack's repository say nothing to it.
+          yield* viewedNow(persisted.id, ["h2"], "local");
+          expect(yield* nothing).toBe(true);
+        }),
+      ),
+    );
+  });
+
   it("refuses layers outside the known stack and stack work on non-PR sessions", async () => {
     discovery = { ok: false, reason: "gh_unauthenticated" };
     const { session: unknown } = await run(openScope(scopeOf(5)));

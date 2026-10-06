@@ -135,6 +135,28 @@ describe("behind", () => {
     expect(behind(run(connect, ready(1, 4), changed(1, 5)), shown)).toBe("read");
     expect(behind(run(connect, ready(1, 4), changed(1, 5, b)), shown)).toBe("replaced");
   });
+
+  it("reads again when a PR session's stack context changes at the same revision", () => {
+    const at = (context: string, kind: "ready" | "changed" = "changed"): LiveEvent => ({
+      type: "frame",
+      generation: 1,
+      event:
+        kind === "ready"
+          ? { kind, daemon: "d1", sessionId: "s1", snapshotId: a, revision: 4, context }
+          : { kind, sessionId: "s1", snapshotId: a, revision: 4, context },
+    });
+    const live = run(connect, at("c1", "ready"));
+    expect(live.known).toEqual({ snapshotId: a, revision: 4, context: "c1" });
+    // Status not yet read at any context, then read at the announced one.
+    expect(behind(live, { snapshotId: a, revision: 4 })).toBe("read");
+    expect(behind(live, { snapshotId: a, revision: 4, context: "c1" })).toBe("current");
+    const rechecked = liveReducer(live, at("c2"));
+    expect(rechecked.known).toEqual({ snapshotId: a, revision: 4, context: "c2" });
+    expect(behind(rechecked, { snapshotId: a, revision: 4, context: "c1" })).toBe("read");
+    expect(behind(rechecked, { snapshotId: a, revision: 5, context: "c1" })).toBe("read");
+    // Its context never pauses Viewed changes: only the revision a ready names does.
+    expect(synchronizing(rechecked, { snapshotId: a, revision: 4, context: "c1" })).toBe(false);
+  });
 });
 
 describe("synchronizing", () => {

@@ -54,6 +54,7 @@ import {
   Semaphore,
   Stream,
 } from "effect";
+import { createHash } from "node:crypto";
 import { CapturedContent, codePage } from "./content.ts";
 import { Git } from "./git.ts";
 import { GitHub, type StackDiscovery } from "./github.ts";
@@ -64,11 +65,24 @@ type OnProgress = (progress: CaptureProgress) => Effect.Effect<void>;
 /** What a subscriber hears after its `ready` version: one committed change of its session. */
 export type SessionChange = Extract<SubscriptionEvent, { readonly kind: "changed" | "deleted" }>;
 
-const versionOf = (session: Session): SessionVersion => ({
-  sessionId: session.id,
-  snapshotId: session.snapshotId,
-  revision: session.revision,
-});
+/**
+ * A session's version among `sessions`. A PR session's `context` covers what its status reports
+ * apart from its own review state, which its revision already versions.
+ */
+const versionOf = (session: Session, sessions: Iterable<Session>): SessionVersion => {
+  const status = pullRequestStatusOf(session, sessions);
+  const version = {
+    sessionId: session.id,
+    snapshotId: session.snapshotId,
+    revision: session.revision,
+  };
+  if (!status) return version;
+  const others = status.sessions.filter(({ sessionId }) => sessionId !== session.id);
+  const context = createHash("sha256")
+    .update(JSON.stringify({ ...status, sessions: others }))
+    .digest("hex");
+  return { ...version, context };
+};
 
 const sameScope = (a: Scope, b: Scope) =>
   a.kind === "range"
@@ -140,7 +154,7 @@ export class Sessions extends Context.Service<
      * Rechecks a PR session's native stack metadata. Success replaces the PR and stack metadata
      * and clears `unavailable`; a failure records `unavailable` and keeps the last verified stack.
      * The snapshot, revision, review state, receipts and `updatedAt` never change, and no session
-     * is created or removed.
+     * is created or removed; subscribers hear the new context at the same revision.
      */
     stack(request: Input<"stack">): Effect.Effect<StackPayload, BadArgs | NoSession>;
     /**
@@ -243,6 +257,24 @@ export class Sessions extends Context.Service<
       const announce = (sessionId: string, change: SessionChange) => {
         for (const events of subscribers.get(sessionId) ?? []) Queue.offerUnsafe(events, change);
       };
+      const announceChanged = (session: Session) =>
+        announce(session.id, { kind: "changed", ...versionOf(session, sessions.values()) });
+      // A PR session's status counts its stack's layer sessions, so a layer opened, read, refreshed
+      // or deleted changes the context of its repository's other PR sessions too. One whose context
+      // did not change hears its version again, which a subscriber already shows.
+      const announceLayers = (changed: Session) => {
+        if (changed.scope.kind !== "pr") return;
+        const { repository } = changed.scope;
+        for (const sessionId of subscribers.keys()) {
+          const other = sessions.get(sessionId);
+          if (
+            other?.scope.kind === "pr" &&
+            other.scope.repository === repository &&
+            other.id !== changed.id
+          )
+            announceChanged(other);
+        }
+      };
 
       // The manifest and every blob it names are committed before any session points at it.
       const publish = (manifest: SnapshotManifest) =>
@@ -338,6 +370,7 @@ export class Sessions extends Context.Service<
             };
             yield* store.save(session).pipe(Effect.orDie);
             sessions.set(session.id, session);
+            announceLayers(session);
             yield* idle.close;
             return opened(session, true);
           }),
@@ -398,6 +431,8 @@ export class Sessions extends Context.Service<
             };
             yield* store.save(rechecked).pipe(Effect.orDie);
             sessions.set(session.id, rechecked);
+            // Metadata only: the revision stays, and the announced context tells open viewers.
+            announceChanged(rechecked);
             return {
               sessionId: session.id,
               pullRequest: pullRequestStatusOf(rechecked, sessions.values())!,
@@ -656,7 +691,7 @@ export class Sessions extends Context.Service<
             if (outcome.session) {
               yield* store.save(outcome.session).pipe(Effect.orDie);
               sessions.set(session.id, outcome.session);
-              announce(session.id, { kind: "changed", ...versionOf(outcome.session) });
+              announceChanged(outcome.session);
             }
             return outcome.status;
           }),
@@ -671,7 +706,8 @@ export class Sessions extends Context.Service<
         if (outcome.session) {
           yield* store.save(outcome.session).pipe(Effect.orDie);
           sessions.set(session.id, outcome.session);
-          announce(session.id, { kind: "changed", ...versionOf(outcome.session) });
+          announceChanged(outcome.session);
+          announceLayers(outcome.session);
         }
         return outcome.result;
       }, Semaphore.withPermit(lock));
@@ -697,7 +733,8 @@ export class Sessions extends Context.Service<
             yield* store.save(refreshed).pipe(Effect.orDie);
             sessions.set(session.id, refreshed);
             sourceChecks.delete(session.id);
-            announce(session.id, { kind: "changed", ...versionOf(refreshed) });
+            announceChanged(refreshed);
+            announceLayers(refreshed);
             return statusOf(refreshed);
           }),
         );
@@ -732,6 +769,7 @@ export class Sessions extends Context.Service<
                 sourceChecks.delete(session.id);
                 announce(session.id, { kind: "deleted", sessionId: session.id });
                 subscribers.delete(session.id);
+                announceLayers(session);
               }),
             ),
           ),
@@ -751,7 +789,7 @@ export class Sessions extends Context.Service<
               let registered = subscribers.get(session.id);
               if (!registered) subscribers.set(session.id, (registered = new Set()));
               registered.add(events);
-              return { version: versionOf(session), events };
+              return { version: versionOf(session, sessions.values()), events };
             }),
           ),
           ({ version, events }) =>

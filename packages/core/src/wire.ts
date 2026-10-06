@@ -297,6 +297,12 @@ export const SessionVersionSchema = Schema.Struct({
   sessionId: Schema.String,
   snapshotId: Schema.String,
   revision: Schema.Number,
+  /**
+   * A PR session's stack context as its status reports it: an opaque identity of its PR and stack
+   * metadata and its other layers' sessions, which change without the revision. Differs whenever
+   * that context does; absent for any other session.
+   */
+  context: Schema.optional(Schema.String),
 });
 export type SessionVersion = typeof SessionVersionSchema.Type;
 
