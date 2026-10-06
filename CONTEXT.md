@@ -44,6 +44,9 @@ A code link within an overview or note to an exact captured snapshot, file, side
 **Comment**:
 A human message starting a thread on one contiguous range of captured code, on one side of one file.
 
+**Change request**:
+A human message marked as asking for a code change rather than an explanation (a Question, the default). Only a change request authorizes the agent to fix code.
+
 **Reply**:
 A subsequent message in a thread, from the human or agent, or the human message starting a conversation on a note.
 
@@ -66,6 +69,13 @@ _Avoid_: Verdict, group Done
 **Pre-pass**:
 The agent's preparation of a walkthrough: understand the whole scoped change, plan complete coverage and order, then publish self-contained groups top to bottom. Preparation may continue while the human reviews groups already published.
 _Avoid_: Analysis phase, triage
+
+**Generated file**:
+A changed file that `.gitattributes` marks `linguist-generated` or `linguist-vendored`. It starts folded but is reviewed and grouped like any other file.
+
+**Review comment**:
+Planned after v1: a human comment for a PR's author, staged in gyst and posted to GitHub as part of a review. Separate from threads, which talk to the agent.
+_Avoid_: Comment (that starts a thread)
 
 **Scope**:
 What a session reviews: uncommitted changes (the default), a recorded Git revision range such as `main...feature`, or a PR whose range is resolved for capture. The scope remains the same as its source changes; it is distinct from a snapshot's frozen contents.
