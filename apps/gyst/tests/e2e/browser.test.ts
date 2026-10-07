@@ -4713,9 +4713,26 @@ describe("installed gyst in a sandboxed browser", () => {
       { command: "stack", session: b.id },
       { command: "stack", session: b.id },
     ]);
+    // The rechecked context arrives by the live read alone; the page itself is never read again,
+    // so no older read of it can land after a newer context.
+    expect(operations.filter(({ command }) => command === "diff")).toHaveLength(1);
     expect((await gyst("session", "status", "--session", b.id)).session.snapshotId).toBe(
       snapshotId,
     );
+
+    // On a narrow screen the dialog and its actions stay inside the panel that clips them.
+    await page.setViewportSize({ width: 320, height: 844 });
+    const panel = (await page.getByRole("main").boundingBox())!;
+    for (const box of [
+      dialog,
+      recheck,
+      dialog.getByRole("button", { name: "Open #1" }),
+      dialog.getByRole("button", { name: "Open #3" }),
+    ]) {
+      const { x, width } = (await box.boundingBox())!;
+      expect(x).toBeGreaterThanOrEqual(panel.x);
+      expect(x + width).toBeLessThanOrEqual(panel.x + panel.width);
+    }
     await settled(page);
     expect(await stop(b.proc, "SIGINT")).toBe(130);
   }, 30_000);

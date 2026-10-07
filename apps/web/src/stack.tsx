@@ -1,11 +1,11 @@
 import type { PullRequestStatus } from "@gyst/core/wire";
 import * as stylex from "@stylexjs/stylex";
-import { Link, useNavigate, useRouter } from "@tanstack/react-router";
+import { Link, useNavigate } from "@tanstack/react-router";
 import { type KeyboardEvent, type RefObject, useEffect, useId, useRef, useState } from "react";
 import { isExpectedFailure, operation } from "./api.ts";
 import { FailureNotice, PillButton, useMounted } from "./components.tsx";
 import { type StackRow, stackRows, triggerLabel, verificationText } from "./stack.ts";
-import { theme } from "./tokens.stylex.ts";
+import { media, theme } from "./tokens.stylex.ts";
 
 const moves = ["ArrowDown", "ArrowUp", "Home", "End"];
 
@@ -98,7 +98,6 @@ function StackDialog(props: {
 }) {
   const { dialog, sessionId, pullRequest } = props;
   const navigate = useNavigate();
-  const router = useRouter();
   const mounted = useMounted();
   const [opening, setOpening] = useState<number>();
   const [rechecking, setRechecking] = useState(false);
@@ -131,13 +130,12 @@ function StackDialog(props: {
     }
   };
 
-  // Metadata only: the page reads status again, never this session's code.
+  // Metadata only: the new context is announced, and the page's live read shows it.
   const recheck = async () => {
     setRechecking(true);
     setFailure(undefined);
     try {
       await operation({ command: "stack", session: sessionId });
-      await router.invalidate();
     } catch (error) {
       if (!isExpectedFailure(error)) console.error(error);
       if (mounted.current) setFailure(error);
@@ -216,16 +214,23 @@ function StackDialog(props: {
 }
 
 const styles = stylex.create({
-  anchor: { position: "relative", display: "inline-flex", flexShrink: 0 },
+  // On a narrow screen the trigger sits too far right for the dialog to fit beside it, so the
+  // dialog spans the clipping panel under its header instead.
+  anchor: {
+    position: { default: "relative", [media.narrow]: "static" },
+    display: "inline-flex",
+    flexShrink: 0,
+  },
   dialog: {
     position: "absolute",
     zIndex: 5,
-    top: "calc(100% + 8px)",
-    left: 0,
+    top: { default: "calc(100% + 8px)", [media.narrow]: "52px" },
+    left: { default: 0, [media.narrow]: "8px" },
+    right: { default: "auto", [media.narrow]: "8px" },
     margin: 0,
-    width: "max-content",
-    minWidth: "320px",
-    maxWidth: "min(560px, calc(100vw - 32px))",
+    width: { default: "max-content", [media.narrow]: "auto" },
+    minWidth: { default: "320px", [media.narrow]: 0 },
+    maxWidth: { default: "min(560px, calc(100vw - 32px))", [media.narrow]: "none" },
     maxHeight: "60vh",
     overflow: "auto",
     padding: "6px",
