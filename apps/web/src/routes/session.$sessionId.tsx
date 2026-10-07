@@ -338,13 +338,16 @@ function useViewedProgress(
   };
   // A session reload reads status again; the same snapshot keeps this reader, so apply it here.
   // A write on the wire answers for itself. The loader's read may be older than the live one
-  // shown, at the same revision, so its stack context is unknown until read live again.
+  // shown, so its stack context is unknown until read live again; Viewed may not change with it,
+  // so that read is asked for here.
   const loaded = useRef(status);
   useEffect(() => {
     if (loaded.current === status) return;
     loaded.current = status;
-    if (show(status)) contextRead.current = undefined;
+    const taken = show(status);
+    if (taken) contextRead.current = undefined;
     if (latest.current.busy === undefined) apply({ type: "status", status: statusRead(status) });
+    if (taken) sync();
   });
   // The connection the write on the wire was sent over, and how many writes were sent: a status
   // read sent before the latest write says nothing of it.

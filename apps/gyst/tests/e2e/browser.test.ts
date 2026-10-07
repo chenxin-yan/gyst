@@ -4737,6 +4737,64 @@ describe("installed gyst in a sandboxed browser", () => {
     expect(await stop(b.proc, "SIGINT")).toBe(130);
   }, 30_000);
 
+  it("reads the stack context live again after a page read that was older than it, even once a Viewed change settles first", async () => {
+    deletePullRequestSessionsAfter();
+    onTestFinished(() => github.stack());
+    const b = await launchIn(github.checkout, "--pr", pullRequestUrl(2));
+    const page = await newPage();
+    await page.setViewportSize({ width: 1280, height: 800 });
+    let armed = false;
+    let fetched = false;
+    const { promise: released, resolve: release } = Promise.withResolvers<void>();
+    await page.route(isOperationUrl, async (route) => {
+      if (!armed || route.request().postDataJSON()?.command !== "files") return route.fallback();
+      armed = false;
+      // The page read has its status, of the stack as verified; only its files are held.
+      const response = await route.fetch();
+      fetched = true;
+      await released;
+      await route.fulfill({ response });
+    });
+    await go(page, b.url);
+    await page.getByRole("main").getByText("b two").waitFor();
+    await says(page, "Live");
+    await settled(page);
+    const { trigger, dialog } = switcher(page);
+    const failed =
+      "Couldn't verify the stack (the GitHub request failed, just now); showing it as of just now";
+
+    try {
+      // Following the switcher's link to this same session reads the page again.
+      armed = true;
+      await trigger.click();
+      await dialog.locator("[aria-current] a").click();
+      await waitFor(() => fetched, "the page read's held files");
+      await github.fake.fail("stack", 2, {
+        exitCode: 1,
+        stdout: '{"message":"Server Error","status":"502"}',
+        stderr: "gh: Server Error (HTTP 502)\n",
+      });
+      await gyst("session", "check", "--session", b.id, "--stack");
+      await trigger.click();
+      await dialog.getByRole("status").getByText(failed, { exact: true }).waitFor();
+      await page.keyboard.press("Escape");
+      await viewedBox(page, "b.txt").click();
+      await waitFor(
+        async () =>
+          (await viewedBox(page, "b.txt").isChecked()) &&
+          (await gyst("session", "status", "--session", b.id)).viewedHunkIds.length > 0,
+        "the Viewed change, settled before the page read",
+      );
+    } finally {
+      release();
+    }
+    await settled(page);
+    await trigger.click();
+    await dialog.waitFor();
+    expect(await dialog.getByRole("status").textContent()).toBe(failed);
+    expect(await stop(b.proc, "SIGINT")).toBe(130);
+  }, 30_000);
+
   it("updates another viewer's stack switcher live after a CLI recheck and a layer opened elsewhere, without a reload or moving its reader", async () => {
     deletePullRequestSessionsAfter();
     onTestFinished(() => github.stack());
