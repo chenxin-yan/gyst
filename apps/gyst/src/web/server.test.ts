@@ -744,7 +744,7 @@ describe("cross-launch isolation", () => {
 
 describe("browserApp navigation", () => {
   const addonCli = fileURLToPath(
-    new URL("../../../../packages/navigation-typescript/src/cli.js", import.meta.url),
+    new URL("../../../../packages/navigation-typescript/src/cli.ts", import.meta.url),
   );
   const target = { session: "s1", snapshotId, side: "new", file: "src/a.ts" } as const;
   const position = { line: 2, character: 4 };

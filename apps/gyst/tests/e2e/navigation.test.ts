@@ -315,15 +315,15 @@ describe("TS/JS navigation through the installed add-on", () => {
     const box = await sandbox();
     const cwd = await math(box, "mismatched");
     const other = join(box.root, "other-release");
-    await mkdir(join(other, "src"), { recursive: true });
+    await mkdir(join(other, "dist"), { recursive: true });
     const manifest = JSON.parse(await readFile(join(navigationPackage, "package.json"), "utf8"));
     await writeFile(join(other, "package.json"), JSON.stringify({ ...manifest, version: "0.0.1" }));
-    await copyFile(join(navigationPackage, "src", "cli.js"), join(other, "src", "cli.js"));
-    await chmod(join(other, "src", "cli.js"), 0o755);
+    await copyFile(join(navigationPackage, "dist", "cli.mjs"), join(other, "dist", "cli.mjs"));
+    await chmod(join(other, "dist", "cli.mjs"), 0o755);
     await symlink(join(navigationPackage, "node_modules"), join(other, "node_modules"));
     const otherBin = join(box.root, "other-bin");
     await mkdir(otherBin);
-    await symlink(join(other, "src", "cli.js"), join(otherBin, navigationAddon.bin));
+    await symlink(join(other, "dist", "cli.mjs"), join(otherBin, navigationAddon.bin));
 
     const viewer = await launchViewer([], { cwd, env: launchEnv(box, otherBin, navigationBin) });
     const mismatched = { kind: "mismatched", found: "0.0.1", install };

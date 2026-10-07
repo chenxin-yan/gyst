@@ -18,46 +18,46 @@ delete engineEnv.PATH;
 const engineBin = () =>
   join(dirname(createRequire(import.meta.url).resolve("typescript/package.json")), "bin", "tsc");
 
+type EngineCheck = { ok: true; version: string } | { ok: false; problem: string };
+
 /** Runs the engine, so a missing native platform package is reported rather than assumed away. */
 const engineCheck = () =>
-  /** @type {Promise<{ ok: true, version: string } | { ok: false, problem: string }>} */ (
-    new Promise((resolve) => {
-      let bin;
-      try {
-        bin = engineBin();
-      } catch {
-        resolve({
-          ok: false,
-          problem: `TypeScript ${pinnedEngine} is not installed with the add-on`,
-        });
-        return;
-      }
-      execFile(
-        process.execPath,
-        [bin, "--version"],
-        // Under gyst's 5 second handshake bound, so a slow engine is reported, not timed out.
-        { env: engineEnv, timeout: 4000, maxBuffer: 64 * 1024, encoding: "utf8" },
-        (error, stdout, stderr) => {
-          if (error) {
-            const lines = stderr.split("\n").map((line) => line.trim());
-            // Not `error.message`: it restates the command line, host paths included.
-            const reason =
-              lines.find((line) => /^\w*Error\b/.test(line)) ??
-              `it exited with ${error.code ?? error.signal}`;
-            resolve({ ok: false, problem: `TypeScript did not start: ${reason}` });
-            return;
-          }
-          const version = /^Version (\S+)$/.exec(stdout.trim())?.[1];
-          if (version === pinnedEngine) resolve({ ok: true, version });
-          else
-            resolve({
-              ok: false,
-              problem: `TypeScript reported ${JSON.stringify(stdout.trim())}, not ${pinnedEngine}`,
-            });
-        },
-      );
-    })
-  );
+  new Promise<EngineCheck>((resolve) => {
+    let bin: string;
+    try {
+      bin = engineBin();
+    } catch {
+      resolve({
+        ok: false,
+        problem: `TypeScript ${pinnedEngine} is not installed with the add-on`,
+      });
+      return;
+    }
+    execFile(
+      process.execPath,
+      [bin, "--version"],
+      // Under gyst's 5 second handshake bound, so a slow engine is reported, not timed out.
+      { env: engineEnv, timeout: 4000, maxBuffer: 64 * 1024, encoding: "utf8" },
+      (error, stdout, stderr) => {
+        if (error) {
+          const lines = stderr.split("\n").map((line) => line.trim());
+          // Not `error.message`: it restates the command line, host paths included.
+          const reason =
+            lines.find((line) => /^\w*Error\b/.test(line)) ??
+            `it exited with ${error.code ?? error.signal}`;
+          resolve({ ok: false, problem: `TypeScript did not start: ${reason}` });
+          return;
+        }
+        const version = /^Version (\S+)$/.exec(stdout.trim())?.[1];
+        if (version === pinnedEngine) resolve({ ok: true, version });
+        else
+          resolve({
+            ok: false,
+            problem: `TypeScript reported ${JSON.stringify(stdout.trim())}, not ${pinnedEngine}`,
+          });
+      },
+    );
+  });
 
 const [command, ...rest] = process.argv.slice(2);
 if (command === "--version" && rest.length === 0) {

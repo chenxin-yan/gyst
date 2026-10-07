@@ -24,7 +24,7 @@ import {
 } from "./lsp.ts";
 
 const repo = fileURLToPath(new URL("../../../../", import.meta.url));
-const addonCli = join(repo, "packages", "navigation-typescript", "src", "cli.js");
+const addonCli = join(repo, "packages", "navigation-typescript", "src", "cli.ts");
 const addonVersion: string = JSON.parse(
   await readFile(join(repo, "packages", "navigation-typescript", "package.json"), "utf8"),
 ).version;

@@ -19,7 +19,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 import packageJson from "../package.json" with { type: "json" };
 
-const cli = fileURLToPath(new URL("cli.js", import.meta.url));
+const cli = fileURLToPath(new URL("cli.ts", import.meta.url));
 const run = promisify(execFile);
 const typescriptPackage = createRequire(cli).resolve("typescript/package.json");
 const tscBin = join(dirname(typescriptPackage), "bin", "tsc");
@@ -179,12 +179,12 @@ describe("gyst-navigation-typescript", () => {
     const addon = join(await tempDir(), "addon");
     await mkdir(join(addon, "src"), { recursive: true });
     await cp(join(dirname(cli), "..", "package.json"), join(addon, "package.json"));
-    await cp(cli, join(addon, "src", "cli.js"));
+    await cp(cli, join(addon, "src", "cli.ts"));
     await cp(dirname(typescriptPackage), join(addon, "node_modules", "typescript"), {
       recursive: true,
       dereference: true,
     });
-    const { stdout } = await run(process.execPath, [join(addon, "src", "cli.js"), "--version"]);
+    const { stdout } = await run(process.execPath, [join(addon, "src", "cli.ts"), "--version"]);
     const handshake = JSON.parse(stdout);
     expect(handshake.version).toBe(packageJson.version);
     expect(handshake.engine.ok).toBe(false);

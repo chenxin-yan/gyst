@@ -21,7 +21,7 @@ import { discoverAddon } from "./navigation-addon.ts";
 
 const repo = fileURLToPath(new URL("../../../../", import.meta.url));
 const addonDir = join(repo, "packages", "navigation-typescript");
-const addonCli = join(addonDir, "src", "cli.js");
+const addonCli = join(addonDir, "src", "cli.ts");
 const readJson = async (...path: ReadonlyArray<string>) =>
   JSON.parse(await readFile(join(repo, ...path), "utf8"));
 
@@ -100,9 +100,9 @@ describe("discoverAddon", () => {
     await mkdir(join(copy, "src"), { recursive: true });
     const manifest = await readJson("packages", "navigation-typescript", "package.json");
     await writeFile(join(copy, "package.json"), JSON.stringify({ ...manifest, version: "0.0.1" }));
-    await cp(addonCli, join(copy, "src", "cli.js"));
+    await cp(addonCli, join(copy, "src", "cli.ts"));
     await symlink(join(addonDir, "node_modules"), join(copy, "node_modules"));
-    expect(await discover(await binWith(join(copy, "src", "cli.js")))).toEqual({
+    expect(await discover(await binWith(join(copy, "src", "cli.ts")))).toEqual({
       kind: "mismatched",
       found: "0.0.1",
     });
@@ -188,8 +188,9 @@ describe("navigation add-on release", () => {
     expect(addon.version).toBe(cli.version);
     expect(addon.version).toBe(daemonVersion);
     expect(addon.name).toBe(navigationAddon.name);
-    expect(addon.bin).toEqual({ [navigationAddon.bin]: "src/cli.js" });
-    expect(addon.files).toEqual(["src/cli.js"]);
+    expect(addon.bin).toEqual({ [navigationAddon.bin]: "src/cli.ts" });
+    expect(addon.publishConfig.bin).toEqual({ [navigationAddon.bin]: "dist/cli.mjs" });
+    expect(addon.files).toEqual(["dist"]);
     const changesets = await readJson(".changeset", "config.json");
     expect(changesets.fixed).toContainEqual(["@gyst/cli", navigationAddon.name]);
   });

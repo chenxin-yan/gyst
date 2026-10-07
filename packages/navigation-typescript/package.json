@@ -15,13 +15,19 @@
     "node": ">=24"
   },
   "publishConfig": {
-    "access": "public"
+    "access": "public",
+    "bin": {
+      "gyst-navigation-typescript": "dist/cli.mjs"
+    }
   },
   "bin": {
-    "gyst-navigation-typescript": "src/cli.js"
+    "gyst-navigation-typescript": "src/cli.ts"
+  },
+  "scripts": {
+    "build": "vp run build:task"
   },
   "files": [
-    "src/cli.js"
+    "dist"
   ],
   "dependencies": {
     "typescript": "7.0.2"

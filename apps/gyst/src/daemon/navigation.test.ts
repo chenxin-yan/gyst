@@ -56,7 +56,7 @@ const repoRoot = fileURLToPath(new URL("../../../../", import.meta.url));
 const addonDir = join(repoRoot, "packages", "navigation-typescript");
 const addon = {
   kind: "available",
-  entry: realpathSync(join(addonDir, "src", "cli.js")),
+  entry: realpathSync(join(addonDir, "src", "cli.ts")),
   version: daemonVersion,
 } as const;
 const install = navigationInstallCommand(daemonVersion);
@@ -679,9 +679,9 @@ describe("Navigation over real captures and the workspace add-on", () => {
       join(replaced, "package.json"),
       JSON.stringify({ ...manifest, version: "0.0.1" }),
     );
-    await cp(addon.entry, join(replaced, "src", "cli.js"));
+    await cp(addon.entry, join(replaced, "src", "cli.ts"));
     await symlink(join(addonDir, "node_modules"), join(replaced, "node_modules"));
-    const replacedEntry = await realpath(join(replaced, "src", "cli.js"));
+    const replacedEntry = await realpath(join(replaced, "src", "cli.ts"));
 
     await runReal(
       dataDir,

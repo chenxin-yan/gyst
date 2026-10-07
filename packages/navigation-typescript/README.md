@@ -31,6 +31,6 @@ The engine is always the one installed with this package, never a reviewed proje
 
 ## Developing
 
-In this repository, `packages/navigation-typescript/src/cli.js` is the executable. To make a
-source `gyst` find it, put a directory containing a `gyst-navigation-typescript` symlink to that
-file on `PATH`.
+In this repository, `packages/navigation-typescript/src/cli.ts` is the executable, run by Node
+directly; `pnpm build` bundles it into the published `dist/cli.mjs`. To make a source `gyst` find
+it, put a directory containing a `gyst-navigation-typescript` symlink to `src/cli.ts` on `PATH`.

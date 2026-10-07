@@ -87,6 +87,7 @@ export default async function setup(project: Pick<TestProject, "provide">) {
       testedEnv,
     );
     // The add-on's own install fetches its pinned engine from the registry (or npm's cache).
+    await exec("pnpm", navigationDir, ["build"], testedEnv);
     navigationTarball = (
       JSON.parse(
         await exec(
