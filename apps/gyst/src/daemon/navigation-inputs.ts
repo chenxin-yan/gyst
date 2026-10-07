@@ -165,7 +165,8 @@ const declaresPackages = (text: string) => {
  * durable blob, and never the checkout, installed packages or anything a script would produce.
  * Configs are confined to the layout (see `confineConfig`), and `root/package.json` bounds the
  * package scope. `root` must exist and `root/project` must not. `files` and `bytes` are the cost of
- * the layout.
+ * the layout; `rewritten` lists the configs confinement rewrote, whose positions no longer match
+ * their captured text.
  */
 export const materializeSide = Effect.fn("materializeSide")(function* (
   manifest: SnapshotManifest,
@@ -247,6 +248,7 @@ export const materializeSide = Effect.fn("materializeSide")(function* (
   // The engine reads each project config and every config an `extends` reaches, whatever its name.
   // Each is read once, so an `extends` cycle ends.
   const confined = new Map<string, ReturnType<typeof confineConfig> | undefined>();
+  const rewritten: Array<string> = [];
   const configs = [...laidOut].filter(projectConfig);
   for (let config = configs.pop(); config !== undefined; config = configs.pop()) {
     if (confined.has(config)) continue;
@@ -260,8 +262,10 @@ export const materializeSide = Effect.fn("materializeSide")(function* (
       continue;
     }
     const kept = confineConfig(config, parsed);
-    if (kept.dropped.length > 0)
+    if (kept.dropped.length > 0) {
       yield* fs.writeFileString(target, `${JSON.stringify(kept.config, null, 2)}\n`);
+      rewritten.push(config);
+    }
     confined.set(config, kept);
     for (const base of kept.extended) {
       const found = extendedBy(config, base);
@@ -290,6 +294,7 @@ export const materializeSide = Effect.fn("materializeSide")(function* (
     files: layout.length,
     bytes: layout.reduce((total, { bytes }) => total + bytes, 0),
     gaps,
+    rewritten,
   };
 });
 

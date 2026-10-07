@@ -230,6 +230,49 @@ const tsconfig =
   '{ "compilerOptions": { "module": "nodenext", "strict": true, "noEmit": true } }\n';
 
 describe("Navigation over real captures and the workspace add-on", () => {
+  it("names no location in a config confinement rewrote, whose engine coordinates are not the captured text's", async () => {
+    const settings =
+      '{\n  "extends": "../outside.json",\n  "marker": 1,\n  "padding": "xxxxxxxxxxxxxxxx"\n}\n';
+    const use = 'import settings from "./settings.json";\nexport const result = settings.marker;\n';
+    const plain = '{ "other": 2 }\n';
+    const kept = 'import plain from "./plain.json";\nexport const other = plain.other;\n';
+    const cwd = await repo("rewritten-config", { "README.md": "# fixture\n" });
+    await write(cwd, {
+      "tsconfig.json": JSON.stringify({
+        extends: "./settings.json",
+        compilerOptions: { module: "esnext", moduleResolution: "bundler", resolveJsonModule: true },
+      }),
+      "settings.json": settings,
+      "plain.json": plain,
+      "use.ts": use,
+      "kept.ts": kept,
+    });
+    const dataDir = join(dir, "rewritten-config-data");
+    const [rewritten, untouched] = await runReal(
+      dataDir,
+      Effect.gen(function* () {
+        const { session } = yield* Sessions.use((s) =>
+          s.open({ command: "open", cwd, scope: { kind: "uncommitted" } }),
+        );
+        const target = {
+          session: session.id,
+          snapshotId: session.snapshotId,
+          side: "new",
+        } as const;
+        return [
+          yield* definition({ ...target, file: "use.ts" }, at(use, 2, "marker")),
+          yield* definition({ ...target, file: "kept.ts" }, at(kept, 2, "other", 1)),
+        ];
+      }),
+    );
+    // Dropping its escaping `extends` moved "marker" up a line in the engine's copy.
+    expect(located(rewritten)).toMatchObject({ locations: [], outside: 1 });
+    expect(located(untouched)).toMatchObject({
+      locations: [{ file: "plain.json", range: span(plain, 1, '"other"') }],
+      outside: 0,
+    });
+  });
+
   it("answers per side from captured text only, with aliases, parameters, UTF-16 and CRLF exact", async () => {
     const dataDir = join(dir, "data-main");
     const secret = `TOPSECRET-${crypto.randomUUID()}`;

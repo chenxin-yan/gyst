@@ -329,6 +329,7 @@ export class Navigation extends Context.Service<
         readonly gaps: ReadonlyArray<NavigationGap>;
         readonly files: number;
         readonly bytes: number;
+        readonly rewritten: ReadonlySet<string>;
       }
       interface Analysis {
         readonly key: string;
@@ -476,6 +477,7 @@ export class Navigation extends Context.Service<
             gaps: inputs.gaps,
             files: inputs.files,
             bytes: inputs.bytes,
+            rewritten: new Set(inputs.rewritten),
           } satisfies Prepared;
         }).pipe(
           Effect.catchTags({
@@ -787,12 +789,13 @@ export class Navigation extends Context.Service<
       /**
        * Keeps only locations in this side's captured text, with ranges converted through that
        * text. Anything else (the engine's own libraries, a host file a relative or absolute import
-       * reaches) is only counted: no path or byte of it is returned.
+       * reaches, a config confinement rewrote so its positions are not the captured text's) is only
+       * counted: no path or byte of it is returned.
        */
       const fence = Effect.fnUntraced(function* (
         manifest: SnapshotManifest,
         side: "old" | "new",
-        project: string,
+        { project, rewritten }: Prepared,
         result: unknown,
       ) {
         const members = new Map(manifest.files.map((file) => [file.path, file]));
@@ -813,7 +816,7 @@ export class Navigation extends Context.Service<
               ? undefined
               : members.get(relative.split(path.sep).join("/"));
           const captured = member?.[side];
-          if (member === undefined || captured?.kind !== "text") {
+          if (member === undefined || captured?.kind !== "text" || rewritten.has(member.path)) {
             outside++;
             continue;
           }
@@ -949,7 +952,7 @@ export class Navigation extends Context.Service<
                   position,
                   ...(query === "references" ? { context: { includeDeclaration: true } } : {}),
                 });
-                const fenced = yield* fence(manifest, request.side, prepared.project, result);
+                const fenced = yield* fence(manifest, request.side, prepared, result);
                 const gaps = yield* missingImports(
                   prepared.engine,
                   uri,
