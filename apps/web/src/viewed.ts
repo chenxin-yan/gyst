@@ -157,11 +157,13 @@ export function viewedReducer(state: ViewedState, event: ViewedEvent): ViewedSta
       // A late reply read before progress already shown; it never moves the reader back.
       if (event.status.revision < state.revision)
         return state.busy ? { ...state, busy: undefined } : state;
-      // A successful read recovers from a reload notice; a conflict stays said.
+      // A successful read recovers from a reload notice; a conflict stays said. Progress read
+      // elsewhere says nothing of a failed write, so it keeps its Retry until resent.
       return {
         snapshotId: state.snapshotId,
         viewed: new Set(event.status.viewedHunkIds),
         revision: event.status.revision,
+        ...(state.intent?.failure !== undefined && { intent: state.intent }),
         ...(state.notice?.kind === "conflict" && { notice: state.notice }),
       };
     }

@@ -2739,6 +2739,56 @@ describe("installed gyst in a sandboxed browser", () => {
     }
   }, 60_000);
 
+  it("keeps a Viewed write and its Retry when its resend is lost too and a change announced meanwhile is read", async () => {
+    const id = await freshSession();
+    const launched = await launchFor(id);
+    const page = await newPage(context, {
+      problems: ["requestfailed /api/operation", "requestfailed /api/operation"],
+    });
+    await page.setViewportSize({ width: 1280, height: 800 });
+    const writes = viewedOf(page);
+    const { promise: cut, resolve: cutOff } = Promise.withResolvers<void>();
+    let lost = 0;
+    await page.route(isOperationUrl, async (route) => {
+      if (lost >= 2 || route.request().postDataJSON()?.command !== "viewed")
+        return route.fallback();
+      // Neither send reaches the daemon: the first is held until the CLI's change is announced.
+      if (lost++ === 0) await cut;
+      await route.abort();
+    });
+    await go(page, launched.url);
+    await says(page, "Live");
+    await settled(page);
+    await viewedBox(page, "README.md").click();
+    await waitFor(() => writes.length === 1, "the held write");
+    const revision = await applyFromCli(id);
+    await pause(page, 500);
+    cutOff();
+    // The resend is lost as well; the read of the CLI's change then says nothing of the write.
+    await waitFor(() => writes.length === 2, "the resend");
+    expect(writes[1]).toEqual(writes[0]);
+    const retry = page.getByRole("main").getByRole("button", { name: "Retry", exact: true });
+    await retry.waitFor();
+    await settled(page);
+    expect(await retry.count()).toBe(1);
+    expect(await viewedBox(page, "README.md").isChecked()).toBe(false);
+    expect(await gyst("session", "status", "--session", id)).toMatchObject({
+      revision,
+      viewedHunkIds: [],
+    });
+
+    // Retry sends the same request, which the daemon answers definitively.
+    await retry.click();
+    await waitFor(() => writes.length === 3, "the retry");
+    expect(writes[2]).toEqual(writes[0]);
+    await page
+      .getByRole("main")
+      .getByText("Not saved: progress changed elsewhere and was read again.")
+      .waitFor();
+    await settled(page);
+    expect(await retry.count()).toBe(0);
+  }, 60_000);
+
   it("resends a Viewed write whose reply was lost once, with the same request id and payload, then reads status", async () => {
     const id = await freshSession();
     const launched = await launchFor(id);

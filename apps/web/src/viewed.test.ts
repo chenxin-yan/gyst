@@ -223,6 +223,24 @@ describe("live progress", () => {
     }
   });
 
+  it("keeps a failed write and its retry across a read of progress changed elsewhere", () => {
+    const failed = viewedReducer(sent(start()), {
+      type: "failed",
+      error: new TransportError("unavailable", "lost"),
+    });
+    const read = viewedReducer(failed, {
+      type: "status",
+      status: { snapshotId, revision: 4, viewedHunkIds: ["c1"] },
+    });
+    expect([read.revision, [...read.viewed], read.intent]).toEqual([4, ["c1"], failed.intent]);
+    expect(checkboxOf(read, "a.ts", ["a1", "a2"]).failure).toBe(failed.intent!.failure);
+    expect(intentFor(read, change, mint)).toEqual({
+      ...failed.intent,
+      attempts: 2,
+      failure: undefined,
+    });
+  });
+
   it("replays nothing while busy or for a write that failed for certain", () => {
     const sending = sent(start());
     expect(replayOf(start())).toBeUndefined();
