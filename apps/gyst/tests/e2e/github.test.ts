@@ -403,6 +403,11 @@ describe("GitHub PR sessions through the installed CLI", () => {
       ["gh: HTTP 502: Bad Gateway\n", "github_failed"],
       ["gh: API rate limit exceeded (HTTP 403)\n", "github_failed"],
       ["GraphQL: Could not resolve to a Repository with the name 'acme/widgets'.\n", "no_access"],
+      // With GH_TOKEN set, gh refuses to guess among remotes on hosts it doesn't know.
+      [
+        "set the GH_HOST environment variable to specify which GitHub host to use\n",
+        "checkout_mismatch",
+      ],
     ] as const) {
       await fake.repository({ exitCode: 1, stderr });
       expect(failed(await box.gyst(checkout, ["session", "open", "--pr", "3"])).detail.reason).toBe(

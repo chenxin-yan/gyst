@@ -191,7 +191,8 @@ const gh = Effect.fn("GitHub.gh")(
 const isRepository = Schema.is(RepositorySchema);
 
 /** gh's own refusals to pick a repository for a checkout, as opposed to GitHub failing. */
-const unresolvedCheckout = /not a git repository|no git remotes found|none of the git remotes/;
+const unresolvedCheckout =
+  /not a git repository|no git remotes found|none of the git remotes|set the GH_HOST environment variable/;
 
 /**
  * The github.com repository `gh` resolves for the checkout at `cwd`, as `gh pr view <number>` there
