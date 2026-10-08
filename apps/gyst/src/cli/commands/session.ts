@@ -2,8 +2,11 @@ import { defineArg, defineCommand } from "@crustjs/core";
 import { handler, layer } from "@crustjs/effect";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import {
+  ApplyEnvelopeSchema,
+  ApplyOpSchema,
   BadArgs,
   type CaptureProgress,
+  ErrorCodeSchema,
   type ExportPayload,
   type ExportPreviewPayload,
   parsePullRequestUrl,
@@ -13,7 +16,7 @@ import {
   type Scope,
   ValidationFailed,
 } from "@gyst/core";
-import { Effect, FileSystem, Layer, Schema, Stdio, Stream } from "effect";
+import { Effect, FileSystem, Layer, Schema, SchemaAST, Stdio, Stream } from "effect";
 import { resolve } from "node:path";
 import { DaemonClient } from "../../daemon/client.ts";
 import { checkoutRepository } from "../../daemon/github.ts";
@@ -103,6 +106,34 @@ const snapshotFlag = {
   required: true,
   description: "The session's current snapshot id, from `open`, `status` or `diff`",
 } as const;
+
+// The generated help and agent reference read these from the shared schemas, so they cannot drift
+// from what the CLI and daemon accept.
+const errorMeanings: Record<typeof ErrorCodeSchema.Type, string> = {
+  stale_revision:
+    "the session moved past the revision or snapshot the request named; reread `status` and rebuild",
+  validation_failed: "the request was refused as written; `detail` says why",
+  no_session: "no saved session has that id",
+  daemon_unreachable: "the background daemon could not be reached or started",
+  bad_args: "the command line is invalid; check this reference",
+  source_unavailable:
+    "the gyst host cannot read the source (`detail.reason`); `message` says what to do",
+  internal_error: "a gyst defect, not a caller mistake",
+};
+const outputSection = {
+  title: "Output and errors",
+  body: [
+    "Every session command prints one JSON document on stdout and exits 0. A failure prints one JSON line `{code, message, detail?}` on stderr and exits 1, with `code`:",
+    ...ErrorCodeSchema.literals.map((code) => `- \`${code}\`: ${errorMeanings[code]}`),
+  ].join("\n"),
+};
+
+const applyOpLines = ApplyOpSchema.members.map(({ fields: { type, ...rest } }) => {
+  const names = Object.entries(rest).map(
+    ([name, schema]) => `${name}${SchemaAST.isOptional(schema.ast) ? "?" : ""}`,
+  );
+  return `- \`${type.literal}\`${names.length > 0 ? `: ${names.join(", ")}` : ""}`;
+});
 
 const units = ["B", "KiB", "MiB", "GiB", "TiB"];
 const byteSize = (bytes: number) => {
@@ -323,6 +354,24 @@ const apply = defineCommand(
   {
     description:
       "Apply one agent mutation batch from stdin: guidance and replies to existing threads, all or nothing",
+    sections: [
+      {
+        title: "Input",
+        body: [
+          `Stdin holds one JSON envelope with ${Object.keys(ApplyEnvelopeSchema.fields)
+            .map((field) => `"${field}"`)
+            .join(
+              ", ",
+            )}. \`snapshotId\` and \`revision\` are the session's current ones, from \`status\` or the reply that last changed the session; a batch naming any other is \`stale_revision\`. Each op is an object with its \`type\` and fields (\`?\` marks an optional field):`,
+          ...applyOpLines,
+          "The batch is validated as a whole and applied all or nothing; success prints the resulting status.",
+        ].join("\n"),
+      },
+      {
+        title: "Retry",
+        body: "Choose `idempotencyKey` once per batch, before sending it. After a lost reply, resend the same batch with the same key: it returns the recorded result, even once the session has moved on, and applies nothing twice. That recorded result is history, not current status: reread `status` before the next batch. A key reused for a different batch is `validation_failed`. After `stale_revision`, reread `status`, reconcile what changed and send the rebuilt batch under a new key.",
+      },
+    ],
   },
   (command) =>
     command
@@ -340,6 +389,12 @@ const threads = defineCommand(
   {
     description:
       "Retrieve threads with their history and original code: --pending takes the open threads with unread human messages now, --open every open thread; either reads, and so freezes, the unread messages it returns",
+    sections: [
+      {
+        title: "Retry",
+        body: "Choose the request id before the first attempt and reuse it only to retry that same retrieval: the same id and mode return the recorded bundle, even after later messages arrive, and freeze nothing more. The same id with the other mode is `validation_failed`. A replayed bundle is history: its `revision`, `progress` and `openThreads` were current when it was first returned. Messages that arrive later stay Pending for a retrieval under a new id; `--open` recovers threads already read.",
+      },
+    ],
   },
   (command) =>
     command
@@ -377,6 +432,12 @@ const refresh = defineCommand(
   {
     description:
       "Recapture the recorded scope and reconcile the review onto it; an identical capture changes nothing",
+    sections: [
+      {
+        title: "Retry",
+        body: "After a lost reply, retry with the same request id and snapshot: it returns the recorded result without capturing again. `stale_revision` means `--snapshot` is no longer current because the session was refreshed already: reread `status` rather than refreshing again. `replaced: false` means the capture was identical and nothing changed.",
+      },
+    ],
   },
   (command) =>
     command
@@ -412,7 +473,15 @@ const refresh = defineCommand(
 );
 const remove = defineCommand(
   "delete",
-  { description: "Delete one saved session and its review state" },
+  {
+    description: "Delete one saved session and its review state",
+    sections: [
+      {
+        title: "Retry",
+        body: "After a lost reply, retry with the same request id and session: it returns the recorded result, even though the session is gone.",
+      },
+    ],
+  },
   (command) =>
     command
       .use(daemonClient)
@@ -501,7 +570,7 @@ const exportCommand = defineCommand(
 
 export const session = defineCommand(
   "session",
-  { description: "Manage co-review sessions" },
+  { description: "Manage co-review sessions", sections: [outputSection] },
   (command) =>
     command
       .provide(daemonClient())
