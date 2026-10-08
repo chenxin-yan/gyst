@@ -323,7 +323,16 @@ describe("review workflows through the installed CLI", () => {
     );
     expect(json(answered).groups[1].overview.markdown).toContain("fixed clock");
 
-    // The run is cut off before answering the note reply: --open recovers the read work.
+    // The run is cut off before answering the note reply. Its pickup id is still known, but the
+    // replay is the bundle as first returned: without the reply just posted, and still listing the
+    // answered question as unread. So --open recovers the read work.
+    const replayed = await agent.threads("pending", "respond-1");
+    expect(replayed.stdout).toBe(pickup.stdout);
+    expect(json(replayed).threads[0]).toMatchObject({
+      id: asked.thread,
+      unread: [asked.message],
+      messages: [{ id: asked.message, author: "human" }],
+    });
     const recovered = json(await agent.threads("open", "recover-1"));
     const thread = (id: string) =>
       recovered.threads.find((entry: { id: string }) => id === entry.id);
