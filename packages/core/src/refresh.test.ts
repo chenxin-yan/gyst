@@ -246,6 +246,17 @@ describe("refreshSession", () => {
       LATER,
     );
     expect(next.viewedHunkIds).toEqual([hunkA, hunkB]);
+    // Once it changes again, the reader's last look at it is stale too.
+    const again = refreshSession(
+      next,
+      to(
+        lines({ ...files, "helper.ts": ["h4", "h4"] }, { "a.ts": changeA, "b.ts": changeB }),
+        "s4",
+      ),
+      new Map([...retained, ["s3", helperOnly]]),
+      LATER,
+    );
+    expect(again.viewedHunkIds).toEqual([hunkB]);
   });
 
   it("keeps guidance current when its referenced lines only moved or changed elsewhere", () => {
@@ -285,23 +296,65 @@ describe("refreshSession", () => {
     expect(refreshed.overview?.references).toEqual(original.overview?.references);
   });
 
-  it("moves a retained note back onto current code once its old range maps again", () => {
+  it("keeps a note on its earlier code while its group no longer covers its mapped range", () => {
+    // An old-side note on A's removed line, whose old side stays the same bytes and so maps.
+    const original: Session = {
+      ...session(),
+      groups: [group("ga", [hunkA], "a.ts", [note("na", pin("a.ts", "old", 10))])],
+    };
+    for (const [snapshot, diff] of [
+      ["s2", "@@ -9,3 +9,3 @@\n l9\n-l10\n+X10\n l11"],
+      ["s3", ""],
+    ] as const) {
+      const changed = lines(
+        { ...files, "a.ts": ["a0", snapshot] },
+        diff ? { "a.ts": diff, "b.ts": changeB } : { "b.ts": changeB },
+      );
+      const refreshed = refreshSession(original, to(changed, snapshot), retained, LATER);
+      expect(refreshed.groups[0]).toMatchObject({ hunkIds: [], files: [] });
+      expect(refreshed.groups[0]!.notes[0]).toEqual({
+        ...original.groups[0]!.notes[0],
+        outdated: ["code"],
+      });
+    }
+  });
+
+  it("unviews a spanning note's surviving hunk when its reference changes, and moves it back once its range maps", () => {
+    // Note na spans A and A2; A2 changes and the helper na references changes with it.
+    const changeA2 = "@@ -20 +20 @@\n-l20\n+L20";
+    const spanning = lines(files, { "a.ts": `${changeA}\n${changeA2}`, "b.ts": changeB });
+    const [a, a2, b] = spanning.hunks.map(({ id }) => id) as [string, string, string];
+    const original: Session = {
+      ...session(),
+      hunks: spanning.hunks,
+      groups: [
+        group("ga", [a, a2], "a.ts", [note("na", pin("a.ts", "new", 10, 20), [helper])]),
+        group("gb", [b], "b.ts", []),
+      ],
+      viewedHunkIds: [a, a2, b],
+    };
+    const fromSpanning = new Map([["s1", spanning]]);
     const changed = lines(
-      { ...files, "a.ts": ["a3", "a4"] },
-      { "a.ts": "@@ -9,3 +9,3 @@\n k9\n-l10\n+L10\n l11", "b.ts": changeB },
+      { ...files, "a.ts": ["a0", "a6"], "helper.ts": ["h1", "h1"] },
+      { "a.ts": `${changeA}\n@@ -20 +20 @@\n-l20\n+X20`, "b.ts": changeB },
     );
-    const outdated = refreshSession(session(), to(changed), retained, LATER);
-    expect(outdated.groups[0]!.notes[0]!.anchor.snapshotId).toBe("s1");
-    // The change was reverted: s1's a.ts is captured again, so the note's range maps.
+    const refreshed = refreshSession(original, to(changed), fromSpanning, LATER);
+    expect(refreshed.groups[0]!.hunkIds).toEqual([a]);
+    expect(refreshed.groups[0]!.notes[0]).toMatchObject({
+      anchor: pin("a.ts", "new", 10, 20),
+      outdated: ["code", "references"],
+    });
+    expect(refreshed.viewedHunkIds).toEqual([b]);
+    // A2 was reverted: s1's a.ts is captured again, and the range maps beside A, still in ga.
     const back = refreshSession(
-      outdated,
-      to(first, "s3"),
-      new Map([...retained, ["s2", changed]]),
+      refreshed,
+      to(spanning, "s3"),
+      new Map([...fromSpanning, ["s2", changed]]),
       LATER,
     );
     expect(back.groups[0]!.notes[0]).toMatchObject({
-      anchor: { ...pin("a.ts", "new", 10), snapshotId: "s3" },
-      outdated: ["code"],
+      anchor: { ...pin("a.ts", "new", 10, 20), snapshotId: "s3" },
+      outdated: ["code", "references"],
     });
   });
 });

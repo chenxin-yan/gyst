@@ -99,6 +99,17 @@ const sameContent = (a: ContentSide, b: ContentSide) =>
     ? b.kind === "text" && a.blob === b.blob
     : a.kind === "absent" && b.kind === "absent";
 
+/** Whether one side of `path` holds different content in `to` than in `from`, or in only one. */
+export function sideChanged(
+  from: SnapshotLines,
+  to: SnapshotLines,
+  { path, side }: Pick<CodeRange, "path" | "side">,
+) {
+  const before = from.files.find((file) => file.path === path);
+  const after = to.files.find((file) => file.path === path);
+  return before && after ? !sameContent(before[side], after[side]) : before !== after;
+}
+
 /**
  * `range`, read in `from`, as the same lines of `to`: every line must map, unchanged and
  * unambiguously, to one contiguous range of the same file and side. A side with identical bytes
