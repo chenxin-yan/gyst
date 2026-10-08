@@ -168,7 +168,8 @@ export const commands: readonly Command[] = [
 
 /**
  * What a standalone walkthrough cannot do: write review state (comments, replies, resolution,
- * Viewed), check or refresh the source, or export again. It has no threads to walk or list.
+ * Viewed), check or refresh the source, export again, or ask a semantic engine, which needs the
+ * daemon. It has no threads to walk or list.
  */
 const liveOnly: ReadonlySet<CommandId> = new Set([
   "comment",
@@ -181,6 +182,8 @@ const liveOnly: ReadonlySet<CommandId> = new Set([
   "refresh",
   "check",
   "export",
+  "definition",
+  "references",
 ]);
 
 /**
