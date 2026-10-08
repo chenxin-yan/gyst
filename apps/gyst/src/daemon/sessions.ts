@@ -358,8 +358,8 @@ export class Sessions extends Context.Service<
       PlatformError.PlatformError | BadArgs | InternalError | SourceUnavailable
     >;
     /**
-     * Runs each requested `reclaim` in turn, coalescing requests, until interrupted. Only the
-     * daemon that owns the store runs it.
+     * Runs each requested `reclaim` in turn, coalescing requests, until interrupted; one already
+     * started finishes first. Only the daemon that owns the store runs it.
      */
     readonly reclaimer: Effect.Effect<never>;
     /** Resolves once a delete has removed the last session; a later open arms it again. */
@@ -471,8 +471,9 @@ export class Sessions extends Context.Service<
       });
       const reclaim = content.reclaim(retainedContent).pipe(Effect.withSpan("Sessions.reclaim"));
       const reclaims = yield* Queue.sliding<void>(1);
+      // A daemon exiting after its last deletion finishes the reclaim that deletion requested.
       const reclaimer = Queue.take(reclaims).pipe(
-        Effect.andThen(reclaim),
+        Effect.andThen(Effect.uninterruptible(reclaim)),
         Effect.catchCause((cause) =>
           Effect.logWarning("could not reclaim captured content", cause),
         ),
