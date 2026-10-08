@@ -105,6 +105,16 @@ the next one. Reads never consult the checkout and name the session's current sn
 `open`, `status` or `diff`; after a refresh an older one fails with `stale_revision`. On a
 terminal, capturing (`gyst`, `open`, `refresh`) shows its progress on stderr.
 
+In the viewer, `c` comments on the selected lines or the cursor's line (in Mouse mode, select
+lines with the hover + and press Comment), `r` replies to a note or thread, `x` resolves a thread
+and `C` lists every conversation, where resolved ones are reopened. Each message is a Question or
+a Change request and stays Pending, editable and deletable, until the agent retrieves it. Agents
+retrieve them with `gyst session threads --session <id> --pending --request-id <request-id>`
+(`--open` for every open thread, read work included): one step that returns each thread's history
+and original code and reads exactly the Pending messages it returns. Retrying with the same request
+id returns the same bundle. Agents answer with `thread.reply` ops in `gyst session apply`, together
+with any guidance changes; they never resolve, reopen or start threads.
+
 Use `/gyst-refresh` in your agent's chat to refresh the existing review and revise
 its affected groups and explanations while preserving unrelated review progress.
 Refresh retains notes only for wholly surviving groups, and Viewed only for exactly
