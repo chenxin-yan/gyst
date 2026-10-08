@@ -1717,6 +1717,104 @@ describe("installed gyst in a sandboxed browser", () => {
     await waitFor(async () => ((await panelTop(page)) ?? 0) > 0, "the reader scrolled");
   }, 15_000);
 
+  it("starts files Git marks generated or vendored folded and labelled Generated in every view, unfolding, grouping and counting like any other", async () => {
+    const cwd = join(root, "generated");
+    await mkdir(join(cwd, "dist"), { recursive: true });
+    await mkdir(join(cwd, "vendor"));
+    const inRepo = (...args: string[]) => execFileSync("git", args, { cwd, env, stdio: "ignore" });
+    inRepo("init", "-q", "-b", "main");
+    inRepo("config", "user.email", "t@gyst.invalid");
+    inRepo("config", "user.name", "t");
+    await writeFile(
+      join(cwd, ".gitattributes"),
+      "dist/** linguist-generated\nvendor/** linguist-vendored\n",
+    );
+    const paths = ["app.js", "dist/bundle.js", "vendor/lib.js"];
+    for (const path of paths) await writeFile(join(cwd, path), `${path} one\n`);
+    inRepo("add", ".");
+    inRepo("commit", "-qm", "init");
+    for (const path of paths) await writeFile(join(cwd, path), `${path} two\n`);
+    const launched = await launchIn(cwd);
+    onTestFinished(async () => {
+      await gyst("session", "delete", "--session", launched.id, "--request-id", randomUUID());
+      await rm(cwd, { recursive: true, force: true });
+    });
+
+    // The agent's reads say which files are Generated.
+    const status = await gyst("session", "status", "--session", launched.id);
+    expect(status.files).toEqual([
+      { path: "app.js", hunkCount: 1, viewed: false },
+      { path: "dist/bundle.js", hunkCount: 1, viewed: false, generated: true },
+      { path: "vendor/lib.js", hunkCount: 1, viewed: false, generated: true },
+    ]);
+    const diff = await gyst("session", "diff", "--session", launched.id);
+    expect(diff.generatedFiles).toEqual(["dist/bundle.js", "vendor/lib.js"]);
+
+    const page = await newPage();
+    await page.setViewportSize({ width: 1280, height: 800 });
+    await page.goto(`${launched.origin}${launched.path}`);
+    const pane = page.getByRole("main");
+    const side = page.getByRole("navigation", { name: "gyst" });
+    const expanded = (path: string) => foldToggle(page, path).getAttribute("aria-expanded");
+    const generated = (path: string) =>
+      pane
+        .getByRole("heading", { name: path, exact: true })
+        .locator("xpath=..")
+        .getByText("Generated", { exact: true });
+    await pane.getByText("app.js two").waitFor();
+    expect(await expanded("app.js")).toBe("true");
+    expect(await expanded("dist/bundle.js")).toBe("false");
+    expect(await expanded("vendor/lib.js")).toBe("false");
+    expect(await generated("dist/bundle.js").count()).toBe(1);
+    expect(await generated("vendor/lib.js").count()).toBe(1);
+    expect(await generated("app.js").count()).toBe(0);
+    await says(page, "0/3 hunks viewed in 3 files");
+
+    // A folder's view starts it folded too.
+    await side.getByRole("button", { name: "vendor/", exact: true }).click();
+    await headingsAre(page, ["vendor/lib.js"]);
+    expect(await expanded("vendor/lib.js")).toBe("false");
+    expect(await generated("vendor/lib.js").count()).toBe(1);
+
+    // The agent groups Generated hunks like any other; the group's view starts them folded.
+    await applyBatch(launched.id, {
+      revision: status.revision,
+      snapshotId: status.session.snapshotId,
+      idempotencyKey: randomUUID(),
+      ops: [
+        {
+          type: "group.create",
+          id: "build",
+          title: "Rebuild the bundle",
+          overview: "The source edit and its build output.",
+          memberHunkIds: diff.hunks.map(({ id }: { id: string }) => id),
+          files: paths,
+        },
+      ],
+    });
+    expect((await gyst("session", "status", "--session", launched.id)).preparation).toMatchObject({
+      groupedHunks: 3,
+      totalHunks: 3,
+    });
+    await side.getByRole("button", { name: /^Rebuild the bundle/ }).click();
+    await headingsAre(page, paths);
+    expect(await expanded("app.js")).toBe("true");
+    expect(await expanded("dist/bundle.js")).toBe("false");
+    expect(await expanded("vendor/lib.js")).toBe("false");
+
+    // It unfolds like any other file, and its Viewed counts.
+    await side.getByRole("button", { name: "All changes", exact: true }).click();
+    await headingsAre(page, paths);
+    await foldToggle(page, "dist/bundle.js").click();
+    await waitFor(async () => (await expanded("dist/bundle.js")) === "true", "bundle unfolded");
+    await pane.getByText("dist/bundle.js two").waitFor();
+    await viewedBox(page, "dist/bundle.js").check();
+    await says(page, "1/3 hunks viewed in 3 files");
+    // Checking folds it and unfolds the next unviewed file, Generated or not.
+    await waitFor(async () => (await expanded("dist/bundle.js")) === "false", "bundle folded");
+    await waitFor(async () => (await expanded("vendor/lib.js")) === "true", "lib unfolded");
+  }, 60_000);
+
   it("scrolls with movement keys in Mouse mode, without a cursor, and selects lines with the hover + and by dragging", async () => {
     const page = await newPage();
     await page.setViewportSize({ width: 1280, height: 800 });
