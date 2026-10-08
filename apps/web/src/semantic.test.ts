@@ -117,6 +117,7 @@ describe("afterIdentifiers", () => {
         kind: "choose",
         choices: [three, plus, zero].map((symbol) => ({ query: "references", symbol })),
         selected: 0,
+        gaps: [],
       },
     });
   });
@@ -126,7 +127,7 @@ describe("afterIdentifiers", () => {
       afterIdentifiers({ kind: "identifiers", query: "definition" }, identifiers(plus)),
     ).toEqual({ ask: { kind: "query", choice: { query: "definition", symbol: plus } } });
     expect(afterIdentifiers({ kind: "identifiers", query: "definition" }, identifiers())).toEqual({
-      stage: { kind: "none", message: "No symbol to look up on line 2." },
+      stage: { kind: "none", message: "No symbol to look up on line 2.", gaps: [] },
     });
   });
 
@@ -143,6 +144,7 @@ describe("afterIdentifiers", () => {
           { query: "references", symbol: plus },
         ],
         selected: 0,
+        gaps: [],
       },
     });
     // A token that only overlaps the identifier, as a highlighter may split one, still finds it.
@@ -151,7 +153,27 @@ describe("afterIdentifiers", () => {
     ).toMatchObject({ stage: { kind: "choose", choices: [{ symbol: plus }, { symbol: plus }] } });
     expect(
       afterIdentifiers({ kind: "identifiers", token: { start: 25, end: 26 } }, identifiers(plus)),
-    ).toEqual({ stage: { kind: "none", message: "No symbol to look up there." } });
+    ).toEqual({ stage: { kind: "none", message: "No symbol to look up there.", gaps: [] } });
+  });
+
+  it("keeps the known missing inputs of a line's identifiers, when it has none too", () => {
+    const gaps = [{ kind: "dependencies", file: "package.json" }] as const;
+    const lacking = (...found: (typeof plus)[]): IdentifiersPayload => ({
+      ...identifiers(...found),
+      outcome: { kind: "identifiers", identifiers: found, gaps },
+    });
+    expect(
+      afterIdentifiers({ kind: "identifiers", query: "definition" }, lacking(three, plus)),
+    ).toMatchObject({ stage: { kind: "choose", gaps } });
+    expect(
+      afterIdentifiers({ kind: "identifiers", token: { start: 21, end: 25 } }, lacking(plus)),
+    ).toMatchObject({ stage: { kind: "choose", gaps } });
+    expect(afterIdentifiers({ kind: "identifiers", query: "definition" }, lacking())).toEqual({
+      stage: { kind: "none", message: "No symbol to look up on line 2.", gaps },
+    });
+    expect(
+      afterIdentifiers({ kind: "identifiers", token: { start: 0, end: 1 } }, lacking(plus)),
+    ).toEqual({ stage: { kind: "none", message: "No symbol to look up there.", gaps } });
   });
 
   it("keeps an unavailable reason and the ask that met it", () => {
@@ -211,6 +233,7 @@ describe("stepped", () => {
       kind: "choose",
       choices: [three, plus, zero].map((symbol) => ({ query: "definition", symbol })),
       selected: 0,
+      gaps: [],
     };
     expect(stepped(choose, 1)).toMatchObject({ selected: 1 });
     expect(stepped(stepped(stepped(choose, 1), 1), 1)).toMatchObject({ selected: 2 });
@@ -371,6 +394,7 @@ describe("SemanticPeekView", () => {
       kind: "choose",
       choices: [three, plus].map((symbol) => ({ query: "definition", symbol })),
       selected: 1,
+      gaps: [],
     });
     expect(choose).toContain('role="listbox" aria-label="Symbols"');
     expect(choose.match(/role="option"/g)).toHaveLength(2);
@@ -411,6 +435,31 @@ describe("SemanticPeekView", () => {
       "2 more lie outside the captured files, in packages gyst never captures, and aren't shown.",
     );
     expect(html).not.toContain("Expand");
+  });
+
+  it("marks a line's symbols, or finding none there, potentially incomplete with their known missing inputs", () => {
+    const gaps = [{ kind: "dependencies", file: "package.json" }] as const;
+    const missingInput =
+      "package.json declares packages, and installed packages are never captured";
+    const choose = text(
+      view({
+        kind: "choose",
+        choices: [three, plus].map((symbol) => ({ query: "definition", symbol })),
+        selected: 0,
+        gaps,
+      }),
+    );
+    expect(choose).toContain("Potentially incomplete.1 known missing input");
+    expect(choose).toContain(missingInput);
+    const none = text(view({ kind: "none", message: "No symbol to look up on line 2.", gaps }));
+    expect(none).toContain("No symbol to look up on line 2.");
+    expect(none).toContain(
+      "Potentially incomplete: finding none doesn't mean there are none.1 known missing input",
+    );
+    expect(none).toContain(missingInput);
+    expect(
+      text(view({ kind: "none", message: "No symbol to look up on line 2.", gaps: [] })),
+    ).not.toContain("Potentially incomplete");
   });
 
   it("lists a few known missing inputs at once and more on request", () => {

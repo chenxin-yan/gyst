@@ -2,7 +2,12 @@
 // usages, and the peek that shows them under that line. Only an answer to the ask still shown
 // applies: closing, another ask, Expand, Back or another snapshot leave a late reply nothing to
 // change. Nothing here touches Viewed.
-import type { AddonState, CapturedRange, NavigationUnavailable } from "@gyst/core/wire";
+import type {
+  AddonState,
+  CapturedRange,
+  NavigationGap,
+  NavigationUnavailable,
+} from "@gyst/core/wire";
 import * as stylex from "@stylexjs/stylex";
 import { type KeyboardEvent, type Ref, useEffect, useMemo, useRef } from "react";
 import { isExpectedFailure, operation } from "./api.ts";
@@ -326,6 +331,11 @@ export function SemanticPeekView(props: {
           onPick={(index) => props.onChoose(index)}
         />
       );
+      footer = stage.gaps.length > 0 && (
+        <div {...stylex.props(styles.footer)}>
+          <Incomplete gaps={stage.gaps} empty={false} />
+        </div>
+      );
       break;
     case "locations": {
       const empty = stage.locations.length === 0;
@@ -363,25 +373,7 @@ export function SemanticPeekView(props: {
               shown.
             </p>
           )}
-          {stage.gaps.length > 0 && (
-            <section aria-label="Potentially incomplete" role="note">
-              <p {...stylex.props(styles.warning)}>
-                Potentially incomplete
-                {empty ? ": finding none doesn't mean there are none" : ""}.
-              </p>
-              {/* A monorepo can lack dozens of inputs; a few are shown, more on request. */}
-              <details open={stage.gaps.length <= shownGaps}>
-                <summary {...stylex.props(styles.summary)}>
-                  {stage.gaps.length} known missing {stage.gaps.length === 1 ? "input" : "inputs"}
-                </summary>
-                <ul {...stylex.props(styles.gaps)}>
-                  {stage.gaps.map((gap) => (
-                    <li key={JSON.stringify(gap)}>{gapText(gap)}</li>
-                  ))}
-                </ul>
-              </details>
-            </section>
-          )}
+          {stage.gaps.length > 0 && <Incomplete gaps={stage.gaps} empty={empty} />}
         </div>
       );
       break;
@@ -391,6 +383,11 @@ export function SemanticPeekView(props: {
         <p role="status" {...stylex.props(styles.muted)}>
           {stage.message}
         </p>
+      );
+      footer = stage.gaps !== undefined && stage.gaps.length > 0 && (
+        <div {...stylex.props(styles.footer)}>
+          <Incomplete gaps={stage.gaps} empty />
+        </div>
       );
       break;
     case "unavailable":
@@ -445,6 +442,30 @@ export function SemanticPeekView(props: {
       overlay={props.overlay}
       handle={props.handle}
     />
+  );
+}
+
+/** A potentially incomplete answer's warning and the known missing inputs it names. */
+function Incomplete(props: { gaps: readonly NavigationGap[]; empty: boolean }) {
+  const { gaps } = props;
+  return (
+    <section aria-label="Potentially incomplete" role="note">
+      <p {...stylex.props(styles.warning)}>
+        Potentially incomplete
+        {props.empty ? ": finding none doesn't mean there are none" : ""}.
+      </p>
+      {/* A monorepo can lack dozens of inputs; a few are shown, more on request. */}
+      <details open={gaps.length <= shownGaps}>
+        <summary {...stylex.props(styles.summary)}>
+          {gaps.length} known missing {gaps.length === 1 ? "input" : "inputs"}
+        </summary>
+        <ul {...stylex.props(styles.gaps)}>
+          {gaps.map((gap) => (
+            <li key={JSON.stringify(gap)}>{gapText(gap)}</li>
+          ))}
+        </ul>
+      </details>
+    </section>
   );
 }
 
