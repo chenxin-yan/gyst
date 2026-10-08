@@ -987,6 +987,7 @@ export class Git extends Context.Service<
             "--reverse",
             "--topo-order",
             "--no-show-signature",
+            "--encoding=UTF-8",
             "--format=%H%n%B",
             "--end-of-options",
             tip,

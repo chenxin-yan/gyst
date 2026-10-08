@@ -110,7 +110,7 @@ export const ProvenanceSchema = Schema.Union([
 ]);
 export type Provenance = typeof ProvenanceSchema.Type;
 
-/** One commit a recorded range contains: its full message as Git stores it, subject and body. */
+/** One commit a recorded range contains: its whole message, subject and body, as UTF-8 text. */
 export const CommitSchema = Schema.Struct({ id: GitObjectIdSchema, message: Schema.String });
 export type Commit = typeof CommitSchema.Type;
 
