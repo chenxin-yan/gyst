@@ -533,6 +533,8 @@ function SessionReader(props: {
   const [opened] = useState(() => recalled?.opened ?? new Map<string, Map<number, Opened>>());
   const [, setOpenedVersion] = useState(0);
   const viewer = useRef<Viewer>(null);
+  // The main panel's scroller while the view has no changes to show, so no viewer.
+  const alone = useRef<HTMLDivElement>(null);
   const live = useLiveSession(session.id);
   const progress = useViewedProgress(session.id, snapshotId, props.status, live);
   const status = progress.status;
@@ -1099,7 +1101,9 @@ function SessionReader(props: {
   const toggleAuthor = () => {
     const showing = !authorShown;
     flushSync(() => setAuthorShown(showing));
-    if (showing) viewer.current?.scrollToEdge("top");
+    if (!showing) return;
+    viewer.current?.scrollToEdge("top");
+    alone.current?.scrollTo({ top: 0 });
   };
 
   // ─── captured-code navigation ───
@@ -1744,7 +1748,7 @@ function SessionReader(props: {
       }
     >
       {shown.length === 0 ? (
-        <div {...stylex.props(styles.alone)}>
+        <div ref={alone} {...stylex.props(styles.alone)}>
           {authorCard && <div {...stylex.props(styles.emptyHeader)}>{authorCard}</div>}
           {inView.group && <div {...stylex.props(styles.emptyHeader)}>{overviewHeader}</div>}
           <p {...stylex.props(styles.empty)}>

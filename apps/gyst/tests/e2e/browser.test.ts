@@ -13,6 +13,7 @@ import {
   type Browser,
   type BrowserContext,
   chromium,
+  type Locator,
   type Page,
   type Request as PageRequest,
   type Route,
@@ -519,6 +520,13 @@ const panelTop = (page: Page) =>
       while (at && getComputedStyle(at).overflowY !== "auto") at = at.parentElement;
       return at?.scrollTop;
     });
+/** The offset of the panel scrolling `inside`, which needs no file in the panel. */
+const scrollTopAround = (inside: Locator) =>
+  inside.evaluate((element) => {
+    let at: Element | null = element;
+    while (at && getComputedStyle(at).overflowY !== "auto") at = at.parentElement;
+    return at!.scrollTop;
+  });
 const focusedText = (page: Page) => page.evaluate(() => document.activeElement?.textContent);
 /** Chromium's console error for an image the viewer's Content-Security-Policy refuses. */
 const blockedImage = (url: string) =>
@@ -5311,6 +5319,52 @@ describe("installed gyst in a sandboxed browser", () => {
     await page.goto(`${one.origin}/session/${one.id}`);
     await page.getByRole("main").getByRole("heading", { level: 2 }).first().waitFor();
     expect(await side.getByRole("button", { name: /^(Description|Commits)/ }).count()).toBe(0);
+    await settled(page);
+  }, 30_000);
+
+  it("reveals the author's explanation above a group without changes that the reader scrolled down", async () => {
+    git("branch", "-f", "peek", "walk");
+    const walk = await openWalk("walk~1...peek");
+    const overview = Array.from({ length: 80 }, (_, i) => `Step ${i + 1} reads the config.`);
+    await walk.publish(0, "long", [
+      { type: "walkthrough.update", overview: walkOverview },
+      { ...coreGroup(walk), overview: overview.join("\n\n") },
+      edgeGroup(walk),
+    ]);
+    // Refreshed to a range without changes: the group is kept, with nothing to show.
+    git("branch", "-f", "peek", "walk~1");
+    const { snapshotId } = (await gyst("session", "status", "--session", walk.id)).session;
+    await gyst(
+      "session",
+      "refresh",
+      "--session",
+      walk.id,
+      "--snapshot",
+      snapshotId,
+      "--request-id",
+      "emptied",
+    );
+    const page = await newPage();
+    await page.setViewportSize({ width: 1280, height: 600 });
+    await page.goto(`${one.origin}/session/${walk.id}`);
+    const side = page.getByRole("navigation", { name: "gyst" });
+    await side.getByRole("button", { name: /^Parse the config/ }).click();
+    const pane = page.getByRole("main");
+    await pane.getByText("This session's snapshot has no changes.", { exact: true }).waitFor();
+    await pane.getByText("Step 80 reads the config.").waitFor();
+    await pane.hover();
+    await page.mouse.wheel(0, 3000);
+    const scrollerTop = () => scrollTopAround(pane.getByText("Step 80 reads the config."));
+    expect(await steady(scrollerTop)).toBeGreaterThan(1000);
+
+    await side.getByRole("button", { name: "Commits" }).click();
+    const card = pane.getByRole("region", { name: "Commits" });
+    await card.getByText("This range has no commits.", { exact: true }).waitFor();
+    await steady(scrollerTop);
+    const box = (await card.boundingBox())!;
+    const paneBox = (await pane.boundingBox())!;
+    expect(box.y).toBeGreaterThanOrEqual(paneBox.y);
+    expect(box.y + box.height).toBeLessThanOrEqual(paneBox.y + paneBox.height);
     await settled(page);
   }, 30_000);
 
