@@ -32,8 +32,7 @@ export type Extent = { left: number; width: number };
 /**
  * An open reference peek. With a `spacer` it is the full-width overlay over that spacer, spanning
  * `extent` (the rendered diff item); without one it reads in flow. Expand is offered only for an
- * available target in the current snapshot: the main panel shows current files by path, so an
- * earlier snapshot's file is read here only. Esc closes it through the reader's keys.
+ * available target; Esc closes it through the reader's keys.
  */
 export function InlinePeek(props: {
   peek: Peek;
@@ -118,7 +117,7 @@ export function InlinePeek(props: {
     >
       <div {...stylex.props(styles.bar)}>
         <span {...stylex.props(styles.title)}>{label}</span>
-        {props.availability.available && target.snapshotId === props.snapshotId && (
+        {props.availability.available && (
           <button
             ref={expand}
             type="button"
