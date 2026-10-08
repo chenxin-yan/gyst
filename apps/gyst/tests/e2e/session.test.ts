@@ -1068,6 +1068,7 @@ describe("gyst session CLI seam", () => {
       command: "edit",
       requestId: "e1",
       message: asked.message,
+      seen: { markdown: "Why *three*?", kind: "change" },
       markdown: "Edited.",
     });
     expect(frozen).toMatchObject({ ok: false, error: { code: "validation_failed" } });

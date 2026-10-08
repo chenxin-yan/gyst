@@ -63,7 +63,7 @@ describe("threadPlaces", () => {
   });
 
   it("places only a new comment's composer itself; a reply's sits in its thread or note", () => {
-    const comment: Draft = { id: "d", anchor: range("a.ts", 2, 3) };
+    const comment: Draft = { id: "d", snapshotId: "s2", anchor: range("a.ts", 2, 3) };
     expect(draftPlace(comment, ["a.ts"], "s2")).toEqual({
       file: "a.ts",
       side: "additions",
@@ -76,7 +76,7 @@ describe("threadPlaces", () => {
 
 describe("replies against a note's wording", () => {
   const onNote = thread("t", range("a.ts", 4), { note: { id: "n1", removed: false } });
-  const wording = (markdown: string) => ({ markdown, references: [] });
+  const wording = (markdown: string) => ({ markdown, references: [], anchor: range("a.ts", 4) });
 
   it("marks a reply Outdated when the note's wording changed or the note went, Pending or not", () => {
     const current = asked("m1", { wording: wording("Now.") });
@@ -92,6 +92,7 @@ describe("replies against a note's wording", () => {
   it("flags what changed under a draft without rebinding it", () => {
     const reply: Draft = {
       id: "d",
+      snapshotId: "s2",
       anchor: range("a.ts", 4),
       note: { id: "n1", removed: false },
       wording: wording("Now."),
@@ -107,10 +108,15 @@ describe("replies against a note's wording", () => {
     ).toBe(false);
     const resolved = thread("t", range("a.ts", 4), { resolved: true });
     expect(draftChange({ ...reply, thread: "t" }, [resolved], notes, "s2")?.blocks).toBe(true);
-    const comment: Draft = { id: "c", anchor: range("a.ts", 2, 2, "s1") };
+    const comment: Draft = { id: "c", snapshotId: "s1", anchor: range("a.ts", 2, 2, "s1") };
     expect(draftChange(comment, [], notes, "s2")?.message).toMatch(/stays on the code/);
     expect(
-      draftChange({ id: "r", anchor: range("a.ts", 2), thread: "gone" }, [], notes, "s2"),
+      draftChange(
+        { id: "r", snapshotId: "s2", anchor: range("a.ts", 2), thread: "gone" },
+        [],
+        notes,
+        "s2",
+      ),
     ).toEqual({
       message: "This thread no longer exists, so the reply can't be sent.",
       blocks: true,

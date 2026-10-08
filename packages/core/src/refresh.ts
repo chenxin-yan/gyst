@@ -18,6 +18,7 @@ import {
   survivingHunkIds,
 } from "./mapping.ts";
 import type { RefreshPayload, Session } from "./session.ts";
+import type { Wording } from "./thread.ts";
 import type { BrowserRequest } from "./wire.ts";
 
 export type RefreshRequest = Extract<BrowserRequest, { readonly command: "refresh" }>;
@@ -159,23 +160,28 @@ export function refreshSession(
 /**
  * The snapshots whose captured content the session still needs, its current one first: those its
  * guidance anchors or references pin, and those of every conversation (resolved ones included),
- * message, reply wording and draft. Reads may name any of them, and refresh maps from them.
+ * message, reply wording and its note's code then, and draft. Reads may name any of them, and refresh maps from them.
  */
 export function pinnedSnapshotIds(session: Session): string[] {
   const ids = new Set([session.snapshotId]);
   const pin = (text: Pick<GuidanceText, "references"> | null | undefined) => {
     for (const { snapshotId } of text?.references ?? []) ids.add(snapshotId);
   };
+  const pinWording = (wording: Wording | undefined) => {
+    pin(wording);
+    if (wording) ids.add(wording.anchor.snapshotId);
+  };
   for (const thread of session.threads) {
     ids.add(thread.anchor.snapshotId);
     for (const message of thread.messages) {
       pin(message);
-      if (message.author === "human") pin(message.wording);
+      if (message.author === "human") pinWording(message.wording);
     }
   }
   for (const draft of session.drafts) {
+    ids.add(draft.snapshotId);
     ids.add(draft.anchor.snapshotId);
-    pin(draft.wording);
+    pinWording(draft.wording);
   }
   pin(session.overview);
   for (const group of session.groups) {

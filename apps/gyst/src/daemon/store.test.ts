@@ -197,7 +197,11 @@ describe("SessionStore", () => {
           pending: false,
           markdown: "Rename it?",
           references: [],
-          wording: { markdown: "Different operations, one behavior.", references: [anchor] },
+          wording: {
+            markdown: "Different operations, one behavior.",
+            references: [anchor],
+            anchor,
+          },
           createdAt: "2026-01-01T00:00:00.000Z",
         },
         {
@@ -212,7 +216,15 @@ describe("SessionStore", () => {
     const conversing: Session = {
       ...saved,
       threads: [thread],
-      drafts: [{ id: "d", anchor, thread: "t", note: { id: "n", removed: false } }],
+      drafts: [
+        {
+          id: "d",
+          snapshotId: "snapshot",
+          anchor,
+          thread: "t",
+          note: { id: "n", removed: false },
+        },
+      ],
       conversationReceipts: [
         {
           requestId: "r3",
@@ -230,7 +242,14 @@ describe("SessionStore", () => {
             revision: 3,
             progress: { viewed: 1, total: 1 },
             openThreads: 0,
-            threads: [{ ...thread, code: { kind: "text", lines: ["b"] }, unread: ["m1"] }],
+            threads: [
+              {
+                ...thread,
+                code: { kind: "text", lines: ["b"] },
+                earlierCode: [],
+                unread: ["m1"],
+              },
+            ],
           },
         },
       ],

@@ -492,6 +492,9 @@ const reviewRequests = [
   }),
 ] as const;
 
+/** A Pending human message as its author last read it, which an edit or deletion must still find. */
+const SeenMessageSchema = Schema.Struct({ markdown: MarkdownSchema, kind: MessageKindSchema });
+
 /**
  * The operations a browser may request: exact saved-session ids and read filters only. Checkout
  * paths, Git input, PATHs, executables, add-on locations and caller roles are not expressible.
@@ -564,12 +567,17 @@ export const BrowserRequestSchema = Schema.Union([
     markdown: MarkdownSchema,
     kind: MessageKindSchema,
   }),
-  /** Edits a Pending human message's text or kind; once read it is frozen. */
+  /**
+   * Edits a Pending human message's text or kind; once read it is frozen. `seen` is the message as
+   * the human last read it, and must still be it, so an edit made elsewhere is never overwritten
+   * unseen. Its unchanged `gyst:` links keep their pins.
+   */
   Schema.Struct({
     command: Schema.Literal("edit"),
     ...exact,
     requestId: Schema.String,
     message: Schema.String,
+    seen: SeenMessageSchema,
     markdown: Schema.optional(MarkdownSchema),
     kind: Schema.optional(MessageKindSchema),
   }).check(
@@ -578,12 +586,16 @@ export const BrowserRequestSchema = Schema.Union([
         markdown !== undefined || kind !== undefined || "edit needs markdown or kind",
     ),
   ),
-  /** Deletes a Pending human message; a thread left with no message disappears, its note stays. */
+  /**
+   * Deletes a Pending human message, still as `seen`; a thread left with no message disappears,
+   * its note stays.
+   */
   Schema.Struct({
     command: Schema.Literal("retract"),
     ...exact,
     requestId: Schema.String,
     message: Schema.String,
+    seen: SeenMessageSchema,
   }),
   /** Resolves (or, with `resolved: false`, reopens) a thread. */
   Schema.Struct({
