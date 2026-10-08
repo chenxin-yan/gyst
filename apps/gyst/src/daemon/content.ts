@@ -51,6 +51,17 @@ const outOfSpace = (error: PlatformError.PlatformError) => {
   );
 };
 
+/** A write in `directory` that ran out of space or quota, as the actionable `storage_full`. */
+export const storageFullIn =
+  (directory: string) =>
+  <E>(error: E | PlatformError.PlatformError) =>
+    error instanceof PlatformError.PlatformError && outOfSpace(error)
+      ? new SourceUnavailable({
+          message: `gyst's data directory (${directory}) is out of space: free space there, or delete saved sessions you no longer need with gyst session delete`,
+          detail: { reason: "storage_full", diagnostic: error.message },
+        })
+      : error;
+
 const invalid =
   <S extends Schema.Top>(schema: S, message: string) =>
   (input: unknown) =>
@@ -262,15 +273,7 @@ export class CapturedContent extends Context.Service<
 
       const spaceFailure = <A, E, R>(
         effect: Effect.Effect<A, E | PlatformError.PlatformError, R>,
-      ) =>
-        Effect.mapError(effect, (error) =>
-          error instanceof PlatformError.PlatformError && outOfSpace(error)
-            ? new SourceUnavailable({
-                message: `gyst's data directory (${root}) is out of space: free space there, or delete saved sessions you no longer need with gyst session delete`,
-                detail: { reason: "storage_full", diagnostic: error.message },
-              })
-            : error,
-        );
+      ) => Effect.mapError(effect, storageFullIn(root));
       /** One write: its staging scoped to it, out of space reported as such, and held throughout. */
       const writing = <A, E, R>(effect: Effect.Effect<A, E | PlatformError.PlatformError, R>) =>
         hold(spaceFailure(Effect.scoped(effect)));
