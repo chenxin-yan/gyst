@@ -441,6 +441,7 @@ describe("gyst session CLI seam", () => {
       "content",
       "corrupt.json",
       "delete-receipts",
+      "viewer.port",
     ]);
 
     // A lost acknowledgement retried after that exit starts a daemon that answers from the receipt
@@ -456,6 +457,7 @@ describe("gyst session CLI seam", () => {
       "content",
       "corrupt.json",
       "delete-receipts",
+      "viewer.port",
     ]);
   }, 20_000);
 
@@ -639,7 +641,12 @@ describe("gyst session CLI seam", () => {
       `daemon.pid to name ${survivor}`,
     );
     expect(installedDaemons()).toEqual([survivor]);
-    expect((await readdir(data)).toSorted()).toEqual(["content", "daemon.pid", "daemon.sock"]);
+    expect((await readdir(data)).toSorted()).toEqual([
+      "content",
+      "daemon.pid",
+      "daemon.sock",
+      "viewer.port",
+    ]);
   }, 20_000);
 
   it("exits 130 on SIGINT through crust's cancellation and releases the socket and pid file", async () => {

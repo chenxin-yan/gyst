@@ -55,8 +55,8 @@ home page lists saved sessions; deleting one there asks for confirmation and rem
 session.
 
 The daemon listens on `127.0.0.1` only, at port 4978. If another program holds it, the daemon
-tries each next port up to 4987 and keeps the port it got until it exits; every link names the
-actual port. Set `GYST_PORT` to start from another port (for development and tests). When every
+tries each next port up to 4987 and keeps the port it got until it exits; a restarted daemon takes
+that port again while it is free. Every link names the actual port. Set `GYST_PORT` to start from another port (for development and tests). When every
 port in the range is taken, `gyst` fails with an error naming the range.
 
 There is no login. The viewer accepts only loopback host names (`localhost`, `127.0.0.1`), on any
