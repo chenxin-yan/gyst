@@ -153,7 +153,7 @@ describe("browserApp static routes", () => {
       expect(response.header("referrer-policy")).toBe("no-referrer");
       expect(response.header("cache-control")).toBe("no-store");
       expect(response.header("content-security-policy")).toBe(
-        "default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src data:; connect-src 'self'",
+        "default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src data:; connect-src 'self'; frame-ancestors 'none'",
       );
       expect(response.header("access-control-allow-origin")).toBeUndefined();
       expect(response.header("set-cookie")).toBeUndefined();

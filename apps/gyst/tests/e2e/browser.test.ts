@@ -2245,6 +2245,30 @@ describe("installed gyst in a sandboxed browser", () => {
     );
   }, 30_000);
 
+  it("refuses to be framed by another page, which could overlay its controls", async () => {
+    const page = await newPage(context, {
+      problems: [expect.stringMatching(/^console Refused to frame .*"frame-ancestors 'none'"/)],
+    });
+    const viewer = `${one.origin}/session/${one.id}`;
+    const requested: string[] = [];
+    page.on("request", (request) => requested.push(request.url()));
+    await page.route("http://attacker.example/", (route) =>
+      route.fulfill({ contentType: "text/html", body: `<iframe src="${viewer}"></iframe>` }),
+    );
+    const [shell] = await Promise.all([
+      page.waitForResponse(viewer),
+      page.goto("http://attacker.example/"),
+    ]);
+    // The daemon answered, but the browser showed its error page instead: no viewer script ran.
+    expect(shell.status()).toBe(200);
+    await waitFor(
+      () => page.frames()[1]?.url() === "chrome-error://chromewebdata/",
+      "the frame to be refused",
+    );
+    await page.waitForTimeout(500);
+    expect(requested).toEqual(["http://attacker.example/", viewer]);
+  });
+
   it("deletes from the list only after confirmation, and replays the same request id", async () => {
     const page = await newPage();
     const deletes = deletesOf(page);
