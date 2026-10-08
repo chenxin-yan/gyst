@@ -156,7 +156,7 @@ describe("GitHub PR sessions through the installed CLI", () => {
       },
       unavailable: null,
       selected: 2,
-      sessions: [{ number: 2, sessionId: b, hunkCount: 1, viewedCount: 0 }],
+      sessions: [{ number: 2, sessionId: b, hunkCount: 1, viewedCount: 0, openThreads: 0 }],
     });
     // A's file is inherited, unchanged source inside B's own snapshot.
     const snapshotB = openedB.session.snapshotId;
@@ -194,8 +194,8 @@ describe("GitHub PR sessions through the installed CLI", () => {
     expect(await files(c)).toEqual(["c.txt"]);
     expect((await status(c)).groups).toEqual([]);
     expect((await status(b)).pullRequest.sessions).toEqual([
-      { number: 2, sessionId: b, hunkCount: 1, viewedCount: 0 },
-      { number: 3, sessionId: c, hunkCount: 1, viewedCount: 0 },
+      { number: 2, sessionId: b, hunkCount: 1, viewedCount: 0, openThreads: 0 },
+      { number: 3, sessionId: c, hunkCount: 1, viewedCount: 0, openThreads: 0 },
     ]);
 
     // 3. Return to B: the saved session as it was, with no refresh and no GitHub call.
@@ -256,7 +256,7 @@ describe("GitHub PR sessions through the installed CLI", () => {
           verifiedAt: expect.any(String),
           layers: [restacked.a, restacked.b].map(layerOf),
         },
-        sessions: [{ number: 2, sessionId: b, hunkCount: 1, viewedCount: 0 }],
+        sessions: [{ number: 2, sessionId: b, hunkCount: 1, viewedCount: 0, openThreads: 0 }],
       },
     });
     // Metadata only: B's snapshot, revision and guidance are as the refresh left them.

@@ -336,6 +336,23 @@ describe("browserApp operations", () => {
       { command: "code", session: "s1", snapshotId, file: "src/a.ts", side: "new", offset: 7 },
       { command: "delete", session: "s1", requestId: "r1" },
       { command: "refresh", session: "s1", snapshotId, requestId: "r1" },
+      { command: "conversations", session: "s1" },
+      {
+        command: "draft",
+        session: "s1",
+        requestId: "r2",
+        target: { kind: "note", note: "n1" },
+        wording: "The note.",
+      },
+      {
+        command: "send",
+        session: "s1",
+        requestId: "r3",
+        draft: "d1",
+        markdown: "Why?",
+        kind: "change",
+      },
+      { command: "resolve", session: "s1", requestId: "r4", thread: "t1", resolved: true },
     ];
     for (const request of requests) {
       const response = await operation(request);
@@ -375,6 +392,17 @@ describe("browserApp operations", () => {
       JSON.stringify({ command: "apply", session: "s1", batch: "{}" }),
       JSON.stringify({ command: "refresh", session: "s1" }),
       JSON.stringify({ command: "delete", session: "s1" }),
+      // The agent's retrieval and replies never come from a browser, nor does an author role.
+      JSON.stringify({ command: "threads", session: "s1", mode: "pending", requestId: "r1" }),
+      JSON.stringify({
+        command: "send",
+        session: "s1",
+        requestId: "r1",
+        draft: "d1",
+        markdown: "Hi.",
+        kind: "question",
+        author: "agent",
+      }),
       // Captured reads name a logical path in an exact snapshot: no host path, blob or checkout.
       JSON.stringify({
         command: "code",

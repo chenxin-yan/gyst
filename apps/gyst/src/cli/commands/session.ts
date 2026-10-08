@@ -310,7 +310,10 @@ const code = defineCommand(
 );
 const apply = defineCommand(
   "apply",
-  { description: "Apply one agent mutation batch from stdin" },
+  {
+    description:
+      "Apply one agent mutation batch from stdin: guidance and replies to existing threads, all or nothing",
+  },
   (command) =>
     command
       .use(daemonClient)
@@ -319,6 +322,43 @@ const apply = defineCommand(
         handler(function* ({ flags, stdout }) {
           const batch = yield* readStdin;
           yield* call({ command: "apply", session: flags.session, batch }, stdout);
+        }),
+      ),
+);
+const threads = defineCommand(
+  "threads",
+  {
+    description:
+      "Retrieve threads with their history and original code: --pending takes the open threads with unread human messages now, --open every open thread; either reads, and so freezes, the unread messages it returns",
+  },
+  (command) =>
+    command
+      .use(daemonClient)
+      .flags(
+        sessionFlag,
+        { name: "pending", type: "boolean", description: "Open threads with unread messages" },
+        { name: "open", type: "boolean", description: "Every open thread, read work included" },
+        {
+          name: "request-id",
+          type: "string",
+          required: true,
+          description:
+            "A caller-chosen id for this retrieval; reuse it to get the same bundle back after a lost reply",
+        },
+      )
+      .action(
+        handler(function* ({ flags, stdout }) {
+          if (flags.pending === flags.open)
+            return yield* new BadArgs({ message: "choose exactly one of --pending and --open" });
+          yield* call(
+            {
+              command: "threads",
+              session: flags.session,
+              mode: flags.pending ? "pending" : "open",
+              requestId: flags["request-id"],
+            },
+            stdout,
+          );
         }),
       ),
 );
@@ -396,6 +436,7 @@ export const session = defineCommand(
       .add(diff)
       .add(files)
       .add(code)
+      .add(threads)
       .add(apply)
       .add(refresh)
       .add(remove),

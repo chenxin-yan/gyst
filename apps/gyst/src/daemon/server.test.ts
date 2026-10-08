@@ -447,6 +447,26 @@ describe("DaemonServer", () => {
             viewed: true,
           },
           { command: "layer", session: "x", number: 1 },
+          // Agents cannot read Pending bodies, write human messages or resolve threads.
+          { command: "conversations", session: "x" },
+          {
+            command: "draft",
+            session: "x",
+            requestId: "r",
+            target: { kind: "thread", thread: "t" },
+          },
+          {
+            command: "send",
+            session: "x",
+            requestId: "r",
+            draft: "d",
+            markdown: "As the human.",
+            kind: "question",
+          },
+          { command: "edit", session: "x", requestId: "r", message: "m", kind: "change" },
+          { command: "retract", session: "x", requestId: "r", message: "m" },
+          { command: "resolve", session: "x", requestId: "r", thread: "t", resolved: true },
+          { command: "discard", session: "x", requestId: "r", draft: "d" },
           { command: "navigation", session: "x", snapshotId: "0".repeat(64) },
           {
             command: "definition",

@@ -11,6 +11,11 @@ import {
   earlierAnchorsOf,
   type CodePayload,
   type CommitsPayload,
+  type ConversationRequest,
+  type ConversationResult,
+  type ConversationsPayload,
+  conversationTargetsOf,
+  converse,
   type DeletePayload,
   type FilesPayload,
   GitHubUnavailableReasonSchema,
@@ -24,7 +29,9 @@ import {
   type PullRequest,
   type PullRequestContext,
   pullRequestStatusOf,
+  pickUp,
   pinnedSnapshotIds,
+  recordedPickup,
   recordedRefresh,
   refresh as refreshOnto,
   type RefreshPayload,
@@ -45,6 +52,11 @@ import {
   type SubscriptionEvent,
   statusOf,
   summaryOf,
+  type Thread,
+  type ThreadCode,
+  threadsFor,
+  type ThreadsPayload,
+  anchorKey,
   ValidationFailed,
   type ViewedPayload,
 } from "@gyst/core";
@@ -254,6 +266,27 @@ export class Sessions extends Context.Service<
     viewed(
       request: Input<"viewed">,
     ): Effect.Effect<ViewedPayload, BadArgs | NoSession | StaleRevision | ValidationFailed>;
+    /** Every conversation and draft pin, Pending bodies included; reading freezes nothing. */
+    conversations(request: Input<"conversations">): Effect.Effect<ConversationsPayload, NoSession>;
+    /**
+     * One human conversation action (`converse` in core), all or nothing with its receipt. Captured
+     * line counts are read outside the review-state lock; the action commits under it.
+     */
+    converse(
+      request: ConversationRequest,
+    ): Effect.Effect<
+      ConversationResult,
+      BadArgs | NoSession | StaleRevision | ValidationFailed | InternalError
+    >;
+    /**
+     * The agent's retrieval (`pickUp` in core): the threads `request.mode` selects at the moment it
+     * commits, each with its captured code, freezing exactly the Pending messages returned, saved
+     * with the bundle's receipt before memory changes. Code is read outside the lock where it can
+     * be, so a pending edit or delete serializes against the commit alone.
+     */
+    threads(
+      request: Input<"threads">,
+    ): Effect.Effect<ThreadsPayload, BadArgs | NoSession | ValidationFailed>;
     /**
      * Re-captures the recorded scope outside the review-state lock, then, under it, checks the
      * observed snapshot is still current and commits the new snapshot, the reconciled review state
@@ -832,6 +865,129 @@ export class Sessions extends Context.Service<
         return outcome.result;
       }, Semaphore.withPermit(lock));
 
+      const conversations = Effect.fn("Sessions.conversations")(function* (
+        request: Input<"conversations">,
+      ) {
+        const session = yield* selected(request);
+        return {
+          sessionId: session.id,
+          snapshotId: session.snapshotId,
+          revision: session.revision,
+          threads: session.threads,
+          drafts: session.drafts,
+        } satisfies ConversationsPayload;
+      }, Semaphore.withPermit(lock));
+
+      /** Commits a conversation change: saved with its receipt before memory, announced if seen. */
+      const commitConversation = Effect.fn("Sessions.commitConversation")(function* (
+        before: Session,
+        after: Session | undefined,
+      ) {
+        if (!after) return;
+        yield* store.save(after).pipe(Effect.orDie);
+        sessions.set(after.id, after);
+        if (after.revision === before.revision) return;
+        announceChanged(after);
+        announceLayers(after);
+      });
+
+      const converseIn = Effect.fn("Sessions.converse")(function* (request: ConversationRequest) {
+        const before = yield* underLock(selected(request));
+        // A replay needs no content, and a snapshot the session no longer pins is refused as stale.
+        const retained = new Set(pinnedSnapshotIds(before));
+        const targets = before.conversationReceipts.some(
+          ({ requestId }) => requestId === request.requestId,
+        )
+          ? []
+          : conversationTargetsOf(request, before).filter(({ snapshotId }) =>
+              retained.has(snapshotId),
+            );
+        const captured: CapturedIndex[] = [];
+        for (const [snapshotId, ranges] of Map.groupBy(targets, (target) => target.snapshotId))
+          captured.push(
+            yield* capturedIndexOf(
+              snapshotId,
+              ranges.map(({ range: { path, side } }) => ({ path, side })),
+            ),
+          );
+        return yield* underLock(
+          Effect.gen(function* () {
+            const session = yield* selected(request);
+            const now = DateTime.formatIso(yield* DateTime.now);
+            const outcome = yield* Effect.fromResult(converse(session, request, captured, now));
+            yield* commitConversation(session, outcome.session);
+            return outcome.result;
+          }),
+        );
+      });
+
+      /** The captured lines of each thread's anchor not in `code` yet, added to it. */
+      const readThreadCode = Effect.fn("Sessions.readThreadCode")(function* (
+        read: Map<string, ThreadCode>,
+        selection: readonly Thread[],
+      ) {
+        for (const { anchor } of selection) {
+          const key = anchorKey(anchor);
+          if (read.has(key)) continue;
+          const manifest = yield* Effect.option(manifestOf(anchor.snapshotId));
+          const file =
+            manifest._tag === "Some"
+              ? manifest.value.files.find(({ path }) => path === anchor.path)
+              : undefined;
+          const side = file?.[anchor.side];
+          if (side?.kind !== "text") {
+            read.set(key, {
+              kind: "unavailable",
+              reason:
+                manifest._tag === "None"
+                  ? "its captured snapshot is unreadable"
+                  : !side
+                    ? `${anchor.path} is not in its captured snapshot`
+                    : side.kind === "absent"
+                      ? `the ${anchor.side} side of ${anchor.path} does not exist`
+                      : `the ${anchor.side} side of ${anchor.path} is ${side.reason}`,
+            });
+            continue;
+          }
+          const text = yield* Stream.runFold(
+            blobOf(side.blob, side.size),
+            () => [] as Uint8Array[],
+            (chunks, chunk) => [...chunks, chunk],
+          ).pipe(
+            Effect.map((chunks) => Buffer.concat(chunks).toString("utf8")),
+            Effect.option,
+          );
+          read.set(
+            key,
+            text._tag === "Some"
+              ? {
+                  kind: "text",
+                  lines: text.value.split("\n").slice(anchor.startLine - 1, anchor.endLine),
+                }
+              : { kind: "unavailable", reason: "its captured content is unreadable" },
+          );
+        }
+      });
+
+      const threads = Effect.fn("Sessions.threads")(function* (request: Input<"threads">) {
+        const before = yield* underLock(selected(request));
+        const recorded = yield* Effect.fromResult(recordedPickup(before, request));
+        if (recorded) return recorded;
+        const threadCode = new Map<string, ThreadCode>();
+        yield* readThreadCode(threadCode, threadsFor(before, request.mode));
+        return yield* underLock(
+          Effect.gen(function* () {
+            const session = yield* selected(request);
+            // A thread started or moved meanwhile is read now, so the recorded bundle is whole.
+            yield* readThreadCode(threadCode, threadsFor(session, request.mode));
+            const now = DateTime.formatIso(yield* DateTime.now);
+            const outcome = yield* Effect.fromResult(pickUp(session, request, threadCode, now));
+            yield* commitConversation(session, outcome.session);
+            return outcome.result;
+          }),
+        );
+      });
+
       /**
        * The lines of every snapshot `session` pins, read from captured content. A pinned snapshot
        * that cannot be read is left out, so the guidance pinning it cannot be verified.
@@ -967,6 +1123,9 @@ export class Sessions extends Context.Service<
         snapshot,
         apply,
         viewed,
+        conversations,
+        converse: converseIn,
+        threads,
         refresh,
         delete: remove,
         subscribe,

@@ -1009,7 +1009,7 @@ describe("Sessions PR stacks", () => {
     expect(status.pullRequest).toEqual({
       ...files.get(b.id)!.pullRequest,
       selected: 2,
-      sessions: [{ number: 2, sessionId: b.id, hunkCount: 2, viewedCount: 0 }],
+      sessions: [{ number: 2, sessionId: b.id, hunkCount: 2, viewedCount: 0, openThreads: 0 }],
     });
     expect(status.pullRequest?.stack).toMatchObject({ layers: layers(1, 2, 3) });
     expect((await run(statusOf(persisted.id))).pullRequest).toBeUndefined();
@@ -1048,7 +1048,7 @@ describe("Sessions PR stacks", () => {
       pullRequest: (await run(statusOf(b.id))).pullRequest,
     });
     expect(result.pullRequest.sessions).toEqual([
-      { number: 2, sessionId: b.id, hunkCount: 2, viewedCount: 1 },
+      { number: 2, sessionId: b.id, hunkCount: 2, viewedCount: 1, openThreads: 0 },
     ]);
     // The description follows the recheck like the title, as untrusted text stored verbatim.
     expect(result.pullRequest.pullRequest.description).toBe(
@@ -1591,6 +1591,216 @@ describe("Sessions.viewed", () => {
     );
     expect(sessionSaves()).toHaveLength(1);
     expect(files.get(persisted.id)?.viewedReceipts).toHaveLength(1);
+  });
+});
+
+describe("Sessions conversations", () => {
+  type Act = Input<"draft" | "send" | "edit" | "retract" | "resolve" | "discard">;
+  const act = (request: Act) => Sessions.use((s) => s.converse(request));
+  const pickup = (session: string, requestId: string, mode: "pending" | "open" = "pending") =>
+    Sessions.use((s) => s.threads({ command: "threads", session, mode, requestId }));
+  const status = (session: string) => Sessions.use((s) => s.status({ command: "status", session }));
+  /** Opens a session whose `notes.txt` is unchanged supporting code, and comments on its lines. */
+  const commented = (markdown: string, requestId: string) =>
+    Effect.gen(function* () {
+      supporting = { "notes.txt": "n1\nn2\nn3\n" };
+      const { session } = yield* openScope();
+      const anchor = {
+        snapshotId: session.snapshotId,
+        path: "notes.txt",
+        side: "new" as const,
+        startLine: 1,
+        endLine: 2,
+      };
+      const drafted = yield* act({
+        command: "draft",
+        session: session.id,
+        requestId: `draft-${requestId}`,
+        target: { kind: "comment", anchor },
+      });
+      const sent = yield* act({
+        command: "send",
+        session: session.id,
+        requestId,
+        draft: drafted.draft!,
+        markdown,
+        kind: "question",
+      });
+      return { session, anchor, sent };
+    });
+
+  it("keeps Pending bodies out of status and freezes exactly what one recorded pickup returns", async () => {
+    const { session, anchor, sent } = await run(commented("Why keep *n2*?", "c1"));
+    const counted = await run(status(session.id));
+    expect(counted.threads).toEqual({ open: 1, resolved: 0, pending: 1 });
+    expect(JSON.stringify(counted)).not.toContain("Why keep");
+    // The author's own read returns the body and freezes nothing.
+    const read = await run(
+      Sessions.use((s) => s.conversations({ command: "conversations", session: session.id })),
+    );
+    expect(read.threads[0]!.messages[0]).toMatchObject({
+      markdown: "Why keep *n2*?",
+      pending: true,
+    });
+    expect((await run(status(session.id))).threads.pending).toBe(1);
+
+    const bundle = await run(pickup(session.id, "p1"));
+    expect(bundle).toMatchObject({
+      sessionId: session.id,
+      revision: sent.revision + 1,
+      progress: { viewed: 0, total: 2 },
+      openThreads: 1,
+      threads: [
+        {
+          id: sent.thread,
+          anchor,
+          code: { kind: "text", lines: ["n1", "n2"] },
+          unread: [sent.message],
+          messages: [{ id: sent.message, kind: "question", pending: false }],
+        },
+      ],
+    });
+    // Saved with its receipt: a fresh daemon replays the same bundle after a later arrival.
+    const thread = sent.thread!;
+    const drafted = await run(
+      act({
+        command: "draft",
+        session: session.id,
+        requestId: "d2",
+        target: { kind: "thread", thread },
+      }),
+    );
+    await run(
+      act({
+        command: "send",
+        session: session.id,
+        requestId: "c2",
+        draft: drafted.draft!,
+        markdown: "And n3?",
+        kind: "change",
+      }),
+    );
+    expect(await run(pickup(session.id, "p1"))).toEqual(bundle);
+    expect(await failure(pickup(session.id, "p1", "open"))).toMatchObject({
+      _tag: "validation_failed",
+    });
+    const next = await run(pickup(session.id, "p2"));
+    expect(next.threads[0]!.unread).toHaveLength(1);
+    expect(next.threads[0]!.messages.map(({ markdown }) => markdown)).toEqual([
+      "Why keep *n2*?",
+      "And n3?",
+    ]);
+    expect(files.get(session.id)?.pickupReceipts.map(({ requestId }) => requestId)).toEqual([
+      "p1",
+      "p2",
+    ]);
+  });
+
+  it("serializes a pending edit against a pickup, which returns what the edit committed", async () => {
+    await run(
+      Effect.gen(function* () {
+        const { session, sent } = yield* commented("Typo?", "c1");
+        const held = yield* holdNextSave;
+        const edit = yield* Effect.forkChild(
+          act({
+            command: "edit",
+            session: session.id,
+            requestId: "e1",
+            message: sent.message!,
+            markdown: "Is n2 a typo?",
+            kind: "change",
+          }),
+        );
+        yield* Deferred.await(held.started);
+        const picked = yield* Effect.forkChild(pickup(session.id, "p1"));
+        yield* Effect.sleep("20 millis");
+        expect(picked.pollUnsafe()).toBeUndefined();
+        yield* Deferred.succeed(held.release, undefined);
+        yield* Fiber.join(edit);
+        const bundle = yield* Fiber.join(picked);
+        expect(bundle.threads[0]!.messages[0]).toMatchObject({
+          markdown: "Is n2 a typo?",
+          kind: "change",
+          pending: false,
+        });
+        // Read means frozen: a later edit or delete is refused, and the correction is a new reply.
+        for (const late of [
+          { command: "edit", message: sent.message!, kind: "question" },
+          { command: "retract", message: sent.message! },
+        ] as const)
+          expect(
+            yield* Effect.flip(
+              act({ session: session.id, requestId: `late-${late.command}`, ...late }),
+            ),
+          ).toMatchObject({ _tag: "validation_failed" });
+      }),
+    );
+  });
+
+  it("refuses a comment outside captured text or on a snapshot the session no longer pins", async () => {
+    await run(
+      Effect.gen(function* () {
+        supporting = { "notes.txt": "n1\nn2\nn3\n" };
+        const { session } = yield* openScope();
+        const draft = (snapshotId: string, endLine: number) =>
+          Effect.flip(
+            act({
+              command: "draft",
+              session: session.id,
+              requestId: `d-${snapshotId}-${endLine}`,
+              target: {
+                kind: "comment",
+                anchor: { snapshotId, path: "notes.txt", side: "new", startLine: 1, endLine },
+              },
+            }),
+          );
+        expect((yield* draft(session.snapshotId, 4))._tag).toBe("validation_failed");
+        expect((yield* draft("b".repeat(64), 1))._tag).toBe("stale_revision");
+      }),
+    );
+  });
+
+  it("keeps a draft's earlier code readable after a refresh until it is sent or discarded", async () => {
+    await run(
+      Effect.gen(function* () {
+        const { session } = yield* openScope();
+        const anchor = {
+          snapshotId: session.snapshotId,
+          path: "a.txt",
+          side: "new" as const,
+          startLine: 1,
+          endLine: 1,
+        };
+        const drafted = yield* act({
+          command: "draft",
+          session: session.id,
+          requestId: "d1",
+          target: { kind: "comment", anchor },
+        });
+        gitPatch = patch.replace("+two", "+TWO");
+        yield* refreshNow(session.id);
+        const earlier = {
+          command: "files",
+          session: session.id,
+          snapshotId: session.snapshotId,
+        } as const;
+        expect((yield* Sessions.use((s) => s.files(earlier))).snapshotId).toBe(session.snapshotId);
+        // The changed line did not map, so the draft keeps its original context.
+        const read = yield* Sessions.use((s) =>
+          s.conversations({ command: "conversations", session: session.id }),
+        );
+        expect(read.drafts).toEqual([{ id: drafted.draft, anchor }]);
+        yield* act({
+          command: "discard",
+          session: session.id,
+          requestId: "x1",
+          draft: drafted.draft!,
+        });
+        expect((yield* Effect.flip(Sessions.use((s) => s.files(earlier))))._tag).toBe(
+          "stale_revision",
+        );
+      }),
+    );
   });
 });
 

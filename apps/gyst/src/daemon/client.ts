@@ -11,6 +11,7 @@ import {
   OpenPayloadSchema,
   RefreshPayloadSchema,
   StatusPayloadSchema,
+  ThreadsPayloadSchema,
   SourceCheckPayloadSchema,
   StackPayloadSchema,
   ReplySchema,
@@ -285,6 +286,7 @@ export class DaemonClient extends Context.Service<
           apply: StatusPayloadSchema,
           refresh: RefreshPayloadSchema,
           delete: DeletePayloadSchema,
+          threads: ThreadsPayloadSchema,
         }[input.command];
         return yield* Schema.decodeUnknownEffect(payload, { onExcessProperty: "error" })(
           reply.value,
