@@ -33,9 +33,9 @@ export const WebUiDir = Context.Reference<string>("gyst/web/WebUiDir", {
 });
 
 /** The first port the viewer tries ("gyst" on a phone keypad); `GYST_PORT` moves the range. */
-export const defaultViewerPort = 4978;
+const defaultViewerPort = 4978;
 /** How many consecutive ports the viewer tries, from the first. */
-export const viewerPortCount = 10;
+const viewerPortCount = 10;
 /** Read when the daemon starts; an invalid value fails each open, which names the problem. */
 export const firstViewerPort = Config.Port("GYST_PORT").pipe(
   Config.withDefault(defaultViewerPort),
@@ -177,8 +177,7 @@ export const isLoopbackHost = (host: string | undefined): host is string => {
 };
 
 /** A browser POST's serialized `Origin` must be exactly this request's already-validated `Host`. */
-export const isSameOrigin = (host: string, origin: string | undefined) =>
-  origin === `http://${host}`;
+const isSameOrigin = (host: string, origin: string | undefined) => origin === `http://${host}`;
 
 /** What the browser's operations and subscriptions reach: the daemon's own review operations. */
 export type ViewerOperations = {
