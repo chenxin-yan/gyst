@@ -8,6 +8,7 @@ import {
 } from "@gyst/core";
 import { Result, Schema } from "effect";
 import { execFileSync, spawn } from "node:child_process";
+import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
 import { chmod, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { connect, createServer, type Socket } from "node:net";
@@ -1360,6 +1361,137 @@ describe("gyst session CLI seam", () => {
     succeeded(
       await gyst(cwd, ["session", "delete", "--session", session.id, "--request-id", "done"]),
     );
+  }, 20_000);
+
+  it("reclaims what replaced and deleted snapshots alone held, keeping shared content readable without the checkout", async () => {
+    const box = await sandbox();
+    const { data, gyst } = box;
+    const cwd = await repo(box, "reclaim");
+    await writeFile(join(cwd, "helper.ts"), "export const helper = 1;\n");
+    git(box, cwd, "add", ".");
+    git(box, cwd, "commit", "-qm", "helper");
+    await writeFile(join(cwd, "tracked.txt"), "replaced by a refresh\n");
+    const blobs = join(data, "content", "blobs");
+    const stored = async () => (await readdir(blobs)).toSorted();
+    const sha256 = (text: string) => createHash("sha256").update(text).digest("hex");
+    const doomed = json(await gyst(cwd, ["session", "open"])).session;
+    // A range over the same commit captures the same unchanged files: stored once, shared.
+    const kept = json(await gyst(cwd, ["session", "open", "HEAD~1..HEAD"])).session;
+    const shared = ["one\n", "export const helper = 1;\n"].map(sha256);
+    expect(await stored()).toEqual([...shared, sha256("replaced by a refresh\n")].toSorted());
+    // Nothing pins the replaced snapshot, so what it alone held goes.
+    await writeFile(join(cwd, "tracked.txt"), "only the doomed session\n");
+    succeeded(
+      await gyst(cwd, [
+        "session",
+        "refresh",
+        "--session",
+        doomed.id,
+        "--snapshot",
+        doomed.snapshotId,
+        "--request-id",
+        "refresh-doomed",
+      ]),
+    );
+    await waitFor(
+      async () => !(await stored()).includes(sha256("replaced by a refresh\n")),
+      "the replaced snapshot's own content to be reclaimed",
+    );
+    expect(await stored()).toEqual([...shared, sha256("only the doomed session\n")].toSorted());
+    const remove = (id: string, requestId: string) =>
+      gyst(box.root, ["session", "delete", "--session", id, "--request-id", requestId]);
+    expect(json(await remove(doomed.id, "delete-doomed"))).toEqual({
+      deleted: true,
+      sessionId: doomed.id,
+    });
+    await waitFor(
+      async () => !(await stored()).includes(sha256("only the doomed session\n")),
+      "the deleted session's own content to be reclaimed",
+    );
+    expect(await stored()).toEqual(shared.toSorted());
+    // The lost reply's retry still answers from the durable receipt.
+    await killDaemon(data);
+    expect(json(await remove(doomed.id, "delete-doomed"))).toEqual({
+      deleted: true,
+      sessionId: doomed.id,
+    });
+
+    await rm(cwd, { recursive: true, force: true });
+    const read = (file: string) =>
+      gyst(box.root, [
+        "session",
+        "code",
+        "--session",
+        kept.id,
+        "--snapshot",
+        kept.snapshotId,
+        "--file",
+        file,
+        "--side",
+        "new",
+      ]);
+    expect(json(await read("helper.ts")).content.text).toBe("export const helper = 1;\n");
+    expect(json(await read("tracked.txt")).content.text).toBe("one\n");
+    succeeded(await remove(kept.id, "delete-kept"));
+    await waitFor(async () => (await stored()).length === 0, "every blob to be reclaimed");
+    expect(await readdir(join(data, "content", "snapshots"))).toEqual([]);
+  }, 20_000);
+
+  it("applies an optional snapshot quota: supporting files left out by name, changed files over it refused", async () => {
+    const box = await sandbox();
+    const { data, gyst } = box;
+    const cwd = await repo(box, "quota");
+    await writeFile(join(cwd, "large.txt"), "x".repeat(4096));
+    git(box, cwd, "add", ".");
+    git(box, cwd, "commit", "-qm", "large");
+    await writeFile(join(cwd, "tracked.txt"), "changed\n");
+    // The daemon reads it when it starts, from the environment of the command that starts it.
+    box.env.GYST_SNAPSHOT_QUOTA = "1 KiB";
+    const { session } = json(await gyst(cwd, ["session", "open"]));
+    const ids = ["--session", session.id, "--snapshot", session.snapshotId];
+    const omitted = { kind: "unavailable", reason: "quota" };
+    expect(json(await gyst(cwd, ["session", "files", ...ids])).files).toEqual([
+      { path: "large.txt", old: omitted, new: omitted },
+      expect.objectContaining({
+        path: "tracked.txt",
+        new: expect.objectContaining({ kind: "text" }),
+      }),
+    ]);
+    expect(
+      json(await gyst(cwd, ["session", "code", ...ids, "--file", "large.txt", "--side", "new"]))
+        .content,
+    ).toEqual(omitted);
+    expect(json(await gyst(cwd, ["session", "check", "--session", session.id]))).toMatchObject({
+      state: "unavailable",
+      message: expect.stringContaining("quota"),
+    });
+
+    // A change larger than the quota is refused whole, never published truncated.
+    const large = await repo(box, "too-large");
+    await writeFile(join(large, "tracked.txt"), "y".repeat(2048));
+    expect(failed(await gyst(large, ["session", "open"]))).toMatchObject({
+      code: "source_unavailable",
+      message: expect.stringContaining("GYST_SNAPSHOT_QUOTA"),
+      detail: { reason: "quota_exceeded" },
+    });
+    expect(json(await gyst(cwd, ["session", "list"])).sessions).toEqual([session]);
+
+    // Without it, the next daemon captures everything; the saved snapshot stays as it was.
+    delete box.env.GYST_SNAPSHOT_QUOTA;
+    await killDaemon(data);
+    const full = json(await gyst(large, ["session", "open"])).session;
+    expect(json(await gyst(cwd, ["session", "files", ...ids])).files[0]).toEqual({
+      path: "large.txt",
+      old: omitted,
+      new: omitted,
+    });
+    for (const [id, requestId] of [
+      [session.id, "delete-quota"],
+      [full.id, "delete-full"],
+    ])
+      succeeded(
+        await gyst(cwd, ["session", "delete", "--session", id!, "--request-id", requestId!]),
+      );
   }, 20_000);
 
   it("skips undecodable saved sessions without reserving their scope or modifying their files", async () => {
