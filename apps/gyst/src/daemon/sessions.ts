@@ -70,6 +70,7 @@ import { type DeleteReceipt, SessionStore } from "./store.ts";
 type SourceCheck = Omit<SourceCheckPayload, "sessionId" | "snapshotId" | "revision">;
 type Operation = Request | BrowserRequest;
 type Input<C extends Operation["command"]> = Extract<Operation, { readonly command: C }>;
+
 /**
  * The entries after the one whose key is `after` (from the first without it), up to `pageBytes` of
  * their JSON and always at least one, and the key to continue after; undefined when no entry has
@@ -95,6 +96,7 @@ const pageAfter = <A>(
     next: first + page.length < entries.length ? keyOf(page.at(-1)!) : null,
   };
 };
+
 /** An open's reply before the daemon adds its viewer link, which only the daemon's port names. */
 export type Opened = Omit<OpenPayload, "link">;
 type OnProgress = (progress: CaptureProgress) => Effect.Effect<void>;
