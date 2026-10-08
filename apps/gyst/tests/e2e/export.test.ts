@@ -365,6 +365,16 @@ describe("walkthrough export", () => {
       "https://example.com/guide",
     );
     expect(await page.evaluate(() => "hostileRan" in window)).toBe(false);
+    // The baseline faces come from the file itself, whatever this machine has installed.
+    expect(
+      await page.evaluate(() =>
+        Promise.all(
+          ['16px "Inter Variable"', '16px "JetBrains Mono Variable"'].map(async (font) =>
+            (await document.fonts.load(font)).map((face) => face.status),
+          ),
+        ),
+      ),
+    ).toEqual([["loaded"], ["loaded"]]);
     await page.getByRole("heading", { level: 1 }).getByText("main...topic").waitFor();
     // Read-only: no Viewed, comments, refresh or export, in the page or its keys.
     for (const name of ["Comments", "Export…", "All sessions", "Delete…"])
