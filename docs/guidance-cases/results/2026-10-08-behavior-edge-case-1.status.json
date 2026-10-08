@@ -1,0 +1,341 @@
+{
+  "session": {
+    "id": "18a078a6-4764-44bc-bb79-3c9f1e9205ac",
+    "repoRoot": "/tmp/gyst-98b-cases/behavior-edge-case",
+    "scope": { "kind": "range", "range": "main...feature" },
+    "snapshotId": "a1b21a911766b80027345dfaa6282e5558fb1784c743d28c6f00001d6fae333c",
+    "createdAt": "2026-10-08T23:19:27.841Z",
+    "updatedAt": "2026-10-08T23:21:24.422Z"
+  },
+  "revision": 3,
+  "overview": {
+    "markdown": "Before this change, `withRetry` retried **every** failure with capped exponential backoff: a `404` was fetched four times, and a server's `Retry-After` header was never read. Now each failed attempt answers two questions before any wait: *is this error worth retrying?* and *how long should we wait?* A client error (4xx other than 408/429) stops at once; otherwise a parseable `Retry-After` replaces the backoff, unless it asks for more than `maxDelayMs`, in which case the call also stops at once.\n\n```mermaid\nflowchart TD\n  fail[attempt throws] --> last{last attempt?}\n  last -->|yes| stop[rethrow this error]\n  last -->|no| retryable{isRetryable?}\n  retryable -->|no| stop\n  retryable -->|yes| asked{Retry-After parsed?}\n  asked -->|no| backoff[sleep backoff]\n  asked -->|\"yes, within maxDelayMs\"| wait[sleep the asked time]\n  asked -->|\"yes, longer\"| stop\n```\n\nRead it along the data flow:\n\n1. **Carry `Retry-After` on `HttpError`**: the response header travels with the thrown error.\n2. **Parse `Retry-After` into milliseconds**: a pure function and its tests.\n3. **Decide whether and how long to retry**: the policy in `withRetry` and its end-to-end tests.\n4. **Document the retry policy**: the README.\n\nVerification: ran `npm test` (Node v24.21.0) on a checkout of `feature` at `eee7cb5`, the snapshot's new side: 12 tests pass.",
+    "references": []
+  },
+  "groups": [
+    {
+      "id": "carry-retry-after",
+      "title": "Carry Retry-After on HttpError",
+      "overview": {
+        "markdown": "Plumbing only: `fetchJson` copies the raw header onto the error it throws for a non-2xx response, so the retry policy, which only sees the error, can read it. Start at [the throw in `fetchJson`](gyst:new/src/client.ts#L14-L15), then the new field on [`HttpError`](gyst:new/src/http-error.ts#L5-L13). No retry behavior changes in this group.",
+        "references": [
+          {
+            "snapshotId": "a1b21a911766b80027345dfaa6282e5558fb1784c743d28c6f00001d6fae333c",
+            "path": "src/client.ts",
+            "side": "new",
+            "startLine": 14,
+            "endLine": 15
+          },
+          {
+            "snapshotId": "a1b21a911766b80027345dfaa6282e5558fb1784c743d28c6f00001d6fae333c",
+            "path": "src/http-error.ts",
+            "side": "new",
+            "startLine": 5,
+            "endLine": 13
+          }
+        ]
+      },
+      "hunkIds": ["7e4fff59f6ef6c20", "f92aa03c919ecd0d"],
+      "files": ["src/client.ts", "src/http-error.ts"],
+      "notes": [
+        {
+          "id": "client-header-read",
+          "anchor": {
+            "snapshotId": "a1b21a911766b80027345dfaa6282e5558fb1784c743d28c6f00001d6fae333c",
+            "path": "src/client.ts",
+            "side": "new",
+            "startLine": 14,
+            "endLine": 15
+          },
+          "markdown": "`Headers.get` returns `null` when the header is absent; `?? undefined` normalizes that to the optional parameter's `undefined`. The header is captured for every non-2xx status, including 4xx that will not be retried.",
+          "references": []
+        },
+        {
+          "id": "http-error-raw-field",
+          "anchor": {
+            "snapshotId": "a1b21a911766b80027345dfaa6282e5558fb1784c743d28c6f00001d6fae333c",
+            "path": "src/http-error.ts",
+            "side": "new",
+            "startLine": 5,
+            "endLine": 8
+          },
+          "markdown": "The header is stored raw, not parsed: an HTTP-date only becomes a wait relative to the clock at decision time, which [`retryDelay`](gyst:new/src/retry.ts#L63-L73) supplies. The parameter is optional, so existing `new HttpError(status, url)` calls still compile.",
+          "references": [
+            {
+              "snapshotId": "a1b21a911766b80027345dfaa6282e5558fb1784c743d28c6f00001d6fae333c",
+              "path": "src/retry.ts",
+              "side": "new",
+              "startLine": 63,
+              "endLine": 73
+            }
+          ]
+        }
+      ],
+      "count": 2
+    },
+    {
+      "id": "parse-retry-after",
+      "title": "Parse Retry-After into milliseconds",
+      "overview": {
+        "markdown": "[`parseRetryAfter`](gyst:new/src/retry-after.ts#L6-L13) turns the raw header into a wait in milliseconds, or `undefined` meaning \"no usable value, fall back to backoff\". It does not cap the value; the cap is applied by the policy in the next group. Read the function, then [its tests](gyst:new/test/retry-after.test.ts#L8-L26).\n\nFor example, with now = 2025-03-01 12:00:00 GMT:\n\n| Header | Result |\n| --- | --- |\n| `3` | `3000` |\n| `Sat, 01 Mar 2025 12:00:02 GMT` | `2000` |\n| `Sat, 01 Mar 2025 11:59:00 GMT` (past) | `0` |\n| `soon`, absent | `undefined` |",
+        "references": [
+          {
+            "snapshotId": "a1b21a911766b80027345dfaa6282e5558fb1784c743d28c6f00001d6fae333c",
+            "path": "src/retry-after.ts",
+            "side": "new",
+            "startLine": 6,
+            "endLine": 13
+          },
+          {
+            "snapshotId": "a1b21a911766b80027345dfaa6282e5558fb1784c743d28c6f00001d6fae333c",
+            "path": "test/retry-after.test.ts",
+            "side": "new",
+            "startLine": 8,
+            "endLine": 26
+          }
+        ]
+      },
+      "hunkIds": ["088624a79a40ca10", "ace6db35c7228671"],
+      "files": ["src/retry-after.ts", "test/retry-after.test.ts"],
+      "notes": [
+        {
+          "id": "parse-delay-seconds",
+          "anchor": {
+            "snapshotId": "a1b21a911766b80027345dfaa6282e5558fb1784c743d28c6f00001d6fae333c",
+            "path": "src/retry-after.ts",
+            "side": "new",
+            "startLine": 7,
+            "endLine": 9
+          },
+          "markdown": "Only plain digits (after trimming) count as delay-seconds. `0` is a valid answer meaning retry immediately, which is shorter than any backoff; there is no upper bound here.",
+          "references": []
+        },
+        {
+          "id": "parse-date-leniency",
+          "anchor": {
+            "snapshotId": "a1b21a911766b80027345dfaa6282e5558fb1784c743d28c6f00001d6fae333c",
+            "path": "src/retry-after.ts",
+            "side": "new",
+            "startLine": 10,
+            "endLine": 12
+          },
+          "markdown": "Edge case: `Date.parse` accepts more than RFC 9110 HTTP-dates, so \"neither\" in the doc comment only covers strings it rejects. Ran a probe on the snapshot's code with Node v24.21.0: `-1` and `1.5` parse as past dates and return `0` (an immediate retry, not the backoff fallback), and an ISO string such as `2025-03-01T12:00:03Z` returns `3000`. Other engines may differ; no test pins these inputs.",
+          "references": []
+        },
+        {
+          "id": "parse-tests",
+          "anchor": {
+            "snapshotId": "a1b21a911766b80027345dfaa6282e5558fb1784c743d28c6f00001d6fae333c",
+            "path": "test/retry-after.test.ts",
+            "side": "new",
+            "startLine": 8,
+            "endLine": 26
+          },
+          "markdown": "Covers both header forms, a past date clamping to `0`, whitespace around a number, and the `undefined` fallbacks. Included in the passing `npm test` run.",
+          "references": []
+        }
+      ],
+      "count": 2
+    },
+    {
+      "id": "retry-policy",
+      "title": "Decide whether and how long to retry",
+      "overview": {
+        "markdown": "The behavior change lives in [the `withRetry` loop](gyst:new/src/retry.ts#L31-L42), which now consults two new helpers: [`isRetryable`](gyst:new/src/retry.ts#L54-L57) decides whether to retry at all, and [`retryDelay`](gyst:new/src/retry.ts#L63-L73) picks the wait or says stop. [`backoff`](gyst:new/src/retry.ts#L46-L48) itself is unchanged. Then read the new `fetchJson` tests, which use `attempts: 4`, `baseDelayMs: 100`, `maxDelayMs: 1000` and a fixed clock.\n\nFor example, under those test options:\n\n| First response | Before | After |\n| --- | --- | --- |\n| `404` | 4 calls, waits 100, 200, 400 | 1 call, no wait |\n| `429`, `Retry-After: 1` | waits 100 (header ignored) | waits 1000 |\n| `503`, `Retry-After: 120` | waits 100 (header ignored) | 1 call, rejects with that `HttpError` |\n| `503`, no header | waits 100 | waits 100 (unchanged) |",
+        "references": [
+          {
+            "snapshotId": "a1b21a911766b80027345dfaa6282e5558fb1784c743d28c6f00001d6fae333c",
+            "path": "src/retry.ts",
+            "side": "new",
+            "startLine": 31,
+            "endLine": 42
+          },
+          {
+            "snapshotId": "a1b21a911766b80027345dfaa6282e5558fb1784c743d28c6f00001d6fae333c",
+            "path": "src/retry.ts",
+            "side": "new",
+            "startLine": 54,
+            "endLine": 57
+          },
+          {
+            "snapshotId": "a1b21a911766b80027345dfaa6282e5558fb1784c743d28c6f00001d6fae333c",
+            "path": "src/retry.ts",
+            "side": "new",
+            "startLine": 63,
+            "endLine": 73
+          },
+          {
+            "snapshotId": "a1b21a911766b80027345dfaa6282e5558fb1784c743d28c6f00001d6fae333c",
+            "path": "src/retry.ts",
+            "side": "new",
+            "startLine": 46,
+            "endLine": 48
+          }
+        ]
+      },
+      "hunkIds": ["119e8143a711e39a", "ab588adef2fcc851", "1b8996736e3253d5", "3c47e1117ea54544"],
+      "files": ["src/retry.ts", "test/retry.test.ts"],
+      "notes": [
+        {
+          "id": "old-retry-everything",
+          "anchor": {
+            "snapshotId": "a1b21a911766b80027345dfaa6282e5558fb1784c743d28c6f00001d6fae333c",
+            "path": "src/retry.ts",
+            "side": "old",
+            "startLine": 27,
+            "endLine": 28
+          },
+          "markdown": "Before: the only exit was running out of attempts, and every wait was `backoff`.",
+          "references": []
+        },
+        {
+          "id": "injected-now",
+          "anchor": {
+            "snapshotId": "a1b21a911766b80027345dfaa6282e5558fb1784c743d28c6f00001d6fae333c",
+            "path": "src/retry.ts",
+            "side": "new",
+            "startLine": 9,
+            "endLine": 12
+          },
+          "markdown": "`now` is optional and defaults to `Date.now` ([line 29](gyst:new/src/retry.ts#L29)), so existing callers are unaffected; it only matters for HTTP-date headers. `maxDelayMs` now also bounds a server-requested wait, as a stop condition rather than a clamp.",
+          "references": [
+            {
+              "snapshotId": "a1b21a911766b80027345dfaa6282e5558fb1784c743d28c6f00001d6fae333c",
+              "path": "src/retry.ts",
+              "side": "new",
+              "startLine": 29,
+              "endLine": 29
+            }
+          ]
+        },
+        {
+          "id": "loop-exit-order",
+          "anchor": {
+            "snapshotId": "a1b21a911766b80027345dfaa6282e5558fb1784c743d28c6f00001d6fae333c",
+            "path": "src/retry.ts",
+            "side": "new",
+            "startLine": 36,
+            "endLine": 39
+          },
+          "markdown": "Checks run in order: last attempt, then retryability, then delay. So `Retry-After` is never read on the last attempt or on a non-retryable status: a `404` carrying `Retry-After: 1` fails after one call with no wait (ran a probe on the snapshot's code). Every early stop rethrows the error itself, so the caller sees the real status and header.",
+          "references": []
+        },
+        {
+          "id": "is-retryable",
+          "anchor": {
+            "snapshotId": "a1b21a911766b80027345dfaa6282e5558fb1784c743d28c6f00001d6fae333c",
+            "path": "src/retry.ts",
+            "side": "new",
+            "startLine": 54,
+            "endLine": 57
+          },
+          "markdown": "Anything that is not an `HttpError` stays retryable. That covers network failures, and also a `SyntaxError` from `response.json()` on a 2xx with a malformed body: a probe showed 4 calls with waits 100, 200, 400. That was already the case before this change; 1xx/3xx never reach here because only `!response.ok` throws `HttpError`, and fetch follows redirects by default.",
+          "references": []
+        },
+        {
+          "id": "retry-delay-boundary",
+          "anchor": {
+            "snapshotId": "a1b21a911766b80027345dfaa6282e5558fb1784c743d28c6f00001d6fae333c",
+            "path": "src/retry.ts",
+            "side": "new",
+            "startLine": 69,
+            "endLine": 72
+          },
+          "markdown": "Boundary: `<=` means a request for exactly `maxDelayMs` is honored; one millisecond more stops the call instead of waiting the cap. A parsed value always replaces the backoff, even when shorter, so `Retry-After: 0` or a past date retries immediately.",
+          "references": []
+        },
+        {
+          "id": "test-fixed-clock",
+          "anchor": {
+            "snapshotId": "a1b21a911766b80027345dfaa6282e5558fb1784c743d28c6f00001d6fae333c",
+            "path": "test/retry.test.ts",
+            "side": "new",
+            "startLine": 13,
+            "endLine": 16
+          },
+          "markdown": "The fixed clock keeps the options deterministic; none of these tests sends an HTTP-date, so it is not exercised end to end here (only in the `parseRetryAfter` tests).",
+          "references": []
+        },
+        {
+          "id": "test-client-error",
+          "anchor": {
+            "snapshotId": "a1b21a911766b80027345dfaa6282e5558fb1784c743d28c6f00001d6fae333c",
+            "path": "test/retry.test.ts",
+            "side": "new",
+            "startLine": 82,
+            "endLine": 91
+          },
+          "markdown": "Pins the main behavior change: one call, no waits. No test covers 408 or 429-without-header still being retried.",
+          "references": []
+        },
+        {
+          "id": "test-retry-after-boundary",
+          "anchor": {
+            "snapshotId": "a1b21a911766b80027345dfaa6282e5558fb1784c743d28c6f00001d6fae333c",
+            "path": "test/retry.test.ts",
+            "side": "new",
+            "startLine": 93,
+            "endLine": 114
+          },
+          "markdown": "`Retry-After: 1` is 1000 ms, exactly `maxDelayMs` in these options, so the first test also pins the `<=` boundary. The second pins the stop: one call, no waits, and the rejected error still carries `retryAfter: \"120\"`. Both pass in the `npm test` run.",
+          "references": []
+        }
+      ],
+      "count": 4
+    },
+    {
+      "id": "readme-policy",
+      "title": "Document the retry policy",
+      "overview": {
+        "markdown": "The README's retry section is rewritten to match the new policy. Its numbers are those of [`defaultRetry`](gyst:new/src/retry.ts#L15): 4 attempts, 200 ms base, 5 s cap.",
+        "references": [
+          {
+            "snapshotId": "a1b21a911766b80027345dfaa6282e5558fb1784c743d28c6f00001d6fae333c",
+            "path": "src/retry.ts",
+            "side": "new",
+            "startLine": 15,
+            "endLine": 15
+          }
+        ]
+      },
+      "hunkIds": ["46447eb37e682faf"],
+      "files": ["README.md"],
+      "notes": [
+        {
+          "id": "readme-scope",
+          "anchor": {
+            "snapshotId": "a1b21a911766b80027345dfaa6282e5558fb1784c743d28c6f00001d6fae333c",
+            "path": "README.md",
+            "side": "new",
+            "startLine": 16,
+            "endLine": 21
+          },
+          "markdown": "\"Network errors\" understates what is retried: any non-`HttpError`, such as a JSON decode failure on a 2xx, is retried too. The text also does not mention that a `Retry-After` is ignored on non-retryable 4xx or that an unparseable value falls back to the backoff.",
+          "references": []
+        }
+      ],
+      "count": 1
+    }
+  ],
+  "preparation": {
+    "state": "complete",
+    "groupedHunks": 9,
+    "totalHunks": 9,
+    "overviewMissing": false,
+    "groupsMissingOverview": [],
+    "overviewOutdated": false,
+    "groupsOutdated": [],
+    "notesOutdated": []
+  },
+  "viewedHunkIds": [],
+  "threads": { "open": 0, "resolved": 0, "pending": 0 },
+  "files": [
+    { "path": "README.md", "hunkCount": 1, "viewed": false },
+    { "path": "src/client.ts", "hunkCount": 1, "viewed": false },
+    { "path": "src/http-error.ts", "hunkCount": 1, "viewed": false },
+    { "path": "src/retry-after.ts", "hunkCount": 1, "viewed": false },
+    { "path": "src/retry.ts", "hunkCount": 2, "viewed": false },
+    { "path": "test/retry-after.test.ts", "hunkCount": 1, "viewed": false },
+    { "path": "test/retry.test.ts", "hunkCount": 2, "viewed": false }
+  ]
+}
