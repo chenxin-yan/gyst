@@ -53,6 +53,14 @@ const longTs = (edited: boolean) =>
     .join("");
 const isOperationUrl = (url: URL) => url.pathname === "/api/operation";
 const isEventsUrl = (url: URL) => url.pathname === "/api/events";
+/** Chromium's console line for a session subscription no daemon was listening to accept. */
+const isRefusedSubscription = (text: string) => {
+  const refused =
+    /^WebSocket connection to '([^']+)' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED$/.exec(
+      text,
+    );
+  return refused !== null && isEventsUrl(new URL(refused[1]!));
+};
 const operationOf = (request: PageRequest) =>
   request.method() === "POST" && isOperationUrl(new URL(request.url()))
     ? request.postDataJSON()
@@ -126,7 +134,8 @@ const operationsInFlight = new WeakMap<Page, Set<PageRequest>>();
  * (`<path> <status>`) and problems: failed requests, page errors and console errors. Chromium's
  * "Failed to load resource" lines only repeat those responses and failures. A session page's
  * subscription is a WebSocket, not a request, so its ends, by design whenever the page is left,
- * closed or its daemon stops, are not counted.
+ * closed or its daemon stops, are not counted, nor is Chromium's console line for a resubscription
+ * refused while its daemon is down.
  */
 async function newPage(
   from: BrowserContext = context,
@@ -150,8 +159,13 @@ async function newPage(
   page.on("requestfailed", (request) => operations.delete(request));
   page.on("pageerror", (error) => seen.problems.push(`pageerror ${error.message}`));
   page.on("console", (message) => {
-    if (message.type() === "error" && !message.text().startsWith("Failed to load resource:"))
-      seen.problems.push(`console ${message.text()}`);
+    const text = message.text();
+    if (
+      message.type() === "error" &&
+      !text.startsWith("Failed to load resource:") &&
+      !isRefusedSubscription(text)
+    )
+      seen.problems.push(`console ${text}`);
   });
   onTestFinished(async () => {
     const snapshot = structuredClone(seen);
