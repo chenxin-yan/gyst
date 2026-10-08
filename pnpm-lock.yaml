@@ -61,17 +61,17 @@ importers:
   apps/gyst:
     dependencies:
       '@crustjs/core':
-        specifier: 0.5.3
-        version: 0.5.3(typescript@7.0.2)
+        specifier: 0.5.5
+        version: 0.5.5(typescript@7.0.2)
       '@crustjs/effect':
         specifier: 0.2.1
-        version: 0.2.1(@crustjs/core@0.5.3(typescript@7.0.2))(effect@4.0.0-rc.118)(typescript@7.0.2)
+        version: 0.2.1(@crustjs/core@0.5.5(typescript@7.0.2))(effect@4.0.0-rc.118)(typescript@7.0.2)
       '@crustjs/extensions':
-        specifier: 0.5.3
-        version: 0.5.3(@crustjs/core@0.5.3(typescript@7.0.2))(typescript@7.0.2)
+        specifier: 0.5.5
+        version: 0.5.5(@crustjs/core@0.5.5(typescript@7.0.2))(typescript@7.0.2)
       '@crustjs/skills':
-        specifier: 0.5.3
-        version: 0.5.3(@crustjs/core@0.5.3(typescript@7.0.2))(typescript@7.0.2)
+        specifier: 0.5.5
+        version: 0.5.5(@crustjs/core@0.5.5(typescript@7.0.2))(typescript@7.0.2)
       '@effect/platform-node':
         specifier: 'catalog:'
         version: 4.0.0-rc.118(effect@4.0.0-rc.118)(redis@6.2.1)
@@ -89,8 +89,8 @@ importers:
         version: 7.8.5
     devDependencies:
       '@crustjs/crust':
-        specifier: 0.5.3
-        version: 0.5.3(@crustjs/core@0.5.3(typescript@7.0.2))(typescript@7.0.2)
+        specifier: 0.5.5
+        version: 0.5.5(@crustjs/core@0.5.5(typescript@7.0.2))(typescript@7.0.2)
       '@gyst/web':
         specifier: workspace:*
         version: link:../web
@@ -375,8 +375,8 @@ packages:
     resolution: {integrity: sha512-dlT1m5e/0yUL0kRNcQn7yGLVThkgbB0Ga/1AmfDDC/8ik6AIiSf2QLQO2zPYvefsHP0aFgxO93cVLCCfDp7kzQ==}
     engines: {node: '>= 20.12.0'}
 
-  '@crustjs/core@0.5.3':
-    resolution: {integrity: sha512-8Ce3051m+stTustTvBG2nV1yjLm1OruRaua8iogC5s4ZVVEz27rTHR+B0Efrfnl8DYcdDIUhTrnjZ8hrciB+XA==}
+  '@crustjs/core@0.5.5':
+    resolution: {integrity: sha512-xGyg0/c23HDznU5lKYKBGNpXQM/lA5mFVnll5+2i2hngogaC4EfMmwETRJO5Vl7utKNx3QERYnnnBP/KCL05Pw==}
     engines: {bun: '>=1.4.0', deno: '>=2.8', node: '>=24'}
     peerDependencies:
       typescript: ^7.0.0
@@ -384,68 +384,68 @@ packages:
       typescript:
         optional: true
 
-  '@crustjs/crust-darwin-arm64@0.5.3':
-    resolution: {integrity: sha512-CHd27mJqNDIU1CiAIVaaoUlY12HHcVJizpShDL7Jl9zf8MX8PyAO51KcOCTz09tD2+veZq0FVLhApmojpCw8Bg==}
+  '@crustjs/crust-darwin-arm64@0.5.5':
+    resolution: {integrity: sha512-lA/uWy5gM+6+77EuywEkwUnAYHG0o+G/Uf9OZGrMzUpzpQ6BfLAb0gTcVOTsPMnNrRs6F/qkLp8nigl3LPCUOQ==}
     engines: {bun: '>=1.4.0'}
     cpu: [arm64]
     os: [darwin]
     hasBin: true
 
-  '@crustjs/crust-darwin-x64@0.5.3':
-    resolution: {integrity: sha512-8TKtxoCc0yLeogFxhPi+hXccx+bOTrZ0/PQEOUiBoNkSOKaWXouBH4gxB4xpNOTfQC3t/XZG/G+5fBJ7SytzvQ==}
+  '@crustjs/crust-darwin-x64@0.5.5':
+    resolution: {integrity: sha512-eBH1pgQ9Haf0HOVcMCm67LT4bS2ljuB1a+uDpXxePyNwhJl7mI4UuHOltxcFHpXzPZ8puFkJA4jIZCvZeKvnaQ==}
     engines: {bun: '>=1.4.0'}
     cpu: [x64]
     os: [darwin]
     hasBin: true
 
-  '@crustjs/crust-linux-arm64-musl@0.5.3':
-    resolution: {integrity: sha512-srG6aI8OCHu2AxSulhcrybMAJC2uGoYtxpCbpGWljddgBxUs+HP3jJ17LCgERAsuCOXJ1TSafxdcWwSEKLFRnA==}
+  '@crustjs/crust-linux-arm64-musl@0.5.5':
+    resolution: {integrity: sha512-FqHjUcTfHOvY+EB076sw3rNVFcdU+hdQnh7LH2x461LvVblw9P3JB+VR5Mebc3EgkNDu2aLSiMVg0U9AiuvA6g==}
     engines: {bun: '>=1.4.0'}
     cpu: [arm64]
     os: [linux]
     libc: [musl]
     hasBin: true
 
-  '@crustjs/crust-linux-arm64@0.5.3':
-    resolution: {integrity: sha512-IcBkdtW1sBWkEfZ40G3/bBYqh2XVeey1aLT/zqP/xmXEJNfKC8GDfW7Pel34MFulahO3/H2y67pC1xQvBov5uA==}
+  '@crustjs/crust-linux-arm64@0.5.5':
+    resolution: {integrity: sha512-FfP8C4/k10IqOjrXG3Ulbeebr4q2jDXDEwHkXPL3jElZVydeN6GpLjiJLMI06JOeGABNvAi2vxXa6Q64GW2JfA==}
     engines: {bun: '>=1.4.0'}
     cpu: [arm64]
     os: [linux]
     libc: [glibc]
     hasBin: true
 
-  '@crustjs/crust-linux-x64-musl@0.5.3':
-    resolution: {integrity: sha512-KYdIbD6P9+Ozd2Klfao/jLEIvYxZuaXjVLrci9OWtrmBshTINUQzUZuYIr5bQMuorK87uHuJ2VwW2lb2MVmzqA==}
+  '@crustjs/crust-linux-x64-musl@0.5.5':
+    resolution: {integrity: sha512-ZUvu4knMBLBFAZhPPKSk9SbygLthTu5V+sARARAgjoOxgA8N6u2p/xSIUMFnBak2DyYybr0mvNGoyyFiE/zs3g==}
     engines: {bun: '>=1.4.0'}
     cpu: [x64]
     os: [linux]
     libc: [musl]
     hasBin: true
 
-  '@crustjs/crust-linux-x64@0.5.3':
-    resolution: {integrity: sha512-VnYFN80wmzbkq07BSCj3FjmElSnTFhThfS/Fd2/UUAYjX4g5tqrysjO5idfrZi9cEtma2Rq70ZJNuMnFN3VoUg==}
+  '@crustjs/crust-linux-x64@0.5.5':
+    resolution: {integrity: sha512-AoMbEfbQxfkJpcZhWRtq/Ikb/2bctPYvcmdzJ/Z2fc7unF7sdhKKYDbI+jNOg8Bw9EV7KsXaSnMTyiJJWcdWuA==}
     engines: {bun: '>=1.4.0'}
     cpu: [x64]
     os: [linux]
     libc: [glibc]
     hasBin: true
 
-  '@crustjs/crust-windows-arm64@0.5.3':
-    resolution: {integrity: sha512-qLnYWtnUSAbRbqA04YRf5NvQ6Feadq0fyR72C7AutBoVbqTE/+1g65zvHxuxyL9QXnwaoDpxyIbhfWR2FOOX7A==}
+  '@crustjs/crust-windows-arm64@0.5.5':
+    resolution: {integrity: sha512-GUewpza0ezu/em3asO4zHO7YpuZyVq+nRlULS0SE4pVNcWIsSxo3lz1ftdYJzDAk5DV9I8iFOWoxfbLrz88U5g==}
     engines: {bun: '>=1.4.0'}
     cpu: [arm64]
     os: [win32]
     hasBin: true
 
-  '@crustjs/crust-windows-x64@0.5.3':
-    resolution: {integrity: sha512-o6rdk8aMHKMc9iKu6JqWzcHRoM8HMVyu/j0o5Em67HarnMzs38Cl05Dexf2+T4u/iLmkaCxSum08E8ODccdRXg==}
+  '@crustjs/crust-windows-x64@0.5.5':
+    resolution: {integrity: sha512-HLzSCDp67bA47+B9w1ZmBJU44ZgwM7OIUaGi37uo1zWDcP6zuuMAEERICH1IDwo2jTJqcrygMVOLyOuuDIcTUQ==}
     engines: {bun: '>=1.4.0'}
     cpu: [x64]
     os: [win32]
     hasBin: true
 
-  '@crustjs/crust@0.5.3':
-    resolution: {integrity: sha512-qrAhM+tXuqzCltq9OQ6NirOyga2q635BGRlcPUVq7/GtmjfnO7RL6WjX6nMtMOL3kLAW/i9v+dhkgD1oChS0sA==}
+  '@crustjs/crust@0.5.5':
+    resolution: {integrity: sha512-7odrLs2DGM8LlDfKLOkBhvKTw7KDwC1uguUjTjPR0Uhqu6pyWWftZP/MJ+OrPjvMrFYR8r/R+MZGbMFEFrdAgQ==}
     engines: {bun: '>=1.4.0'}
     hasBin: true
     peerDependencies:
@@ -462,27 +462,18 @@ packages:
       typescript:
         optional: true
 
-  '@crustjs/extensions@0.5.3':
-    resolution: {integrity: sha512-OxCqS1Kj7NoTYtSkLqWw3HgIL2CuLT/uY7KAuMOT0j5fsL1IM3UsKh3bVUk7UnJxaFIoj03HUerM3bUFh29N1g==}
+  '@crustjs/extensions@0.5.5':
+    resolution: {integrity: sha512-++3hHoFQXShC9O7D7MI1ikdow2Mp202Cwn5APTFXByfRppKizjqjtjfMK4nS9k5pH2bqeBNQR222V0KX8q7qKQ==}
     engines: {bun: '>=1.4.0', deno: '>=2.8', node: '>=24'}
     peerDependencies:
-      '@crustjs/core': ^0.5.3
+      '@crustjs/core': ^0.5.5
       typescript: ^7.0.0
     peerDependenciesMeta:
       typescript:
         optional: true
 
-  '@crustjs/progress@0.1.4':
-    resolution: {integrity: sha512-hFD/TsqCzcUJq2iJJpvgpz7Dgz69NpL6SCTbbU6KNrW/W0EL1Z34AhMZLb3Z3m8DdYYk5xGIUumjMtaZza23ug==}
-    engines: {bun: '>=1.4.0', deno: '>=2.8', node: '>=24'}
-    peerDependencies:
-      typescript: ^7.0.0
-    peerDependenciesMeta:
-      typescript:
-        optional: true
-
-  '@crustjs/prompts@0.2.5':
-    resolution: {integrity: sha512-XaItvsHBPIqNxdsPQCq7CrebE4EsgALUXlw03sFvFPu5JA+NZU3Hz6iaUgK3PiCJfObDLawdJiBwaIm+11eMGQ==}
+  '@crustjs/progress@0.1.5':
+    resolution: {integrity: sha512-7MyL4wJ5d5n/wND7DevBRGJ6J+ziT1bLR850FSI0UpihS6L1r1s/FSGmsJF2ubzNztDTlQKxVB8Ie80nr/gTYg==}
     engines: {bun: '>=1.4.0', deno: '>=2.8', node: '>=24'}
     peerDependencies:
       typescript: ^7.0.0
@@ -490,18 +481,8 @@ packages:
       typescript:
         optional: true
 
-  '@crustjs/skills@0.5.3':
-    resolution: {integrity: sha512-+fUR5Mhnx062v4yitVMn2+XLGUrxnChUlmeeLpphMPrKnCQP52t2eDsL1dWlYN4gpL5dWgz5pko1rbLxaQhKTw==}
-    engines: {bun: '>=1.4.0', deno: '>=2.8', node: '>=24'}
-    peerDependencies:
-      '@crustjs/core': ^0.5.3
-      typescript: ^7.0.0
-    peerDependenciesMeta:
-      typescript:
-        optional: true
-
-  '@crustjs/store@0.4.3':
-    resolution: {integrity: sha512-a3p+qA9WPkKpmJrO9c+WXORP+G5qc9fYu6AVgRKZ5DSmmsv17242Ue4xqqHrP7sMWlpeSn7uQc4vIKNDZUR3LQ==}
+  '@crustjs/prompts@0.2.6':
+    resolution: {integrity: sha512-4X6o/vatsp6ft+gSex13xFeO5D/t2ePcliZczg1C2kV3Uw1ffPBsCozoBG9sgoCLIYPJuAelWK9jckkyof2XZA==}
     engines: {bun: '>=1.4.0', deno: '>=2.8', node: '>=24'}
     peerDependencies:
       typescript: ^7.0.0
@@ -509,8 +490,18 @@ packages:
       typescript:
         optional: true
 
-  '@crustjs/style@0.3.5':
-    resolution: {integrity: sha512-CsohYSUoCr/wrqA8Y+izlbDFVsXJ1afw34CAkv86E7kPqdCcRwpVl4Tnkj9Htw04tCVpfH/jWnqtHnGEFiCLpw==}
+  '@crustjs/skills@0.5.5':
+    resolution: {integrity: sha512-k9ueIoSm2ScuC04kp/R0dvyM/koePfvd/2C9SIc+B6C61s7ZSMC3GYFVFRiQMmZm7X3uMYAyIpPjIj47EVEA/g==}
+    engines: {bun: '>=1.4.0', deno: '>=2.8', node: '>=24'}
+    peerDependencies:
+      '@crustjs/core': ^0.5.5
+      typescript: ^7.0.0
+    peerDependenciesMeta:
+      typescript:
+        optional: true
+
+  '@crustjs/store@0.4.4':
+    resolution: {integrity: sha512-1QsPZDFXnMYAMpTPexjLVrAwXOJJUVqCiyikt6/PwftSypyBiT1JPA347yzBQhnqwJJsn/yFMTcjqlLQ7064cg==}
     engines: {bun: '>=1.4.0', deno: '>=2.8', node: '>=24'}
     peerDependencies:
       typescript: ^7.0.0
@@ -518,9 +509,14 @@ packages:
       typescript:
         optional: true
 
-  '@crustjs/utils@0.2.1':
-    resolution: {integrity: sha512-aPVztwkk3BJ37/m9vt9Djz8wUCtrAj2WHDHHYxjcE+UDTIpq6kdfOdh9G1NLyJ+vV4n0BtyA6Iq+P5Ij2aCebQ==}
+  '@crustjs/style@0.3.6':
+    resolution: {integrity: sha512-49iRAWUYTL2NJUTVFJkOQbWgWclRMM44R6a7gQ1UasTz6i3Sad1xCqseCA8LrH6lwNatluXr3pv+rUCJQkK9Fg==}
     engines: {bun: '>=1.4.0', deno: '>=2.8', node: '>=24'}
+    peerDependencies:
+      typescript: ^7.0.0
+    peerDependenciesMeta:
+      typescript:
+        optional: true
 
   '@crustjs/utils@0.2.2':
     resolution: {integrity: sha512-hPDqqHpdekLi8nU/eqQf0fsAbkjsBzGntTcQdypElinREA+tC2iC8JnXPsf8iKYWNogmJJ2tyqGzTXZrk431Kg==}
@@ -3478,13 +3474,13 @@ snapshots:
       fast-wrap-ansi: 0.2.2
       sisteransi: 1.0.5
 
-  '@crustjs/core@0.5.3(typescript@7.0.2)':
+  '@crustjs/core@0.5.5(typescript@7.0.2)':
     dependencies:
       '@crustjs/utils': 0.2.2
     optionalDependencies:
       typescript: 7.0.2
 
-  '@crustjs/crust-darwin-arm64@0.5.3(typescript@7.0.2)':
+  '@crustjs/crust-darwin-arm64@0.5.5(typescript@7.0.2)':
     optionalDependencies:
       '@tsdown/exe': 0.23.0(tsdown@0.23.0)
       tsdown: 0.23.0(@tsdown/exe@0.23.0)(typescript@7.0.2)
@@ -3504,7 +3500,7 @@ snapshots:
       - vue-tsc
     optional: true
 
-  '@crustjs/crust-darwin-x64@0.5.3(typescript@7.0.2)':
+  '@crustjs/crust-darwin-x64@0.5.5(typescript@7.0.2)':
     optionalDependencies:
       '@tsdown/exe': 0.23.0(tsdown@0.23.0)
       tsdown: 0.23.0(@tsdown/exe@0.23.0)(typescript@7.0.2)
@@ -3524,7 +3520,7 @@ snapshots:
       - vue-tsc
     optional: true
 
-  '@crustjs/crust-linux-arm64-musl@0.5.3(typescript@7.0.2)':
+  '@crustjs/crust-linux-arm64-musl@0.5.5(typescript@7.0.2)':
     optionalDependencies:
       '@tsdown/exe': 0.23.0(tsdown@0.23.0)
       tsdown: 0.23.0(@tsdown/exe@0.23.0)(typescript@7.0.2)
@@ -3544,7 +3540,7 @@ snapshots:
       - vue-tsc
     optional: true
 
-  '@crustjs/crust-linux-arm64@0.5.3(typescript@7.0.2)':
+  '@crustjs/crust-linux-arm64@0.5.5(typescript@7.0.2)':
     optionalDependencies:
       '@tsdown/exe': 0.23.0(tsdown@0.23.0)
       tsdown: 0.23.0(@tsdown/exe@0.23.0)(typescript@7.0.2)
@@ -3564,7 +3560,7 @@ snapshots:
       - vue-tsc
     optional: true
 
-  '@crustjs/crust-linux-x64-musl@0.5.3(typescript@7.0.2)':
+  '@crustjs/crust-linux-x64-musl@0.5.5(typescript@7.0.2)':
     optionalDependencies:
       '@tsdown/exe': 0.23.0(tsdown@0.23.0)
       tsdown: 0.23.0(@tsdown/exe@0.23.0)(typescript@7.0.2)
@@ -3584,7 +3580,7 @@ snapshots:
       - vue-tsc
     optional: true
 
-  '@crustjs/crust-linux-x64@0.5.3(typescript@7.0.2)':
+  '@crustjs/crust-linux-x64@0.5.5(typescript@7.0.2)':
     optionalDependencies:
       '@tsdown/exe': 0.23.0(tsdown@0.23.0)
       tsdown: 0.23.0(@tsdown/exe@0.23.0)(typescript@7.0.2)
@@ -3604,7 +3600,7 @@ snapshots:
       - vue-tsc
     optional: true
 
-  '@crustjs/crust-windows-arm64@0.5.3(typescript@7.0.2)':
+  '@crustjs/crust-windows-arm64@0.5.5(typescript@7.0.2)':
     optionalDependencies:
       '@tsdown/exe': 0.23.0(tsdown@0.23.0)
       tsdown: 0.23.0(@tsdown/exe@0.23.0)(typescript@7.0.2)
@@ -3624,7 +3620,7 @@ snapshots:
       - vue-tsc
     optional: true
 
-  '@crustjs/crust-windows-x64@0.5.3(typescript@7.0.2)':
+  '@crustjs/crust-windows-x64@0.5.5(typescript@7.0.2)':
     optionalDependencies:
       '@tsdown/exe': 0.23.0(tsdown@0.23.0)
       tsdown: 0.23.0(@tsdown/exe@0.23.0)(typescript@7.0.2)
@@ -3644,18 +3640,18 @@ snapshots:
       - vue-tsc
     optional: true
 
-  '@crustjs/crust@0.5.3(@crustjs/core@0.5.3(typescript@7.0.2))(typescript@7.0.2)':
+  '@crustjs/crust@0.5.5(@crustjs/core@0.5.5(typescript@7.0.2))(typescript@7.0.2)':
     dependencies:
-      '@crustjs/core': 0.5.3(typescript@7.0.2)
+      '@crustjs/core': 0.5.5(typescript@7.0.2)
     optionalDependencies:
-      '@crustjs/crust-darwin-arm64': 0.5.3(typescript@7.0.2)
-      '@crustjs/crust-darwin-x64': 0.5.3(typescript@7.0.2)
-      '@crustjs/crust-linux-arm64': 0.5.3(typescript@7.0.2)
-      '@crustjs/crust-linux-arm64-musl': 0.5.3(typescript@7.0.2)
-      '@crustjs/crust-linux-x64': 0.5.3(typescript@7.0.2)
-      '@crustjs/crust-linux-x64-musl': 0.5.3(typescript@7.0.2)
-      '@crustjs/crust-windows-arm64': 0.5.3(typescript@7.0.2)
-      '@crustjs/crust-windows-x64': 0.5.3(typescript@7.0.2)
+      '@crustjs/crust-darwin-arm64': 0.5.5(typescript@7.0.2)
+      '@crustjs/crust-darwin-x64': 0.5.5(typescript@7.0.2)
+      '@crustjs/crust-linux-arm64': 0.5.5(typescript@7.0.2)
+      '@crustjs/crust-linux-arm64-musl': 0.5.5(typescript@7.0.2)
+      '@crustjs/crust-linux-x64': 0.5.5(typescript@7.0.2)
+      '@crustjs/crust-linux-x64-musl': 0.5.5(typescript@7.0.2)
+      '@crustjs/crust-windows-arm64': 0.5.5(typescript@7.0.2)
+      '@crustjs/crust-windows-x64': 0.5.5(typescript@7.0.2)
       '@tsdown/exe': 0.23.0(tsdown@0.23.0)
       tsdown: 0.23.0(@tsdown/exe@0.23.0)(typescript@7.0.2)
     transitivePeerDependencies:
@@ -3673,57 +3669,55 @@ snapshots:
       - unrun
       - vue-tsc
 
-  '@crustjs/effect@0.2.1(@crustjs/core@0.5.3(typescript@7.0.2))(effect@4.0.0-rc.118)(typescript@7.0.2)':
+  '@crustjs/effect@0.2.1(@crustjs/core@0.5.5(typescript@7.0.2))(effect@4.0.0-rc.118)(typescript@7.0.2)':
     dependencies:
-      '@crustjs/core': 0.5.3(typescript@7.0.2)
+      '@crustjs/core': 0.5.5(typescript@7.0.2)
       effect: 4.0.0-rc.118
     optionalDependencies:
       typescript: 7.0.2
 
-  '@crustjs/extensions@0.5.3(@crustjs/core@0.5.3(typescript@7.0.2))(typescript@7.0.2)':
+  '@crustjs/extensions@0.5.5(@crustjs/core@0.5.5(typescript@7.0.2))(typescript@7.0.2)':
     dependencies:
-      '@crustjs/core': 0.5.3(typescript@7.0.2)
-      '@crustjs/store': 0.4.3(typescript@7.0.2)
-      '@crustjs/style': 0.3.5(typescript@7.0.2)
+      '@crustjs/core': 0.5.5(typescript@7.0.2)
+      '@crustjs/store': 0.4.4(typescript@7.0.2)
+      '@crustjs/style': 0.3.6(typescript@7.0.2)
       '@crustjs/utils': 0.2.2
     optionalDependencies:
       typescript: 7.0.2
 
-  '@crustjs/progress@0.1.4(typescript@7.0.2)':
+  '@crustjs/progress@0.1.5(typescript@7.0.2)':
     dependencies:
-      '@crustjs/style': 0.3.5(typescript@7.0.2)
-      '@crustjs/utils': 0.2.1
-    optionalDependencies:
-      typescript: 7.0.2
-
-  '@crustjs/prompts@0.2.5(typescript@7.0.2)':
-    dependencies:
-      '@crustjs/style': 0.3.5(typescript@7.0.2)
-      '@crustjs/utils': 0.2.1
-    optionalDependencies:
-      typescript: 7.0.2
-
-  '@crustjs/skills@0.5.3(@crustjs/core@0.5.3(typescript@7.0.2))(typescript@7.0.2)':
-    dependencies:
-      '@crustjs/core': 0.5.3(typescript@7.0.2)
-      '@crustjs/progress': 0.1.4(typescript@7.0.2)
-      '@crustjs/prompts': 0.2.5(typescript@7.0.2)
-      '@crustjs/style': 0.3.5(typescript@7.0.2)
+      '@crustjs/style': 0.3.6(typescript@7.0.2)
       '@crustjs/utils': 0.2.2
     optionalDependencies:
       typescript: 7.0.2
 
-  '@crustjs/store@0.4.3(typescript@7.0.2)':
+  '@crustjs/prompts@0.2.6(typescript@7.0.2)':
     dependencies:
-      '@crustjs/utils': 0.2.1
+      '@crustjs/style': 0.3.6(typescript@7.0.2)
+      '@crustjs/utils': 0.2.2
     optionalDependencies:
       typescript: 7.0.2
 
-  '@crustjs/style@0.3.5(typescript@7.0.2)':
+  '@crustjs/skills@0.5.5(@crustjs/core@0.5.5(typescript@7.0.2))(typescript@7.0.2)':
+    dependencies:
+      '@crustjs/core': 0.5.5(typescript@7.0.2)
+      '@crustjs/progress': 0.1.5(typescript@7.0.2)
+      '@crustjs/prompts': 0.2.6(typescript@7.0.2)
+      '@crustjs/style': 0.3.6(typescript@7.0.2)
+      '@crustjs/utils': 0.2.2
     optionalDependencies:
       typescript: 7.0.2
 
-  '@crustjs/utils@0.2.1': {}
+  '@crustjs/store@0.4.4(typescript@7.0.2)':
+    dependencies:
+      '@crustjs/utils': 0.2.2
+    optionalDependencies:
+      typescript: 7.0.2
+
+  '@crustjs/style@0.3.6(typescript@7.0.2)':
+    optionalDependencies:
+      typescript: 7.0.2
 
   '@crustjs/utils@0.2.2': {}
 
