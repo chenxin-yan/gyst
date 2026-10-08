@@ -3711,6 +3711,60 @@ describe("Sessions captured reads over real captures", () => {
       expect(await onDisk("blobs")).toEqual([]);
     });
 
+    it("keeps whole a snapshot another session pins part of when a file it cannot read names it", async () => {
+      const cwd = await repo("partly", { "t.ts": "t\n", "o.ts": "o\n" });
+      await writeFile(join(cwd, "t.ts"), "t first\n");
+      await writeFile(join(cwd, "o.ts"), "o first\n");
+      const { opened, sessionId } = await runReal(
+        Effect.gen(function* () {
+          const sessions = yield* Sessions;
+          const { session } = yield* sessions.open({ command: "open", cwd, scope: uncommitted });
+          const opened = files.get(session.id)!;
+          const comment = yield* act({
+            command: "draft",
+            session: session.id,
+            requestId: "comment",
+            target: {
+              kind: "comment",
+              anchor: {
+                snapshotId: session.snapshotId,
+                path: "t.ts",
+                side: "new",
+                startLine: 1,
+                endLine: 1,
+              },
+            },
+          });
+          yield* act({
+            command: "send",
+            session: session.id,
+            requestId: "send",
+            draft: comment.draft!,
+            markdown: "Why?",
+            kind: "question",
+          });
+          yield* Effect.promise(() =>
+            Promise.all([
+              writeFile(join(cwd, "t.ts"), "t second\n"),
+              writeFile(join(cwd, "o.ts"), "o second\n"),
+            ]),
+          );
+          expect((yield* refreshNow(session.id)).replaced).toBe(true);
+          return { opened, sessionId: session.id };
+        }),
+      );
+      // The thread keeps only t.ts of the first snapshot; an older version's copy of the session
+      // names that snapshot as current.
+      undecodable = [JSON.stringify({ ...opened, revision: "from another version" })];
+      await runReal(reclaim);
+      expect(await onDisk("blobs")).toContain(sha256("o first\n"));
+      undecodable = [];
+      await runReal(reclaim);
+      expect(await onDisk("blobs")).not.toContain(sha256("o first\n"));
+      expect(await onDisk("blobs")).toContain(sha256("t first\n"));
+      await runReal(remove(sessionId, "delete-partly").pipe(Effect.andThen(reclaim)));
+    });
+
     it("captures under an optional snapshot quota and says which supporting files it left out", async () => {
       const cwd = await repo("quota", { "big.ts": "x".repeat(1000), "small.ts": "small\n" });
       await writeFile(join(cwd, "small.ts"), "changed\n");

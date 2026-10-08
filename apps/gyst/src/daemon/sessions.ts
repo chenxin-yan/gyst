@@ -457,7 +457,7 @@ export class Sessions extends Context.Service<
         for (const text of yield* store.loadUndecodable)
           for (const id of new Set(text.match(/[0-9a-f]{64}/g)))
             if (
-              !kept.has(id) &&
+              kept.get(id) !== "all" &&
               (yield* content.loadManifest(id).pipe(
                 Effect.as(true),
                 Effect.catchTag("bad_args", () => Effect.succeed(false)),
