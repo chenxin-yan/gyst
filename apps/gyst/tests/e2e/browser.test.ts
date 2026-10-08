@@ -4114,6 +4114,58 @@ describe("installed gyst in a sandboxed browser", () => {
     await settled(page);
   }, 180_000);
 
+  it("keeps the selected result in the selector's view without scrolling the review", async () => {
+    const session = await navigationSession("navigate-many", navigationBin);
+    const page = await newPage();
+    await page.setViewportSize({ width: 1400, height: 1200 });
+    // More usages than the selector shows at once: plus's own, each listed four times.
+    await page.route(isOperationUrl, async (route) => {
+      if (route.request().postDataJSON()?.command !== "references") return route.fallback();
+      const response = await route.fetch();
+      const reply = await response.json();
+      const { outcome } = reply.value;
+      outcome.locations = Array.from({ length: 4 }, () => outcome.locations).flat();
+      await route.fulfill({ response, json: reply });
+    });
+    await page.goto(session.url);
+    const pane = page.getByRole("main");
+    await headingsAre(page, ["src/crlf.ts", "src/math.ts", "src/use.ts"]);
+    await pane
+      .getByText("export const four = plus(three, 1);", { exact: true })
+      .getByText("plus", { exact: true })
+      .click({ button: "right" });
+    const peek = peekOf(page);
+    const symbols = peek.getByRole("listbox", { name: "Symbols" });
+    await symbols.waitFor({ timeout: 60_000 });
+    await waitFor(() => hasFocus(symbols), "the symbols focused");
+    await page.keyboard.press("j");
+    await page.keyboard.press("Enter");
+    const usages = peek.getByRole("listbox", { name: "Usages" });
+    await usages.waitFor({ timeout: 30_000 });
+    await waitFor(() => hasFocus(usages), "the usages focused");
+    expect(await usages.getByRole("option").count()).toBe(12);
+    expect(await usages.evaluate((list) => list.scrollHeight > list.clientHeight)).toBe(true);
+    const shown = () =>
+      usages.evaluate((list) => {
+        const row = list.querySelector("[aria-selected='true']")!.getBoundingClientRect();
+        const box = list.getBoundingClientRect();
+        return row.top >= box.top - 1 && row.bottom <= box.bottom + 1;
+      });
+    const top = (await peek.boundingBox())!.y;
+    for (let step = 0; step < 11; step++) {
+      await page.keyboard.press("j");
+      await waitFor(shown, `row ${step + 2} shown`);
+    }
+    expect(await usages.getByRole("option").last().getAttribute("aria-selected")).toBe("true");
+    for (let step = 0; step < 11; step++) {
+      await page.keyboard.press("k");
+      await waitFor(shown, `row ${11 - step} shown`);
+    }
+    expect(await usages.getByRole("option").first().getAttribute("aria-selected")).toBe("true");
+    expect(Math.abs((await peek.boundingBox())!.y - top)).toBeLessThanOrEqual(1);
+    await settled(page);
+  }, 120_000);
+
   it("offers the exact install command, Check again and Continue without navigation, and finds an npm install into the launch PATH with the same daemon", async () => {
     const prefix = join(root, "navigation-prefix");
     await mkdir(join(prefix, "bin"), { recursive: true });
