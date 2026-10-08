@@ -9,7 +9,7 @@ import {
   OutdatedReasonSchema,
 } from "./guidance.ts";
 import { hash } from "./hash.ts";
-import { mapRange, matchHunks, type SnapshotLines } from "./mapping.ts";
+import { mapRange, matchHunks, sideChanged, type SnapshotLines } from "./mapping.ts";
 import type { RefreshPayload, Session } from "./session.ts";
 import type { BrowserRequest } from "./wire.ts";
 
@@ -34,8 +34,8 @@ const withReasons = <Text extends GuidanceText>(
  * emptied one included. Guidance is kept and marked Outdated rather than dropped: a note when its
  * anchored hunks or range changed, an overview when its group's or the review's hunks changed, and
  * any text whose references no longer map unchanged from their pinned snapshot. A note whose range
- * maps moves with it; one that cannot keeps its old anchor. References stay pinned. A reference
- * that changed in this refresh unviews its note's anchored hunks, never the target's.
+ * maps within its group moves with it; any other keeps its old anchor. References stay pinned. A
+ * reference that changed in this refresh unviews its note's anchored hunks, never the target's.
  *
  * `retained` holds the lines of the session's current snapshot and of every snapshot its guidance
  * pins; a pin whose snapshot is missing cannot be verified, so its guidance is Outdated.
@@ -62,13 +62,20 @@ export function refreshSession(
     const to = linesOf(snapshotId);
     return from && to ? mapRange(from, to, range) : undefined;
   };
+  const previous = linesOf(session.snapshotId);
   /** Whether each pinned reference still reads the same lines in the fresh snapshot. */
   const referencesOf = (text: GuidanceText) => {
     const unmapped = text.references.filter((range) => !mapped(range, fresh.snapshotId));
     return {
       changed: unmapped.length > 0,
-      // Changed by this refresh: it still mapped onto the snapshot being replaced.
-      changedNow: unmapped.some((range) => mapped(range, session.snapshotId)),
+      // Changed by this refresh: it still mapped onto the snapshot being replaced, or, already
+      // changed before, its file's side changed again, which may be what the reader last read.
+      changedNow: unmapped.some(
+        (range) =>
+          mapped(range, session.snapshotId) !== undefined ||
+          !previous ||
+          sideChanged(previous, fresh.snapshot, range),
+      ),
     };
   };
   const overviewOf = (overview: GuidanceText | null, codeChanged: boolean) => {
@@ -89,24 +96,29 @@ export function refreshSession(
     const files = new Set(hunkIds.map((id) => fileOf.get(id)));
     const notes = group.notes.map((note) => {
       const range = mapped(note.anchor, fresh.snapshotId);
-      const anchor = range ? { ...range, snapshotId: fresh.snapshotId } : note.anchor;
+      const moved = range && { ...range, snapshotId: fresh.snapshotId };
+      const after = moved ? anchoredHunkIds(draft.hunks, moved) : [];
+      // A note reads beside its group's code, so one whose range maps only outside the group
+      // stays on its earlier code, where the group still discloses it.
+      const anchor = moved && after.some((id) => hunkIds.includes(id)) ? moved : undefined;
       const before =
         note.anchor.snapshotId === session.snapshotId
           ? anchoredHunkIds(session.hunks, note.anchor)
           : [];
-      const after = range ? anchoredHunkIds(draft.hunks, anchor) : [];
       const references = referencesOf(note);
       const reasons: OutdatedReason[] = [];
       if (
-        !range ||
+        !anchor ||
         before.some((id) => !matches.has(id)) ||
         before.length !== after.length ||
         after.some((id) => !before.includes(id))
       )
         reasons.push("code");
       if (references.changed) reasons.push("references");
-      if (references.changedNow) for (const id of after) unviewed.add(id);
-      return withReasons({ ...note, anchor }, reasons);
+      // Surviving hunks keep their id, so this reaches the note's former hunks that still exist.
+      if (references.changedNow)
+        for (const id of [...before, ...(anchor ? after : [])]) unviewed.add(id);
+      return withReasons({ ...note, anchor: anchor ?? note.anchor }, reasons);
     });
     return {
       ...group,
