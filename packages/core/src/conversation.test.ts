@@ -67,7 +67,11 @@ const base: Session = {
 };
 
 const captured: CapturedIndex[] = [
-  { snapshotId: SNAPSHOT, sides: new Map([["new\0a.ts", { kind: "text", lines: 20 }]]) },
+  {
+    snapshotId: SNAPSHOT,
+    sides: new Map([["new\0a.ts", { kind: "text", lines: 20 }]]),
+    earlierHunks: new Map(),
+  },
 ];
 
 type Act = ConversationRequest extends infer Request
@@ -372,6 +376,7 @@ describe("human conversation actions", () => {
         ["new\0a.ts", { kind: "text", lines: 20 }],
         ["old\0a.ts", { kind: "text", lines: 20 }],
       ]),
+      earlierHunks: new Map(),
     };
     const reanchor = (session: Session) =>
       Result.getOrThrow(
@@ -426,6 +431,7 @@ describe("human conversation actions", () => {
     const next: CapturedIndex = {
       snapshotId: "next",
       sides: new Map([["new\0a.ts", { kind: "text", lines: 20 }]]),
+      earlierHunks: new Map(),
     };
     const both = [...captured, next];
     const at = (session: Session, requestId: string, request: Act) =>
