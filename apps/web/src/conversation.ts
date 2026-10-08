@@ -82,6 +82,19 @@ export function threadPlaces(
   return places.sort((a, b) => a.fileIndex - b.fileIndex || a.line - b.line);
 }
 
+/** The kept draft of a new comment on exactly `anchor`, its snapshot included, which `c` resumes. */
+export const commentDraftOn = (drafts: readonly Draft[], anchor: CapturedRange) =>
+  drafts.find(
+    (draft) =>
+      draft.thread === undefined &&
+      draft.note === undefined &&
+      draft.anchor.snapshotId === anchor.snapshotId &&
+      draft.anchor.path === anchor.path &&
+      draft.anchor.side === anchor.side &&
+      draft.anchor.startLine === anchor.startLine &&
+      draft.anchor.endLine === anchor.endLine,
+  );
+
 /**
  * Where a new comment's composer shows: at the last line of its range, when the panel shows that
  * code. A reply's composer shows in its thread or note instead.

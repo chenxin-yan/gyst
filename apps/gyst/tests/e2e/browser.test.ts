@@ -4616,6 +4616,52 @@ describe("installed gyst in a sandboxed browser", () => {
       kind: "text",
       lines: ["export const b4 = 4;", "export const b5 = 5 * 2;"],
     });
+    // Comments shows that thread's earlier code on request.
+    await keys(page, "Shift+C");
+    const listed = page.getByRole("dialog", { name: "Comments" }).locator("[data-thread]");
+    await listed.getByRole("button", { name: /walk\/b\.ts:L4–5/ }).click();
+    await listed.getByRole("button", { name: "Show the earlier code" }).click();
+    await listed.getByText("export const b5 = 5 * 2;").waitFor();
+    await page.keyboard.press("Escape");
+    await comments.waitFor({ state: "detached" });
+
+    // b-note's line is gone too; its first reply starts its thread from its earlier note.
+    await pane
+      .locator('[data-earlier-note="b-note"]')
+      .getByRole("button", { name: "Reply" })
+      .click();
+    const noteReply = comments.getByRole("textbox", { name: "Reply" });
+    await noteReply.fill("Does five still double?");
+    await noteReply.press("Enter");
+    await waitFor(
+      async () => (await comments.locator("[data-thread]").count()) === 2,
+      "the earlier note's thread",
+    );
+    await page.keyboard.press("Escape");
+    const noteBundle = await gyst(
+      "session",
+      "threads",
+      "--session",
+      walk.id,
+      "--pending",
+      "--request-id",
+      "p1",
+    );
+    expect(noteBundle.threads).toMatchObject([
+      {
+        note: { id: "b-note", removed: false },
+        code: { kind: "text", lines: ["export const b5 = 5 * 2;"] },
+        messages: [
+          {
+            markdown: "Does five still double?",
+            wording: {
+              markdown: "Five doubles too.",
+              anchor: { path: "walk/b.ts", side: "new", startLine: 5, endLine: 5 },
+            },
+          },
+        ],
+      },
+    ]);
   }, 60_000);
 
   it("comments inside an expanded captured file and in Mouse mode with the hover +, never touching Viewed", async () => {
@@ -4632,6 +4678,11 @@ describe("installed gyst in a sandboxed browser", () => {
       .getByRole("button", { name: /^Parse the config/ })
       .click();
     await headingsAre(page, ["walk/b.ts", "walk/a.ts"]);
+    // Nested: span's link expands b.ts, whose note's link expands the unchanged src/long.ts.
+    await pane.locator("[data-note=span]").getByRole("button", { name: "the five" }).click();
+    await peekOf(page).getByRole("button", { name: "Expand" }).click();
+    await headingsAre(page, ["walk/b.ts"]);
+    await says(page, "b.ts:4 · new");
     await pane.locator("[data-note=b-note]").getByRole("button", { name: "line 40" }).click();
     await peekOf(page).getByRole("button", { name: "Expand" }).click();
     await headingsAre(page, ["src/long.ts"]);
@@ -4641,10 +4692,20 @@ describe("installed gyst in a sandboxed browser", () => {
     await field.fill("Supporting code: still forty?");
     await field.press("Enter");
     await pane.locator("[data-thread]").getByText("Pending").waitFor();
+    // r replies in that thread, there.
+    await keys(page, "r");
+    const nestedReply = pane.locator("[data-composer]").getByRole("textbox", { name: "Reply" });
+    await nestedReply.fill("And forty-one?");
+    await nestedReply.press("Enter");
+    await pane.locator("[data-thread]").getByText("2 messages").waitFor();
 
-    // Back in the diff, Mouse mode's hover + selects a line and the status line comments on it.
+    // Back to b.ts, then the diff, Viewed untouched.
+    await keys(page, "Backspace");
+    await headingsAre(page, ["walk/b.ts"]);
     await keys(page, "Backspace");
     await headingsAre(page, ["walk/b.ts", "walk/a.ts"]);
+    await says(page, "0/3 hunks viewed in 2 files");
+    // Back in the diff, Mouse mode's hover + selects a line and the status line comments on it.
     await page
       .getByRole("radiogroup", { name: "Input mode" })
       .getByRole("radio", { name: "Mouse" })
@@ -4675,12 +4736,145 @@ describe("installed gyst in a sandboxed browser", () => {
       "p1",
     );
     expect(
-      bundle.threads.map(({ anchor, code }: any) => [anchor.path, anchor.startLine, code.lines]),
+      bundle.threads.map(({ anchor, code, messages }: any) => [
+        anchor.path,
+        anchor.startLine,
+        code.lines,
+        messages.length,
+      ]),
     ).toEqual([
-      ["src/long.ts", 40, ["export const line40 = 40;"]],
-      ["walk/a.ts", 19, ["export const a19 = 19;"]],
+      ["src/long.ts", 40, ["export const line40 = 40;"], 2],
+      ["walk/a.ts", 19, ["export const a19 = 19;"], 1],
     ]);
     expect(bundle.progress).toEqual({ viewed: 0, total: 5 });
+    expect(writes).toEqual([]);
+  }, 60_000);
+
+  it("walks threads sharing a range one by one, closes one with Esc, replies from Comments in place, peeks a reply's link and rereads after a failed read", async () => {
+    const walk = await openWalk();
+    await publishWalk(walk);
+    const page = await newPage(context, { problems: ["requestfailed /api/operation"] });
+    await page.setViewportSize({ width: 1280, height: 1200 });
+    const writes = viewedOf(page);
+    // Armed later: the next conversations read fails as if the connection dropped.
+    let failRead = false;
+    let failed = 0;
+    await page.route(isOperationUrl, async (route) => {
+      if (!failRead || route.request().postDataJSON()?.command !== "conversations")
+        return route.fallback();
+      failRead = false;
+      failed++;
+      await route.abort();
+    });
+    await page.goto(`${one.origin}/session/${walk.id}`);
+    const pane = page.getByRole("main");
+    await page
+      .getByRole("navigation", { name: "gyst" })
+      .getByRole("button", { name: /^Parse the config/ })
+      .click();
+    await headingsAre(page, ["walk/b.ts", "walk/a.ts"]);
+    await page.getByRole("radio", { name: "Split", exact: true }).check();
+    await keys(page, "]", "n", "]", "n", "k");
+    await says(page, "a.ts:19 · new");
+    const say = async (text: string) => {
+      const before = await pane.locator("[data-thread]").count();
+      await keys(page, "c");
+      const field = pane.locator("[data-composer]").getByRole("textbox", { name: "Comment" });
+      await field.fill(text);
+      await field.press("Enter");
+      await waitFor(
+        async () => (await pane.locator("[data-thread]").count()) === before + 1,
+        `the thread ${text}`,
+      );
+    };
+    // Two threads share line 19; a third is on line 20.
+    await say("First?");
+    await say("Second?");
+    await keys(page, "j");
+    await say("Third?");
+    // The agent answers the first with a link; that conversations read fails once, and the
+    // viewer reads again instead of staying stale.
+    const picked = await gyst(
+      "session",
+      "threads",
+      "--session",
+      walk.id,
+      "--pending",
+      "--request-id",
+      "p1",
+    );
+    const idOf = (text: string): string =>
+      picked.threads.find(({ messages }: any) => messages[0].markdown === text).id;
+    const threadOf = (text: string) => pane.locator(`[data-thread="${idOf(text)}"]`);
+    const first = idOf("First?");
+    failRead = true;
+    await walk.publish(picked.revision, "answer", [
+      {
+        type: "thread.reply",
+        thread: first,
+        markdown: "It is like [line 40](gyst:new/src/long.ts#L40-L44).",
+      },
+    ]);
+    await waitFor(() => failed === 1, "the failed conversations read");
+    await pane.locator("[data-thread]").getByText("2 messages").waitFor();
+    await says(page, "Live");
+
+    // ]t steps through both threads on line 19 before line 20; Enter opens the one reached.
+    const expanded = async () =>
+      (
+        await pane
+          .locator("[data-thread]")
+          .evaluateAll((threads) =>
+            threads
+              .filter((thread) => thread.querySelector("button[aria-expanded=true]"))
+              .map((thread) => thread.getAttribute("data-thread")),
+          )
+      ).map((id) => picked.threads.find((thread: any) => thread.id === id)?.messages[0].markdown);
+    await keys(page, "g", "g", "]", "t", "Enter");
+    await says(page, "a.ts:19 · new");
+    await waitFor(async () => (await expanded()).join() === "First?", "the first thread open");
+    await keys(page, "]", "t", "Enter");
+    await says(page, "a.ts:19 · new");
+    await waitFor(async () => (await expanded()).join() === "Second?", "the second thread open");
+    await keys(page, "]", "t");
+    await says(page, "a.ts:20 · new");
+    await keys(page, "[", "t", "r");
+    const second = threadOf("Second?");
+    await second.locator("[data-composer]").getByRole("textbox", { name: "Reply" }).waitFor();
+    // Esc closes the composer, keeping its draft, then the conversation; never the file.
+    await keys(page, "Escape");
+    await second.locator("[data-composer]").waitFor({ state: "detached" });
+    await waitFor(async () => (await expanded()).join() === "Second?", "the second still open");
+    await keys(page, "Escape");
+    await waitFor(async () => (await expanded()).length === 0, "the conversation closed");
+    await headingsAre(page, ["walk/b.ts", "walk/a.ts"]);
+    await pane.getByText("export const a19 = 19;", { exact: true }).last().waitFor();
+
+    // The agent's link peeks beside its thread rather than replacing the panel.
+    await threadOf("First?")
+      .getByRole("button", { name: /^Thread/ })
+      .click();
+    await threadOf("First?").getByRole("button", { name: "line 40" }).click();
+    const peek = peekOf(page);
+    await peek.getByText("export const line40 = 40;").waitFor();
+    await headingsAre(page, ["walk/b.ts", "walk/a.ts"]);
+    await keys(page, "Escape");
+    await peek.waitFor({ state: "detached" });
+
+    // Reply from Comments to a thread the panel shows writes it there, Comments closed.
+    await keys(page, "Shift+C");
+    const comments = page.getByRole("dialog", { name: "Comments" });
+    const third = comments.locator("[data-thread]").filter({ hasText: /a\.ts:L20/ });
+    await third.getByRole("button", { name: /a\.ts:L20/ }).click();
+    await third.getByRole("button", { name: "Reply" }).click();
+    await comments.waitFor({ state: "detached" });
+    const inPlace = threadOf("Third?").locator("[data-composer]").getByRole("textbox", {
+      name: "Reply",
+    });
+    await inPlace.waitFor();
+    await inPlace.fill("Also twenty?");
+    await inPlace.press("Enter");
+    await threadOf("Third?").getByText("Also twenty?").waitFor();
     expect(writes).toEqual([]);
   }, 60_000);
 

@@ -58,6 +58,7 @@ import {
 import { AuthorEntry, CommitsCard, DescriptionCard, useRangeCommits } from "../author.tsx";
 import { CommandMenu, KeyHelp } from "../commands.tsx";
 import {
+  commentDraftOn,
   draftChange,
   draftPlace,
   forgetDraftText,
@@ -66,7 +67,13 @@ import {
   type ThreadPlace,
   threadPlaces,
 } from "../conversation.ts";
-import { Composer, CommentsList, ThreadCard, useConversations } from "../conversation.tsx";
+import {
+  type Act,
+  Composer,
+  CommentsList,
+  ThreadCard,
+  useConversations,
+} from "../conversation.tsx";
 import {
   AllSessionsLink,
   Crumb,
@@ -582,7 +589,11 @@ function SessionReader(props: {
     authorShown && session.scope.kind === "range",
     recalled?.author.commits,
   );
-  const conversations = useConversations(session.id, live.state.known?.conversations);
+  const conversations = useConversations(session.id, {
+    announced: live.state.known?.conversations,
+    generation: live.state.generation,
+    lost: live.lost,
+  });
   // One conversation is open at a time, and one composer, shown only once asked for.
   const [expandedThread, setExpandedThread] = useState<string>();
   const [activeDraft, setActiveDraft] = useState<string>();
@@ -692,9 +703,18 @@ function SessionReader(props: {
     () => annotationsOf(inView, notes, status),
     [inView, notes, status],
   );
-  // A peek under a note reserves its row after the note; one asked on a code line, under that line.
-  const peekNote =
-    peek?.kind === "reference" && peek.origin.kind === "note" ? peek.origin.noteId : undefined;
+  // Threads read where their code is shown: an expanded earlier file shows its own snapshot's.
+  const codeSnapshot = captured?.snapshotId ?? snapshotId;
+  const allNotes = useMemo(() => notesById(status), [status]);
+  const threadsShown = useMemo(
+    () => threadPlaces(conversations.threads, shownPaths, codeSnapshot, notes, allNotes),
+    [conversations.threads, shownPaths, codeSnapshot, notes, allNotes],
+  );
+  // A peek under a note or thread reserves its row after it; one asked on a code line, under that
+  // line.
+  const peekOrigin = peek?.kind === "reference" ? peek.origin : undefined;
+  const peekNote = peekOrigin?.kind === "note" ? peekOrigin.noteId : undefined;
+  const peekThread = peekOrigin?.kind === "thread" ? peekOrigin.threadId : undefined;
   const peekLine = peek?.kind === "semantic" ? peek.origin : undefined;
   const [lineFile, lineSide, lineNumber] = [peekLine?.file, peekLine?.side, peekLine?.line];
   const peekPlace = useMemo((): { file: string; side: Side; line: number } | undefined => {
@@ -704,15 +724,11 @@ function SessionReader(props: {
         side: lineSide === "old" ? "deletions" : "additions",
         line: lineNumber,
       };
-    return peekNote === undefined ? undefined : notes.find(({ note }) => note.id === peekNote);
-  }, [lineFile, lineSide, lineNumber, peekNote, notes]);
-  // Threads read where their code is shown: an expanded earlier file shows its own snapshot's.
-  const codeSnapshot = captured?.snapshotId ?? snapshotId;
-  const allNotes = useMemo(() => notesById(status), [status]);
-  const threadsShown = useMemo(
-    () => threadPlaces(conversations.threads, shownPaths, codeSnapshot, notes, allNotes),
-    [conversations.threads, shownPaths, codeSnapshot, notes, allNotes],
-  );
+    if (peekNote !== undefined) return notes.find(({ note }) => note.id === peekNote);
+    return peekThread === undefined
+      ? undefined
+      : threadsShown.find(({ thread }) => thread.id === peekThread);
+  }, [lineFile, lineSide, lineNumber, peekNote, peekThread, notes, threadsShown]);
   const draftNow = conversations.drafts.find(({ id }) => id === activeDraft);
   const draftAt = draftNow && draftPlace(draftNow, shownPaths, codeSnapshot);
   // Rebuilt only when what sits where changes, so a reread keeps the renderer's items and the
@@ -750,6 +766,8 @@ function SessionReader(props: {
   const lastNote = useRef<number>(undefined);
   // The note `]n`/`[n` last put the Vim cursor on: notes can share a line, which the cursor can't.
   const cursorNote = useRef<string>(undefined);
+  // The thread last chosen at the Vim cursor: threads can share a range, which the cursor can't.
+  const cursorThread = useRef<string>(undefined);
   const layout = layoutOf(mode, width);
 
   // The metadata each file shows, and the one place its full contents are kept: its partial
@@ -1545,6 +1563,10 @@ function SessionReader(props: {
                 note={note}
                 read={() => readOnce(note.anchor)}
                 onReference={(target) => follow(target, { kind: "overview" })}
+                onReply={() => {
+                  setDialog("comments");
+                  replyTo({ note: note.id });
+                }}
               />
             ))}
           </section>
@@ -1631,8 +1653,9 @@ function SessionReader(props: {
 
   // ─── conversations ───
   /**
-   * The thread a command acts on: in Vim mode one at the cursor's line, the open one first; in
-   * Mouse mode, which has no cursor, the open one.
+   * The thread a command acts on: in Vim mode one at the cursor's line, the one last chosen there
+   * (by `]t`/`[t` or opening it) first, then the open one; in Mouse mode, which has no cursor, the
+   * open one.
    */
   const threadAt = (target: Cursor | undefined): ThreadPlace | undefined => {
     if (!vim) return threadsShown.find(({ thread }) => thread.id === expandedThread);
@@ -1641,7 +1664,11 @@ function SessionReader(props: {
     const onLine = threadsShown.filter(
       (at) => at.fileIndex === from.fileIndex && at.side === from.side && at.line === from.line,
     );
-    return onLine.find(({ thread }) => thread.id === expandedThread) ?? onLine[0];
+    return (
+      onLine.find(({ thread }) => thread.id === cursorThread.current) ??
+      onLine.find(({ thread }) => thread.id === expandedThread) ??
+      onLine[0]
+    );
   };
   const conversationOf = (id: string) => conversations.threads.find((thread) => thread.id === id);
   const sayFailure = (what: string, error: unknown) => {
@@ -1652,10 +1679,7 @@ function SessionReader(props: {
   };
   /** Pins what a message is composed against, then opens its composer; a lost link pins nothing. */
   const startDraft = async (
-    target:
-      | { kind: "comment"; anchor: CapturedRange }
-      | { kind: "thread"; thread: string }
-      | { kind: "note"; note: string },
+    target: Extract<Parameters<Act>[0], { command: "draft" }>["target"],
     wording: string | undefined,
   ) => {
     if (live.state.phase !== "live")
@@ -1688,29 +1712,16 @@ function SessionReader(props: {
     if (!shownWhole && range.endSide !== undefined && range.endSide !== range.side)
       return setNotice("A comment covers lines of one side; select them on one side.");
     const side = shownWhole ? captured.side : range.side === "deletions" ? "old" : "new";
-    const existing = conversations.drafts.find(
-      ({ anchor, thread, note }) =>
-        thread === undefined &&
-        note === undefined &&
-        anchor.path === picked.id &&
-        anchor.side === side &&
-        anchor.startLine === Math.min(range.start, range.end) &&
-        anchor.endLine === Math.max(range.start, range.end),
-    );
+    const anchor: CapturedRange = {
+      snapshotId: shownWhole ? captured.snapshotId : snapshotId,
+      path: picked.id,
+      side,
+      startLine: Math.min(range.start, range.end),
+      endLine: Math.max(range.start, range.end),
+    };
+    const existing = commentDraftOn(conversations.drafts, anchor);
     if (existing) return setActiveDraft(existing.id);
-    void startDraft(
-      {
-        kind: "comment",
-        anchor: {
-          snapshotId: shownWhole ? captured.snapshotId : snapshotId,
-          path: picked.id,
-          side,
-          startLine: Math.min(range.start, range.end),
-          endLine: Math.max(range.start, range.end),
-        },
-      },
-      undefined,
-    );
+    void startDraft({ kind: "comment", anchor }, undefined);
   };
   /** A reply in a thread, or to a note, which starts its only thread; a kept draft is resumed. */
   const replyTo = (target: { thread: string } | { note: string }) => {
@@ -1783,6 +1794,7 @@ function SessionReader(props: {
       if (at === undefined) return;
       if (folded.has(at.file)) setFolds([at.file], false);
       if (at.note !== undefined) cursorNote.current = at.note;
+      cursorThread.current = at.thread.id;
       return go({ file: at.file, kind: "line", side: at.side, line: at.line });
     }
     const top = viewer.current?.visibleAt("top");
@@ -1796,9 +1808,14 @@ function SessionReader(props: {
       "top",
     );
   };
-  /** A thread where it is read, in the panel or in Comments, with its reply composer if open here. */
+  /**
+   * A thread where it is read, in the panel or in Comments, with its reply composer if open here.
+   * In the panel its links peek beside it; Comments, a dialog, expands them instead. A reply to a
+   * thread the panel shows is written there, so Comments closes for it (`onShow`).
+   */
   const threadCard = (thread: Thread, located: boolean, composer: boolean, onShow?: () => void) => {
     const draft = composer && draftNow?.thread === thread.id ? draftNow : undefined;
+    const shownHere = located && placedThreads.has(thread.id) ? onShow : undefined;
     return (
       <ThreadCard
         key={thread.id}
@@ -1808,16 +1825,28 @@ function SessionReader(props: {
         located={located}
         expanded={expandedThread === thread.id || draft !== undefined}
         onToggle={() => {
+          cursorThread.current = thread.id;
           if (expandedThread === thread.id) return setExpandedThread(undefined);
           setExpandedThread(thread.id);
           if (draftNow && draftNow.thread !== thread.id) setActiveDraft(undefined);
         }}
-        onReply={() => replyTo({ thread: thread.id })}
+        onReply={() => {
+          shownHere?.();
+          replyTo({ thread: thread.id });
+        }}
         onResolve={() => void setResolved(thread.id, !thread.resolved)}
         act={conversations.act}
-        onReference={expand}
+        onReference={
+          located ? expand : (target) => follow(target, { kind: "thread", threadId: thread.id })
+        }
+        refocus={
+          !located && refocus?.origin.kind === "thread" && refocus.origin.threadId === thread.id
+            ? refocus.target
+            : undefined
+        }
+        readCode={() => readOnce(thread.anchor)}
         composer={draft && composerOf(draft)}
-        onShow={located && placedThreads.has(thread.id) ? onShow : undefined}
+        onShow={shownHere}
       />
     );
   };
@@ -1941,11 +1970,12 @@ function SessionReader(props: {
       return setFolds(model.files, fold, fold && here ? { ...here, kind: "header" } : undefined);
     }
     // Esc closes the composer first, keeping its draft, then ends a selection, then clears the
-    // search highlight, then closes the peek.
+    // search highlight, then closes the peek, then the open conversation.
     if (id === "cancel") {
       if (activeDraft !== undefined) return setActiveDraft(undefined);
       if (lines !== null) return setLines(null);
-      return searchShown ? closeSearch() : closePeek();
+      if (searchShown) return closeSearch();
+      return peek !== undefined ? closePeek() : setExpandedThread(undefined);
     }
     if (!vim) {
       // Mouse mode: movement scrolls; folds and Viewed act on the file at the top of the panel.

@@ -145,7 +145,10 @@ const nav = stylex.create({
 });
 
 /** Focuses the reference to `refocus` inside `slot` whenever it is set: a closed peek's origin. */
-function useRefocus(slot: RefObject<HTMLElement | null>, refocus: CapturedRange | undefined) {
+export function useRefocus(
+  slot: RefObject<HTMLElement | null>,
+  refocus: CapturedRange | undefined,
+) {
   useEffect(() => {
     if (refocus === undefined) return;
     const title = CSS.escape(referenceLabel(refocus));
@@ -287,6 +290,8 @@ export function EarlierNoteCard(props: {
   note: StatusNote;
   read: () => Promise<RangeRead>;
   onReference: (target: CapturedRange) => void;
+  /** Replies to the note, starting its thread if it has none; its conversation is in Comments. */
+  onReply: () => void;
 }) {
   const { note } = props;
   const [shown, setShown] = useState(false);
@@ -315,6 +320,9 @@ export function EarlierNoteCard(props: {
           {shown ? "Hide the earlier code" : "Show the earlier code"}
         </button>
         {shown && <PeekPreview target={note.anchor} read={props.read} />}
+        <button type="button" onClick={props.onReply} {...stylex.props(noteStyles.reply)}>
+          Reply
+        </button>
       </div>
     </div>
   );
