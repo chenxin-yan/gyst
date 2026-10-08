@@ -1179,6 +1179,71 @@ describe("Git.capture Generated files", () => {
     );
   }, 60_000);
 
+  it("reads uncommitted attributes under a snapshot quota from the captured bytes, stored or left out, into a fresh content store", async () => {
+    const cwd = await repo("generated-quota");
+    await writeFile(join(cwd, ".gitattributes"), "tracked.txt linguist-generated=true\n");
+    git(cwd, "add", ".");
+    git(cwd, "commit", "-qm", "attributes");
+    await writeFile(join(cwd, "tracked.txt"), "changed\n");
+    const attributes = sha256("tracked.txt linguist-generated=true\n");
+    const quota = (
+      size: string,
+      spawner?: Layer.Layer<ChildProcessSpawner.ChildProcessSpawner>,
+    ) => {
+      const fresh = join(root, `generated-quota-data-${size.replace(" ", "")}`);
+      return run(
+        Effect.gen(function* () {
+          const manifest = yield* Git.use((g) => g.capture(cwd, { kind: "uncommitted" }));
+          yield* CapturedContent.use((c) => c.putManifest(manifest));
+          return {
+            manifest,
+            blobs: yield* Effect.promise(() => readdir(join(fresh, "content", "blobs"))),
+          };
+        }),
+        undefined,
+        spawner,
+        { GYST_DATA_DIR: fresh, GYST_SNAPSHOT_QUOTA: size },
+      );
+    };
+
+    const admitted = await quota("1 MiB");
+    expect(generatedOf(admitted.manifest)).toEqual(["tracked.txt"]);
+    expect(admitted.blobs).toContain(attributes);
+    // tracked.txt needs 12 bytes, so the attributes file is left out, yet still decides.
+    const omitted = await quota("12 B");
+    expect(generatedOf(omitted.manifest)).toEqual(["tracked.txt"]);
+    expect(fileOf(omitted.manifest, ".gitattributes")).toEqual({
+      path: ".gitattributes",
+      old: { kind: "unavailable", reason: "quota" },
+      new: { kind: "unavailable", reason: "quota" },
+    });
+    expect(omitted.blobs).not.toContain(attributes);
+
+    // Edited once measured (paths go in order, so on reading tracked.txt's old side), the
+    // attributes file fails the capture rather than deciding with other bytes.
+    const trackedOid = git(cwd, "rev-parse", "HEAD:tracked.txt").trim();
+    let edited = false;
+    const editing = Layer.effect(
+      ChildProcessSpawner.ChildProcessSpawner,
+      Effect.gen(function* () {
+        const live = yield* ChildProcessSpawner.ChildProcessSpawner;
+        return ChildProcessSpawner.make((command) =>
+          command._tag === "StandardCommand" && command.args.includes(trackedOid) && !edited
+            ? Effect.promise(async () => {
+                edited = true;
+                await writeFile(join(cwd, ".gitattributes"), "tracked.txt -linguist-generated\n");
+              }).pipe(Effect.andThen(live.spawn(command)))
+            : live.spawn(command),
+        );
+      }),
+    ).pipe(Layer.provide(NodeServices.layer));
+    await expect(quota("12 B", editing)).rejects.toMatchObject({
+      _tag: "bad_args",
+      detail: { path: ".gitattributes" },
+    });
+    expect(edited).toBe(true);
+  });
+
   it("reads a range's attributes from its commits, while uncommitted work reads the checkout's", async () => {
     const cwd = await repo("generated-range");
     await writeFile(join(cwd, ".gitattributes"), "gone.js linguist-vendored\n");
