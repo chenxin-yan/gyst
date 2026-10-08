@@ -46,6 +46,12 @@ export const ManifestFileSchema = Schema.Struct({
    * never reviewed: both paths keep their captured sides and neither has hunks.
    */
   renamedFrom: Schema.optional(LogicalPathSchema),
+  /**
+   * Present only on a changed file that Git's attributes at capture mark `linguist-generated` or
+   * `linguist-vendored`: its new side's, or its old side's when it was deleted. A Generated file
+   * starts folded and is otherwise reviewed like any other.
+   */
+  generated: Schema.optional(Schema.Literal(true)),
 }).check(
   Schema.makeFilter(
     (file) =>
