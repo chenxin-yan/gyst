@@ -196,9 +196,12 @@ export function useSemanticNavigation(props: {
   return { ask, checkAgain, retry, choose, select };
 }
 
-/** The key that remounts a semantic peek, so focus moves in afresh: every change but selection. */
+/**
+ * The key that remounts a semantic peek, so focus moves in and the peek is revealed afresh: every
+ * change but a selection, or a waiting peek's readiness, which would undo the reader's scrolling.
+ */
 export const semanticKey = ({ origin, stage }: SemanticPeek) =>
-  JSON.stringify({ origin, stage: { ...stage, selected: undefined } });
+  JSON.stringify({ origin, stage: { ...stage, selected: undefined, readiness: undefined } });
 
 const sideNames = (origin: LineOrigin, snapshotId: string) =>
   `${origin.side} side · snapshot ${origin.snapshotId.slice(0, 7)}${origin.snapshotId === snapshotId ? "" : " (earlier)"}`;
