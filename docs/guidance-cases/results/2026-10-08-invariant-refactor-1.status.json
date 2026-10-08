@@ -1,0 +1,193 @@
+{
+  "session": {
+    "id": "0058665e-72cd-408d-93d7-d6677f662fda",
+    "repoRoot": "/tmp/gyst-98b-cases/invariant-refactor",
+    "scope": { "kind": "range", "range": "main...feature" },
+    "snapshotId": "7efc9c5a01d97079b3baf8ec58a59f7585b318bb7c3ce47d5ddcb13e84332303",
+    "createdAt": "2026-10-08T23:28:39.673Z",
+    "updatedAt": "2026-10-08T23:39:37.574Z"
+  },
+  "revision": 2,
+  "overview": {
+    "markdown": "A refactor of `LruCache` in `src/lru.ts`. Before, it kept values in a `#values` Map and recency in a separate `#order` array, so every `get`, replace and `delete` searched and spliced the array: O(n) per use. Now one `#entries` Map holds both, because a `Map` iterates in insertion order: deleting and reinserting a key on use moves it to the end, and the first key is always the next eviction.\n\n**Invariant to check:** the `#entries` iteration order is exactly the old `#order` array, least to most recently used, after every public operation. If it holds, `keys()`, `size` and the choice of eviction victim are unchanged. The public API is unchanged, and [`memoize`](gyst:new/src/memo.ts#L12-L21) is untouched.\n\n| Step | Before | After |\n| --- | --- | --- |\n| Use (`get`, replace) | `#values.set` + splice `#order` + push | `#use`: delete + set on `#entries` |\n| Evict | `#order.shift()` + `#values.delete` | first entry of `#entries`, deleted |\n| `delete` | `#values.delete` + splice `#order` | `#entries.delete` |\n\nOne observable difference: a `NaN` key. The old array lookup used `indexOf` (`===`), which never finds `NaN`, while a `Map` matches it; see the note on the removed `#touch`. String-keyed `memoize` cannot produce a `NaN` key.\n\nRead in two steps:\n\n1. **One Map holds values and recency**: the new field and the read paths.\n2. **Write paths and eviction on the single Map**: `set`, `delete`, eviction, and the two tests that pin delete and eviction order.\n\nVerification run on the snapshot's commits: `node --test` on `feature` passes 9 of 9; the `feature` test file run against `main`'s `src/lru.ts` also passes 9 of 9, so the new tests describe behavior the old code already had.",
+    "references": [
+      {
+        "snapshotId": "7efc9c5a01d97079b3baf8ec58a59f7585b318bb7c3ce47d5ddcb13e84332303",
+        "path": "src/memo.ts",
+        "side": "new",
+        "startLine": 12,
+        "endLine": 21
+      }
+    ]
+  },
+  "groups": [
+    {
+      "id": "single-map",
+      "title": "One Map holds values and recency",
+      "overview": {
+        "markdown": "Start at the [new field and its comment](gyst:new/src/lru.ts#L12-L16): it states the invariant the whole change relies on. Then the read methods: `size`, `has` and `peek` read the same Map and do not reorder it, so inspecting the cache still never changes what it evicts next. `get` is the one read that counts as a use, and moves its key to the end through [`#use`](gyst:new/src/lru.ts#L69-L72).",
+        "references": [
+          {
+            "snapshotId": "7efc9c5a01d97079b3baf8ec58a59f7585b318bb7c3ce47d5ddcb13e84332303",
+            "path": "src/lru.ts",
+            "side": "new",
+            "startLine": 12,
+            "endLine": 16
+          },
+          {
+            "snapshotId": "7efc9c5a01d97079b3baf8ec58a59f7585b318bb7c3ce47d5ddcb13e84332303",
+            "path": "src/lru.ts",
+            "side": "new",
+            "startLine": 69,
+            "endLine": 72
+          }
+        ]
+      },
+      "hunkIds": ["bee368c51382ab9e", "1759e064885c1957"],
+      "files": ["src/lru.ts"],
+      "notes": [
+        {
+          "id": "entries-invariant",
+          "anchor": {
+            "snapshotId": "7efc9c5a01d97079b3baf8ec58a59f7585b318bb7c3ce47d5ddcb13e84332303",
+            "path": "src/lru.ts",
+            "side": "new",
+            "startLine": 12,
+            "endLine": 16
+          },
+          "markdown": "`Map.prototype.set` on an existing key keeps its original position, so moving a key to the most-recent end needs the delete before the set. Before, the keys of `#values` and the contents of `#order` had to agree; now there is only one structure, so they cannot drift apart.",
+          "references": []
+        },
+        {
+          "id": "get-reads-before-use",
+          "anchor": {
+            "snapshotId": "7efc9c5a01d97079b3baf8ec58a59f7585b318bb7c3ce47d5ddcb13e84332303",
+            "path": "src/lru.ts",
+            "side": "new",
+            "startLine": 39,
+            "endLine": 44
+          },
+          "markdown": "The value is read before `#use` because `#use` reinserts it. The `!` is only a type assertion: the `has` guard has already settled presence, so a stored `undefined` value is still returned as `undefined`, as before.",
+          "references": []
+        }
+      ],
+      "count": 2
+    },
+    {
+      "id": "write-paths",
+      "title": "Write paths and eviction on the single Map",
+      "overview": {
+        "markdown": "Read [`set`](gyst:new/src/lru.ts#L50-L57) first, then the two private helpers it calls, `#use` and `#evictOldest`, and compare them with the [old `set`](gyst:old/src/lru.ts#L47-L61). The order of effects is unchanged: a replaced key moves to the end without evicting; a new key at capacity first removes the oldest entry, then reports it, then inserts. The two new tests pin the parts of that order a rewrite could most easily break.\n\nFor example, with capacity 2 holding `a`, `b`: `set(\"c\")` evicts `a`, and the listener sees `keys()` as `[\"b\"]`, without `a` and before `c` is added.",
+        "references": [
+          {
+            "snapshotId": "7efc9c5a01d97079b3baf8ec58a59f7585b318bb7c3ce47d5ddcb13e84332303",
+            "path": "src/lru.ts",
+            "side": "new",
+            "startLine": 50,
+            "endLine": 57
+          },
+          {
+            "snapshotId": "7efc9c5a01d97079b3baf8ec58a59f7585b318bb7c3ce47d5ddcb13e84332303",
+            "path": "src/lru.ts",
+            "side": "old",
+            "startLine": 47,
+            "endLine": 61
+          }
+        ]
+      },
+      "hunkIds": ["02511a2a4a2c2e64", "eaa8dc7dd500ce5b"],
+      "files": ["src/lru.ts", "test/lru.test.ts"],
+      "notes": [
+        {
+          "id": "touch-nan",
+          "anchor": {
+            "snapshotId": "7efc9c5a01d97079b3baf8ec58a59f7585b318bb7c3ce47d5ddcb13e84332303",
+            "path": "src/lru.ts",
+            "side": "old",
+            "startLine": 75,
+            "endLine": 78
+          },
+          "markdown": "Removed code had an edge case: `indexOf` uses `===`, so for a `NaN` key it returned `-1`, and `splice(-1, 1)` removed the *last* key instead. `Map` uses SameValueZero, so the new code handles `NaN`. This changes observable behavior for `NaN` keys only. Ran a script on both commits: with capacity 3, `set(\"a\")`, `set(NaN)`, `set(\"b\")`, `get(NaN)` leaves `keys()` as `[\"a\", NaN, NaN]` on `main` and `[\"a\", \"b\", NaN]` on `feature`. No test covers this.",
+          "references": []
+        },
+        {
+          "id": "set-paths",
+          "anchor": {
+            "snapshotId": "7efc9c5a01d97079b3baf8ec58a59f7585b318bb7c3ce47d5ddcb13e84332303",
+            "path": "src/lru.ts",
+            "side": "new",
+            "startLine": 51,
+            "endLine": 56
+          },
+          "markdown": "Replacing goes through `#use`, which deletes and reinserts with the new value: the same result as the old `#values.set` plus `#touch`. A new key is a plain `set`, which appends it at the most recent end.",
+          "references": []
+        },
+        {
+          "id": "delete-single-call",
+          "anchor": {
+            "snapshotId": "7efc9c5a01d97079b3baf8ec58a59f7585b318bb7c3ce47d5ddcb13e84332303",
+            "path": "src/lru.ts",
+            "side": "new",
+            "startLine": 60,
+            "endLine": 62
+          },
+          "markdown": "`Map.prototype.delete` already returns whether the key was present, so the return value matches the old version, and there is no second structure to splice.",
+          "references": []
+        },
+        {
+          "id": "evict-oldest",
+          "anchor": {
+            "snapshotId": "7efc9c5a01d97079b3baf8ec58a59f7585b318bb7c3ce47d5ddcb13e84332303",
+            "path": "src/lru.ts",
+            "side": "new",
+            "startLine": 74,
+            "endLine": 78
+          },
+          "markdown": "The first entry of the iterator is the least recently used one. The `!` on `.value` is safe because the only caller runs it when `size === capacity`, and the constructor requires `capacity >= 1`, so the Map is never empty here. Deleting before calling `#onEvict` keeps the old order of effects.",
+          "references": []
+        },
+        {
+          "id": "test-delete-frees-slot",
+          "anchor": {
+            "snapshotId": "7efc9c5a01d97079b3baf8ec58a59f7585b318bb7c3ce47d5ddcb13e84332303",
+            "path": "test/lru.test.ts",
+            "side": "new",
+            "startLine": 53,
+            "endLine": 59
+          },
+          "markdown": "Pins that `delete` frees capacity: `size` now comes from the Map, so the next new key fits without evicting.",
+          "references": []
+        },
+        {
+          "id": "test-evict-order",
+          "anchor": {
+            "snapshotId": "7efc9c5a01d97079b3baf8ec58a59f7585b318bb7c3ce47d5ddcb13e84332303",
+            "path": "test/lru.test.ts",
+            "side": "new",
+            "startLine": 61,
+            "endLine": 68
+          },
+          "markdown": "The listener records `keys()` when it is called, so `[[\"b\"]]` proves the victim is already gone and the new key is not yet added. Ran `node --test`: this test passes on `feature`, and also against `main`'s implementation.",
+          "references": []
+        }
+      ],
+      "count": 2
+    }
+  ],
+  "preparation": {
+    "state": "complete",
+    "groupedHunks": 4,
+    "totalHunks": 4,
+    "overviewMissing": false,
+    "groupsMissingOverview": [],
+    "overviewOutdated": false,
+    "groupsOutdated": [],
+    "notesOutdated": []
+  },
+  "viewedHunkIds": [],
+  "threads": { "open": 0, "resolved": 0, "pending": 0 },
+  "files": [
+    { "path": "src/lru.ts", "hunkCount": 3, "viewed": false },
+    { "path": "test/lru.test.ts", "hunkCount": 1, "viewed": false }
+  ]
+}

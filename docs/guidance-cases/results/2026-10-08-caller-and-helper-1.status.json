@@ -1,0 +1,217 @@
+{
+  "session": {
+    "id": "9dfa99bb-09a3-4c4c-a6c6-91d06f2ff407",
+    "repoRoot": "/tmp/gyst-98b-cases/caller-and-helper",
+    "scope": { "kind": "range", "range": "main...feature" },
+    "snapshotId": "887692e57e34792c23d5776ab0b60bd3478b0e72307449821216c643e49cde7c",
+    "createdAt": "2026-10-08T23:39:55.158Z",
+    "updatedAt": "2026-10-08T23:41:20.961Z"
+  },
+  "revision": 2,
+  "overview": {
+    "markdown": "`AccountStore` already keys accounts by identity: [`save`](gyst:new/src/accounts/store.ts#L14-L17) writes under `normalizeEmail(account.email)`, which lowercases, trims and folds Gmail dots, `+tags` and `googlemail.com` ([`normalizeEmail`](gyst:new/src/email.ts#L13-L35)). But [`findByKey`](gyst:new/src/accounts/store.ts#L19-L26) does not normalize, and before this change both entry points passed it the raw address. So the write and the lookup used different keys. This change makes `signUp` and `logIn` normalize before they look up. `store.ts` and `email.ts` are unchanged.\n\n| Call | Before | After |\n| --- | --- | --- |\n| `signUp` twice with `Ada@example.com` | second call succeeds and **replaces** the first account under key `ada@example.com` | second call throws `DuplicateAccount` |\n| `logIn(\" adalovelace+work@GMAIL.com\", …)` for an account created as `Ada.Lovelace@gmail.com` | `unknown-account` | `ok` |\n| `logIn(\"ada\", …)` (not an address) | `unknown-account` | `unknown-account` (unchanged) |\n\nRead it in two groups:\n\n1. **Check duplicates by identity key at sign-up**: the one-line fix and its tests.\n2. **Look up logins by identity key**: the same fix in `logIn`, plus how it handles text that is not an address.\n\nEvidence: ran `node --test` on the `feature` commit (`e1f93c1`, the snapshot's new side): 12 tests pass. With this change's `test/accounts.test.ts` run against `main`'s source, the two spelling tests fail and the other six pass. A probe on `main` signing up `Ada@example.com` twice left one account, the second one, which is the replacement in the first row.",
+    "references": [
+      {
+        "snapshotId": "887692e57e34792c23d5776ab0b60bd3478b0e72307449821216c643e49cde7c",
+        "path": "src/accounts/store.ts",
+        "side": "new",
+        "startLine": 14,
+        "endLine": 17
+      },
+      {
+        "snapshotId": "887692e57e34792c23d5776ab0b60bd3478b0e72307449821216c643e49cde7c",
+        "path": "src/email.ts",
+        "side": "new",
+        "startLine": 13,
+        "endLine": 35
+      },
+      {
+        "snapshotId": "887692e57e34792c23d5776ab0b60bd3478b0e72307449821216c643e49cde7c",
+        "path": "src/accounts/store.ts",
+        "side": "new",
+        "startLine": 19,
+        "endLine": 26
+      }
+    ]
+  },
+  "groups": [
+    {
+      "id": "signup-identity-key",
+      "title": "Check duplicates by identity key at sign-up",
+      "overview": {
+        "markdown": "The fix is one line in [`signUp`](gyst:new/src/accounts/signup.ts#L17-L30): the duplicate check now looks up `normalizeEmail(input.email)`, the same key `store.save` writes under, so the check and the write agree. What is stored is unchanged: `email` stays as typed, only trimmed, and mail still goes there.\n\nRead `signup.ts`, then the two new `signUp` tests; the test-file import feeds the second one.",
+        "references": [
+          {
+            "snapshotId": "887692e57e34792c23d5776ab0b60bd3478b0e72307449821216c643e49cde7c",
+            "path": "src/accounts/signup.ts",
+            "side": "new",
+            "startLine": 17,
+            "endLine": 30
+          }
+        ]
+      },
+      "hunkIds": ["7f981d034ebc0262", "32ba8ba9d46708dc", "4934c960ca6bb5a3", "0b0ba7baef435662"],
+      "files": ["src/accounts/signup.ts", "test/accounts.test.ts"],
+      "notes": [
+        {
+          "id": "signup-invalid-order",
+          "anchor": {
+            "snapshotId": "887692e57e34792c23d5776ab0b60bd3478b0e72307449821216c643e49cde7c",
+            "path": "src/accounts/signup.ts",
+            "side": "new",
+            "startLine": 17,
+            "endLine": 20
+          },
+          "markdown": "Invalid input threw `InvalidEmail` before this change too, but from `store.save`, after `newId()` and `hashPassword` had run. It now throws from the lookup, before either of them. The doc comment makes that exception part of the contract.",
+          "references": []
+        },
+        {
+          "id": "signup-lookup-key",
+          "anchor": {
+            "snapshotId": "887692e57e34792c23d5776ab0b60bd3478b0e72307449821216c643e49cde7c",
+            "path": "src/accounts/signup.ts",
+            "side": "new",
+            "startLine": 22,
+            "endLine": 22
+          },
+          "markdown": "Before, a lookup with a raw address missed an existing account whenever the input was not already in normal form. `save` then [replaced](gyst:new/src/accounts/store.ts#L14-L17) that account under the same key, so a second sign-up took over the first account with a new password. `DuplicateAccount` still quotes the input as typed, not the key.",
+          "references": [
+            {
+              "snapshotId": "887692e57e34792c23d5776ab0b60bd3478b0e72307449821216c643e49cde7c",
+              "path": "src/accounts/store.ts",
+              "side": "new",
+              "startLine": 14,
+              "endLine": 17
+            }
+          ]
+        },
+        {
+          "id": "signup-spelling-test",
+          "anchor": {
+            "snapshotId": "887692e57e34792c23d5776ab0b60bd3478b0e72307449821216c643e49cde7c",
+            "path": "test/accounts.test.ts",
+            "side": "new",
+            "startLine": 33,
+            "endLine": 39
+          },
+          "markdown": "Covers both kinds of folding, case and Gmail dots, tags and domain. The last assertion checks that the first account survived, which is the takeover the old code allowed. Fails against `main`'s source, passes on `feature` (both runs executed).",
+          "references": []
+        },
+        {
+          "id": "signup-invalid-test",
+          "anchor": {
+            "snapshotId": "887692e57e34792c23d5776ab0b60bd3478b0e72307449821216c643e49cde7c",
+            "path": "test/accounts.test.ts",
+            "side": "new",
+            "startLine": 41,
+            "endLine": 45
+          },
+          "markdown": "Pins behavior that already held on `main`, where this test also passes. It does not tell you whether the throw happened before or after hashing.",
+          "references": []
+        }
+      ],
+      "count": 4
+    },
+    {
+      "id": "login-identity-key",
+      "title": "Look up logins by identity key",
+      "overview": {
+        "markdown": "[`logIn`](gyst:new/src/accounts/login.ts#L9-L15) normalizes the same way, but a login form accepts any text. So the new private helper [`identityKey`](gyst:new/src/accounts/login.ts#L17-L25) turns `InvalidEmail` into \"no key\", and `logIn` reports `unknown-account` rather than throwing. Sign-up still lets `InvalidEmail` propagate. `LoginResult` is unchanged.\n\nRead `logIn`, then `identityKey`, then the two new `logIn` tests.",
+        "references": [
+          {
+            "snapshotId": "887692e57e34792c23d5776ab0b60bd3478b0e72307449821216c643e49cde7c",
+            "path": "src/accounts/login.ts",
+            "side": "new",
+            "startLine": 9,
+            "endLine": 15
+          },
+          {
+            "snapshotId": "887692e57e34792c23d5776ab0b60bd3478b0e72307449821216c643e49cde7c",
+            "path": "src/accounts/login.ts",
+            "side": "new",
+            "startLine": 17,
+            "endLine": 25
+          }
+        ]
+      },
+      "hunkIds": ["d90da84e542ac8d2", "b975c5d4e480c61e", "d1414f39880ce34f"],
+      "files": ["src/accounts/login.ts", "test/accounts.test.ts"],
+      "notes": [
+        {
+          "id": "login-no-key",
+          "anchor": {
+            "snapshotId": "887692e57e34792c23d5776ab0b60bd3478b0e72307449821216c643e49cde7c",
+            "path": "src/accounts/login.ts",
+            "side": "new",
+            "startLine": 10,
+            "endLine": 12
+          },
+          "markdown": "With no key there is no store lookup, and the result goes through the existing `unknown-account` branch. That matches what `main` returned for such input: the raw lookup simply found nothing.",
+          "references": []
+        },
+        {
+          "id": "login-identity-key-helper",
+          "anchor": {
+            "snapshotId": "887692e57e34792c23d5776ab0b60bd3478b0e72307449821216c643e49cde7c",
+            "path": "src/accounts/login.ts",
+            "side": "new",
+            "startLine": 18,
+            "endLine": 25
+          },
+          "markdown": "Only `InvalidEmail` is swallowed; anything else is rethrown. As captured, [`normalizeEmail`](gyst:new/src/email.ts#L22-L35) throws nothing but `InvalidEmail`, so the rethrow covers only unexpected errors.",
+          "references": [
+            {
+              "snapshotId": "887692e57e34792c23d5776ab0b60bd3478b0e72307449821216c643e49cde7c",
+              "path": "src/email.ts",
+              "side": "new",
+              "startLine": 22,
+              "endLine": 35
+            }
+          ]
+        },
+        {
+          "id": "login-spelling-test",
+          "anchor": {
+            "snapshotId": "887692e57e34792c23d5776ab0b60bd3478b0e72307449821216c643e49cde7c",
+            "path": "test/accounts.test.ts",
+            "side": "new",
+            "startLine": 68,
+            "endLine": 75
+          },
+          "markdown": "The login spelling differs from the sign-up spelling in whitespace, case, dots, a `+tag` and the domain's case. Fails against `main`'s source, passes on `feature` (both runs executed).",
+          "references": []
+        },
+        {
+          "id": "login-invalid-test",
+          "anchor": {
+            "snapshotId": "887692e57e34792c23d5776ab0b60bd3478b0e72307449821216c643e49cde7c",
+            "path": "test/accounts.test.ts",
+            "side": "new",
+            "startLine": 77,
+            "endLine": 83
+          },
+          "markdown": "Pins that `logIn` never throws for text that is not an address. It also passes on `main`, so this is a regression guard for the new `normalizeEmail` call, not a behavior change.",
+          "references": []
+        }
+      ],
+      "count": 3
+    }
+  ],
+  "preparation": {
+    "state": "complete",
+    "groupedHunks": 7,
+    "totalHunks": 7,
+    "overviewMissing": false,
+    "groupsMissingOverview": [],
+    "overviewOutdated": false,
+    "groupsOutdated": [],
+    "notesOutdated": []
+  },
+  "viewedHunkIds": [],
+  "threads": { "open": 0, "resolved": 0, "pending": 0 },
+  "files": [
+    { "path": "src/accounts/login.ts", "hunkCount": 2, "viewed": false },
+    { "path": "src/accounts/signup.ts", "hunkCount": 2, "viewed": false },
+    { "path": "test/accounts.test.ts", "hunkCount": 3, "viewed": false }
+  ]
+}
