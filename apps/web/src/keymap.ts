@@ -99,7 +99,11 @@ export const commands: readonly Command[] = [
     label: "Comment on the selected lines, or the line at the cursor",
   },
   { id: "reply", keys: [["R"]], label: "Reply to the thread or note at the cursor" },
-  { id: "resolve", keys: [["X"]], label: "Resolve or reopen the thread at the cursor" },
+  {
+    id: "resolve",
+    keys: [["X"]],
+    label: "Resolve the open thread at the cursor; reopen it from all comments",
+  },
   { id: "comments", keys: [["Shift+C"]], label: "All comments" },
   { id: "nextGroup", keys: [["Shift+J"]], label: "Next walkthrough group" },
   { id: "previousGroup", keys: [["Shift+K"]], label: "Previous walkthrough group" },
