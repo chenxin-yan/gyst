@@ -126,7 +126,7 @@ export const commands: readonly Command[] = [
   {
     id: "cancel",
     keys: [["Escape"]],
-    label: "Close the composer, the selection, the peek or the open thread",
+    label: "Close the composer, the selection, the search highlight, the peek or the open thread",
   },
   {
     id: "fold",
