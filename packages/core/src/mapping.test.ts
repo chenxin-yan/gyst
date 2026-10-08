@@ -103,6 +103,22 @@ describe("mapRange", () => {
     ).toBeUndefined();
   });
 
+  it("aligns a long changed hunk once, not once per line", () => {
+    // An added file of 20,000 lines whose last line the next capture edits.
+    const size = 20_000;
+    const addedFile = (current: string, last: string) =>
+      snapshot(
+        "0",
+        current,
+        `@@ -0,0 +1,${size} @@\n${Array.from({ length: size - 1 }, (_, index) => `+line ${index}\n`).join("")}+${last}\n`,
+      );
+    const before = addedFile("f", "last");
+    const after = addedFile("e", "edited");
+    const started = performance.now();
+    expect(mapRange(before, after, range("new", 1, size - 1))).toEqual(range("new", 1, size - 1));
+    expect(performance.now() - started).toBeLessThan(2_000);
+  });
+
   it("maps nothing to a file the other snapshot lacks", () => {
     expect(mapRange(first, { files: [], hunks: [] }, range("new", 1))).toBeUndefined();
   });
