@@ -1019,7 +1019,11 @@ describe("Sessions PR stacks", () => {
     const before = files.get(b.id)!;
     const captures = captureCalls.length;
     const commitsBefore = commits.length;
-    pullRequestEdit = { state: "merged", title: "Renamed layer" };
+    pullRequestEdit = {
+      state: "merged",
+      title: "Renamed layer",
+      description: "<img src=x onerror=alert(1)> Rewritten.",
+    };
     discovery = stacked(3, 2, 1);
     const result = await run(recheck(b.id));
     const after = files.get(b.id)!;
@@ -1042,6 +1046,10 @@ describe("Sessions PR stacks", () => {
     expect(result.pullRequest.sessions).toEqual([
       { number: 2, sessionId: b.id, hunkCount: 2, viewedCount: 1 },
     ]);
+    // The description follows the recheck like the title, as untrusted text stored verbatim.
+    expect(result.pullRequest.pullRequest.description).toBe(
+      "<img src=x onerror=alert(1)> Rewritten.",
+    );
     // No capture, no publication: one session save only.
     expect(captureCalls).toHaveLength(captures);
     expect(commits.slice(commitsBefore)).toEqual([`session ${b.id}`]);
