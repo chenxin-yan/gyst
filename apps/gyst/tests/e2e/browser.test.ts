@@ -2484,8 +2484,6 @@ describe("installed gyst in a sandboxed browser", () => {
       "Command menu",
     ])
       await help.getByText(label, { exact: true }).waitFor();
-    // Keys of later tickets are not listed.
-    expect(await help.getByText(/Search/).count()).toBe(0);
     await page.keyboard.press("j");
     await says(page, "README.md · file");
     await page.keyboard.press("Escape");

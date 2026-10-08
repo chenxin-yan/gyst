@@ -55,6 +55,9 @@ describe("commands", () => {
     expect(completesSequence({ key: "c" }, { key: "]", at: 1000 }, 1500)).toBe(true);
     expect(completesSequence({ key: "c" }, { key: "z", at: 1000 }, 1500)).toBe(true);
     expect(completesSequence({ key: "c" }, { key: "j", at: 1000 }, 1500)).toBe(false);
+    // r after g is gr's, never a reply.
+    expect(completesSequence({ key: "r" }, { key: "g", at: 1000 }, 1500)).toBe(true);
+    expect(completesSequence({ key: "r" }, { key: "j", at: 1000 }, 1500)).toBe(false);
     expect(typed("C", { key: "C" })).toBe(false);
     expect(typed("Shift+C", { key: "C" })).toBe(true);
     expect(typed("R", { key: "R" })).toBe(false);
