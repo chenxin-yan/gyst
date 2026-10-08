@@ -140,9 +140,9 @@ describe("events", () => {
       super();
       FakeSocket.last = this;
     }
+    // A real socket then waits in CLOSING for the daemon's reply, which a stalled one never sends.
     close() {
       this.closedByViewer = true;
-      this.end(1005);
     }
     send(...messages: unknown[]) {
       for (const data of messages)

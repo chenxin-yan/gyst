@@ -147,7 +147,11 @@ export async function* events(
     closed = event;
     wake();
   });
-  const abort = () => socket.close();
+  // Not waiting for the close event: a stalled connection's closing handshake may never finish.
+  const abort = () => {
+    socket.close();
+    wake();
+  };
   signal.addEventListener("abort", abort);
   try {
     for (;;) {
