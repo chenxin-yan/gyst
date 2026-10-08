@@ -209,14 +209,14 @@ function lineMapper(
   /**
    * The lines of `to` that the lines of `from` between `low` and `high` stay as. A line stays as the
    * one whose every line before it, or every line after it, up to the bounds is the same in both
-   * snapshots. It must stay as one line read either way, and that line must stay one line of
-   * `from` read either way: beside an identical line inserted or deleted, which one stayed is
-   * ambiguous.
+   * snapshots. Unless the segment stayed the same, its text must occur once in each: beside an
+   * identical line, even one another edit keeps from either reading, which one stayed is ambiguous.
    */
   const align = (low: number, high: number) => {
     const fromSegment = between(parsedFrom, low, high);
     const toSegment = between(parsedTo, low, high);
-    const shortest = Math.min(fromSegment.tokens.length, toSegment.tokens.length);
+    const length = fromSegment.tokens.length;
+    const shortest = Math.min(length, toSegment.tokens.length);
     let prefix = 0;
     while (prefix < shortest && fromSegment.tokens[prefix] === toSegment.tokens[prefix]) prefix++;
     let suffix = 0;
@@ -225,18 +225,24 @@ function lineMapper(
       fromSegment.tokens.at(-1 - suffix) === toSegment.tokens.at(-1 - suffix)
     )
       suffix++;
-    const grown = toSegment.tokens.length - fromSegment.tokens.length;
-    /** Where the line at `position` of a segment `length` lines long stays, read from either end. */
-    const readings = (position: number, length: number, shift: number) => [
-      ...(position < prefix ? [position] : []),
-      ...(position >= length - suffix ? [position + shift] : []),
-    ];
+    const unchanged = prefix === length && length === toSegment.tokens.length;
+    const counts = (tokens: readonly string[]) => {
+      const count = new Map<string, number>();
+      for (const token of tokens) count.set(token, (count.get(token) ?? 0) + 1);
+      return count;
+    };
+    const fromCounts = counts(fromSegment.tokens);
+    const toCounts = counts(toSegment.tokens);
     return (line: number) => {
       const index = line - fromSegment.first;
-      const [stays, ...others] = readings(index, fromSegment.tokens.length, grown);
-      if (stays === undefined || others.some((each) => each !== stays)) return undefined;
-      const back = readings(stays, toSegment.tokens.length, -grown);
-      return back.every((each) => each === index) ? toSegment.first + stays : undefined;
+      const token = fromSegment.tokens[index]!;
+      if (!unchanged && (fromCounts.get(token)! > 1 || (toCounts.get(token) ?? 0) > 1))
+        return undefined;
+      // With its text once in each, both readings, where both apply, name the one line holding it.
+      if (index < prefix) return toSegment.first + index;
+      if (index >= length - suffix)
+        return toSegment.first + index + toSegment.tokens.length - length;
+      return undefined;
     };
   };
   // A segment is aligned once, however many of its lines are mapped.
@@ -303,7 +309,8 @@ export function contextChanged(
  * maps to itself. Otherwise a line of a hunk maps through that hunk's exact counterpart; an
  * unchanged line only through the other side's identical bytes to an unchanged line of `to`; and a
  * changed line, with the other side's identical bytes, only where `to` holds the same text with
- * nothing else changed between them and an unchanged line on one side of it, both sides agreeing.
+ * nothing else changed between them and an unchanged line on one side of it. Unless the changed
+ * lines around it are the same in both, no other of them may hold that text in either.
  * No similarity, rename or cross-file matching: anything else is undefined.
  */
 export function mapRange(

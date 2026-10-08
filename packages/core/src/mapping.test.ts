@@ -103,6 +103,39 @@ describe("mapRange", () => {
     ).toBeUndefined();
   });
 
+  it("refuses a repeated changed line whatever other edit hides the competing copy", () => {
+    // Lines one side adds (or removes) after line 5 while the other side stays the same bytes.
+    const run = (side: "old" | "new", name: string, lines: string[]) =>
+      snapshot(
+        side === "old" ? name : "0",
+        side === "new" ? name : "0",
+        `@@ -5,${side === "old" ? lines.length + 2 : 2} +5,${side === "new" ? lines.length + 2 : 2} @@\n l5\n${lines.map((line) => `${side === "new" ? "+" : "-"}${line}\n`).join("")} l6\n`,
+      );
+    for (const side of ["old", "new"] as const) {
+      // Deleting one ref and editing b leaves only the prefix reading, for the first ref.
+      const doubled = run(side, "11", ["a", "ref", "ref", "b"]);
+      const edited = run(side, "12", ["a", "ref", "B"]);
+      expect(mapRange(doubled, edited, range(side, 7))).toBeUndefined();
+      expect(mapRange(doubled, edited, range(side, 8))).toBeUndefined();
+      expect(mapRange(doubled, edited, range(side, 6))).toEqual(range(side, 6));
+      expect(mapRange(edited, doubled, range(side, 7))).toBeUndefined();
+      expect(mapRange(edited, doubled, range(side, 6))).toEqual(range(side, 6));
+      // Two insertions agree on the second ref's readings, yet either later ref could be it.
+      const twice = run(side, "13", ["a", "ref", "ref", "X", "b"]);
+      const thrice = run(side, "14", ["a", "ref", "Y", "ref", "ref", "X", "b"]);
+      expect(mapRange(twice, thrice, range(side, 7))).toBeUndefined();
+      expect(mapRange(twice, thrice, range(side, 8))).toBeUndefined();
+      expect(mapRange(twice, thrice, range(side, 9, 10))).toEqual(range(side, 11, 12));
+      expect(mapRange(thrice, twice, range(side, 10))).toBeUndefined();
+      expect(mapRange(thrice, twice, range(side, 9))).toBeUndefined();
+      expect(mapRange(thrice, twice, range(side, 11, 12))).toEqual(range(side, 9, 10));
+      // A segment that stayed the same still maps its repeated lines.
+      expect(
+        mapRange(twice, run(side, "15", ["a", "ref", "ref", "X", "b"]), range(side, 7, 8)),
+      ).toEqual(range(side, 7, 8));
+    }
+  });
+
   it("aligns a long changed hunk once, not once per line", () => {
     // An added file of 20,000 lines whose last line the next capture edits.
     const size = 20_000;
