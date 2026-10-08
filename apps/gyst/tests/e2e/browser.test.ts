@@ -5322,6 +5322,76 @@ describe("installed gyst in a sandboxed browser", () => {
     await settled(page);
   }, 30_000);
 
+  it("returns to a range session reading a later page of its commits at the same place, without reading them again", async () => {
+    const tree = join(root, "explained");
+    git("worktree", "add", "-q", "-b", "explained", tree, "main");
+    onTestFinished(() => {
+      git("worktree", "remove", "--force", tree);
+      git("branch", "-D", "explained");
+    });
+    const inTree = (...args: string[]) => execFileSync("git", args, { cwd: tree, env });
+    // Long enough that the second commit is on a second page.
+    const reasons = Array.from(
+      { length: 1500 },
+      (_, i) => `Reason ${i + 1}: a line the reader needs to follow the change.`,
+    );
+    for (const [content, message] of [
+      ["one\n", `Explain the change\n\n${reasons.join("\n")}`],
+      ["two\n", "Second step"],
+    ] as const) {
+      await writeFile(join(tree, "explained.txt"), content);
+      inTree("add", ".");
+      inTree("commit", "-qm", message);
+    }
+    const id = await freshSession("main..explained");
+    const other = await freshSession();
+    const reads: any[] = [];
+    const page = await newPage();
+    await page.setViewportSize({ width: 1280, height: 600 });
+    page.on("request", (request) => {
+      if (operationOf(request)?.command === "commits") reads.push(operationOf(request));
+    });
+    await page.goto(`${one.origin}/session/${id}`);
+    const pane = page.getByRole("main");
+    await pane.getByRole("heading", { name: "explained.txt" }).waitFor();
+    // Mouse mode: no cursor to fall back on, only what was at the panel's top.
+    await page
+      .getByRole("radiogroup", { name: "Input mode" })
+      .getByRole("radio", { name: "Mouse" })
+      .check();
+    const entry = page.getByRole("navigation", { name: "gyst" }).getByRole("button", {
+      name: "Commits",
+    });
+    await entry.click();
+    const card = pane.getByRole("region", { name: "Commits" });
+    await card.getByText("Reason 1500: a line").waitFor();
+    await card.getByRole("button", { name: "Show more commits (1 more)" }).click();
+    const second = card.getByText("Second step", { exact: true });
+    await second.waitFor();
+    expect(reads).toHaveLength(2);
+    // Down to the second commit, read from the panel's top, far above the first file.
+    await pane.hover();
+    const paneTop = (await pane.boundingBox())!.y;
+    await page.mouse.wheel(0, (await second.boundingBox())!.y - paneTop - 100);
+    const reading = await steady(() => scrollTopAround(card));
+    expect(reading).toBeGreaterThan(10_000);
+
+    await toSessionAndBack(page, other);
+    await second.waitFor();
+    expect(await entry.getAttribute("aria-expanded")).toBe("true");
+    await waitFor(
+      async () => Math.abs((await scrollTopAround(card)) - reading) < 2,
+      "the commits' offset again",
+    );
+    expect(Math.abs((await steady(() => scrollTopAround(card))) - reading)).toBeLessThan(2);
+    const shown = (await second.boundingBox())!;
+    expect(shown.y).toBeGreaterThan(paneTop);
+    expect(shown.y).toBeLessThan(paneTop + 600);
+    expect(await card.getByRole("button", { name: /^Show more commits/ }).count()).toBe(0);
+    expect(reads).toHaveLength(2);
+    await settled(page);
+  }, 30_000);
+
   it("reveals the author's explanation above a group without changes that the reader scrolled down", async () => {
     git("branch", "-f", "peek", "walk");
     const walk = await openWalk("walk~1...peek");
