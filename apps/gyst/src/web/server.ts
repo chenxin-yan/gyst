@@ -291,18 +291,24 @@ export const browserApp = (assets: WebAssets, operations: ViewerOperations) =>
   });
 
 /**
- * Serves `app` on 127.0.0.1 at the first free port from `first` through the next nine, within the
- * caller's scope, and returns that port. Closing the scope drops every open connection first, so a
- * browser's open event stream cannot hold the daemon's exit.
+ * Serves `app` on 127.0.0.1 at the first free port from `first` through the next nine, trying
+ * `preferred` first when it is one of them, within the caller's scope, and returns that port.
+ * Closing the scope drops every open connection first, so a browser's open event stream cannot hold
+ * the daemon's exit.
  */
 export const serveViewer = <E, R>(
   first: number,
   app: Effect.Effect<HttpServerResponse.HttpServerResponse, E, R>,
+  preferred?: number,
 ) =>
   Effect.gen(function* () {
     const last = Math.min(first + viewerPortCount - 1, 65_535);
+    const range = Array.from({ length: last - first + 1 }, (_, n) => first + n);
+    const ports = range.includes(preferred ?? 0)
+      ? [preferred!, ...range.filter((port) => port !== preferred)]
+      : range;
     const scope = yield* Effect.scope;
-    for (let port = first; port <= last; port++) {
+    for (const port of ports) {
       const attempt = yield* Scope.fork(scope);
       const server = createServer();
       const bound = yield* NodeHttpServer.make(() => server, { host: "127.0.0.1", port }).pipe(

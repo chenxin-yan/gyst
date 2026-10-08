@@ -107,6 +107,7 @@ const paths = Layer.sync(Paths, () => ({
   dataDir,
   socketPath,
   pidPath: join(dataDir, "daemon.pid"),
+  viewerPortPath: join(dataDir, "viewer.port"),
   deleteReceiptsPath: join(dataDir, "delete-receipts"),
   sessionFile: (id: string) => join(dataDir, `${id}.json`),
 }));
@@ -698,6 +699,7 @@ describe("DaemonServer", () => {
                   dataDir,
                   socketPath: fakeSocket,
                   pidPath: join(dataDir, "interim.pid"),
+                  viewerPortPath: join(dataDir, "interim.port"),
                   deleteReceiptsPath: join(dataDir, "interim-receipts"),
                   sessionFile: (id: string) => join(dataDir, `interim-${id}.json`),
                 }),
@@ -786,8 +788,11 @@ const toggle = (browser: ReturnType<typeof browserAt>, id: string, n: number) =>
 };
 
 describe("DaemonServer viewer", () => {
-  // Each test's daemon loads `files`; earlier tests leave sessions there.
-  beforeEach(() => files.clear());
+  // Each test's daemon loads `files` and prefers the last daemon's port; earlier tests leave both.
+  beforeEach(async () => {
+    files.clear();
+    await rm(join(dataDir, "viewer.port"), { force: true });
+  });
 
   it("serves the SPA and operations on loopback from the first free port, which every link names", async () => {
     const taken = await occupy(1);
@@ -877,6 +882,31 @@ describe("DaemonServer viewer", () => {
             ),
           ),
         ),
+      );
+    } finally {
+      await taken.release();
+    }
+  }, 10_000);
+
+  it("takes the last daemon's port again after a lower one frees up, so links and forwards still reach it", async () => {
+    const taken = await occupy(1);
+    const layer = serverLayerOver(
+      NodeServices.layer,
+      viewerSettings(() => String(taken.first)),
+    );
+    try {
+      await Effect.runPromise(
+        Effect.gen(function* () {
+          const { running } = yield* started;
+          const opened = yield* open("/kept-port");
+          expect(linkPort(opened)).toBe(taken.first + 1);
+          yield* Fiber.interrupt(running);
+          yield* Effect.promise(() => taken.release());
+          const next = yield* started;
+          const reopened = yield* send({ command: "open", session: openedId(opened) });
+          expect(linkPort(reopened)).toBe(taken.first + 1);
+          yield* Fiber.interrupt(next.running);
+        }).pipe(Effect.provide(layer)),
       );
     } finally {
       await taken.release();
