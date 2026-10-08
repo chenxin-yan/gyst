@@ -110,6 +110,7 @@ describe("daemon wire envelopes", () => {
     },
     { command: "discard", session: "s1", requestId: "r8", draft: "d1" },
     { command: "conversations", session: "s1" },
+    { command: "messages", session: "s1", thread: "t1" },
   ];
 
   it("keeps human and browser-only operations off the socket", () => {

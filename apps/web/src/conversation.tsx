@@ -6,10 +6,11 @@ import type {
   Draft,
   Message,
   MessageKind,
-  Thread,
+  MessagesPayload,
+  ThreadEntry,
 } from "@gyst/core/wire";
 import * as stylex from "@stylexjs/stylex";
-import { type ReactNode, useCallback, useEffect, useRef, useState } from "react";
+import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { isExpectedFailure, isUncertain, newRequestId, operation } from "./api.ts";
 import { Dialog } from "./commands.tsx";
 import { PillButton, useMounted } from "./components.tsx";
@@ -21,7 +22,6 @@ import {
   forgetDraftText,
   keepDraftText,
   liveNote,
-  pendingCount,
   replyOutdated,
   threadLocation,
 } from "./conversation.ts";
@@ -49,11 +49,21 @@ export type Act = (
 ) => Promise<ConversationResult>;
 
 /**
- * The session's threads and draft pins, read again whenever the live link announces other
- * conversations or connects again, and after each action of this reader. A late read never
- * replaces a newer one. A failed read is the link's loss, so it reconnects and reads again rather
- * than leaving the conversations stale. An action whose reply was lost keeps its request id, so
- * doing the same again is its retry.
+ * Reads of threads' messages: `read` asks for a thread's at its listed version, at most once per
+ * version; `last` is the last answer for a thread, which a card shows until a newer one lands.
+ */
+export type MessageReads = {
+  read: (thread: Pick<ThreadEntry, "id" | "version">) => Promise<MessagesPayload>;
+  last: (threadId: string) => MessagesPayload | undefined;
+};
+
+/**
+ * The session's threads, listed without their messages, and its draft pins, read again whenever
+ * the live link announces other conversations or connects again, and after each action of this
+ * reader. A late read never replaces a newer one. A failed read is the link's loss, so it
+ * reconnects and reads again rather than leaving the conversations stale. A thread's messages are
+ * read only where it is open, and again only when its version changes. An action whose reply was
+ * lost keeps its request id, so doing the same again is its retry.
  */
 export function useConversations(
   sessionId: string,
@@ -116,7 +126,29 @@ export function useConversations(
     },
     [sessionId, load],
   );
-  return { threads: read?.threads ?? [], drafts: read?.drafts ?? [], act };
+  const messageReads = useRef(
+    new Map<string, { version: string; read: Promise<MessagesPayload> }>(),
+  );
+  const lastMessages = useRef(new Map<string, MessagesPayload>());
+  const messages = useMemo<MessageReads>(
+    () => ({
+      read: ({ id, version }) => {
+        const asked = messageReads.current.get(id);
+        if (asked?.version === version) return asked.read;
+        const answer = operation({ command: "messages", session: sessionId, thread: id });
+        messageReads.current.set(id, { version, read: answer });
+        answer.then(
+          (payload) => void lastMessages.current.set(id, payload),
+          // A failed read is not kept, so the thread's next read asks again.
+          () => messageReads.current.get(id)?.read === answer && messageReads.current.delete(id),
+        );
+        return answer;
+      },
+      last: (threadId) => lastMessages.current.get(threadId),
+    }),
+    [sessionId],
+  );
+  return { threads: read?.threads ?? [], drafts: read?.drafts ?? [], act, messages };
 }
 
 const kindLabel: Record<MessageKind, string> = { question: "Question", change: "Change request" };
@@ -285,7 +317,7 @@ export function Composer(props: {
 /** One message of a thread: its author, kind, Pending and Outdated marks, and for its author's Pending ones, edits. */
 function MessageItem(props: {
   message: Message;
-  thread: Thread;
+  thread: Pick<ThreadEntry, "note">;
   notes: ReadonlyMap<string, StatusNote>;
   act: Act;
   onReference: (target: CapturedRange) => void;
@@ -407,17 +439,48 @@ function MessageItem(props: {
 }
 
 /**
+ * An open thread's messages: read when it opens and again when its version changes, the last
+ * read shown meanwhile. A failed read says so and is retried on request.
+ */
+function useMessages(thread: ThreadEntry, open: boolean, messages: MessageReads) {
+  const { id, version } = thread;
+  const { read } = messages;
+  const [shown, setShown] = useState(() => messages.last(id));
+  const [failure, setFailure] = useState<string>();
+  const [attempt, setAttempt] = useState(0);
+  useEffect(() => {
+    if (!open) return;
+    let current = true;
+    setFailure(undefined);
+    read({ id, version }).then(
+      (payload) => current && setShown(payload),
+      (error: unknown) => {
+        if (!isExpectedFailure(error)) console.error(error);
+        if (current)
+          setFailure(error instanceof Error && error.message ? `: ${error.message}` : "");
+      },
+    );
+    return () => {
+      current = false;
+    };
+  }, [open, id, version, read, attempt]);
+  return { shown, failure, retry: () => setAttempt((count) => count + 1) };
+}
+
+/**
  * A thread where it is read: collapsed to a chip naming its messages and whether any is Pending,
- * or open with every message, a composer while a reply is written, and Reply and Resolve.
+ * or open with every message, a composer while a reply is written, and Reply and Resolve, which
+ * names the version of the messages shown.
  */
 export function ThreadCard(props: {
-  thread: Thread;
+  thread: ThreadEntry;
   snapshotId: string;
   notes: ReadonlyMap<string, StatusNote>;
   expanded: boolean;
   onToggle: () => void;
   onReply: () => void;
-  onResolve: () => void;
+  onResolve: (seen: string) => void;
+  messages: MessageReads;
   act: Act;
   onReference: (target: CapturedRange) => void;
   /** The open composer of a reply in this thread. */
@@ -432,7 +495,8 @@ export function ThreadCard(props: {
   refocus?: CapturedRange | undefined;
 }) {
   const { thread } = props;
-  const pending = pendingCount(thread);
+  const pending = thread.pendingCount;
+  const read = useMessages(thread, props.expanded, props.messages);
   const removed = thread.note?.removed === true;
   const earlier = thread.anchor.snapshotId !== props.snapshotId;
   const [code, setCode] = useState(false);
@@ -449,7 +513,7 @@ export function ThreadCard(props: {
         >
           <span {...stylex.props(styles.chevron, props.expanded && styles.chevronOpen)} />
           {props.located ? threadLocation(thread.anchor, props.snapshotId) : "Thread"} ·{" "}
-          {thread.messages.length} {thread.messages.length === 1 ? "message" : "messages"}
+          {thread.messageCount} {thread.messageCount === 1 ? "message" : "messages"}
           {pending > 0 && <span {...stylex.props(styles.pending)}>Pending</span>}
           {thread.resolved && <span {...stylex.props(styles.resolved)}>Resolved</span>}
         </button>
@@ -476,8 +540,19 @@ export function ThreadCard(props: {
                 {code && <PeekPreview target={thread.anchor} read={props.readCode} />}
               </>
             )}
+            {read.shown === undefined && read.failure === undefined && (
+              <p role="status" {...stylex.props(styles.meta)}>
+                Reading the messages…
+              </p>
+            )}
+            {read.failure !== undefined && (
+              <p role="alert" {...stylex.props(styles.alert)}>
+                Couldn't read the messages{read.failure}.{" "}
+                <PillButton onClick={read.retry}>Try again</PillButton>
+              </p>
+            )}
             <ol {...stylex.props(styles.messages)}>
-              {thread.messages.map((message) => (
+              {read.shown?.messages.map((message) => (
                 <MessageItem
                   key={message.id}
                   message={message}
@@ -492,7 +567,7 @@ export function ThreadCard(props: {
             {!props.composer && (
               <div {...stylex.props(styles.row)}>
                 {!thread.resolved && <PillButton onClick={props.onReply}>Reply</PillButton>}
-                <PillButton onClick={props.onResolve}>
+                <PillButton onClick={() => props.onResolve(read.shown?.version ?? thread.version)}>
                   {thread.resolved ? "Reopen" : "Resolve"}
                 </PillButton>
                 {props.onShow && <PillButton onClick={props.onShow}>Show in the diff</PillButton>}
@@ -510,10 +585,10 @@ export function ThreadCard(props: {
  * reopened and threads whose code is no longer shown are read; and the drafts not being written.
  */
 export function CommentsList(props: {
-  threads: readonly Thread[];
+  threads: readonly ThreadEntry[];
   drafts: readonly Draft[];
   snapshotId: string;
-  renderThread: (thread: Thread) => ReactNode;
+  renderThread: (thread: ThreadEntry) => ReactNode;
   /** The composer of a draft written here rather than in the panel, or undefined. */
   renderDraft: (draft: Draft) => ReactNode;
   onResume: (draft: Draft) => void;

@@ -23,6 +23,7 @@ import {
   InternalError,
   type DiffPayload,
   type ListPayload,
+  type MessagesPayload,
   NoSession,
   type OpenPayload,
   pageBytes,
@@ -55,6 +56,7 @@ import {
   type Thread,
   threadAnchorsOf,
   type ThreadCode,
+  threadEntryOf,
   threadsFor,
   threadVersionOf,
   type ThreadsPayload,
@@ -278,8 +280,12 @@ export class Sessions extends Context.Service<
     viewed(
       request: Input<"viewed">,
     ): Effect.Effect<ViewedPayload, BadArgs | NoSession | StaleRevision | ValidationFailed>;
-    /** Every conversation and draft pin, Pending bodies included; reading freezes nothing. */
+    /** Every conversation, listed without its messages, and every draft pin; reading freezes nothing. */
     conversations(request: Input<"conversations">): Effect.Effect<ConversationsPayload, NoSession>;
+    /** One thread's messages, Pending bodies included; reading freezes nothing. */
+    messages(
+      request: Input<"messages">,
+    ): Effect.Effect<MessagesPayload, NoSession | ValidationFailed>;
     /**
      * One human conversation action (`converse` in core), all or nothing with its receipt. Captured
      * line counts are read outside the review-state lock; the action commits under it.
@@ -886,12 +892,25 @@ export class Sessions extends Context.Service<
           snapshotId: session.snapshotId,
           revision: session.revision,
           version: conversationsOf(session),
-          threads: session.threads.map((thread) => ({
-            ...thread,
-            version: threadVersionOf(thread),
-          })),
+          threads: session.threads.map(threadEntryOf),
           drafts: session.drafts,
         } satisfies ConversationsPayload;
+      }, Semaphore.withPermit(lock));
+
+      const messages = Effect.fn("Sessions.messages")(function* (request: Input<"messages">) {
+        const session = yield* selected(request);
+        const thread = session.threads.find(({ id }) => id === request.thread);
+        if (!thread)
+          return yield* new ValidationFailed({
+            message: `thread ${request.thread} does not exist`,
+            detail: { thread: request.thread },
+          });
+        return {
+          sessionId: session.id,
+          thread: thread.id,
+          version: threadVersionOf(thread),
+          messages: thread.messages,
+        } satisfies MessagesPayload;
       }, Semaphore.withPermit(lock));
 
       /**
@@ -1146,6 +1165,7 @@ export class Sessions extends Context.Service<
         apply,
         viewed,
         conversations,
+        messages,
         converse: converseIn,
         threads,
         refresh,
