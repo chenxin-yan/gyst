@@ -520,8 +520,11 @@ function SessionReader(props: {
   const [cursor, setCursor] = useState<Cursor | undefined>(recalled?.cursor);
   const [lines, setLines] = useState<CodeViewLineSelection | null>(null);
   // Generated files start folded in every view; the fold state is shared, so they unfold as usual.
+  // A return keeps the folds it left.
   const [folded, setFolded] = useState<ReadonlySet<string>>(
-    () => new Set(props.status.files.flatMap(({ path, generated }) => (generated ? [path] : []))),
+    () =>
+      recalled?.folded ??
+      new Set(props.status.files.flatMap(({ path, generated }) => (generated ? [path] : []))),
   );
   const [dialog, setDialog] = useState<"menu" | "help">();
   // Hidden lines opened per file. They live here, not in the renderer, which forgets them with
@@ -805,6 +808,7 @@ function SessionReader(props: {
     inputMode,
     cursor,
     opened,
+    folded,
     top: recalled?.top,
   });
   readingPlace.current = {
@@ -816,6 +820,7 @@ function SessionReader(props: {
     back,
     inputMode,
     cursor,
+    folded,
   };
   useEffect(() => remember(session.id, snapshotId, hunks, readingPlace.current));
   const returning = useRef(recalled !== undefined);
