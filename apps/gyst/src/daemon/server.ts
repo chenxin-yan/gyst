@@ -45,7 +45,7 @@ import { makeNavigationAddons } from "./navigation-addon.ts";
 import { Paths } from "./paths.ts";
 import { DaemonMessageSchema, daemonVersion, ProgressLineSchema } from "./protocol.ts";
 import { type Opened, Sessions } from "./sessions.ts";
-import { inspectSavedSessions } from "./store.ts";
+import { inspectSavedSessions, writeAtomically } from "./store.ts";
 import { daemonAbsent, readLine } from "./wire.ts";
 
 const decodeRequest = Schema.decodeUnknownEffect(Schema.fromJsonString(DaemonMessageSchema), {
@@ -386,11 +386,13 @@ export class DaemonServer extends Context.Service<
         Effect.flatMap((empty) => Effect.map(Ref.get(active), (n) => empty && n === 0)),
         Effect.repeat({ until: (idle) => idle }),
       );
-      // Lost the path to a concurrent starter: exit. Kept it: make sure `daemon.pid` names us.
+      // Lost the path to a concurrent starter: exit. Kept it: make sure `daemon.pid` and the
+      // viewer port preference name us.
       const untilOrphaned = Effect.fnUntraced(
-        function* (ownsSocket: Effect.Effect<boolean>) {
+        function* (ownsSocket: Effect.Effect<boolean>, ownViewerPort: Effect.Effect<void>) {
           const owns = yield* ownsSocket;
           if (owns && !(yield* ownsPidFile)) yield* writePidFile;
+          if (owns) yield* ownViewerPort;
           return owns;
         },
         Effect.repeat({ while: (owns) => owns, schedule: Schedule.spaced("1 second") }),
@@ -414,6 +416,23 @@ export class DaemonServer extends Context.Service<
           Effect.map(Number),
           Effect.orElseSucceed(() => undefined),
         );
+        // Only a preference: without it the next daemon scans the range from the start. A starter
+        // that loses the socket may record its own port first, so the owner keeps restoring ours.
+        const ownViewerPort = Effect.suspend(() => {
+          if (bound === undefined) return Effect.void;
+          const portLine = `${bound}\n`;
+          return fs.readFileString(paths.viewerPortPath).pipe(
+            Effect.orElseSucceed(() => ""),
+            Effect.flatMap((content) =>
+              content === portLine
+                ? Effect.void
+                : writeAtomically(paths.viewerPortPath, portLine).pipe(
+                    Effect.provideService(FileSystem.FileSystem, fs),
+                  ),
+            ),
+            Effect.ignore,
+          );
+        });
         viewerPort = binding(
           Effect.suspend(() =>
             bound !== undefined
@@ -428,12 +447,7 @@ export class DaemonServer extends Context.Service<
                   ),
                   Scope.provide(scope),
                   Effect.tap((port) => Effect.sync(() => void (bound = port))),
-                  // Only a preference: without it the next daemon scans the range from the start.
-                  Effect.tap((port) =>
-                    Effect.ignore(
-                      fs.writeFileString(paths.viewerPortPath, `${port}\n`, { mode: 0o600 }),
-                    ),
-                  ),
+                  Effect.tap(() => Effect.when(ownViewerPort, ownsSocket)),
                 ),
           ),
         );
@@ -441,7 +455,7 @@ export class DaemonServer extends Context.Service<
         yield* Effect.raceAllFirst([
           server.run(handleConnection),
           untilIdle,
-          untilOrphaned(ownsSocket),
+          untilOrphaned(ownsSocket, ownViewerPort),
           restart.await,
           signalled,
         ]);
