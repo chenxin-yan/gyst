@@ -184,6 +184,8 @@ function StackDialog(props: {
               <span {...stylex.props(styles.count)}>
                 Viewed {row.session.viewed}/{row.session.total}{" "}
                 {row.session.total === 1 ? "hunk" : "hunks"}
+                {row.session.open > 0 &&
+                  ` · ${row.session.open} unresolved ${row.session.open === 1 ? "thread" : "threads"}`}
               </span>
             ) : (
               <span {...stylex.props(styles.count)}>
