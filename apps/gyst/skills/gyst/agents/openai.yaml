@@ -1,5 +1,5 @@
 interface:
   display_name: "Gyst"
-  short_description: "Compose a group-based code-review walkthrough"
+  short_description: "Prepare or revisit a gyst code-review walkthrough"
 policy:
   allow_implicit_invocation: true

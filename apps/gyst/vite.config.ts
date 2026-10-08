@@ -39,6 +39,7 @@ export default defineConfig({
           input: [
             { auto: true },
             "src/**",
+            "skills/**",
             "tsconfig.json",
             "dist/web-ui/**",
             "dist/export/**",

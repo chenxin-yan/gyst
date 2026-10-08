@@ -33,7 +33,18 @@ npm install -g @gyst/cli
 
    You can also specify a range (`/gyst main...HEAD`) or a PR (`/gyst PR 42`).
    The agent plans coverage and order first, then publishes complete groups
-   progressively into the session.
+   progressively into the session and sends you its link once the first groups
+   are there.
+
+3. Read in the browser, mark hunks Viewed and leave comments: a Question asks for an
+   explanation, a Change request asks for a fix. When you want answers, ask in your agent:
+
+   ```text
+   /gyst-respond <session-id>
+   ```
+
+   The agent answers what is Pending at that moment, fixes only what you marked Change
+   request, and stops; comments you send later wait for the next `/gyst-respond`.
 
 This version ships the headless session CLI, background daemon, agent skills and a
 browser viewer, served by the daemon, that shows each saved session's captured diff. The terminal review viewer
@@ -118,11 +129,13 @@ and original code and reads exactly the Pending messages it returns. Retrying wi
 id returns the same bundle. Agents answer with `thread.reply` ops in `gyst session apply`, together
 with any guidance changes; they never resolve, reopen or start threads.
 
-Use `/gyst-refresh` in your agent's chat to refresh the existing review and revise
-its affected groups and explanations while preserving unrelated review progress.
-Refresh retains notes only for wholly surviving groups, and Viewed only for exactly
-matching hunks; losing any member clears that group's notes without changing
-unrelated groups.
+Ask `/gyst` in your agent's chat to refresh or regroup an existing review: it refreshes
+only when asked, then repairs the affected groups and explanations while preserving
+unrelated review progress. Refresh keeps a hunk's Viewed and group only when its code
+is unchanged, and marks guidance whose code or referenced lines changed as Outdated
+until the agent rechecks it. `/gyst-respond` refreshes on its own only after fixing a
+Change request in an uncommitted-changes session; a fix to a Git range or PR stays a
+local edit that it reports, without committing, pushing or refreshing.
 
 Installing a new CLI does not itself restart the background daemon. On the next
 command, gyst checks compatibility before sending review operations. It automatically
