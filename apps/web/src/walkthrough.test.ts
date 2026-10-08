@@ -4,6 +4,7 @@ import { changedFiles } from "./reader.ts";
 import {
   annotationsOf,
   coverageOf,
+  outdatedReason,
   groupProgress,
   noteLine,
   noteSequence,
@@ -156,6 +157,37 @@ describe("coverageOf", () => {
       "The walkthrough has no overview yet.",
       "Title edge has no overview yet.",
     ]);
+  });
+
+  it("names Outdated guidance, so a walkthrough with it reads as unfinished", () => {
+    expect(
+      coverageOf(
+        status([core, edge], {
+          state: "incomplete",
+          groupedHunks: 5,
+          overviewMissing: false,
+          groupsMissingOverview: [],
+          overviewOutdated: true,
+          groupsOutdated: ["edge"],
+          notesOutdated: ["n1", "n2"],
+        }),
+      ),
+    ).toEqual([
+      "Walkthrough in progress.",
+      "The walkthrough overview is Outdated.",
+      "Title edge is Outdated.",
+      "2 notes are Outdated.",
+    ]);
+  });
+});
+
+describe("outdatedReason", () => {
+  it("says why guidance is Outdated, in words, and nothing for current guidance", () => {
+    expect(outdatedReason(undefined)).toBeUndefined();
+    expect(outdatedReason(["code", "references"])).toBe(
+      "Outdated: the code it explains changed; code it references changed.",
+    );
+    expect(outdatedReason(undefined, true)).toBe("Outdated: its changes are gone since a refresh.");
   });
 });
 

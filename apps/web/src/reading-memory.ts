@@ -25,7 +25,9 @@ export type ReadingPlace = {
 /**
  * Each session's reading place for this page's lifetime, so switching between stack layers (or any
  * sessions) and back resumes where the reader was. Kept per session ID, so one session's place never
- * leaks into another; a place belongs to the snapshot it was read in, and a refresh starts afresh.
+ * leaks into another. After a refresh the place carries over only where it names something that can
+ * survive one: the view, the input mode and the file at the top. Lines, folds, a cursor, an expanded
+ * reference and Back belong to the snapshot they were read in.
  */
 const places = new Map<string, { snapshotId: string; place: ReadingPlace }>();
 
@@ -35,5 +37,20 @@ export const remember = (sessionId: string, snapshotId: string, place: ReadingPl
 
 export const recall = (sessionId: string, snapshotId: string): ReadingPlace | undefined => {
   const saved = places.get(sessionId);
-  return saved?.snapshotId === snapshotId ? saved.place : undefined;
+  if (saved === undefined || saved.snapshotId === snapshotId) return saved?.place;
+  const { review, inputMode, top } = saved.place;
+  return {
+    review,
+    captured: undefined,
+    expandedOpened: new Map(),
+    peek: undefined,
+    back: [],
+    inputMode,
+    cursor: undefined,
+    opened: new Map(),
+    top:
+      top !== undefined && "position" in top
+        ? { position: { file: top.position.file, side: undefined, line: undefined } }
+        : top,
+  };
 };

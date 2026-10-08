@@ -32,7 +32,8 @@ export type Extent = { left: number; width: number };
 /**
  * An open reference peek. With a `spacer` it is the full-width overlay over that spacer, spanning
  * `extent` (the rendered diff item); without one it reads in flow. Expand is offered only for an
- * available target; Esc closes it through the reader's keys.
+ * available target in the current snapshot: the main panel shows current files by path, so an
+ * earlier snapshot's file is read here only. Esc closes it through the reader's keys.
  */
 export function InlinePeek(props: {
   peek: Peek;
@@ -117,7 +118,7 @@ export function InlinePeek(props: {
     >
       <div {...stylex.props(styles.bar)}>
         <span {...stylex.props(styles.title)}>{label}</span>
-        {props.availability.available && (
+        {props.availability.available && target.snapshotId === props.snapshotId && (
           <button
             ref={expand}
             type="button"
@@ -170,7 +171,7 @@ type Preview =
  * The target's captured lines with a few around them, numbered as in the file, the target's
  * highlighted, and colored by the diff renderer's shared Shiki highlighter once it is ready.
  */
-function PeekPreview(props: { target: CapturedRange; read: () => Promise<RangeRead> }) {
+export function PeekPreview(props: { target: CapturedRange; read: () => Promise<RangeRead> }) {
   const { target, read } = props;
   const [preview, setPreview] = useState<Preview>({ kind: "loading" });
   useEffect(() => {

@@ -2,13 +2,23 @@
 // and the note and foreign-change annotations inside the diff. Derivations live in walkthrough.ts.
 import type { CapturedRange, StatusPayload } from "@gyst/core/wire";
 import * as stylex from "@stylexjs/stylex";
-import { type FocusEvent, type ReactNode, type RefObject, useEffect, useRef } from "react";
+import {
+  type FocusEvent,
+  type ReactNode,
+  type RefObject,
+  useEffect,
+  useRef,
+  useState,
+} from "react";
+import type { RangeRead } from "./captured.ts";
+import { PeekPreview } from "./peek.tsx";
 import { rangeLabel, referenceLabel } from "./rich.ts";
 import { RichText } from "./rich.tsx";
 import { theme } from "./tokens.stylex.ts";
 import {
   coverageOf,
   groupProgress,
+  outdatedReason,
   type ReviewView,
   type StatusGroup,
   type StatusNote,
@@ -16,8 +26,9 @@ import {
 
 /**
  * The sidebar's walkthrough: its overview row and its groups in the agent's order, each with a
- * checkmark and count derived from Viewed hunks, in words as well as marks. An incomplete
- * walkthrough says what it still lacks; a plain diff session needs none.
+ * checkmark and count derived from Viewed hunks, in words as well as marks, and Outdated where a
+ * refresh left it so. An incomplete walkthrough says what it still lacks; a plain diff session
+ * needs none.
  */
 export function WalkthroughNav(props: {
   status: StatusPayload;
@@ -29,6 +40,8 @@ export function WalkthroughNav(props: {
   const coverage = coverageOf(status);
   const plain = status.preparation.state === "plain";
   const overviewShown = view.kind === "files" && view.path === "";
+  const outdatedGroups = new Set(status.preparation.groupsOutdated);
+  const outdatedMark = <span {...stylex.props(nav.outdated)}>Outdated</span>;
   return (
     <>
       <p {...stylex.props(nav.head)}>Walkthrough</p>
@@ -45,6 +58,7 @@ export function WalkthroughNav(props: {
                 {...stylex.props(nav.row, overviewShown && nav.selected)}
               >
                 <span {...stylex.props(nav.title)}>Overview</span>
+                {status.preparation.overviewOutdated && outdatedMark}
               </button>
             </li>
           )}
@@ -52,12 +66,13 @@ export function WalkthroughNav(props: {
             const progress = groupProgress(group, props.viewed);
             const selected = view.kind === "group" && view.id === group.id;
             const words = `${progress.viewed} of ${progress.total} ${progress.total === 1 ? "hunk" : "hunks"} viewed`;
+            const outdated = outdatedGroups.has(group.id);
             return (
               <li key={group.id}>
                 <button
                   type="button"
                   aria-current={selected || undefined}
-                  aria-label={`${group.title}, ${progress.done ? `all ${words}` : words}`}
+                  aria-label={`${group.title}, ${progress.done ? `all ${words}` : words}${outdated ? ", Outdated" : ""}`}
                   title={group.title}
                   onClick={() => props.onView({ kind: "group", id: group.id })}
                   {...stylex.props(nav.row, selected && nav.selected)}
@@ -66,6 +81,7 @@ export function WalkthroughNav(props: {
                     {progress.done ? "✓" : ""}
                   </span>
                   <span {...stylex.props(nav.title)}>{group.title}</span>
+                  {outdated && outdatedMark}
                   <span {...stylex.props(nav.count)} aria-hidden>
                     {progress.viewed}/{progress.total}
                   </span>
@@ -118,6 +134,7 @@ const nav = stylex.create({
     whiteSpace: "nowrap",
   },
   count: { flexShrink: 0, fontFamily: theme["--mono"], fontSize: "11px", color: theme.faint },
+  outdated: { flexShrink: 0, fontSize: "11px", color: theme.hunkHeader },
   coverage: {
     display: "grid",
     gap: "2px",
@@ -146,7 +163,11 @@ export function OverviewCard(props: {
   label: string;
   title?: string | undefined;
   overview: StatusGroup["overview"];
+  /** Why the overview, or the group it introduces, is Outdated; `outdatedReason`'s words. */
+  outdated?: string | undefined;
   onReference: (target: CapturedRange) => void;
+  /** The group's notes on earlier code (`EarlierNoteCard`), which have no place in the diff. */
+  earlierNotes?: ReactNode;
   /** A reference peek followed from this overview, read in flow below it. */
   peek?: ReactNode;
   /** A reference whose peek just closed, focused again: Back rebuilds the overview it was in. */
@@ -157,6 +178,11 @@ export function OverviewCard(props: {
   return (
     <section ref={box} aria-label={props.label} {...stylex.props(card.box)}>
       {props.title !== undefined && <p {...stylex.props(card.title)}>{props.title}</p>}
+      {props.outdated && (
+        <p role="note" {...stylex.props(outdatedStyles.line)}>
+          {props.outdated}
+        </p>
+      )}
       {props.overview ? (
         <RichText
           markdown={props.overview.markdown}
@@ -166,6 +192,7 @@ export function OverviewCard(props: {
       ) : (
         <p {...stylex.props(card.missing)}>No overview yet.</p>
       )}
+      {props.earlierNotes}
       {props.peek}
     </section>
   );
@@ -223,9 +250,15 @@ export function NoteCard(props: {
         >
           <span {...stylex.props(noteStyles.chevron, !props.collapsed && noteStyles.chevronOpen)} />
           {rangeLabel(note.anchor)}
+          {note.outdated && <span {...stylex.props(outdatedStyles.tag)}>Outdated</span>}
         </button>
         {!props.collapsed && (
           <div {...stylex.props(noteStyles.body)}>
+            {note.outdated && (
+              <p role="note" {...stylex.props(outdatedStyles.line)}>
+                {outdatedReason(note.outdated)}
+              </p>
+            )}
             <RichText
               markdown={note.markdown}
               references={note.references}
@@ -237,6 +270,58 @@ export function NoteCard(props: {
     </div>
   );
 }
+
+/**
+ * A note whose range a refresh could not map onto the current code, kept in its group above the
+ * diff: its own captured lines from the earlier snapshot are disclosed on request, read from that
+ * snapshot and never drawn as a current change.
+ */
+export function EarlierNoteCard(props: {
+  note: StatusNote;
+  read: () => Promise<RangeRead>;
+  onReference: (target: CapturedRange) => void;
+}) {
+  const { note } = props;
+  const [shown, setShown] = useState(false);
+  return (
+    <div data-earlier-note={note.id} {...stylex.props(noteStyles.box)}>
+      <p {...stylex.props(noteStyles.chip)}>
+        {referenceLabel(note.anchor)} · earlier snapshot{" "}
+        <code>{note.anchor.snapshotId.slice(0, 7)}</code>
+        <span {...stylex.props(outdatedStyles.tag)}>Outdated</span>
+      </p>
+      <div {...stylex.props(noteStyles.body)}>
+        <p role="note" {...stylex.props(outdatedStyles.line)}>
+          {outdatedReason(note.outdated)} Its lines are not in the current code.
+        </p>
+        <RichText
+          markdown={note.markdown}
+          references={note.references}
+          onReference={props.onReference}
+        />
+        <button
+          type="button"
+          aria-expanded={shown}
+          onClick={() => setShown(!shown)}
+          {...stylex.props(outdatedStyles.disclose)}
+        >
+          {shown ? "Hide the earlier code" : "Show the earlier code"}
+        </button>
+        {shown && <PeekPreview target={note.anchor} read={props.read} />}
+      </div>
+    </div>
+  );
+}
+
+const outdatedStyles = stylex.create({
+  tag: { marginLeft: "6px", fontFamily: theme.sans, color: theme.hunkHeader },
+  line: { marginBottom: "4px", fontSize: "12px", color: theme.hunkHeader },
+  disclose: {
+    marginBlock: "6px",
+    fontSize: "12px",
+    color: { default: theme.muted, ":hover": theme.ink },
+  },
+});
 
 /** The owner of a change shown in a group view that another group, or none yet, explains. */
 export function ForeignHunkLabel(props: { owner: string | undefined }) {

@@ -33,20 +33,16 @@ const whyNoText = (side: CapturedRange["side"], content: NoText) =>
     : `${side} side not captured: ${notCaptured[content.reason]}`;
 
 /**
- * Whether the reader can show a reference's target. Only the current snapshot is readable (older
- * ones are not kept yet, #93), so a target pinned to another one is unavailable rather than read
- * from the current files. `file` is the target's manifest entry when a loaded files page has it;
- * while pages are still loading, a file not seen yet is left to the read to settle.
+ * Whether the reader can show a reference's target. A target pinned to an earlier snapshot is read
+ * from that snapshot, which the session keeps while guidance pins it, never from the current files;
+ * its read settles whether its side holds text. `file` is the target's manifest entry when a loaded
+ * files page has it; while pages are still loading, a file not seen yet is left to the read too.
  */
 export function referenceAvailability(
   target: CapturedRange,
   current: { snapshotId: string; file: ManifestFile | undefined; complete: boolean },
 ): Availability {
-  if (target.snapshotId !== current.snapshotId)
-    return {
-      available: false,
-      reason: "captured in an earlier snapshot this session no longer keeps",
-    };
+  if (target.snapshotId !== current.snapshotId) return available;
   if (current.file === undefined)
     return current.complete ? { available: false, reason: "not in this snapshot" } : available;
   const side = current.file[target.side];

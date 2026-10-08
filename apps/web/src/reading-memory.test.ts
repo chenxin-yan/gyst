@@ -62,9 +62,15 @@ describe("reading memory", () => {
     expect(recall("e", "snap-e")).toEqual(expanded);
   });
 
-  it("ignores a place read in another snapshot of the session, as after a refresh", () => {
-    remember("d", "old", placeAt("lib", "lib/x.ts"));
-    expect(recall("d", "new")).toBeUndefined();
+  it("carries only the view, input mode and top file over a refresh to another snapshot", () => {
+    remember("d", "old", {
+      ...placeAt("lib", "lib/x.ts"),
+      inputMode: "mouse",
+      cursor: { file: "lib/x.ts", kind: "line", side: "additions", line: 12 },
+      opened: new Map([["lib/x.ts", new Map([[0, { fromStart: 20, fromEnd: 0 }]])]]),
+      top: { position: { file: "lib/x.ts", side: "additions", line: 9 } },
+    });
+    expect(recall("d", "new")).toEqual({ ...placeAt("lib", "lib/x.ts"), inputMode: "mouse" });
     // An overview at the top is kept as the panel's offset.
     const overview: ReadingPlace = { ...placeAt("", undefined), top: { scrollTop: 40 } };
     remember("d", "new", overview);
