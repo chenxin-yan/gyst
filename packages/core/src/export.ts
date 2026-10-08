@@ -5,6 +5,7 @@ import {
   ContentSideSchema,
   type ManifestFile,
   ManifestFileSchema,
+  type Provenance,
   ProvenanceSchema,
   type SnapshotManifest,
   SnapshotIdSchema,
@@ -22,6 +23,7 @@ import {
   HunkSchema,
   type Preparation,
   PreparationSchema,
+  type Scope,
   ScopeSchema,
   type Session,
 } from "./session.ts";
@@ -139,6 +141,38 @@ export const ExportPayloadSchema = Schema.Struct({
   html: Schema.String,
 });
 export type ExportPayload = typeof ExportPayloadSchema.Type;
+
+/**
+ * The recorded scope and what each side was captured from, one line each, as both export surfaces
+ * state them. Uncommitted content is the working tree as captured, which no commit identifies; an
+ * unborn repository's old side is an empty baseline, not a commit.
+ */
+export function provenanceLines(scope: Scope, provenance: Provenance): string[] {
+  switch (provenance.kind) {
+    case "uncommitted":
+      return [
+        "Scope: uncommitted changes, untracked files included",
+        provenance.head === null
+          ? "Old side: an empty baseline; the repository had no commits"
+          : `Old side: HEAD ${provenance.head}`,
+        "New side: the working tree as captured, which no commit identifies",
+      ];
+    case "range":
+      return [
+        `Scope: Git range ${scope.kind === "range" ? scope.range : ""}`,
+        provenance.mergeBase === null
+          ? `Old side: ${provenance.base}`
+          : `Old side: merge base ${provenance.mergeBase} of ${provenance.base}`,
+        `New side: ${provenance.head}`,
+      ];
+    case "pr":
+      return [
+        `Scope: GitHub PR ${scope.kind === "pr" ? `${scope.repository}#${scope.number}` : ""}`,
+        `Old side: merge base ${provenance.mergeBase} of base ${provenance.base}`,
+        `New side: head ${provenance.head}`,
+      ];
+  }
+}
 
 /** Why a walkthrough cannot be exported yet; empty when it is ready. */
 export function readinessProblems(preparation: Preparation): string[] {

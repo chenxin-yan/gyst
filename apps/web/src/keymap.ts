@@ -53,6 +53,7 @@ export type CommandId =
   | "mode"
   | "refresh"
   | "check"
+  | "export"
   | "menu"
   | "help";
 
@@ -160,13 +161,36 @@ export const commands: readonly Command[] = [
   { id: "mode", keys: [], label: "Switch between Vim and Mouse mode" },
   { id: "refresh", keys: [["Shift+R"]], label: "Refresh the session from its source" },
   { id: "check", keys: [], label: "Check the source for changes without refreshing" },
+  { id: "export", keys: [], label: "Export the walkthrough as one standalone HTML file" },
   { id: "menu", keys: [["Meta+K"], ["Control+K"]], label: "Command menu" },
   { id: "help", keys: [["?"]], label: "Keyboard shortcuts" },
 ];
 
-/** The commands an input mode runs, for its keys, its menu and its help alike. */
-export const commandsFor = (mode: InputMode) =>
-  mode === "vim" ? commands : commands.filter((command) => !command.vimOnly);
+/**
+ * What a standalone walkthrough cannot do: write review state (comments, replies, resolution,
+ * Viewed), check or refresh the source, or export again. It has no threads to walk or list.
+ */
+const liveOnly: ReadonlySet<CommandId> = new Set([
+  "comment",
+  "reply",
+  "resolve",
+  "comments",
+  "nextThread",
+  "previousThread",
+  "viewed",
+  "refresh",
+  "check",
+  "export",
+]);
+
+/**
+ * The commands an input mode runs, for its keys, its menu and its help alike; a standalone
+ * walkthrough runs only those that read.
+ */
+export const commandsFor = (mode: InputMode, standalone = false) =>
+  commands.filter(
+    (command) => (mode === "vim" || !command.vimOnly) && !(standalone && liveOnly.has(command.id)),
+  );
 
 /**
  * Whether `event` completes a sequence that `previous` started, as `R` does after `z`: it then
