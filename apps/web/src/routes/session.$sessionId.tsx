@@ -588,8 +588,13 @@ function SessionReader(props: {
   const byPath = useMemo(() => new Map(files.map((file) => [file.path, file])), [files]);
   // Memoized: a new list makes the renderer reconcile its items and restore the reading position.
   // An expanded reference shows its one file: every hunk of a changed one, with no Viewed section.
-  const capturedFile = captured && byPath.get(captured.path);
-  const capturedEntry = captured && manifestByPath.get(captured.path);
+  // A reference into an earlier snapshot expands as that snapshot's file, read whole from it, never
+  // as the current files' diff or entry at its path.
+  const earlierPath =
+    captured !== undefined && captured.snapshotId !== snapshotId ? captured.path : undefined;
+  const currentPath = earlierPath === undefined ? captured?.path : undefined;
+  const capturedFile = currentPath === undefined ? undefined : byPath.get(currentPath);
+  const capturedEntry = currentPath === undefined ? undefined : manifestByPath.get(currentPath);
   const inView = useMemo(
     (): ViewFiles =>
       captured
@@ -603,7 +608,11 @@ function SessionReader(props: {
   );
   const shown = inView.files;
   const shownByPath = useMemo(() => new Map(shown.map((file) => [file.path, file])), [shown]);
-  const notes = useMemo(() => noteSequence(inView, status), [inView, status]);
+  // Current notes explain current lines, which an earlier snapshot's file does not show.
+  const notes = useMemo(
+    () => (earlierPath === undefined ? noteSequence(inView, status) : []),
+    [earlierPath, inView, status],
+  );
   const noteAnnotations = useMemo(
     () => annotationsOf(inView, notes, status),
     [inView, notes, status],
@@ -635,12 +644,19 @@ function SessionReader(props: {
   // shape, which the renderer hydrates in place when a range opens before the file loaded eagerly,
   // or an eagerly loaded clone. Kept once loaded: the renderer retains the rendered diffs of the
   // items it recycles, so dropping ours would not bound memory (#108).
-  const [diffs, setDiffs] = useState<ReadonlyMap<string, FileDiffMetadata>>(
+  const [loadedDiffs, setDiffs] = useState<ReadonlyMap<string, FileDiffMetadata>>(
     () =>
       new Map(
         files.flatMap((file) => (file.hunks.length > 0 ? [[file.path, fileDiffOf(file)]] : [])),
       ),
   );
+  // What the panel shows: an expanded earlier snapshot's file has no current diff.
+  const diffs = useMemo(() => {
+    if (earlierPath === undefined) return loadedDiffs;
+    const shownDiffs = new Map(loadedDiffs);
+    shownDiffs.delete(earlierPath);
+    return shownDiffs;
+  }, [loadedDiffs, earlierPath]);
 
   const setLoad = useCallback(
     (path: string, load: FileLoad | undefined) =>
@@ -723,7 +739,7 @@ function SessionReader(props: {
   // A files page can bring a file's entry after its diff was built without one, and only the
   // entry says a whole side has no lines. A load that failed meanwhile no longer applies.
   useEffect(() => {
-    const late = lateWholeFiles(files, diffs);
+    const late = lateWholeFiles(files, loadedDiffs);
     if (late.length === 0) return;
     for (const file of late) setLoad(file.path, undefined);
     setDiffs((before) => {
@@ -731,7 +747,7 @@ function SessionReader(props: {
       for (const file of late) next.set(file.path, fileDiffOf(file));
       return next;
     });
-  }, [files, diffs, setLoad]);
+  }, [files, loadedDiffs, setLoad]);
 
   const hydratable = useMemo(
     () =>

@@ -3243,7 +3243,7 @@ describe("installed gyst in a sandboxed browser", () => {
     expect(await open(second)).toBe("false");
   }, 30_000);
 
-  it("reads a reference pinned to an earlier snapshot from that snapshot after a refresh, without offering Expand", async () => {
+  it("reads and expands a reference pinned to an earlier snapshot from that snapshot after a refresh", async () => {
     git("branch", "-f", "peek", "walk");
     const id = await openRange("walk~1...peek");
     onTestFinished(() =>
@@ -3282,13 +3282,23 @@ describe("installed gyst in a sandboxed browser", () => {
     await overview.getByRole("button", { name: "the constants" }).click();
     const peek = overview.locator("[data-peek]");
     await peek.getByText("export const line10 = 10;").waitFor();
-    expect(await peek.getByRole("button", { name: "Expand" }).count()).toBe(0);
     expect(await peek.textContent()).toContain("(earlier)");
+    await peek.getByRole("button", { name: "Expand" }).click();
+    const identity = pane.getByRole("region", { name: "Captured file" });
+    await identity.waitFor();
+    expect(await identity.textContent()).toContain(
+      `snapshot ${snapshotId.slice(0, 7)} (earlier snapshot)`,
+    );
+    await headingsAre(page, ["src/long.ts"]);
+    await pane.getByText("export const line10 = 10;", { exact: true }).waitFor();
+    await keys(page, "Backspace");
+    await headingsAre(page, ["walk/a.ts", "walk/b.ts", "walk/c.ts", "walk/d.ts"]);
     await settled(page);
-    // Read from the snapshot it is pinned to, never the current one.
-    expect(reads.filter((read) => read.file === "src/long.ts")).toEqual([
-      expect.objectContaining({ snapshotId, file: "src/long.ts", side: "new" }),
-    ]);
+    // Read from the snapshot it is pinned to, never the current one: the preview, then the file.
+    const longReads = reads.filter((read) => read.file === "src/long.ts");
+    expect(longReads.length).toBeGreaterThanOrEqual(2);
+    for (const read of longReads)
+      expect(read).toEqual(expect.objectContaining({ snapshotId, side: "new" }));
   }, 30_000);
 
   it("refreshes on R, keeping surviving work in place and changed guidance Outdated beside its earlier code", async () => {
@@ -3366,7 +3376,18 @@ describe("installed gyst in a sandboxed browser", () => {
     const peek = peekOf(page);
     await peek.getByText("export const b5 = 5 * 2;").waitFor();
     expect(await peek.textContent()).toContain("(earlier)");
-    expect(await peek.getByRole("button", { name: "Expand" }).count()).toBe(0);
+    // Expanded, it is the earlier b.ts, not the current change at that path.
+    await peek.getByRole("button", { name: "Expand" }).click();
+    const main = page.getByRole("main");
+    const identity = main.getByRole("region", { name: "Captured file" });
+    await identity.waitFor();
+    expect(await identity.textContent()).toContain("(earlier snapshot)");
+    await headingsAre(page, ["walk/b.ts"]);
+    await main.getByText("export const b5 = 5 * 2;", { exact: true }).waitFor();
+    expect(await main.getByText("export const b5 = 5 * 3;", { exact: true }).count()).toBe(0);
+    await keys(page, "Backspace");
+    await headingsAre(page, ["walk/a.ts"]);
+    await peek.getByText("export const b5 = 5 * 2;").waitFor();
     await keys(page, "Escape");
     await peek.waitFor({ state: "detached" });
 
