@@ -2625,7 +2625,15 @@ function ContinuousDiff(props: {
       },
       scrollTo: scrollTop,
       scrollToEdge(end) {
-        scrollTop(end === "top" ? 0 : node().scrollHeight);
+        // The renderer drives it: its layout corrections over files it has not measured yet would
+        // stop a native smooth scroll partway (Chrome 154).
+        pendingTop.current = undefined;
+        manualAt.current = -Infinity;
+        view.current?.scrollTo({
+          type: "position",
+          position: end === "top" ? 0 : Infinity,
+          behavior: "smooth-auto",
+        });
       },
       expand(file, range, count) {
         const rendered = view.current
