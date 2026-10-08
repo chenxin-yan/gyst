@@ -38,6 +38,8 @@ Do not ask the human to confirm, wait, poll or retrieve again.
 
 ## 3. Answer each thread
 
+First read `gyst session status --session <id>`; do not assume this invocation prepared the session or that the current directory is its checkout. `session.repoRoot` is the repository the session reviews and `session.scope` its recorded scope, which section 4 depends on. A PR session's `pullRequest` holds the selected PR and its verified native stack, each layer with its title and description: use the whole stack as context, but reply and fix only in this session.
+
 Answer the messages listed in `unread`, reading the whole thread for context and the code the thread is anchored to. Check claims against the snapshot with `gyst session code --snapshot <snapshotId>` rather than the live checkout.
 
 - **Question**: it authorizes an explanation, never a code change, whatever its wording ("could you rename this?" is still a Question). Explain, and if it implies a change, say the human can send a Change request. If the next reader would ask the same thing, improve the reusable guidance (a note, a group or the walkthrough overview) in the same batch and keep the reply brief; otherwise reply only.
@@ -47,7 +49,7 @@ Replies are free-form Markdown, posted with `thread.reply` by thread id; there i
 
 ## 4. Change requests
 
-Make the requested change in the checkout and verify it as far as you can. Then decide whether the session's recorded scope includes it:
+Make the requested change in the session's repository (`repoRoot`) and verify it as far as you can. Then decide whether the session's recorded scope includes it:
 
 - **Uncommitted changes** (`scope.kind` `uncommitted`): a working-tree edit is in scope. Refresh with `gyst session refresh --session <id> --snapshot <snapshotId> --request-id <new id>`, using the current snapshot id, then repair the guidance as the authoring reference's "After a refresh" section says, and reply on the new snapshot and revision. Retry a lost refresh reply with the same request id; `stale_revision` means the session was refreshed already, so reread status instead of refreshing again.
 - **A Git range or a GitHub PR**: the range is committed history and the PR is what was pushed, so a working-tree edit is not part of it. Do not commit, push, retarget the session, restack or refresh to make it fit. Leave the edit in the checkout, say in the reply what you changed locally and that the session does not show it, and report it. Only when the human has already committed or pushed it, so that `gyst session check --session <id>` reports `changed`, does a refresh include it.
@@ -68,4 +70,4 @@ Report briefly: which threads you answered, which Change requests you fixed and 
 
 ### Recovering interrupted work
 
-If an earlier `/gyst-respond` was cut off after its pickup, its messages are read but may be unanswered. Retry that pickup with its own request id if you still have it; otherwise `gyst session threads --session <id> --open --request-id <new id>` returns every open thread with its whole history, already-read messages included. Answer the human messages that have no later agent reply, and report them as above.
+If an earlier `/gyst-respond` was cut off after its pickup, its messages are read but may be unanswered. Retry that pickup with its own request id if you still have it; otherwise `gyst session threads --session <id> --open --request-id <new id>` returns every open thread with its whole history, already-read messages included. Answer every message in its `unread`: this retrieval was the first to read them. For the already-read human messages, check what the replies after them actually say: a reply may answer only some of the messages before it, or report work as unfinished, so a later agent reply does not mean a message was answered. Answer what is still open and report as above.
