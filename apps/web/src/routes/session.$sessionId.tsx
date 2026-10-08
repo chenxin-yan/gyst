@@ -1671,6 +1671,8 @@ function SessionReader(props: {
       onLine[0]
     );
   };
+  /** Whether the panel shows a thread open: opened, or held open by the reply being written in it. */
+  const threadOpen = (id: string) => expandedThread === id || draftNow?.thread === id;
   const conversationOf = (id: string) => conversations.threads.find((thread) => thread.id === id);
   /**
    * The thread a draft is written in, while it exists. A thread goes with its last Pending message,
@@ -1846,7 +1848,7 @@ function SessionReader(props: {
         snapshotId={snapshotId}
         notes={allNotes}
         located={located}
-        expanded={expandedThread === thread.id || draft !== undefined}
+        expanded={composer ? threadOpen(thread.id) : expandedThread === thread.id}
         onToggle={() => {
           cursorThread.current = thread.id;
           if (expandedThread === thread.id) return setExpandedThread(undefined);
@@ -1953,10 +1955,9 @@ function SessionReader(props: {
           vim ? "Put the cursor on an open thread to resolve it." : "Open a thread to resolve it.",
         );
       // An open thread names the messages it shows, which a newer listing may not have reached.
-      const read =
-        at.thread.id === expandedThread
-          ? conversations.messages.last(at.thread.id)?.version
-          : undefined;
+      const read = threadOpen(at.thread.id)
+        ? conversations.messages.last(at.thread.id)?.version
+        : undefined;
       return void setResolved(at.thread.id, read ?? at.thread.version, true);
     }
     if (id === "nextThread" || id === "previousThread")

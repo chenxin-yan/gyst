@@ -4966,6 +4966,17 @@ describe("installed gyst in a sandboxed browser", () => {
         .getByRole("button", { name: /^Thread/ })
         .click();
     await threadOf("First?").getByText("It is like").waitFor();
+    // A reply begun keeps the thread open, and its messages shown, after its chip is clicked.
+    await threadOf("First?").getByRole("button", { name: "Reply" }).click();
+    const later = threadOf("First?").locator("[data-composer]").getByRole("textbox", {
+      name: "Reply",
+    });
+    await later.fill("Later?");
+    await threadOf("First?")
+      .getByRole("button", { name: /^Thread/ })
+      .click();
+    await later.waitFor();
+    expect(await expanded()).toEqual(["First?"]);
     failMessages = true;
     const { revision } = await gyst("session", "status", "--session", walk.id);
     await walk.publish(revision, "again", [
