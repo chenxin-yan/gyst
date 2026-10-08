@@ -66,6 +66,7 @@ let statusHeld: Deferred.Deferred<void>;
 let statusRelease: Deferred.Deferred<void>;
 let progressGate: Deferred.Deferred<void> | undefined;
 const files = new Map<string, Session>();
+let launchPaths: Record<string, string> = {};
 
 const git = Layer.succeed(Git, {
   repoRoot: (cwd) =>
@@ -95,6 +96,8 @@ const store = Layer.succeed(SessionStore, {
   remove: (id) => Effect.sync(() => void files.delete(id)),
   loadDeleteReceipts: Effect.succeed([]),
   saveDeleteReceipts: () => Effect.void,
+  loadLaunchPaths: Effect.sync(() => launchPaths),
+  saveLaunchPaths: (saved) => Effect.sync(() => void (launchPaths = saved)),
 });
 const crypto = Layer.succeed(
   Crypto.Crypto,
@@ -109,6 +112,7 @@ const paths = Layer.sync(Paths, () => ({
   pidPath: join(dataDir, "daemon.pid"),
   viewerPortPath: join(dataDir, "viewer.port"),
   deleteReceiptsPath: join(dataDir, "delete-receipts"),
+  launchPathsPath: join(dataDir, "launch-paths"),
   sessionFile: (id: string) => join(dataDir, `${id}.json`),
 }));
 /** What reached the Navigation double, in order: navigation requests and retirements. */
@@ -178,7 +182,7 @@ const serverLayerOver = (
         Layer.provide(Layer.mergeAll(git, noGitHub, store, crypto, publishingContent())),
       ),
     ),
-    Layer.provide(navigation),
+    Layer.provide(Layer.merge(navigation, store)),
     Layer.provide(paths),
     Layer.provide(settings),
     Layer.provide(platform),
@@ -481,69 +485,82 @@ describe("DaemonServer", () => {
     try {
       await Effect.runPromise(
         Effect.gen(function* () {
-          navigationCalls.length = 0;
-          const server = yield* DaemonServer;
-          const running = yield* Effect.forkChild(server.run);
-          const opened = yield* send({
-            command: "open",
-            cwd: "/navigate",
-            scope: { kind: "uncommitted" },
-            path: `/nonexistent:${bin}`,
-          }).pipe(Effect.retry({ schedule: Schedule.spaced("10 millis"), times: 100 }));
-          const session = openedId(opened);
-          const browser = browserAt(linkPort(opened));
-          const status = yield* send({ command: "status", session });
-          if (!status.ok) throw new Error("status failed");
-          const snapshotId = (status.value as { session: { snapshotId: string } }).session
-            .snapshotId;
-          // Ordinary review operations never reach navigation.
-          expect(navigationCalls).toEqual([]);
+          const { session, browser, queries } = yield* Effect.gen(function* () {
+            navigationCalls.length = 0;
+            const server = yield* DaemonServer;
+            const running = yield* Effect.forkChild(server.run);
+            const opened = yield* send({
+              command: "open",
+              cwd: "/navigate",
+              scope: { kind: "uncommitted" },
+              path: `/nonexistent:${bin}`,
+            }).pipe(Effect.retry({ schedule: Schedule.spaced("10 millis"), times: 100 }));
+            const session = openedId(opened);
+            const browser = browserAt(linkPort(opened));
+            const status = yield* send({ command: "status", session });
+            if (!status.ok) throw new Error("status failed");
+            const snapshotId = (status.value as { session: { snapshotId: string } }).session
+              .snapshotId;
+            // Ordinary review operations never reach navigation.
+            expect(navigationCalls).toEqual([]);
 
-          const target = { session, snapshotId, side: "new", file: "a.ts" } as const;
-          const position = { line: 1, character: 0 };
-          const queries = [
-            { command: "definition", ...target, position },
-            { command: "references", ...target, position },
-            { command: "identifiers", ...target, line: 1 },
-            { command: "navigation", session, snapshotId },
-          ] as const;
-          for (const query of queries)
-            expect((yield* browser.operation(query)).reply?.ok).toBe(true);
-          expect(navigationCalls).toEqual(
-            queries.map((query) => ({ ...query, addon: { kind: "missing" } })),
-          );
+            const target = { session, snapshotId, side: "new", file: "a.ts" } as const;
+            const position = { line: 1, character: 0 };
+            const queries = [
+              { command: "definition", ...target, position },
+              { command: "references", ...target, position },
+              { command: "identifiers", ...target, line: 1 },
+              { command: "navigation", session, snapshotId },
+            ] as const;
+            for (const query of queries)
+              expect((yield* browser.operation(query)).reply?.ok).toBe(true);
+            expect(navigationCalls).toEqual(
+              queries.map((query) => ({ ...query, addon: { kind: "missing" } })),
+            );
 
-          // Check again looks on the same PATH, so an install into one of its directories counts.
-          yield* Effect.promise(() => symlink(script, join(bin, navigationAddon.bin)));
-          navigationCalls.length = 0;
-          yield* browser.operation(queries[0]);
-          yield* browser.operation({ ...queries[3], recheck: true });
-          yield* browser.operation(queries[0]);
-          expect(navigationCalls).toEqual([
-            { ...queries[0], addon: { kind: "missing" } },
-            { ...queries[3], addon: available },
-            { ...queries[0], addon: available },
-          ]);
+            // Check again looks on the same PATH, so an install into one of its directories counts.
+            yield* Effect.promise(() => symlink(script, join(bin, navigationAddon.bin)));
+            navigationCalls.length = 0;
+            yield* browser.operation(queries[0]);
+            yield* browser.operation({ ...queries[3], recheck: true });
+            yield* browser.operation(queries[0]);
+            expect(navigationCalls).toEqual([
+              { ...queries[0], addon: { kind: "missing" } },
+              { ...queries[3], addon: available },
+              { ...queries[0], addon: available },
+            ]);
+            yield* Fiber.interrupt(running);
+            return { session, browser, queries };
+          }).pipe(Effect.provide(serverLayer));
 
-          // The latest CLI invocation's PATH replaces it; one without the add-on finds none.
-          navigationCalls.length = 0;
-          expect(ok(yield* send({ command: "open", session, path: later }))).toBe(true);
-          yield* browser.operation(queries[3]);
-          expect(navigationCalls).toEqual([{ ...queries[3], addon: { kind: "missing" } }]);
+          // A restarted daemon discovers on the same PATH, with no CLI opening the session again.
+          yield* Effect.gen(function* () {
+            const { running } = yield* started;
+            navigationCalls.length = 0;
+            yield* browser.operation(queries[3]);
+            expect(navigationCalls).toEqual([{ ...queries[3], addon: available }]);
 
-          navigationCalls.length = 0;
-          const refreshed = yield* send({ command: "refresh", session });
-          if (!refreshed.ok) throw new Error("refresh failed");
-          const current = (refreshed.value as { session: { snapshotId: string } }).session
-            .snapshotId;
-          expect(navigationCalls).toEqual([{ retire: session, keep: current }]);
-          expect(ok(yield* remove(session))).toBe(true);
-          expect(navigationCalls).toEqual([
-            { retire: session, keep: current },
-            { retire: session, keep: undefined },
-          ]);
-          yield* Fiber.interrupt(running);
-        }).pipe(Effect.provide(serverLayer)),
+            // The latest CLI invocation's PATH replaces it; one without the add-on finds none.
+            navigationCalls.length = 0;
+            expect(ok(yield* send({ command: "open", session, path: later }))).toBe(true);
+            yield* browser.operation(queries[3]);
+            expect(navigationCalls).toEqual([{ ...queries[3], addon: { kind: "missing" } }]);
+
+            navigationCalls.length = 0;
+            const refreshed = yield* send({ command: "refresh", session });
+            if (!refreshed.ok) throw new Error("refresh failed");
+            const current = (refreshed.value as { session: { snapshotId: string } }).session
+              .snapshotId;
+            expect(navigationCalls).toEqual([{ retire: session, keep: current }]);
+            expect(ok(yield* remove(session))).toBe(true);
+            expect(navigationCalls).toEqual([
+              { retire: session, keep: current },
+              { retire: session, keep: undefined },
+            ]);
+            expect(launchPaths).toEqual({});
+            yield* Fiber.interrupt(running);
+          }).pipe(Effect.provide(serverLayer));
+        }),
       );
     } finally {
       process.env.PATH = inherited;
@@ -701,6 +718,7 @@ describe("DaemonServer", () => {
                   pidPath: join(dataDir, "interim.pid"),
                   viewerPortPath: join(dataDir, "interim.port"),
                   deleteReceiptsPath: join(dataDir, "interim-receipts"),
+                  launchPathsPath: join(dataDir, "interim-launch-paths"),
                   sessionFile: (id: string) => join(dataDir, `interim-${id}.json`),
                 }),
               ),

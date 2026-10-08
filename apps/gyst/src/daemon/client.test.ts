@@ -85,6 +85,7 @@ const withClient = <A, E>(effect: Effect.Effect<A, E, DaemonClient>) =>
           pidPath: join(dataDir, "daemon.pid"),
           viewerPortPath: join(dataDir, "viewer.port"),
           deleteReceiptsPath: join(dataDir, "delete-receipts"),
+          launchPathsPath: join(dataDir, "launch-paths"),
           sessionFile: (id) => join(dataDir, `${id}.json`),
         }),
       ),

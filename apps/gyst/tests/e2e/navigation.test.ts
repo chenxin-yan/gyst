@@ -597,7 +597,7 @@ describe("TS/JS navigation through the installed add-on", () => {
     await write(cwd, { "src/use.ts": `${newUse}export const five = plus(four, 1);\n` });
     const viewer = await launchViewer([], { cwd, env: launchEnv(box, navigationBin) });
     // Each session finds the add-on on the PATH it was last opened with, which a restarted daemon
-    // learns again from the next open.
+    // keeps: the commands that restart it below open nothing and have no add-on on their PATH.
     const openRange = async (...selection: string[]) =>
       json(
         await run(installed.bin, ["session", "open", ...selection], {
@@ -606,6 +606,8 @@ describe("TS/JS navigation through the installed add-on", () => {
         }),
       ).session.id;
     const range = await openRange("HEAD~1..HEAD");
+    const restartDaemon = async () =>
+      succeeded(await run(installed.bin, ["session", "list"], { cwd, env: launchEnv(box) }));
     const a = await queries(viewer);
     const b = await queries(viewer, range);
     let most = 0;
@@ -644,7 +646,7 @@ describe("TS/JS navigation through the installed add-on", () => {
 
     // A SIGKILLed daemon cannot stop its engine; the engine is told the daemon's processId and
     // loses its stdin. What happens is recorded, not required.
-    expect(await openRange("--session", range)).toBe(range);
+    await restartDaemon();
     await plus(b, "new");
     const [engine] = engines(navigation.prefix);
     const killedAt = performance.now();
@@ -659,7 +661,7 @@ describe("TS/JS navigation through the installed add-on", () => {
     );
     expect(left).toHaveLength(1);
     // The next daemon clears the crashed one's materialization when navigation is next used.
-    expect(await openRange("--session", range)).toBe(range);
+    await restartDaemon();
     await plus(b, "new");
     expect(await navigationDirs(box.data)).toHaveLength(1);
     expect(await navigationDirs(box.data)).not.toEqual(left);

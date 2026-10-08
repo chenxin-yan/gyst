@@ -441,6 +441,7 @@ describe("gyst session CLI seam", () => {
       "content",
       "corrupt.json",
       "delete-receipts",
+      "launch-paths",
       "viewer.port",
     ]);
 
@@ -457,6 +458,7 @@ describe("gyst session CLI seam", () => {
       "content",
       "corrupt.json",
       "delete-receipts",
+      "launch-paths",
       "viewer.port",
     ]);
   }, 20_000);

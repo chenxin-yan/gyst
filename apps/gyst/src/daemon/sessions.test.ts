@@ -228,6 +228,8 @@ const store = Layer.succeed(SessionStore, {
       : Effect.sync(() => {
           deleteReceipts = receipts;
         }),
+  loadLaunchPaths: Effect.succeed({}),
+  saveLaunchPaths: () => Effect.void,
 });
 
 const sessionsLayer = Sessions.layer.pipe(
