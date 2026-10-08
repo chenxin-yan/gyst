@@ -584,7 +584,7 @@ function SessionReader(props: {
     authorShown && session.scope.kind === "range",
     recalled?.author.commits,
   );
-  const conversations = useConversations(session.id, live.state.known?.revision);
+  const conversations = useConversations(session.id, live.state.known?.conversations);
   // One conversation is open at a time, and one composer, shown only once asked for.
   const [expandedThread, setExpandedThread] = useState<string>();
   const [activeDraft, setActiveDraft] = useState<string>();
@@ -1665,7 +1665,6 @@ function SessionReader(props: {
     try {
       const { draft } = await conversations.act({
         command: "draft",
-        requestId: newRequestId(),
         target,
         ...(wording !== undefined && { wording }),
       });
@@ -1759,7 +1758,6 @@ function SessionReader(props: {
     try {
       await conversations.act({
         command: "resolve",
-        requestId: newRequestId(),
         thread: threadId,
         resolved,
       });
@@ -2538,7 +2536,7 @@ function SessionReader(props: {
           }}
           onDiscard={(draft) =>
             void conversations
-              .act({ command: "discard", requestId: newRequestId(), draft: draft.id })
+              .act({ command: "discard", draft: draft.id })
               .then(() => forgetDraftText(session.id, draft.id))
               .catch((error: unknown) => sayFailure("discard the draft", error))
           }
