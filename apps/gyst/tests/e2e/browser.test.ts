@@ -4581,7 +4581,7 @@ describe("installed gyst in a sandboxed browser", () => {
     await thread.waitFor({ state: "detached" });
     await keys(page, "Shift+C");
     const comments = page.getByRole("dialog", { name: "Comments" });
-    await comments.getByText("Reply on walk/a.ts:L20 · new").waitFor();
+    await comments.getByText("Reply on walk/a.ts:L10–20 · new").waitFor();
     // Resuming it writes it under its note again, with its text, and sends it into a new thread there.
     await comments.getByRole("button", { name: "Resume" }).click();
     await comments.waitFor({ state: "detached" });
