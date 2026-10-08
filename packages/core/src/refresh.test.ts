@@ -213,7 +213,7 @@ describe("refreshSession", () => {
     expect(refreshed.hunks).toEqual(original.hunks);
     // Note na's anchored hunk A is unviewed; group gb's Outdated overview leaves B as it was.
     expect(refreshed.viewedHunkIds).toEqual([hunkB]);
-    const [ga, gb] = refreshed.groups as [Group, Group];
+    const [ga, gb] = refreshed.groups as Group[] as [Group, Group];
     expect(ga.notes[0]).toMatchObject({ outdated: ["references"], references: [helper] });
     expect(ga.notes[0]!.anchor.snapshotId).toBe("s2");
     expect(gb.overview).toEqual({ ...original.groups[1]!.overview, outdated: ["references"] });
