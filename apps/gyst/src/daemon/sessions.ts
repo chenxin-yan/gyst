@@ -348,8 +348,8 @@ export class Sessions extends Context.Service<
     readonly load: Effect.Effect<void, PlatformError.PlatformError>;
     /**
      * Removes the captured content no saved session retains (`retainedFiles`), once no operation
-     * holds content. The daemon runs it in the background after loading, deleting, refreshing and a
-     * failed capture, and before retrying a capture that ran out of space. A session file this
+     * holds content. It runs before retrying a capture that ran out of space, and through
+     * `reclaimer` after loading, deleting, refreshing and a failed capture. A session file this
      * version cannot read keeps every snapshot it names; a manifest that cannot be read reclaims
      * nothing.
      */
@@ -357,6 +357,11 @@ export class Sessions extends Context.Service<
       Reclaimed,
       PlatformError.PlatformError | BadArgs | InternalError | SourceUnavailable
     >;
+    /**
+     * Runs each requested `reclaim` in turn, coalescing requests, until interrupted. Only the
+     * daemon that owns the store runs it.
+     */
+    readonly reclaimer: Effect.Effect<never>;
     /** Resolves once a delete has removed the last session; a later open arms it again. */
     readonly idle: Effect.Effect<void>;
     /** Waits for in-flight mutations, so an open racing the idle check is counted. */
@@ -466,13 +471,12 @@ export class Sessions extends Context.Service<
       });
       const reclaim = content.reclaim(retainedContent).pipe(Effect.withSpan("Sessions.reclaim"));
       const reclaims = yield* Queue.sliding<void>(1);
-      yield* Queue.take(reclaims).pipe(
+      const reclaimer = Queue.take(reclaims).pipe(
         Effect.andThen(reclaim),
         Effect.catchCause((cause) =>
           Effect.logWarning("could not reclaim captured content", cause),
         ),
         Effect.forever,
-        Effect.forkScoped,
       );
       const requestReclaim = Effect.sync(() => {
         Queue.offerUnsafe(reclaims, undefined);
@@ -1272,6 +1276,7 @@ export class Sessions extends Context.Service<
         subscribe,
         load,
         reclaim,
+        reclaimer,
         idle: idle.await,
         isEmpty: Semaphore.withPermit(
           lock,
