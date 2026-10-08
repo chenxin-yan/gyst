@@ -14,8 +14,8 @@ import { FailureNotice, PillButton, ScopeLabel, Title, useMounted } from "./comp
 import { embeddedExport } from "./standalone.ts";
 import { theme } from "./tokens.stylex.ts";
 
-const isStale = (error: unknown) =>
-  typeof error === "object" && error !== null && "_tag" in error && error._tag === "stale_revision";
+const tagOf = (error: unknown) =>
+  typeof error === "object" && error !== null && "_tag" in error ? error._tag : undefined;
 
 /** A side as the manifest lists it: its content identity and size, or why it has no bytes. */
 const sideIdentity = ({ content }: PinnedSide) =>
@@ -75,9 +75,11 @@ export function ExportDialog(props: { sessionId: string; onClose: () => void }) 
       download(file.html, file.name);
       setNotice(`Your browser is saving ${file.name}. Check its downloads for the file.`);
     } catch (error) {
-      if (!isExpectedFailure(error)) console.error(error);
+      // Changed or no longer ready since this preview: the new one says what an export is now.
+      const changed = tagOf(error) === "stale_revision" || tagOf(error) === "validation_failed";
+      if (!changed && !isExpectedFailure(error)) console.error(error);
       if (!mounted.current) return;
-      if (isStale(error)) {
+      if (changed) {
         setNotice(
           "The walkthrough changed since this preview, so nothing was exported. Review what it would share now and approve again.",
         );
