@@ -9,7 +9,13 @@ import {
   OutdatedReasonSchema,
 } from "./guidance.ts";
 import { hash } from "./hash.ts";
-import { mapRange, matchHunks, sideChanged, type SnapshotLines } from "./mapping.ts";
+import {
+  contextChanged,
+  mapRange,
+  matchHunks,
+  sideChanged,
+  type SnapshotLines,
+} from "./mapping.ts";
 import type { RefreshPayload, Session } from "./session.ts";
 import type { BrowserRequest } from "./wire.ts";
 
@@ -35,7 +41,8 @@ const withReasons = <Text extends GuidanceText>(
  * anchored hunks or range changed, an overview when its group's or the review's hunks changed, and
  * any text whose references no longer map unchanged from their pinned snapshot. A note whose range
  * maps within its group moves with it; any other keeps its old anchor. References stay pinned. A
- * reference that changed in this refresh unviews its note's anchored hunks, never the target's.
+ * reference whose code reads differently than in the replaced snapshot unviews its note's anchored
+ * hunks, never the target's.
  *
  * `retained` holds the lines of the session's current snapshot and of every snapshot its guidance
  * pins; a pin whose snapshot is missing cannot be verified, so its guidance is Outdated.
@@ -63,21 +70,19 @@ export function refreshSession(
     return from && to ? mapRange(from, to, range) : undefined;
   };
   const previous = linesOf(session.snapshotId);
-  /** Whether each pinned reference still reads the same lines in the fresh snapshot. */
-  const referencesOf = (text: GuidanceText) => {
-    const unmapped = text.references.filter((range) => !mapped(range, fresh.snapshotId));
-    return {
-      changed: unmapped.length > 0,
-      // Changed by this refresh: it still mapped onto the snapshot being replaced, or, already
-      // changed before, its file's side changed again, which may be what the reader last read.
-      changedNow: unmapped.some(
-        (range) =>
-          mapped(range, session.snapshotId) !== undefined ||
-          !previous ||
-          sideChanged(previous, fresh.snapshot, range),
-      ),
-    };
-  };
+  /**
+   * Whether the pinned references still read the same lines in the fresh snapshot, and whether
+   * any reads differently than in the replaced one, where the reader last read it.
+   */
+  const referencesOf = (text: GuidanceText) => ({
+    changed: text.references.some((range) => !mapped(range, fresh.snapshotId)),
+    changedNow: text.references.some((range) => {
+      if (!previous) return true;
+      const pinned = linesOf(range.snapshotId);
+      const changed = pinned && contextChanged(pinned, previous, fresh.snapshot, range);
+      return changed ?? sideChanged(previous, fresh.snapshot, range);
+    }),
+  });
   const overviewOf = (overview: GuidanceText | null, codeChanged: boolean) => {
     if (!overview) return overview;
     const reasons: OutdatedReason[] = [];
