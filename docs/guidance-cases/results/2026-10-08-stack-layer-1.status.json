@@ -1,0 +1,219 @@
+{
+  "session": {
+    "id": "d08a31cd-220c-4e21-bd31-d5014152773c",
+    "repoRoot": "/tmp/gyst-98b-cases/stack-layer",
+    "scope": { "kind": "range", "range": "layer-1...layer-2" },
+    "snapshotId": "1662b9ebfb8e6731f9ee6ccbb75dfa8d8dee18e6b14b5926461d68e287bda580",
+    "createdAt": "2026-10-08T23:41:39.435Z",
+    "updatedAt": "2026-10-08T23:43:30.252Z"
+  },
+  "revision": 2,
+  "overview": {
+    "markdown": "Before this change, `totals()` held prices as dollar floats, multiplied and summed them as floats and rounded each amount separately with `toFixed(2)`. Float drift could push a half-cent tax the wrong way. Now every amount is an integer number of cents from start to finish, and dollar strings appear only at the two edges: [`parseCents`](gyst:new/src/money.ts#L20-L26) on the way in and [`formatCents`](gyst:new/src/money.ts#L29-L33) on the way out.\n\n```mermaid\nflowchart LR\n  price[\"unitPrice '0.70'\"] -->|parseCents| line[line cents]\n  line -->|sum| sub[subtotal cents]\n  sub -->|applyRate bp| tax[tax cents]\n  sub --> fmt[formatCents]\n  tax --> fmt\n  fmt --> out[Totals strings]\n```\n\nThe observable difference (old result from running the `layer-1` version of `totals()`, new from the test below):\n\n| Input | Before | After |\n| --- | --- | --- |\n| 3 × `0.70`, 5% tax | tax `0.10`, total `2.20` | tax `0.11`, total `2.21` |\n| unit price with 3 decimals | accepted | throws `InvalidAmount` |\n| quantity `0`, `-1` or `1.5` | accepted | throws `RangeError` |\n\nRead it in two steps:\n\n1. **Change the invoice input contract**: `unitPrice` becomes a decimal string and `taxRate` becomes `taxBasisPoints`. This breaks every caller that builds an `Invoice`. The output type `Totals` is unchanged, so [`renderInvoice`](gyst:new/src/render.ts#L4-L13) needs no edit.\n2. **Compute totals in integer cents**: the new arithmetic in `totals()`, the per-item validation and the tests that pin both.\n\nStack context: this is the middle of three layers. The helpers in `src/money.ts` come from the layer below (`main...layer-1`). They are unchanged source in this snapshot, so they are linked here, not reviewed. I checked with `git diff --stat main layer-1`, which shows that layer adds only `src/money.ts` and `test/money.test.ts`. The layer above (`layer-2...layer-3`) adds `src/csv.ts`. Reading it in Git shows it calls `totals()` and writes `item.unitPrice` into the CSV verbatim, so it depends on the string price introduced here.\n\nVerification: ran `npm test` (Node 24.21.0) on the `layer-2` checkout, which matches this snapshot: 12 tests pass.",
+    "references": [
+      {
+        "snapshotId": "1662b9ebfb8e6731f9ee6ccbb75dfa8d8dee18e6b14b5926461d68e287bda580",
+        "path": "src/money.ts",
+        "side": "new",
+        "startLine": 20,
+        "endLine": 26
+      },
+      {
+        "snapshotId": "1662b9ebfb8e6731f9ee6ccbb75dfa8d8dee18e6b14b5926461d68e287bda580",
+        "path": "src/money.ts",
+        "side": "new",
+        "startLine": 29,
+        "endLine": 33
+      },
+      {
+        "snapshotId": "1662b9ebfb8e6731f9ee6ccbb75dfa8d8dee18e6b14b5926461d68e287bda580",
+        "path": "src/render.ts",
+        "side": "new",
+        "startLine": 4,
+        "endLine": 13
+      }
+    ]
+  },
+  "groups": [
+    {
+      "id": "input-contract",
+      "title": "Change the invoice input contract",
+      "overview": {
+        "markdown": "The types in [`src/invoice.ts`](gyst:new/src/invoice.ts#L1-L15) are the breaking part of the change. Prices are now written as text and tax as whole basis points, so no float enters `totals()`. The test fixture then migrates to the new shape. Its expected `office` totals ([unchanged test](gyst:new/test/invoice.test.ts#L17-L24)) are the same as before, which shows that amounts that were already exact do not move.\n\nFor example, a caller migrates `{ unitPrice: 4.5, quantity: 4 }` with `taxRate: 0.0825` to `{ unitPrice: \"4.50\", quantity: 4 }` with `taxBasisPoints: 825`.",
+        "references": [
+          {
+            "snapshotId": "1662b9ebfb8e6731f9ee6ccbb75dfa8d8dee18e6b14b5926461d68e287bda580",
+            "path": "src/invoice.ts",
+            "side": "new",
+            "startLine": 1,
+            "endLine": 15
+          },
+          {
+            "snapshotId": "1662b9ebfb8e6731f9ee6ccbb75dfa8d8dee18e6b14b5926461d68e287bda580",
+            "path": "test/invoice.test.ts",
+            "side": "new",
+            "startLine": 17,
+            "endLine": 24
+          }
+        ]
+      },
+      "hunkIds": ["30f1cd64564195da", "a7b8dbff4cbcd26b"],
+      "files": ["src/invoice.ts", "test/invoice.test.ts"],
+      "notes": [
+        {
+          "id": "unit-price-string",
+          "anchor": {
+            "snapshotId": "1662b9ebfb8e6731f9ee6ccbb75dfa8d8dee18e6b14b5926461d68e287bda580",
+            "path": "src/invoice.ts",
+            "side": "new",
+            "startLine": 5,
+            "endLine": 8
+          },
+          "markdown": "The price stays as text until `parseCents` turns it into cents, so `\"0.70\"` never becomes the float `0.7`. The quantity rule is only a comment here; `lineAmount` enforces it further down.",
+          "references": []
+        },
+        {
+          "id": "tax-basis-points",
+          "anchor": {
+            "snapshotId": "1662b9ebfb8e6731f9ee6ccbb75dfa8d8dee18e6b14b5926461d68e287bda580",
+            "path": "src/invoice.ts",
+            "side": "new",
+            "startLine": 13,
+            "endLine": 14
+          },
+          "markdown": "A caller that keeps passing the old fraction (`0.0825`) fails loudly: [`applyRate`](gyst:new/src/money.ts#L39-L41) refuses a non-integer rate with `RangeError`. I ran this with `8.25`. A caller that passes a whole percent such as `8` is not caught and gets 0.08%, because the type is still a bare `number`.",
+          "references": [
+            {
+              "snapshotId": "1662b9ebfb8e6731f9ee6ccbb75dfa8d8dee18e6b14b5926461d68e287bda580",
+              "path": "src/money.ts",
+              "side": "new",
+              "startLine": 39,
+              "endLine": 41
+            }
+          ]
+        },
+        {
+          "id": "fixture-migration",
+          "anchor": {
+            "snapshotId": "1662b9ebfb8e6731f9ee6ccbb75dfa8d8dee18e6b14b5926461d68e287bda580",
+            "path": "test/invoice.test.ts",
+            "side": "new",
+            "startLine": 8,
+            "endLine": 14
+          },
+          "markdown": "`\"62\"` shows that whole dollars without decimals are accepted. Running the `layer-1` `totals()` on the old fixture also gives `86.60`, so this test's expectation is the same before and after.",
+          "references": []
+        }
+      ],
+      "count": 2
+    },
+    {
+      "id": "integer-cents",
+      "title": "Compute totals in integer cents",
+      "overview": {
+        "markdown": "Start at [`totals()`](gyst:new/src/invoice.ts#L30-L40). The pipeline has the same shape as before (lines, subtotal, tax on the subtotal, total), but every value in it is now an integer number of cents. Then read [`lineAmount`](gyst:new/src/invoice.ts#L42-L46), where each item's input is validated and converted. Finally, read the tests: one pins the half-cent case that floats got wrong, and two pin the new refusals.\n\nInvariant: `total` is formatted from `subtotal + tax` in cents, so the printed total always equals the printed subtotal plus the printed tax. Under `toFixed(2)` on floats, these were three separate roundings.",
+        "references": [
+          {
+            "snapshotId": "1662b9ebfb8e6731f9ee6ccbb75dfa8d8dee18e6b14b5926461d68e287bda580",
+            "path": "src/invoice.ts",
+            "side": "new",
+            "startLine": 30,
+            "endLine": 40
+          },
+          {
+            "snapshotId": "1662b9ebfb8e6731f9ee6ccbb75dfa8d8dee18e6b14b5926461d68e287bda580",
+            "path": "src/invoice.ts",
+            "side": "new",
+            "startLine": 42,
+            "endLine": 46
+          }
+        ]
+      },
+      "hunkIds": ["afa60bd84351afdb", "5ca87070ad498b4f"],
+      "files": ["src/invoice.ts", "test/invoice.test.ts"],
+      "notes": [
+        {
+          "id": "totals-pipeline",
+          "anchor": {
+            "snapshotId": "1662b9ebfb8e6731f9ee6ccbb75dfa8d8dee18e6b14b5926461d68e287bda580",
+            "path": "src/invoice.ts",
+            "side": "new",
+            "startLine": 30,
+            "endLine": 40
+          },
+          "markdown": "Tax is still rounded once, on the subtotal, as it was before. The difference is that the subtotal is now exact, and [`applyRate`](gyst:new/src/money.ts#L39-L46) rounds half away from zero in integer arithmetic. So `210` cents at 500 bp is exactly 10.5 cents, which rounds to 11.",
+          "references": [
+            {
+              "snapshotId": "1662b9ebfb8e6731f9ee6ccbb75dfa8d8dee18e6b14b5926461d68e287bda580",
+              "path": "src/money.ts",
+              "side": "new",
+              "startLine": 39,
+              "endLine": 46
+            }
+          ]
+        },
+        {
+          "id": "line-amount-validation",
+          "anchor": {
+            "snapshotId": "1662b9ebfb8e6731f9ee6ccbb75dfa8d8dee18e6b14b5926461d68e287bda580",
+            "path": "src/invoice.ts",
+            "side": "new",
+            "startLine": 42,
+            "endLine": 46
+          },
+          "markdown": "The first invalid item throws, and no partial `Totals` is returned. [`parseCents`](gyst:new/src/money.ts#L14-L26) refuses more than two decimals and anything non-numeric (I ran it: `\"$4.50\"` throws `InvalidAmount`). It accepts a leading `-`, so a negative-price discount line still works. I ran `\"-5.00\"`: it subtracts from the subtotal.",
+          "references": [
+            {
+              "snapshotId": "1662b9ebfb8e6731f9ee6ccbb75dfa8d8dee18e6b14b5926461d68e287bda580",
+              "path": "src/money.ts",
+              "side": "new",
+              "startLine": 14,
+              "endLine": 26
+            }
+          ]
+        },
+        {
+          "id": "half-cent-test",
+          "anchor": {
+            "snapshotId": "1662b9ebfb8e6731f9ee6ccbb75dfa8d8dee18e6b14b5926461d68e287bda580",
+            "path": "test/invoice.test.ts",
+            "side": "new",
+            "startLine": 35,
+            "endLine": 47
+          },
+          "markdown": "This is the case from the walkthrough table. Running the `layer-1` `totals()` on `3 × 0.70` at 5% gives tax `0.10` and total `2.20`, which confirms the comment's claim. Passes under `npm test`.",
+          "references": []
+        },
+        {
+          "id": "refusal-tests",
+          "anchor": {
+            "snapshotId": "1662b9ebfb8e6731f9ee6ccbb75dfa8d8dee18e6b14b5926461d68e287bda580",
+            "path": "test/invoice.test.ts",
+            "side": "new",
+            "startLine": 49,
+            "endLine": 62
+          },
+          "markdown": "Both tests check only the error class. The third argument to `assert.throws`, `String(quantity)`, is the failure message, not a pattern, so the test does not check the `RangeError` text or which item it names. Both pass under `npm test`.",
+          "references": []
+        }
+      ],
+      "count": 2
+    }
+  ],
+  "preparation": {
+    "state": "complete",
+    "groupedHunks": 4,
+    "totalHunks": 4,
+    "overviewMissing": false,
+    "groupsMissingOverview": [],
+    "overviewOutdated": false,
+    "groupsOutdated": [],
+    "notesOutdated": []
+  },
+  "viewedHunkIds": [],
+  "threads": { "open": 0, "resolved": 0, "pending": 0 },
+  "files": [
+    { "path": "src/invoice.ts", "hunkCount": 2, "viewed": false },
+    { "path": "test/invoice.test.ts", "hunkCount": 2, "viewed": false }
+  ]
+}
