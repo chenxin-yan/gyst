@@ -1,0 +1,528 @@
+import { describe, expect, it } from "vite-plus/test";
+import { Result, Schema } from "effect";
+import type { CapturedIndex } from "./apply.ts";
+import { applyBatch } from "./apply.ts";
+import {
+  anchorKey,
+  type ConversationRequest,
+  converse,
+  pickUp,
+  type ThreadsRequest,
+} from "./conversation.ts";
+import type { CapturedRange } from "./guidance.ts";
+import { setViewed } from "./human-action.ts";
+import { type Session, SessionSchema } from "./session.ts";
+import { statusOf } from "./status.ts";
+import type { ThreadCode } from "./thread.ts";
+
+const LATER = "2026-02-02T00:00:00.000Z";
+const SNAPSHOT = "snapshot";
+
+const range = (startLine: number, endLine = startLine, snapshotId = SNAPSHOT): CapturedRange => ({
+  snapshotId,
+  path: "a.ts",
+  side: "new",
+  startLine,
+  endLine,
+});
+
+const base: Session = {
+  id: "session",
+  repoRoot: "/repo",
+  scope: { kind: "uncommitted" },
+  snapshotId: SNAPSHOT,
+  createdAt: "2026-01-01T00:00:00.000Z",
+  updatedAt: "2026-01-01T00:00:00.000Z",
+  revision: 3,
+  hunks: [
+    {
+      id: "a1",
+      file: "a.ts",
+      header: "@@ -1,3 +1,3 @@",
+      patch: "@@ -1,3 +1,3 @@\n a\n-b\n+B\n c",
+      contentHash: "a1",
+    },
+  ],
+  overview: null,
+  groups: [
+    {
+      id: "g1",
+      title: "first",
+      overview: { markdown: "First group.", references: [] },
+      hunkIds: ["a1"],
+      files: ["a.ts"],
+      notes: [{ id: "n1", anchor: range(2), markdown: "About B.", references: [] }],
+    },
+  ],
+  viewedHunkIds: ["a1"],
+  receiptTexts: [],
+  applyReceipts: [],
+  viewedReceipts: [],
+  refreshReceipts: [],
+  threads: [],
+  drafts: [],
+  conversationReceipts: [],
+  pickupReceipts: [],
+};
+
+const captured: CapturedIndex[] = [
+  { snapshotId: SNAPSHOT, sides: new Map([["new\0a.ts", { kind: "text", lines: 20 }]]) },
+];
+
+type Act = ConversationRequest extends infer Request
+  ? Request extends ConversationRequest
+    ? Omit<Request, "session" | "requestId">
+    : never
+  : never;
+
+const act = (session: Session, requestId: string, request: Act) =>
+  converse(session, { session: session.id, requestId, ...request }, captured, LATER);
+const done = (session: Session, requestId: string, request: Act) =>
+  Result.getOrThrow(act(session, requestId, request));
+const refused = (session: Session, requestId: string, request: Act) =>
+  Result.getOrThrow(Result.flip(act(session, requestId, request)));
+
+/** Drafts and sends one message, returning the session and what the send made. */
+function post(
+  session: Session,
+  target: Extract<Act, { command: "draft" }>["target"],
+  markdown: string,
+  extra: { wording?: string; kind?: "question" | "change"; id?: string } = {},
+) {
+  const id = extra.id ?? markdown;
+  const drafted = done(session, `draft-${id}`, {
+    command: "draft",
+    target,
+    ...(extra.wording && { wording: extra.wording }),
+  });
+  const sent = done(drafted.session!, `send-${id}`, {
+    command: "send",
+    draft: drafted.result.draft!,
+    markdown,
+    kind: extra.kind ?? "question",
+  });
+  return { session: sent.session!, thread: sent.result.thread!, message: sent.result.message! };
+}
+
+const code = (session: Session): ReadonlyMap<string, ThreadCode> =>
+  new Map(session.threads.map(({ anchor }) => [anchorKey(anchor), { kind: "text", lines: ["B"] }]));
+const threadsRequest = (mode: ThreadsRequest["mode"], requestId: string): ThreadsRequest => ({
+  command: "threads",
+  session: "session",
+  mode,
+  requestId,
+});
+const pick = (session: Session, mode: ThreadsRequest["mode"], requestId: string) =>
+  Result.getOrThrow(pickUp(session, threadsRequest(mode, requestId), code(session), LATER));
+
+describe("human conversation actions", () => {
+  it("comments on any captured range through a pinned draft, Pending until read", () => {
+    const drafted = done(base, "r1", {
+      command: "draft",
+      target: { kind: "comment", anchor: range(4, 6) },
+    });
+    // The pin alone is no review change: no revision, no Viewed.
+    expect(drafted.session).toMatchObject({ revision: 3, drafts: [{ anchor: range(4, 6) }] });
+    const sent = done(drafted.session!, "r2", {
+      command: "send",
+      draft: drafted.result.draft!,
+      markdown: "Why *this*?",
+      kind: "change",
+    });
+    expect(sent.result).toEqual({
+      sessionId: "session",
+      revision: 4,
+      thread: sent.result.thread,
+      message: sent.result.message,
+    });
+    expect(sent.session).toMatchObject({ drafts: [], viewedHunkIds: ["a1"] });
+    expect(sent.session!.threads).toEqual([
+      {
+        id: sent.result.thread,
+        anchor: range(4, 6),
+        resolved: false,
+        messages: [
+          {
+            id: sent.result.message,
+            author: "human",
+            kind: "change",
+            pending: true,
+            markdown: "Why *this*?",
+            references: [],
+            createdAt: LATER,
+          },
+        ],
+      },
+    ]);
+    // Several threads may share one range.
+    const again = post(sent.session!, { kind: "comment", anchor: range(4, 6) }, "And this?");
+    expect(again.session.threads.map(({ anchor }) => anchor)).toEqual([range(4, 6), range(4, 6)]);
+    expect(Schema.decodeUnknownSync(SessionSchema)(again.session)).toEqual(again.session);
+  });
+
+  it("refuses comments outside captured text or retained snapshots", () => {
+    expect(
+      refused(base, "r1", { command: "draft", target: { kind: "comment", anchor: range(19, 21) } }),
+    ).toMatchObject({ _tag: "validation_failed" });
+    expect(
+      refused(base, "r1", {
+        command: "draft",
+        target: { kind: "comment", anchor: range(1, 1, "reclaimed") },
+      }),
+    ).toMatchObject({ _tag: "stale_revision" });
+  });
+
+  it("replays a request id's recorded result and refuses it for another payload", () => {
+    const first = done(base, "r1", {
+      command: "draft",
+      target: { kind: "comment", anchor: range(4) },
+    });
+    const later = post(first.session!, { kind: "comment", anchor: range(5) }, "Later.").session;
+    expect(
+      act(later, "r1", { command: "draft", target: { kind: "comment", anchor: range(4) } }),
+    ).toEqual(Result.succeed({ result: first.result }));
+    expect(
+      refused(later, "r1", { command: "draft", target: { kind: "comment", anchor: range(5) } }),
+    ).toMatchObject({
+      _tag: "validation_failed",
+      message: "request id reused with a different payload",
+    });
+  });
+
+  it("starts a note's only thread with its first reply, each reply keeping the wording it saw", () => {
+    const stale = refused(base, "r1", {
+      command: "draft",
+      target: { kind: "note", note: "n1" },
+      wording: "An older wording.",
+    });
+    expect(stale._tag).toBe("stale_revision");
+    const first = post(base, { kind: "note", note: "n1" }, "Why B?", { wording: "About B." });
+    expect(first.session.threads[0]).toMatchObject({
+      anchor: range(2),
+      note: { id: "n1", removed: false },
+      messages: [{ wording: { markdown: "About B.", references: [] } }],
+    });
+    // The agent rewrites the note; a later reply, in the same thread, keeps the new wording.
+    const rewritten = Result.getOrThrow(
+      applyBatch(
+        first.session,
+        {
+          revision: first.session.revision,
+          snapshotId: SNAPSHOT,
+          idempotencyKey: "rewrite",
+          ops: [{ type: "note.update", id: "n1", markdown: "B, explained better." }],
+        },
+        captured[0]!,
+        LATER,
+      ),
+    ).session!;
+    const second = post(rewritten, { kind: "note", note: "n1" }, "Thanks, and C?", {
+      wording: "B, explained better.",
+    });
+    expect(second.session.threads).toHaveLength(1);
+    expect(
+      second.session.threads[0]!.messages.map(
+        (message) => "wording" in message && message.wording?.markdown,
+      ),
+    ).toEqual(["About B.", "B, explained better."]);
+  });
+
+  it("lets only Pending human messages change, never once read or an agent's", () => {
+    const { session, message } = post(base, { kind: "comment", anchor: range(4) }, "Typo");
+    const edited = done(session, "e1", {
+      command: "edit",
+      message,
+      markdown: "Is this a typo?",
+      kind: "change",
+    }).session!;
+    expect(edited.threads[0]!.messages[0]).toMatchObject({
+      markdown: "Is this a typo?",
+      kind: "change",
+      pending: true,
+    });
+    const read = pick(edited, "pending", "p1").session!;
+    for (const request of [
+      { command: "edit", message, kind: "question" },
+      { command: "retract", message },
+    ] as const)
+      expect(refused(read, "late", request)).toMatchObject({
+        _tag: "validation_failed",
+        message: `message ${message} was already read; send a correction as a new reply`,
+      });
+    // The correction is a new reply in the same thread.
+    const corrected = post(
+      read,
+      { kind: "thread", thread: read.threads[0]!.id },
+      "I meant line 5.",
+    );
+    expect(corrected.session.threads[0]!.messages).toHaveLength(2);
+  });
+
+  it("deletes a Pending message without cascading; an emptied thread goes, its note stays", () => {
+    const first = post(base, { kind: "note", note: "n1" }, "One?", { wording: "About B." });
+    const second = post(first.session, { kind: "note", note: "n1" }, "Two?", {
+      wording: "About B.",
+    });
+    const once = done(second.session, "x1", {
+      command: "retract",
+      message: first.message,
+    }).session!;
+    expect(once.threads[0]!.messages.map(({ markdown }) => markdown)).toEqual(["Two?"]);
+    const empty = done(once, "x2", { command: "retract", message: second.message }).session!;
+    expect(empty.threads).toEqual([]);
+    expect(empty.groups[0]!.notes.map(({ id }) => id)).toEqual(["n1"]);
+  });
+
+  it("asks for reopening before a human reply to a resolved thread", () => {
+    const { session, thread } = post(base, { kind: "comment", anchor: range(4) }, "Why?");
+    const resolved = done(session, "s1", { command: "resolve", thread, resolved: true }).session!;
+    expect(statusOf(resolved).threads).toEqual({ open: 0, resolved: 1, pending: 1 });
+    expect(
+      refused(resolved, "d1", { command: "draft", target: { kind: "thread", thread } }),
+    ).toMatchObject({ _tag: "validation_failed" });
+    // A draft opened before the resolution cannot be sent into it either.
+    const drafted = done(session, "d2", { command: "draft", target: { kind: "thread", thread } });
+    const late = done(drafted.session!, "s2", { command: "resolve", thread, resolved: true });
+    expect(
+      refused(late.session!, "send", {
+        command: "send",
+        draft: drafted.result.draft!,
+        markdown: "More?",
+        kind: "question",
+      }),
+    ).toMatchObject({ _tag: "validation_failed" });
+    const reopened = done(resolved, "s3", { command: "resolve", thread, resolved: false }).session!;
+    expect(
+      post(reopened, { kind: "thread", thread }, "More?").session.threads[0]!.messages,
+    ).toHaveLength(2);
+    // Read, reply and resolution never touch Viewed.
+    expect(reopened.viewedHunkIds).toEqual(["a1"]);
+  });
+
+  it("pins a message's references to the current snapshot, within captured text", () => {
+    const { session } = post(
+      base,
+      { kind: "comment", anchor: range(4) },
+      "See [here](gyst:new/a.ts#L7).",
+    );
+    expect(session.threads[0]!.messages[0]!.references).toEqual([range(7)]);
+    const drafted = done(base, "d", {
+      command: "draft",
+      target: { kind: "comment", anchor: range(4) },
+    });
+    for (const markdown of ["See [far](gyst:new/a.ts#L30).", "![image](https://example.com/a.png)"])
+      expect(
+        refused(drafted.session!, "s", {
+          command: "send",
+          draft: drafted.result.draft!,
+          markdown,
+          kind: "question",
+        })._tag,
+      ).toBe("validation_failed");
+  });
+
+  it("keeps a draft's context when its note is removed, sending into the retained place", () => {
+    const drafted = done(base, "d", {
+      command: "draft",
+      target: { kind: "note", note: "n1" },
+      wording: "About B.",
+    });
+    const removed = Result.getOrThrow(
+      applyBatch(
+        drafted.session!,
+        {
+          revision: 3,
+          snapshotId: SNAPSHOT,
+          idempotencyKey: "rm",
+          ops: [{ type: "note.remove", id: "n1" }],
+        },
+        captured[0]!,
+        LATER,
+      ),
+    ).session!;
+    expect(removed.drafts).toEqual([
+      { ...drafted.session!.drafts[0], note: { id: "n1", removed: true } },
+    ]);
+    const sent = done(removed, "s", {
+      command: "send",
+      draft: drafted.result.draft!,
+      markdown: "Was this right?",
+      kind: "question",
+    }).session!;
+    expect(sent.threads[0]).toMatchObject({
+      anchor: range(2),
+      note: { id: "n1", removed: true },
+      messages: [{ wording: { markdown: "About B." } }],
+    });
+  });
+});
+
+describe("pickUp", () => {
+  const two = () => {
+    const a = post(base, { kind: "comment", anchor: range(4) }, "A?");
+    const b = post(a.session, { kind: "comment", anchor: range(5) }, "B?", { kind: "change" });
+    return b.session;
+  };
+
+  it("freezes exactly the Pending messages it returns and records the bundle", () => {
+    const session = two();
+    const picked = pick(session, "pending", "p1");
+    expect(picked.result).toMatchObject({
+      sessionId: "session",
+      revision: session.revision + 1,
+      progress: { viewed: 1, total: 1 },
+      openThreads: 2,
+    });
+    expect(
+      picked.result.threads.map(({ unread, code: lines, messages }) => ({
+        unread,
+        lines,
+        messages,
+      })),
+    ).toEqual(
+      session.threads.map(({ messages }) => ({
+        unread: [messages[0]!.id],
+        lines: { kind: "text", lines: ["B"] },
+        messages: [{ ...messages[0], pending: false }],
+      })),
+    );
+    // Kinds come back on human messages.
+    expect(
+      picked.result.threads.map(
+        ({ messages }) => messages[0]!.author === "human" && messages[0]!.kind,
+      ),
+    ).toEqual(["question", "change"]);
+    expect(statusOf(picked.session!).threads).toEqual({ open: 2, resolved: 0, pending: 0 });
+    // Viewed is untouched; the next pickup has nothing.
+    expect(picked.session!.viewedHunkIds).toEqual(["a1"]);
+    const empty = pick(picked.session!, "pending", "p2");
+    expect(empty.result).toMatchObject({
+      threads: [],
+      openThreads: 2,
+      revision: picked.result.revision,
+    });
+  });
+
+  it("returns the recorded bundle to a retry even after later arrivals, which wait", () => {
+    const session = two();
+    const picked = pick(session, "pending", "p1");
+    const arrived = post(
+      picked.session!,
+      { kind: "thread", thread: session.threads[0]!.id },
+      "And?",
+    );
+    const retried = pickUp(arrived.session, threadsRequest("pending", "p1"), new Map(), LATER);
+    expect(retried).toEqual(Result.succeed({ result: picked.result }));
+    // A lost acknowledgement left nothing unread behind: the later message waits for a new pickup.
+    expect(statusOf(arrived.session).threads.pending).toBe(1);
+    const next = pick(arrived.session, "pending", "p2");
+    expect(next.result.threads.map(({ unread }) => unread)).toEqual([[arrived.message]]);
+    expect(
+      Result.getOrThrow(
+        Result.flip(pickUp(arrived.session, threadsRequest("open", "p1"), new Map(), LATER)),
+      ),
+    ).toMatchObject({ _tag: "validation_failed" });
+  });
+
+  it("skips resolved threads until reopened, and recovers open work after a crash", () => {
+    const session = two();
+    const [first, second] = session.threads.map(({ id }) => id) as [string, string];
+    const resolved = done(session, "r", {
+      command: "resolve",
+      thread: second,
+      resolved: true,
+    }).session!;
+    const picked = pick(resolved, "pending", "p1");
+    expect(picked.result.threads.map(({ id }) => id)).toEqual([first]);
+    // The agent crashed before answering: open recovery returns the read work again, freezing nothing new.
+    const recovered = pick(picked.session!, "open", "o1");
+    expect(recovered.result.threads.map(({ id, unread }) => ({ id, unread }))).toEqual([
+      { id: first, unread: [] },
+    ]);
+    expect(recovered.result.revision).toBe(picked.result.revision);
+    const reopened = done(recovered.session!, "o", {
+      command: "resolve",
+      thread: second,
+      resolved: false,
+    }).session!;
+    const exposed = pick(reopened, "pending", "p2");
+    expect(exposed.result.threads.map(({ id }) => id)).toEqual([second]);
+  });
+
+  it("freezes unread bodies returned by open recovery under the same rules", () => {
+    const session = two();
+    const recovered = pick(session, "open", "o1");
+    expect(recovered.result.threads.flatMap(({ unread }) => unread)).toHaveLength(2);
+    expect(statusOf(recovered.session!).threads.pending).toBe(0);
+  });
+
+  it("serializes against pending edits: a deleted message is never returned, an edited one returns as edited", () => {
+    const session = two();
+    const [a, b] = session.threads.map(({ messages }) => messages[0]!.id) as [string, string];
+    const edited = done(session, "e", {
+      command: "edit",
+      message: a,
+      markdown: "A, edited?",
+    }).session!;
+    const kinded = done(edited, "k", { command: "edit", message: a, kind: "change" }).session!;
+    const deleted = done(kinded, "x", { command: "retract", message: b }).session!;
+    const picked = pick(deleted, "pending", "p1");
+    expect(picked.result.threads.flatMap(({ messages }) => messages)).toMatchObject([
+      { id: a, markdown: "A, edited?", kind: "change", pending: false },
+    ]);
+  });
+
+  it("lets agent replies land in resolved threads without reopening them, immutable afterwards", () => {
+    const session = pick(two(), "pending", "p1").session!;
+    const thread = session.threads[0]!.id;
+    const resolved = done(session, "r", { command: "resolve", thread, resolved: true }).session!;
+    const replied = Result.getOrThrow(
+      applyBatch(
+        resolved,
+        {
+          revision: resolved.revision,
+          snapshotId: SNAPSHOT,
+          idempotencyKey: "late",
+          ops: [{ type: "thread.reply", thread, markdown: "It was a typo; fixed." }],
+        },
+        captured[0]!,
+        LATER,
+      ),
+    ).session!;
+    expect(replied.threads[0]).toMatchObject({ resolved: true });
+    const reply = replied.threads[0]!.messages.at(-1)!;
+    expect(reply).toMatchObject({ author: "agent", markdown: "It was a typo; fixed." });
+    expect("kind" in reply).toBe(false);
+    expect(
+      refused(replied, "e", { command: "edit", message: reply.id, markdown: "Changed." }),
+    ).toMatchObject({
+      message: "agent replies cannot be changed",
+    });
+    expect(statusOf(replied).viewedHunkIds).toEqual(["a1"]);
+  });
+
+  it("keeps human authority apart: Viewed, resolution and messages move independently", () => {
+    const session = two();
+    const thread = session.threads[0]!.id;
+    const unviewed = Result.getOrThrow(
+      setViewed(
+        session,
+        {
+          command: "viewed",
+          session: "session",
+          snapshotId: SNAPSHOT,
+          revision: session.revision,
+          requestId: "v",
+          hunkIds: ["a1"],
+          viewed: false,
+        },
+        LATER,
+      ),
+    ).session!;
+    const resolved = done(unviewed, "r", { command: "resolve", thread, resolved: true }).session!;
+    expect(resolved).toMatchObject({
+      viewedHunkIds: [],
+      threads: [{ resolved: true }, { resolved: false }],
+    });
+  });
+});

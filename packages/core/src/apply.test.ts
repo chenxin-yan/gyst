@@ -81,6 +81,10 @@ const session: Session = {
   applyReceipts: [],
   viewedReceipts: [],
   refreshReceipts: [],
+  threads: [],
+  drafts: [],
+  conversationReceipts: [],
+  pickupReceipts: [],
 };
 
 const sides: [string, CapturedSide][] = [
@@ -935,5 +939,121 @@ describe("Outdated guidance", () => {
     expect(rewritten.groups[0]!.notes[0]).toEqual(
       note("n1", range("a.ts", "new", 2), "Rewritten n1."),
     );
+  });
+});
+
+describe("thread replies and note conversations", () => {
+  const asked = {
+    id: "m1",
+    author: "human",
+    kind: "question",
+    pending: false,
+    markdown: "Why?",
+    references: [],
+    createdAt: LATER,
+  } as const;
+  const withThreads: Session = {
+    ...session,
+    threads: [
+      { id: "t-code", anchor: pin(range("a.ts", "new", 40)), resolved: false, messages: [asked] },
+      {
+        id: "t-note",
+        anchor: pin(range("a.ts", "new", 2)),
+        note: { id: "n1", removed: false },
+        resolved: true,
+        messages: [{ ...asked, id: "m2" }],
+      },
+    ],
+    drafts: [
+      { id: "d1", anchor: pin(range("a.ts", "new", 2)), note: { id: "n1", removed: false } },
+    ],
+  };
+
+  it("posts immutable agent replies atomically with guidance, never touching Viewed or resolution", () => {
+    const changed = applied(
+      [
+        {
+          type: "thread.reply",
+          thread: "t-code",
+          markdown: "See [the helper](gyst:new/support.ts#L2).",
+        },
+        { type: "thread.reply", thread: "t-note", markdown: "Answered after resolution." },
+        { type: "group.update", id: "g2", title: "second, renamed" },
+      ],
+      withThreads,
+    );
+    expect(
+      changed.threads.map(({ resolved, messages }) => ({ resolved, last: messages.at(-1) })),
+    ).toEqual([
+      {
+        resolved: false,
+        last: {
+          id: expect.any(String),
+          author: "agent",
+          markdown: "See [the helper](gyst:new/support.ts#L2).",
+          references: [pin(range("support.ts", "new", 2))],
+          createdAt: LATER,
+        },
+      },
+      { resolved: true, last: expect.objectContaining({ author: "agent", references: [] }) },
+    ]);
+    expect(changed.viewedHunkIds).toEqual(withThreads.viewedHunkIds);
+    // An unknown thread or a reference outside captured text rolls back the whole batch.
+    for (const op of [
+      { type: "thread.reply", thread: "t-gone", markdown: "Hm." },
+      { type: "thread.reply", thread: "t-code", markdown: "[far](gyst:new/b.ts#L9)" },
+    ] as const)
+      expect(
+        rejected([{ type: "group.update", id: "g2", title: "renamed" }, op], withThreads)._tag,
+      ).toBe("validation_failed");
+  });
+
+  it("refuses agent attempts to start, resolve or impersonate in a batch", () => {
+    for (const op of [
+      { type: "thread.create", anchor: range("a.ts", "new", 2), markdown: "Look." },
+      { type: "thread.resolve", thread: "t-code" },
+      { type: "thread.reply", thread: "t-code", markdown: "Hi.", author: "human" },
+      { type: "thread.reply", thread: "t-code", markdown: "Hi.", kind: "change" },
+    ])
+      expect(() =>
+        Schema.decodeUnknownSync(ApplyEnvelopeSchema, { onExcessProperty: "error" })({
+          ...batch([]),
+          ops: [op],
+        }),
+      ).toThrow();
+  });
+
+  it("moves a note's thread with a re-anchor and leaves it in place once the note is removed", () => {
+    const moved = applied(
+      [{ type: "note.update", id: "n1", anchor: range("a.ts", "old", 2) }],
+      withThreads,
+    );
+    expect(moved.threads[1]!.anchor).toEqual(pin(range("a.ts", "old", 2)));
+    expect(moved.drafts[0]!.anchor).toEqual(pin(range("a.ts", "old", 2)));
+    // A new note under the same id at the same place does not inherit the removed note's thread.
+    const replaced = applied(
+      [
+        { type: "note.remove", id: "n1" },
+        {
+          type: "note.create",
+          id: "n1",
+          group: "g1",
+          anchor: range("a.ts", "new", 2),
+          markdown: "New.",
+        },
+      ],
+      withThreads,
+    );
+    expect(replaced.threads[1]).toMatchObject({
+      note: { id: "n1", removed: true },
+      anchor: pin(range("a.ts", "new", 2)),
+    });
+    expect(replaced.drafts[0]!.note).toEqual({ id: "n1", removed: true });
+    // Dissolving the group removes its notes, never their conversations.
+    const dissolved = applied([{ type: "group.dissolve", id: "g1" }], withThreads);
+    expect(dissolved.threads.map(({ id, note }) => ({ id, note }))).toEqual([
+      { id: "t-code", note: undefined },
+      { id: "t-note", note: { id: "n1", removed: true } },
+    ]);
   });
 });

@@ -138,6 +138,18 @@ export function refreshSession(
       notes,
     };
   });
+  // A note's thread and drafts follow the note, wherever it now sits. Any other thread or draft moves
+  // only where every line of its range maps unchanged, independently of hunk identity; otherwise it
+  // keeps its original code, pinned. Messages, Pending, resolution and wording are never touched.
+  const notesNow = new Map(
+    draft.groups.flatMap(({ notes }) => notes.map((note) => [note.id, note] as const)),
+  );
+  for (const item of [...draft.threads, ...draft.drafts]) {
+    const note = item.note && !item.note.removed ? notesNow.get(item.note.id) : undefined;
+    const range = note ? undefined : mapped(item.anchor, fresh.snapshotId);
+    if (note) item.anchor = note.anchor;
+    else if (range) item.anchor = { ...range, snapshotId: fresh.snapshotId };
+  }
   draft.viewedHunkIds = draft.viewedHunkIds.filter((id) => matches.has(id) && !unviewed.has(id));
   draft.revision++;
   draft.updatedAt = updatedAt;
@@ -146,13 +158,25 @@ export function refreshSession(
 
 /**
  * The snapshots whose captured content the session still needs, its current one first: those its
- * guidance anchors or references pin. Reads may name any of them, and refresh maps from them.
+ * guidance anchors or references pin, and those of every conversation (resolved ones included),
+ * message, reply wording and draft. Reads may name any of them, and refresh maps from them.
  */
 export function pinnedSnapshotIds(session: Session): string[] {
   const ids = new Set([session.snapshotId]);
-  const pin = (text: GuidanceText | null) => {
+  const pin = (text: Pick<GuidanceText, "references"> | null | undefined) => {
     for (const { snapshotId } of text?.references ?? []) ids.add(snapshotId);
   };
+  for (const thread of session.threads) {
+    ids.add(thread.anchor.snapshotId);
+    for (const message of thread.messages) {
+      pin(message);
+      if (message.author === "human") pin(message.wording);
+    }
+  }
+  for (const draft of session.drafts) {
+    ids.add(draft.anchor.snapshotId);
+    pin(draft.wording);
+  }
   pin(session.overview);
   for (const group of session.groups) {
     pin(group.overview);

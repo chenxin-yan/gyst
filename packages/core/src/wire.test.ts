@@ -59,6 +59,39 @@ describe("daemon wire envelopes", () => {
       expect(() => decodeRequest(invalid)).toThrow();
   });
 
+  const humanConversation = [
+    {
+      command: "draft",
+      session: "s1",
+      requestId: "r1",
+      target: {
+        kind: "comment",
+        anchor: { snapshotId, path: "src/a.ts", side: "new", startLine: 2, endLine: 4 },
+      },
+    },
+    {
+      command: "send",
+      session: "s1",
+      requestId: "r2",
+      draft: "d1",
+      markdown: "Why?",
+      kind: "question",
+    },
+    { command: "draft", session: "s1", requestId: "r3", target: { kind: "thread", thread: "t1" } },
+    {
+      command: "draft",
+      session: "s1",
+      requestId: "r4",
+      target: { kind: "note", note: "n1" },
+      wording: "The note.",
+    },
+    { command: "edit", session: "s1", requestId: "r5", message: "m1", kind: "change" },
+    { command: "retract", session: "s1", requestId: "r6", message: "m1" },
+    { command: "resolve", session: "s1", requestId: "r7", thread: "t1", resolved: false },
+    { command: "discard", session: "s1", requestId: "r8", draft: "d1" },
+    { command: "conversations", session: "s1" },
+  ];
+
   it("keeps human and browser-only operations off the socket", () => {
     const target = { session: "s1", snapshotId, side: "new", file: "src/a.ts" };
     for (const browserOnly of [
@@ -79,10 +112,39 @@ describe("daemon wire envelopes", () => {
       { command: "definition", ...target, position: { line: 1, character: 4 } },
       { command: "references", ...target, position: { line: 1, character: 4 } },
       { command: "identifiers", ...target, line: 3 },
+      ...humanConversation,
     ]) {
       expect(decodeBrowserRequest(browserOnly)).toEqual(browserOnly);
       expect(() => decodeRequest(browserOnly)).toThrow();
     }
+  });
+
+  it("keeps the agent's thread retrieval off the browser, and human authority off both", () => {
+    for (const retrieval of [
+      { command: "threads", session: "s1", mode: "pending", requestId: "r1" },
+      { command: "threads", session: "s1", mode: "open", requestId: "r1" },
+    ]) {
+      expect(decodeRequest(retrieval)).toEqual(retrieval);
+      expect(() => decodeBrowserRequest(retrieval)).toThrow();
+    }
+    for (const invalid of [
+      { command: "threads", session: "s1", mode: "pending" },
+      { command: "threads", session: "s1", mode: "resolved", requestId: "r1" },
+      { command: "threads", session: "s1", mode: "open", requestId: "r1", role: "human" },
+    ])
+      expect(() => decodeRequest(invalid)).toThrow();
+    for (const invalid of [
+      // A message has no author field to forge, and a kind only of its own.
+      { ...humanConversation[1], author: "agent" },
+      { ...humanConversation[1], kind: "verdict" },
+      { ...humanConversation[1], markdown: "  " },
+      { command: "edit", session: "s1", requestId: "r1", message: "m1" },
+      { ...humanConversation[0], target: { kind: "group", group: "g1" } },
+      { ...humanConversation[0], target: { kind: "overview" } },
+      { ...humanConversation[0], target: { kind: "comment", anchor: { path: "a", side: "new" } } },
+      { command: "resolve", session: "s1", thread: "t1", resolved: true },
+    ])
+      expect(() => decodeBrowserRequest(invalid)).toThrow();
   });
 
   it("keeps checkout, Git, executable, authority and agent operations out of browser requests", () => {
@@ -298,6 +360,7 @@ describe("daemon wire envelopes", () => {
         notesOutdated: [],
       },
       viewedHunkIds: [],
+      threads: { open: 0, resolved: 0, pending: 0 },
       files: [{ path: "a.ts", hunkCount: 1, viewed: false }],
     };
     expect(Schema.decodeUnknownSync(publicWire.StatusPayloadSchema, strict)(status)).toEqual(
@@ -341,6 +404,7 @@ describe("daemon wire envelopes", () => {
       "src/metadata.ts",
       "src/navigation.ts",
       "src/session.ts",
+      "src/thread.ts",
       "src/wire.ts",
     ]);
     expect([...external]).toEqual(["effect"]);

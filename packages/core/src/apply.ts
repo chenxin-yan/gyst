@@ -85,6 +85,15 @@ export const NoteRevalidateSchema = Schema.Struct({
   type: Schema.Literal("note.revalidate"),
   id: Schema.String,
 });
+/**
+ * An agent reply appended to an existing thread, open or resolved (it never reopens one). Free-form
+ * and immutable once posted; its references pin to the batch's snapshot.
+ */
+export const ThreadReplySchema = Schema.Struct({
+  type: Schema.Literal("thread.reply"),
+  thread: Schema.String,
+  markdown: MarkdownSchema,
+});
 export const ApplyOpSchema = Schema.Union([
   WalkthroughUpdateSchema,
   WalkthroughRevalidateSchema,
@@ -96,6 +105,7 @@ export const ApplyOpSchema = Schema.Union([
   NoteUpdateSchema,
   NoteRevalidateSchema,
   NoteRemoveSchema,
+  ThreadReplySchema,
 ]);
 export type ApplyOp = typeof ApplyOpSchema.Type;
 export const ApplyEnvelopeSchema = Schema.Struct({
@@ -230,7 +240,8 @@ const sameRange = (a: CapturedRange, b: CapturedRange) =>
   a.startLine === b.startLine &&
   a.endLine === b.endLine;
 
-function capturedProblem(captured: CapturedIndex, range: CodeRange): string | undefined {
+/** Why `range` is not captured text in `captured`, or undefined when it is. */
+export function capturedProblem(captured: CapturedIndex, range: CodeRange): string | undefined {
   const side = captured.sides.get(capturedSideKey(range.side, range.path));
   const target = `${range.side} side of ${range.path}`;
   if (!side || side.kind === "missing") return `${range.path} is not in the captured snapshot`;
@@ -386,6 +397,8 @@ export function applyBatch(
   const touchedBy = (kind: "group" | "note", id: string) => touched.get(`${kind}\0${id}`);
   // Notes whose anchor this batch wrote; only those are checked against captured lines.
   const anchorsWritten = new Set<string>();
+  // A removed note's conversation stays, but never passes to a later note with the same id.
+  const notesRemoved = new Set<string>();
   /**
    * Every text the batch writes must pass the rich-content policy. Unchanged text keeps its stored
    * pins, even to an older snapshot; changed text pins its references to this snapshot.
@@ -428,6 +441,20 @@ export function applyBatch(
   };
 
   for (const [opIndex, op] of envelope.ops.entries()) {
+    if (op.type === "thread.reply") {
+      const thread = draft.threads.find(({ id }) => id === op.thread);
+      if (!thread) {
+        fail(opIndex, `thread ${op.thread} does not exist`);
+        continue;
+      }
+      thread.messages.push({
+        id: hash(`reply\0${envelope.idempotencyKey}\0${opIndex}`),
+        author: "agent",
+        ...guidanceText(opIndex, op.markdown, null),
+        createdAt: updatedAt,
+      });
+      continue;
+    }
     if (op.type === "walkthrough.revalidate") {
       draft.overview = revalidated(opIndex, draft.overview, "the walkthrough overview") ?? null;
       continue;
@@ -506,6 +533,7 @@ export function applyBatch(
       if (op.type === "note.remove") {
         group.notes.splice(index, 1);
         anchorsWritten.delete(op.id);
+        notesRemoved.add(op.id);
         continue;
       }
       const note = group.notes[index]!;
@@ -550,7 +578,10 @@ export function applyBatch(
     }
     if (op.type === "group.dissolve") {
       draft.groups.splice(draft.groups.indexOf(group), 1);
-      for (const { id } of group.notes) anchorsWritten.delete(id);
+      for (const { id } of group.notes) {
+        anchorsWritten.delete(id);
+        notesRemoved.add(id);
+      }
       continue;
     }
     if (op.memberHunkIds) {
@@ -636,6 +667,16 @@ export function applyBatch(
       new ValidationFailed({ message: "apply validation failed", detail: errors }),
     );
 
+  // A note's thread and drafts sit at its anchor; once it is removed they keep their place.
+  const notesNow = new Map(
+    draft.groups.flatMap(({ notes }) => notes.map((note) => [note.id, note] as const)),
+  );
+  for (const item of [...draft.threads, ...draft.drafts]) {
+    if (!item.note || item.note.removed) continue;
+    const note = notesNow.get(item.note.id);
+    if (note && !notesRemoved.has(note.id)) item.anchor = note.anchor;
+    else item.note = { id: item.note.id, removed: true };
+  }
   const unviewed = invalidatedHunkIds(session, draft, captured.earlierHunks);
   draft.viewedHunkIds = draft.viewedHunkIds.filter((id) => !unviewed.has(id));
   for (const group of draft.groups) sortNotes(draft, group);

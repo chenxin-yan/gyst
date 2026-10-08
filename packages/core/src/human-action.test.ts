@@ -30,6 +30,10 @@ const session: Session = {
   applyReceipts: [],
   viewedReceipts: [],
   refreshReceipts: [],
+  threads: [],
+  drafts: [],
+  conversationReceipts: [],
+  pickupReceipts: [],
 };
 const request = (fields: Partial<ViewedRequest> = {}): ViewedRequest => ({
   command: "viewed",

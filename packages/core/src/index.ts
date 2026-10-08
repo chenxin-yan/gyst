@@ -16,9 +16,22 @@ export {
   NoteCreateSchema,
   NoteRemoveSchema,
   NoteUpdateSchema,
+  ThreadReplySchema,
   type ValidationDetail,
   WalkthroughUpdateSchema,
 } from "./apply.ts";
+export {
+  anchorKey,
+  type ConversationOutcome,
+  type ConversationRequest,
+  conversationTargetsOf,
+  converse,
+  pickUp,
+  type PickupOutcome,
+  recordedPickup,
+  threadsFor,
+  type ThreadsRequest,
+} from "./conversation.ts";
 export {
   BlobIdSchema,
   type ByteRange,
@@ -141,6 +154,34 @@ export {
   ViewedPayloadSchema,
 } from "./session.ts";
 export { sanitizeTerminalText, TitleSchema } from "./metadata.ts";
+export {
+  type AgentMessage,
+  AgentMessageSchema,
+  type ConversationResult,
+  ConversationResultSchema,
+  type ConversationsPayload,
+  ConversationsPayloadSchema,
+  type Draft,
+  DraftSchema,
+  type HumanMessage,
+  HumanMessageSchema,
+  type Message,
+  type MessageKind,
+  MessageKindSchema,
+  MessageSchema,
+  type NoteLink,
+  NoteLinkSchema,
+  type Thread,
+  type ThreadCode,
+  ThreadCodeSchema,
+  type ThreadCounts,
+  ThreadCountsSchema,
+  ThreadSchema,
+  type ThreadsPayload,
+  ThreadsPayloadSchema,
+  type Wording,
+  WordingSchema,
+} from "./thread.ts";
 export { parseFilePatch, parseSnapshot } from "./snapshot.ts";
 export { statusOf, summaryOf } from "./status.ts";
 export {

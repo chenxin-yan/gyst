@@ -4,10 +4,17 @@ import type { ManifestFile } from "./content.ts";
 import { setViewed } from "./human-action.ts";
 import type { CapturedRange, Note } from "./guidance.ts";
 import type { SnapshotLines } from "./mapping.ts";
-import { type FreshSnapshot, refresh, refreshSession, type RefreshRequest } from "./refresh.ts";
+import {
+  type FreshSnapshot,
+  pinnedSnapshotIds,
+  refresh,
+  refreshSession,
+  type RefreshRequest,
+} from "./refresh.ts";
 import type { Group, Session } from "./session.ts";
 import { parseSnapshot } from "./snapshot.ts";
 import { statusOf } from "./status.ts";
+import type { Draft, HumanMessage, Thread } from "./thread.ts";
 
 const LATER = "2026-02-02T00:00:00.000Z";
 
@@ -80,6 +87,10 @@ function session(): Session {
     applyReceipts: [],
     viewedReceipts: [],
     refreshReceipts: [],
+    threads: [],
+    drafts: [],
+    conversationReceipts: [],
+    pickupReceipts: [],
   };
 }
 const retained = new Map([["s1", first]]);
@@ -498,6 +509,126 @@ describe("refreshSession", () => {
       anchor: { ...pin("a.ts", "new", 10, 20), snapshotId: "s4" },
       outdated: ["code", "references"],
     });
+  });
+});
+
+describe("refreshSession conversations", () => {
+  const asked = (id: string, pending = true): HumanMessage => ({
+    id,
+    author: "human",
+    kind: "question",
+    pending,
+    markdown: `Question ${id}?`,
+    references: [],
+    createdAt: "2026-01-01T00:00:00.000Z",
+  });
+  const thread = (id: string, anchor: CapturedRange, extra: Partial<Thread> = {}): Thread => ({
+    id,
+    anchor,
+    resolved: false,
+    messages: [asked(`${id}-1`)],
+    ...extra,
+  });
+
+  it("maps a code thread line by line through its changed hunk, else keeps it on its original code", () => {
+    // A's hunk gains a line after L10: no hunk counterpart, so A loses identity and Viewed.
+    const grown = lines(
+      { ...files, "a.ts": ["a0", "a5"] },
+      { "a.ts": "@@ -9,3 +9,4 @@\n l9\n-l10\n+L10\n+extra\n l11", "b.ts": changeB },
+    );
+    const kept = thread("kept", pin("a.ts", "new", 9, 10), {
+      resolved: true,
+      messages: [asked("kept-1", false), asked("kept-2")],
+    });
+    // Line 11 moved to 12, so the range is no longer one contiguous unchanged range.
+    const split = thread("split", pin("a.ts", "new", 10, 11));
+    // Old-side code reads the same bytes, so it maps whatever happened to the new side.
+    const old = thread("old", pin("a.ts", "old", 10));
+    const original: Session = { ...session(), threads: [kept, split, old] };
+    const refreshed = refreshSession(original, to(grown), retained, LATER);
+    expect(refreshed.viewedHunkIds).toEqual([hunkB]);
+    expect(refreshed.threads).toEqual([
+      { ...kept, anchor: { ...pin("a.ts", "new", 9, 10), snapshotId: "s2" } },
+      split,
+      { ...old, anchor: { ...old.anchor, snapshotId: "s2" } },
+    ]);
+    // Refresh never resolves or reopens, nor reads a Pending message.
+    expect(statusOf(refreshed).threads).toEqual({ open: 2, resolved: 1, pending: 3 });
+    // The thread left on earlier code keeps that snapshot readable.
+    expect(pinnedSnapshotIds(refreshed)).toEqual(["s2", "s1"]);
+  });
+
+  it("moves a note's thread and drafts with the note, and keeps a removed note's where they were", () => {
+    const shifted = lines(
+      { ...files, "a.ts": ["a0", "a2"] },
+      { "a.ts": `@@ -1,0 +2,2 @@\n+i1\n+i2\n${changeA.replace("+9,3", "+11,3")}`, "b.ts": changeB },
+    );
+    const wording = { markdown: "About na.", references: [helper] };
+    const onNote = thread("on-note", pin("a.ts", "new", 10), {
+      note: { id: "na", removed: false },
+      messages: [{ ...asked("on-note-1"), wording }],
+    });
+    // A thread whose note is gone stays where it was, even where a later note took the id.
+    const orphan = thread("orphan", pin("a.ts", "new", 9), { note: { id: "na", removed: true } });
+    const drafts: Draft[] = [
+      { id: "d-note", anchor: pin("a.ts", "new", 10), note: { id: "na", removed: false }, wording },
+      { id: "d-code", anchor: pin("a.ts", "new", 11) },
+    ];
+    const refreshed = refreshSession(
+      { ...session(), threads: [onNote, orphan], drafts },
+      to(shifted),
+      retained,
+      LATER,
+    );
+    const moved = { ...pin("a.ts", "new", 12), snapshotId: "s2" };
+    expect(refreshed.threads).toEqual([
+      { ...onNote, anchor: moved },
+      { ...orphan, anchor: { ...pin("a.ts", "new", 11), snapshotId: "s2" } },
+    ]);
+    expect(refreshed.drafts).toEqual([
+      { ...drafts[0], anchor: moved },
+      { ...drafts[1], anchor: { ...pin("a.ts", "new", 13), snapshotId: "s2" } },
+    ]);
+    // The reply's wording still pins its references' snapshot.
+    expect(pinnedSnapshotIds(refreshed)).toEqual(["s2", "s1"]);
+  });
+
+  it("pins the snapshots of every thread, message reference, reply wording and draft", () => {
+    const at = (snapshotId: string): CapturedRange => ({ ...pin("a.ts", "new", 1), snapshotId });
+    const pinned = pinnedSnapshotIds({
+      ...session(),
+      overview: null,
+      groups: [],
+      threads: [
+        thread("t", at("anchor"), {
+          resolved: true,
+          messages: [
+            {
+              ...asked("h"),
+              references: [at("human")],
+              wording: { markdown: "w", references: [at("wording")] },
+            },
+            {
+              id: "a",
+              author: "agent",
+              markdown: "A.",
+              references: [at("agent")],
+              createdAt: LATER,
+            },
+          ],
+        }),
+      ],
+      drafts: [
+        {
+          id: "d",
+          anchor: at("draft"),
+          wording: { markdown: "w", references: [at("draft-wording")] },
+        },
+      ],
+    });
+    expect(pinned.toSorted()).toEqual(
+      ["s1", "anchor", "human", "wording", "agent", "draft", "draft-wording"].toSorted(),
+    );
   });
 });
 
