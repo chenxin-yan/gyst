@@ -259,6 +259,37 @@ describe("refreshSession", () => {
     expect(again.viewedHunkIds).toEqual([hunkB]);
   });
 
+  it("unviews a changed reference's note when what it reads changes again, even back to its pin", () => {
+    const helperAt = (snapshotId: string, current: string, body?: string) =>
+      [
+        snapshotId,
+        lines(
+          { ...files, "helper.ts": ["h0", current] },
+          { "a.ts": changeA, "b.ts": changeB, ...(body && { "helper.ts": body }) },
+        ),
+      ] as const;
+    const [, edited] = helperAt("s2", "h1", "@@ -2 +2 @@\n-x2\n+y2");
+    let state = refreshSession(session(), to(edited), retained, LATER);
+    expect(state.groups[0]!.notes[0]!.outdated).toEqual(["references"]);
+    expect(state.viewedHunkIds).toEqual([hunkB]);
+    const lineage = new Map([...retained, ["s2", edited]]);
+    for (const [snapshotId, snapshot, viewed] of [
+      // The helper changed only far below the referenced lines: the reader's look still holds.
+      [...helperAt("s3", "h2", "@@ -2 +2 @@\n-x2\n+y2\n@@ -30,0 +31 @@\n+bottom"), [hunkA, hunkB]],
+      // The helper is back to the pinned bytes, which the reader has not seen beside A.
+      [...helperAt("s4", "h0"), [hunkB]],
+    ] as const) {
+      const read = { ...state, viewedHunkIds: [hunkA, hunkB] };
+      state = refreshSession(read, to(snapshot, snapshotId), lineage, LATER);
+      expect(state.viewedHunkIds).toEqual(viewed);
+      expect(state.groups[0]!.notes[0]).toMatchObject({
+        outdated: ["references"],
+        references: [helper],
+      });
+      lineage.set(snapshotId, snapshot);
+    }
+  });
+
   it("keeps guidance current when its referenced lines only moved or changed elsewhere", () => {
     // The helper gains a working-tree line above the referenced range, and one far below it.
     const edited = lines(
