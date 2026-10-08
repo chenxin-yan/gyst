@@ -67,6 +67,7 @@ export {
   ExportPreviewPayloadSchema,
   exportSnapshotIds,
   noTextReason,
+  notCaptured,
   provenanceLines,
   type PinnedSide,
   PinnedSideSchema,
