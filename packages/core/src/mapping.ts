@@ -53,10 +53,16 @@ function startsOf(hunk: Hunk): Record<CodeSide, number> | undefined {
 
 /**
  * One body row: its line on each side (context has both, a removal only old, an addition only new)
- * and its text, a missing final newline included.
+ * and its text, a missing final newline included. A line only one side holds sits just `before` a
+ * line of the other side.
  */
-type Row = { old?: number; new?: number; text: string };
-type ParsedHunk = Hunk & { readonly starts: Record<CodeSide, number>; readonly rows: Row[] };
+type Row = { old?: number; new?: number; before?: number; text: string };
+type ParsedHunk = Hunk & {
+  readonly starts: Record<CodeSide, number>;
+  readonly rows: Row[];
+  /** The rows holding a line of each side, in order. */
+  readonly lines: Record<CodeSide, Row[]>;
+};
 
 function parse(hunk: Hunk): ParsedHunk | undefined {
   const starts = startsOf(hunk);
@@ -65,12 +71,16 @@ function parse(hunk: Hunk): ParsedHunk | undefined {
   const rows: Row[] = [];
   for (const line of hunk.patch.split("\n").slice(1)) {
     const text = line.slice(1);
-    if (line.startsWith("-")) rows.push({ old: old++, text });
-    else if (line.startsWith("+")) rows.push({ new: current++, text });
+    if (line.startsWith("-")) rows.push({ old: old++, before: current, text });
+    else if (line.startsWith("+")) rows.push({ new: current++, before: old, text });
     else if (line.startsWith(" ")) rows.push({ old: old++, new: current++, text });
     else if (line.startsWith("\\") && rows.length > 0) rows.at(-1)!.text += `\n${line}`;
   }
-  return { ...hunk, starts, rows };
+  const lines = {
+    old: rows.filter((row) => row.old !== undefined),
+    new: rows.filter((row) => row.new !== undefined),
+  };
+  return { ...hunk, starts, rows, lines };
 }
 
 type Located = {
@@ -85,20 +95,24 @@ type Located = {
  * line, or between hunks. `hunks` are the file's, in order.
  */
 function locate(hunks: readonly ParsedHunk[], side: CodeSide, line: number): Located {
-  let delta = 0;
-  for (const hunk of hunks) {
-    const { starts, rows } = hunk;
-    if (line < starts[side]) break;
-    const own = rows.filter((row) => row[side] !== undefined);
-    const other = rows.filter((row) => row[otherSide(side)] !== undefined);
-    if (line < starts[side] + own.length) {
-      const offset = line - starts[side];
-      const row = own[offset]!;
-      return { within: { hunk, offset, row }, other: row[otherSide(side)] };
-    }
-    delta = starts[otherSide(side)] + other.length - (starts[side] + own.length);
+  // The last hunk starting at or before the line holds it, or ends just before it.
+  let low = 0;
+  let high = hunks.length;
+  while (low < high) {
+    const middle = (low + high) >>> 1;
+    if (hunks[middle]!.starts[side] <= line) low = middle + 1;
+    else high = middle;
   }
-  return { other: line + delta };
+  const hunk = hunks[low - 1];
+  if (!hunk) return { other: line };
+  const { starts, lines } = hunk;
+  const other = otherSide(side);
+  const offset = line - starts[side];
+  const row = lines[side][offset];
+  if (row) return { within: { hunk, offset, row }, other: row[other] };
+  return {
+    other: line + starts[other] + lines[other].length - (starts[side] + lines[side].length),
+  };
 }
 
 /**
@@ -115,8 +129,7 @@ export function counterpartLine(
   const starts = startsOf(counterpart);
   if (!parsed || !starts) return undefined;
   const offset = line - parsed.starts[side];
-  const lines = parsed.rows.filter((row) => row[side] !== undefined).length;
-  return offset >= 0 && offset < lines ? starts[side] + offset : undefined;
+  return offset >= 0 && offset < parsed.lines[side].length ? starts[side] + offset : undefined;
 }
 
 const sameContent = (a: ContentSide, b: ContentSide) =>
@@ -168,63 +181,74 @@ function lineMapper(
       rows.flatMap((row) => (row[side] === undefined ? [row[other]!] : [])),
     ),
   );
+  // Each run of consecutive changed other-side lines, by its lines: the unchanged other-side lines
+  // (or the file's start) bounding it.
+  const runs = new Map<number, { readonly low: number; readonly high: number }>();
+  const sorted = [...changedOther].sort((a, b) => a - b);
+  for (let first = 0; first < sorted.length;) {
+    let last = first;
+    while (sorted[last + 1] === sorted[last]! + 1) last++;
+    const run = { low: sorted[first]! - 1, high: sorted[last]! + 1 };
+    for (let index = first; index <= last; index++) runs.set(sorted[index]!, run);
+    first = last + 1;
+  }
   /**
-   * This side's lines strictly between two other-side lines neither snapshot changes, each as the
-   * other-side line it holds or, for a changed line, its text.
+   * This side's lines strictly between two other-side lines neither snapshot changes: the first
+   * one's number, and each as the other-side line it holds or, for a changed line, its text.
    */
   const between = (hunks: readonly ParsedHunk[], low: number, high: number) => {
     const start = low === 0 ? 0 : locate(hunks, other, low).other!;
     const end = locate(hunks, other, high).other!;
-    const lines: { line: number; token: string }[] = [];
+    const tokens: string[] = [];
     for (let line = start + 1; line < end; line++) {
       const at = locate(hunks, side, line);
-      lines.push({
-        line,
-        token: at.other === undefined ? `+${at.within!.row.text}` : `=${at.other}`,
-      });
+      tokens.push(at.other === undefined ? `+${at.within!.row.text}` : `=${at.other}`);
     }
-    return lines;
+    return { first: start + 1, tokens };
   };
   /**
-   * A line only this side of a changed hunk holds maps as the same line when every line between it
-   * and the nearest unchanged line before or after it is the same in both snapshots. It must map to
-   * one line read either way, and that line must map back to it read either way: beside an
-   * identical line inserted or deleted, which one stayed is ambiguous.
+   * The lines of `to` that the lines of `from` between `low` and `high` stay as. A line stays as the
+   * one whose every line before it, or every line after it, up to the bounds is the same in both
+   * snapshots. It must stay as one line read either way, and that line must stay one line of
+   * `from` read either way: beside an identical line inserted or deleted, which one stayed is
+   * ambiguous.
    */
-  const alignChanged = ({ hunk, row }: NonNullable<Located["within"]>) => {
-    const index = hunk.rows.indexOf(row);
-    const above = hunk.rows.slice(0, index).findLast((each) => each[other] !== undefined);
-    // The changed line sits just before this other-side line.
-    const gap = above === undefined ? hunk.starts[other] : above[other]! + 1;
-    let low = gap - 1;
-    while (low > 0 && changedOther.has(low)) low--;
-    let high = gap;
-    while (changedOther.has(high)) high++;
-    const fromLines = between(parsedFrom, low, high);
-    const toLines = between(parsedTo, low, high);
-    const at = fromLines.findIndex(({ line }) => line === row[side]);
+  const align = (low: number, high: number) => {
+    const fromSegment = between(parsedFrom, low, high);
+    const toSegment = between(parsedTo, low, high);
+    const shortest = Math.min(fromSegment.tokens.length, toSegment.tokens.length);
     let prefix = 0;
-    while (
-      prefix < Math.min(fromLines.length, toLines.length) &&
-      fromLines[prefix]!.token === toLines[prefix]!.token
-    )
-      prefix++;
+    while (prefix < shortest && fromSegment.tokens[prefix] === toSegment.tokens[prefix]) prefix++;
     let suffix = 0;
     while (
-      suffix < Math.min(fromLines.length, toLines.length) &&
-      fromLines.at(-1 - suffix)!.token === toLines.at(-1 - suffix)!.token
+      suffix < shortest &&
+      fromSegment.tokens.at(-1 - suffix) === toSegment.tokens.at(-1 - suffix)
     )
       suffix++;
-    const grown = toLines.length - fromLines.length;
+    const grown = toSegment.tokens.length - fromSegment.tokens.length;
     /** Where the line at `position` of a segment `length` lines long stays, read from either end. */
     const readings = (position: number, length: number, shift: number) => [
       ...(position < prefix ? [position] : []),
       ...(position >= length - suffix ? [position + shift] : []),
     ];
-    const [stays, ...others] = readings(at, fromLines.length, grown);
-    if (stays === undefined || others.some((each) => each !== stays)) return undefined;
-    const back = readings(stays, toLines.length, -grown);
-    return back.every((each) => each === at) ? toLines[stays]!.line : undefined;
+    return (line: number) => {
+      const index = line - fromSegment.first;
+      const [stays, ...others] = readings(index, fromSegment.tokens.length, grown);
+      if (stays === undefined || others.some((each) => each !== stays)) return undefined;
+      const back = readings(stays, toSegment.tokens.length, -grown);
+      return back.every((each) => each === index) ? toSegment.first + stays : undefined;
+    };
+  };
+  // A segment is aligned once, however many of its lines are mapped.
+  const aligned = new Map<number, ReturnType<typeof align>>();
+  /** A line only this side of a changed hunk holds, as the same line of `to` (see `align`). */
+  const alignChanged = ({ row }: NonNullable<Located["within"]>) => {
+    const gap = row.before!;
+    const low = runs.get(gap - 1)?.low ?? gap - 1;
+    const high = runs.get(gap)?.high ?? gap;
+    let segment = aligned.get(low);
+    if (!segment) aligned.set(low, (segment = align(low, high)));
+    return segment(row[side]!);
   };
   return (line) => {
     const at = locate(parsedFrom, side, line);
