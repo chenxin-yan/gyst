@@ -1,7 +1,12 @@
 // The reader's commands and the keys that run them: one typed table, read by the keyboard handler,
 // the command menu and the help. Later tickets add their rows here.
 
-import { type Hotkey, LETTER_KEYS, parseHotkey } from "@tanstack/react-hotkeys";
+import {
+  DEFAULT_SEQUENCE_TIMEOUT,
+  type Hotkey,
+  LETTER_KEYS,
+  parseHotkey,
+} from "@tanstack/react-hotkeys";
 
 export type CommandId =
   | "down"
@@ -115,9 +120,6 @@ export const commands: readonly Command[] = [
 export const commandsFor = (mode: InputMode) =>
   mode === "vim" ? commands : commands.filter((command) => !command.vimOnly);
 
-/** How long a sequence waits for its next key, as TanStack Hotkeys waits by default. */
-const sequenceTimeout = 1000;
-
 /**
  * Whether `event` completes a sequence that `previous` started, as `R` does after `z`: it then
  * belongs to that sequence (`zR`), not to the single-key command bound to it alone (`R`).
@@ -127,7 +129,7 @@ export function completesSequence(
   previous: { readonly key: string; readonly at: number } | undefined,
   now: number,
 ) {
-  if (previous === undefined || now - previous.at > sequenceTimeout) return false;
+  if (previous === undefined || now - previous.at > DEFAULT_SEQUENCE_TIMEOUT) return false;
   return commands.some(({ keys }) =>
     keys.some(
       (sequence) =>
