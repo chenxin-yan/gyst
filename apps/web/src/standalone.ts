@@ -93,6 +93,9 @@ export function answer(data: WalkthroughExport, request: BrowserRequest): Reply 
     case "status": {
       const counts = new Map<string, number>();
       for (const hunk of walkthrough.hunks) counts.set(hunk.file, (counts.get(hunk.file) ?? 0) + 1);
+      const generated = new Set(
+        walkthrough.files.filter((file) => file.generated).map(({ path }) => path),
+      );
       return ok({
         session,
         revision: 0,
@@ -110,7 +113,12 @@ export function answer(data: WalkthroughExport, request: BrowserRequest): Reply 
         },
         viewedHunkIds: [],
         threads: { open: 0, resolved: 0, pending: 0 },
-        files: [...counts].map(([path, hunkCount]) => ({ path, hunkCount, viewed: false })),
+        files: [...counts].map(([path, hunkCount]) => ({
+          path,
+          hunkCount,
+          viewed: false,
+          ...(generated.has(path) && { generated: true as const }),
+        })),
       } satisfies StatusPayload);
     }
     case "diff":

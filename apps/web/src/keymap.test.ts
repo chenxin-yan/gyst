@@ -157,7 +157,8 @@ describe("commands", () => {
     ]);
   });
 
-  // A standalone walkthrough reads: navigation, folds, layouts, peeks and Back, never a write.
+  // A standalone walkthrough reads: navigation, search, folds, layouts, peeks and Back, never a
+  // write or a semantic engine's answer.
   it("leaves only reading commands to a standalone walkthrough", () => {
     const writes = [
       "comment",
@@ -170,6 +171,8 @@ describe("commands", () => {
       "refresh",
       "check",
       "export",
+      "definition",
+      "references",
     ];
     for (const mode of ["vim", "mouse"] as const) {
       const ids = commandsFor(mode, true).map(({ id }) => id);
@@ -179,7 +182,15 @@ describe("commands", () => {
           .filter((id) => !writes.includes(id)),
       );
       expect(ids).toEqual(
-        expect.arrayContaining(["nextFile", "nextGroup", "nextNote", "unfoldAll", "back", "split"]),
+        expect.arrayContaining([
+          "nextFile",
+          "nextGroup",
+          "nextNote",
+          "unfoldAll",
+          "back",
+          "split",
+          "search",
+        ]),
       );
     }
     expect(commandsFor("vim", false).map(({ id }) => id)).toContain("export");

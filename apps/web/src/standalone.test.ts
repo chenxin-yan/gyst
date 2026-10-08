@@ -1,4 +1,9 @@
-import type { BrowserRequest, CodePayload, WalkthroughExport } from "@gyst/core/wire";
+import type {
+  BrowserRequest,
+  CodePayload,
+  StatusPayload,
+  WalkthroughExport,
+} from "@gyst/core/wire";
 import { describe, expect, it } from "vite-plus/test";
 import { type CodeRead, readRange, readWholeSide } from "./captured.ts";
 import { answer, codePageOf } from "./standalone.ts";
@@ -125,6 +130,23 @@ describe("answer", () => {
       ok: true,
       value: { threads: [], drafts: [] },
     });
+  });
+
+  it("marks the Generated files the export records, so they start folded as in the viewer", () => {
+    const files = data.walkthrough.files.map((file) =>
+      file.path === "a.ts" ? { ...file, generated: true as const } : file,
+    );
+    const status = answer(
+      { ...data, walkthrough: { ...data.walkthrough, files } },
+      { command: "status", session: "walkthrough" },
+    );
+    expect(status.ok && (status.value as StatusPayload).files).toEqual([
+      { path: "a.ts", hunkCount: 1, viewed: false, generated: true },
+    ]);
+    const plain = reply({ command: "status", session: "walkthrough" });
+    expect(plain.ok && (plain.value as StatusPayload).files).toEqual([
+      { path: "a.ts", hunkCount: 1, viewed: false },
+    ]);
   });
 
   it("refuses every write, check and refresh: the export is read-only", () => {
