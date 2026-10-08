@@ -176,11 +176,12 @@ agent cannot export on your behalf through it. An existing file is never replace
 write leaves nothing behind, or says which file it could not take back. On success it prints the
 path, size, snapshot and export time as JSON.
 
-The file opens from disk in a browser, offline, without gyst, the daemon or the checkout. It is
-read-only: groups, files, notes, folds, layouts, full-file context, references with peek, expand
-and Back, and the reading keys work; it carries no conversations, Viewed progress, session id or
-local paths, makes no network request, and opens a web link only when you click it. It cannot be
-imported back into gyst. The reader itself is about 15 MiB; a 1,000-file export is about 20 MiB.
+The file opens from disk in a browser, offline, without gyst, the daemon or the checkout, and
+carries its own fonts, highlighting and diagram renderer. It is read-only: groups, files, notes,
+folds, layouts, full-file context, references with peek, expand and Back, and the reading keys work;
+it carries no conversations, Viewed progress, session id or local paths, makes no network request,
+and opens a web link only when you click it. It cannot be imported back into gyst. The reader itself
+is about 15 MiB; a 1,000-file export is about 20 MiB.
 
 ## Storage
 

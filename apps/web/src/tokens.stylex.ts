@@ -3,7 +3,7 @@ import * as stylex from "@stylexjs/stylex";
 // The accepted review baseline (prototype/interactive-review): Catppuccin Mocha with lavender as the
 // sole accent, Inter + JetBrains Mono. Each palette colour keeps its Catppuccin style-guide role.
 // Fonts are not fetched from a font service; installed Inter/JetBrains Mono are used, otherwise the
-// system faces.
+// system faces. A standalone walkthrough embeds both as their variable faces (src/fonts.css).
 export const palette = stylex.defineVars({
   red: "#f38ba8",
   peach: "#fab387",
@@ -36,8 +36,8 @@ export const theme = stylex.defineVars({
   changed: palette.blue,
   hunkHeader: palette.peach,
   match: palette.peach,
-  sans: '"Inter", system-ui, sans-serif',
-  "--mono": '"JetBrains Mono", ui-monospace, monospace',
+  sans: '"Inter", "Inter Variable", system-ui, sans-serif',
+  "--mono": '"JetBrains Mono", "JetBrains Mono Variable", ui-monospace, monospace',
 });
 
 export const media = stylex.defineConsts({ narrow: "@media (max-width: 760px)" });
