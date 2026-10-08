@@ -10,6 +10,7 @@ import type {
   StatusPayload,
   Thread,
 } from "@gyst/core/wire";
+import { sameRange } from "./rich.ts";
 import type { NotePlace, StatusNote } from "./walkthrough.ts";
 
 /** Every current note of the session by id, whatever the view shows. */
@@ -126,8 +127,9 @@ export const replyOutdated = (
 
 /**
  * What changed under a draft since it was begun, said beside its composer: its thread went or was
- * resolved (which `blocks` sending), its note changed or went, or a refresh left its code behind.
- * Sending never rebinds it.
+ * resolved (which `blocks` sending), its note changed, moved to other code or went, or a refresh
+ * left its code behind. A moved note's reply names the code it was begun on. Sending never
+ * rebinds it.
  */
 export function draftChange(
   draft: Draft,
@@ -142,13 +144,21 @@ export function draftChange(
   if (draft.thread !== undefined && thread === undefined && draft.note === undefined)
     return { message: "This thread no longer exists, so the reply can't be sent.", blocks: true };
   const note = liveNote(draft, notes);
+  const began = draft.wording?.anchor;
+  const reworded = note && draft.wording && note.markdown !== draft.wording.markdown;
+  const moved =
+    note &&
+    began &&
+    !(sameRange(note.anchor, began) && note.anchor.snapshotId === began.snapshotId);
   const message = draft.note?.removed
     ? "The note was removed. Your reply keeps the wording you began it against."
-    : note && draft.wording && note.markdown !== draft.wording.markdown
-      ? "The note changed since you began. Your reply keeps the wording you began it against."
-      : draft.anchor.snapshotId !== snapshotId
-        ? "A refresh changed this code. Your comment stays on the code you began it against."
-        : undefined;
+    : moved
+      ? `The note ${reworded ? "changed and " : ""}moved to other code since you began. Your reply keeps the ${reworded ? "wording and code" : "code"} you began it against, ${threadLocation(began, snapshotId)}.`
+      : reworded
+        ? "The note changed since you began. Your reply keeps the wording you began it against."
+        : draft.anchor.snapshotId !== snapshotId
+          ? "A refresh changed this code. Your comment stays on the code you began it against."
+          : undefined;
   return message === undefined ? undefined : { message, blocks: false };
 }
 
