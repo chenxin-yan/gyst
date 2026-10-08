@@ -2,6 +2,7 @@ import { webPaths } from "@gyst/core/web";
 import {
   type BrowserRequest,
   CodePayloadSchema,
+  CommitsPayloadSchema,
   DaemonError,
   DeletePayloadSchema,
   DiffPayloadSchema,
@@ -88,6 +89,7 @@ const payloadSchemas = {
   layer: OpenPayloadSchema,
   diff: DiffPayloadSchema,
   files: FilesPayloadSchema,
+  commits: CommitsPayloadSchema,
   code: CodePayloadSchema,
   delete: DeletePayloadSchema,
   refresh: RefreshPayloadSchema,

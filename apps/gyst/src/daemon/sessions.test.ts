@@ -2835,6 +2835,83 @@ describe("Sessions captured reads over real captures", () => {
     );
   });
 
+  it("reads a range's captured commit messages in pages; refresh recaptures them, a check does not", async () => {
+    const cwd = await repo("commits", { "a.txt": "base\n" });
+    git(cwd, "branch", "-M", "main");
+    git(cwd, "switch", "-qc", "feature");
+    // Big enough that the two commits take two pages.
+    const long = `Explain the change\n\n${"Why it matters. ".repeat(4500)}`;
+    await writeFile(join(cwd, "a.txt"), "one\n");
+    git(cwd, "commit", "-qam", long);
+    await writeFile(join(cwd, "a.txt"), "two\n");
+    git(cwd, "commit", "-qam", "Second step");
+    const one = git(cwd, "rev-parse", "HEAD~1").trim();
+    const two = git(cwd, "rev-parse", "HEAD").trim();
+    await runReal(
+      Effect.gen(function* () {
+        const sessions = yield* Sessions;
+        const scope = { kind: "range", range: "main..feature" } as const;
+        const { session } = yield* sessions.open({ command: "open", cwd, scope });
+        const read = (snapshotId: string, after?: string) =>
+          sessions.commits({ command: "commits", session: session.id, snapshotId, after });
+        const first = yield* read(session.snapshotId);
+        expect(first).toEqual({
+          sessionId: session.id,
+          snapshotId: session.snapshotId,
+          total: 2,
+          commits: [{ id: one, message: long.trimEnd() }],
+          next: one,
+        });
+        expect(yield* read(session.snapshotId, one)).toMatchObject({
+          commits: [{ id: two, message: "Second step" }],
+          next: null,
+        });
+        expect(yield* Effect.flip(read(session.snapshotId, two.replace(/./u, "0")))).toMatchObject({
+          _tag: "validation_failed",
+        });
+
+        // A reworded commit changes no code; a check reports the change and replaces nothing.
+        git(cwd, "commit", "-q", "--amend", "-m", "Second step, reworded");
+        expect(yield* sessions.check({ command: "check", session: session.id })).toMatchObject({
+          state: "changed",
+        });
+        expect(yield* read(session.snapshotId, one)).toMatchObject({
+          commits: [{ id: two, message: "Second step" }],
+        });
+        const refreshed = yield* refreshNow(session.id);
+        expect(refreshed).toMatchObject({ replaced: true, previousSnapshotId: session.snapshotId });
+        const reworded = git(cwd, "rev-parse", "HEAD").trim();
+        expect(yield* read(refreshed.snapshotId, one)).toMatchObject({
+          commits: [{ id: reworded, message: "Second step, reworded" }],
+        });
+        expect(yield* Effect.flip(read(session.snapshotId))).toMatchObject({
+          _tag: "stale_revision",
+          detail: { snapshotId: refreshed.snapshotId },
+        });
+
+        // Uncommitted work captures none, so its one page is empty.
+        const { session: local } = yield* sessions.open({
+          command: "open",
+          cwd,
+          scope: uncommitted,
+        });
+        expect(
+          yield* sessions.commits({
+            command: "commits",
+            session: local.id,
+            snapshotId: local.snapshotId,
+          }),
+        ).toEqual({
+          sessionId: local.id,
+          snapshotId: local.snapshotId,
+          total: 0,
+          commits: [],
+          next: null,
+        });
+      }),
+    );
+  });
+
   it("rejects a replaced snapshot as stale and finishes an in-flight read against its own", async () => {
     const cwd = await repo("stale", { "a.txt": "before\n" });
     await writeFile(join(cwd, "a.txt"), "during\n");

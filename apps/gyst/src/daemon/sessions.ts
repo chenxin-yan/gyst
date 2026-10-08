@@ -10,6 +10,7 @@ import {
   type CaptureProgress,
   earlierAnchorsOf,
   type CodePayload,
+  type CommitsPayload,
   type DeletePayload,
   type FilesPayload,
   GitHubUnavailableReasonSchema,
@@ -69,6 +70,31 @@ import { type DeleteReceipt, SessionStore } from "./store.ts";
 type SourceCheck = Omit<SourceCheckPayload, "sessionId" | "snapshotId" | "revision">;
 type Operation = Request | BrowserRequest;
 type Input<C extends Operation["command"]> = Extract<Operation, { readonly command: C }>;
+/**
+ * The entries after the one whose key is `after` (from the first without it), up to `pageBytes` of
+ * their JSON and always at least one, and the key to continue after; undefined when no entry has
+ * the key `after`.
+ */
+const pageAfter = <A>(
+  entries: ReadonlyArray<A>,
+  keyOf: (entry: A) => string,
+  after: string | undefined,
+) => {
+  const first = after === undefined ? 0 : entries.findIndex((entry) => keyOf(entry) === after) + 1;
+  if (after !== undefined && first === 0) return undefined;
+  const page: A[] = [];
+  let bytes = 0;
+  for (let index = first; index < entries.length; index++) {
+    const entry = entries[index]!;
+    bytes += Buffer.byteLength(JSON.stringify(entry));
+    if (page.length > 0 && bytes > pageBytes) break;
+    page.push(entry);
+  }
+  return {
+    entries: page,
+    next: first + page.length < entries.length ? keyOf(page.at(-1)!) : null,
+  };
+};
 /** An open's reply before the daemon adds its viewer link, which only the daemon's port names. */
 export type Opened = Omit<OpenPayload, "link">;
 type OnProgress = (progress: CaptureProgress) => Effect.Effect<void>;
@@ -198,6 +224,10 @@ export class Sessions extends Context.Service<
       CodePayload,
       BadArgs | NoSession | StaleRevision | ValidationFailed | InternalError
     >;
+    /** A recorded range's captured commit messages, oldest first; none for any other scope. */
+    commits(
+      request: Input<"commits">,
+    ): Effect.Effect<CommitsPayload, NoSession | StaleRevision | ValidationFailed | InternalError>;
     /**
      * The named current snapshot and its manifest, selected once: nothing after this reads the
      * session again. Another snapshot id is `stale_revision` carrying the current one.
@@ -634,32 +664,37 @@ export class Sessions extends Context.Service<
 
       const files = Effect.fn("Sessions.files")(function* (request: Input<"files">) {
         const { sessionId, snapshotId, manifest } = yield* pinned(request);
-        let first = 0;
-        if (request.after !== undefined) {
-          const index = manifest.files.findIndex(({ path }) => path === request.after);
-          if (index === -1)
-            return yield* new ValidationFailed({
-              message: "the files cursor names no file in this snapshot",
-              detail: { after: request.after },
-            });
-          first = index + 1;
-        }
-        const page = [];
-        let bytes = 0;
-        for (let index = first; index < manifest.files.length; index++) {
-          const file = manifest.files[index]!;
-          bytes += Buffer.byteLength(JSON.stringify(file));
-          if (page.length > 0 && bytes > pageBytes) break;
-          page.push(file);
-        }
-        const last = first + page.length;
+        const page = pageAfter(manifest.files, ({ path }) => path, request.after);
+        if (page === undefined)
+          return yield* new ValidationFailed({
+            message: "the files cursor names no file in this snapshot",
+            detail: { after: request.after },
+          });
         return {
           sessionId,
           snapshotId,
           total: manifest.files.length,
-          files: page,
-          next: last < manifest.files.length ? page.at(-1)!.path : null,
+          files: page.entries,
+          next: page.next,
         } satisfies FilesPayload;
+      });
+
+      const commits = Effect.fn("Sessions.commits")(function* (request: Input<"commits">) {
+        const { sessionId, snapshotId, manifest } = yield* snapshot(request);
+        const captured = manifest.commits ?? [];
+        const page = pageAfter(captured, ({ id }) => id, request.after);
+        if (page === undefined)
+          return yield* new ValidationFailed({
+            message: "the commits cursor names no commit in this snapshot",
+            detail: { after: request.after },
+          });
+        return {
+          sessionId,
+          snapshotId,
+          total: captured.length,
+          commits: page.entries,
+          next: page.next,
+        } satisfies CommitsPayload;
       });
 
       const code = Effect.fn("Sessions.code")(function* (request: Input<"code">) {
@@ -921,6 +956,7 @@ export class Sessions extends Context.Service<
         layer,
         diff,
         files,
+        commits,
         code,
         snapshot,
         apply,

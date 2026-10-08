@@ -208,6 +208,8 @@ export class DaemonServer extends Context.Service<
             return sessions.diff(request);
           case "files":
             return sessions.files(request);
+          case "commits":
+            return sessions.commits(request);
           case "code":
             return sessions.code(request);
           case "apply":

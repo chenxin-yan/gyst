@@ -1,6 +1,8 @@
 import { Schema } from "effect";
 import {
+  CommitSchema,
   ContentSideSchema,
+  GitObjectIdSchema,
   LogicalPathSchema,
   ManifestFileSchema,
   SnapshotIdSchema,
@@ -50,7 +52,7 @@ export {
   type StackMembership,
   StackMembershipSchema,
 } from "./github.ts";
-export { type ContentSide, type ManifestFile, sameSide } from "./content.ts";
+export { type Commit, type ContentSide, type ManifestFile, sameSide } from "./content.ts";
 export {
   anchoredHunkIds,
   type CapturedRange,
@@ -292,6 +294,19 @@ export const FilesPayloadSchema = Schema.Struct({
 export type FilesPayload = typeof FilesPayloadSchema.Type;
 
 /**
+ * One page of a recorded range's captured commits, oldest first; `next` is the next `after`. Any
+ * other session's snapshot captured none, so its only page is empty.
+ */
+export const CommitsPayloadSchema = Schema.Struct({
+  sessionId: Schema.String,
+  snapshotId: SnapshotIdSchema,
+  total: Schema.Natural,
+  commits: Schema.Array(CommitSchema),
+  next: Schema.NullOr(GitObjectIdSchema),
+});
+export type CommitsPayload = typeof CommitsPayloadSchema.Type;
+
+/**
  * One page of one side of a captured file. `text` is the exact captured bytes from `start` (CRLF,
  * lone CR, BOM and a missing final LF kept), so concatenating every page's text in order yields
  * the file byte for byte. Lines are LF-delimited; a final LF ends the last line rather than
@@ -456,6 +471,16 @@ export const BrowserRequestSchema = Schema.Union([
    * repository are the session's own, so a browser can name neither.
    */
   Schema.Struct({ command: Schema.Literal("layer"), ...exact, number: PullRequestNumberSchema }),
+  /**
+   * The commit messages the session's current snapshot captured with a recorded range, read like
+   * `files`: `after` is the previous page's `next`.
+   */
+  Schema.Struct({
+    command: Schema.Literal("commits"),
+    ...exact,
+    snapshotId: SnapshotIdSchema,
+    after: Schema.optional(GitObjectIdSchema),
+  }),
   /**
    * The human marks exactly `hunkIds` Viewed (or not), against the snapshot and revision they
    * observed. `requestId` is chosen before sending and reused for every retry, like `delete`.
