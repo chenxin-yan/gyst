@@ -2,6 +2,7 @@ import * as NodeSocket from "@effect/platform-node/NodeSocket";
 import * as NodeSocketServer from "@effect/platform-node/NodeSocketServer";
 import {
   BadArgs,
+  type BrowserRequest,
   type CaptureProgress,
   DaemonError,
   DaemonUnreachable,
@@ -9,7 +10,6 @@ import {
   ReplySchema,
   type Request,
   type SubscriptionEvent,
-  SubscriptionEventSchema,
 } from "@gyst/core";
 import {
   Context,
@@ -20,19 +20,31 @@ import {
   Latch,
   Option,
   type PlatformError,
-  Queue,
   Ref,
   Result,
   Schedule,
   Schema,
+  Scope,
+  Semaphore,
+  Stream,
 } from "effect";
 import * as Socket from "effect/socket/Socket";
 import type * as SocketServer from "effect/socket/SocketServer";
 import { compare } from "semver";
+import {
+  browserApp,
+  firstViewerPort,
+  serveViewer,
+  type ViewerOperations,
+  viewerLink,
+  webAssetsOrNotice,
+  WebUiDir,
+} from "../web/server.ts";
 import { Navigation } from "./navigation.ts";
+import { makeNavigationAddons } from "./navigation-addon.ts";
 import { Paths } from "./paths.ts";
 import { DaemonMessageSchema, daemonVersion, ProgressLineSchema } from "./protocol.ts";
-import { Sessions } from "./sessions.ts";
+import { type Opened, Sessions } from "./sessions.ts";
 import { inspectSavedSessions } from "./store.ts";
 import { daemonAbsent, readLine } from "./wire.ts";
 
@@ -41,8 +53,6 @@ const decodeRequest = Schema.decodeUnknownEffect(Schema.fromJsonString(DaemonMes
 });
 const encodeReply = Schema.encodeSync(Schema.fromJsonString(ReplySchema));
 const encodeProgress = Schema.encodeSync(Schema.fromJsonString(ProgressLineSchema));
-const encodeEvent = Schema.encodeSync(Schema.fromJsonString(SubscriptionEventSchema));
-type DaemonMessage = typeof DaemonMessageSchema.Type;
 
 const isAlreadyExists = (error: PlatformError.PlatformError | Socket.SocketError) =>
   error._tag === "PlatformError" && error.reason._tag === "AlreadyExists";
@@ -59,7 +69,10 @@ const signalled = Effect.callback<void>((resume) => {
 export class DaemonServer extends Context.Service<
   DaemonServer,
   {
-    /** Serves until idle, a signal, or losing the socket path to a newer daemon; silent when one is already live. */
+    /**
+     * Serves the socket and the viewer until idle, a signal, or losing the socket path to a newer
+     * daemon; silent when one is already live.
+     */
     readonly run: Effect.Effect<
       void,
       SocketServer.SocketServerError | Socket.SocketError | PlatformError.PlatformError
@@ -73,6 +86,9 @@ export class DaemonServer extends Context.Service<
       const navigation = yield* Navigation;
       const paths = yield* Paths;
       const fs = yield* FileSystem.FileSystem;
+      const webUiDir = yield* WebUiDir;
+      const firstPort = yield* Effect.result(firstViewerPort);
+      const addons = yield* makeNavigationAddons(daemonVersion);
       const pid = String(process.pid);
 
       // Any other connect failure (EACCES, ...) is unknown territory: propagate, never reclaim.
@@ -141,13 +157,39 @@ export class DaemonServer extends Context.Service<
         Effect.when(fs.remove(paths.pidPath, { force: true }), ownsPidFile).pipe(Effect.ignore),
       );
 
+      /**
+       * The viewer's port once it is bound, binding it first if it is not: `run` binds at startup,
+       * and an open retries a bind that failed then, so the daemon keeps one port for its life.
+       */
+      let viewerPort: Effect.Effect<number, DaemonUnreachable> = Effect.die(
+        "the daemon is not running",
+      );
+      const withLink = (opened: Opened) =>
+        Effect.map(viewerPort, (port) => ({
+          ...opened,
+          link: viewerLink(port, opened.session.id),
+        }));
+
+      /**
+       * The review operations, one use case each, whichever adapter decoded them: the socket
+       * carries the CLI's, the HTTP adapter the browser's.
+       */
       const dispatch = (
-        request: Request,
+        request: Request | BrowserRequest,
         onProgress: (progress: CaptureProgress) => Effect.Effect<void>,
       ): Effect.Effect<unknown, DaemonError> => {
         switch (request.command) {
+          // The viewer is bound first, so an open that could not be shown creates nothing.
           case "open":
-            return sessions.open(request, onProgress);
+            return viewerPort.pipe(
+              Effect.andThen(sessions.open(request, onProgress)),
+              Effect.tap(({ session }) =>
+                "path" in request && request.path !== undefined
+                  ? addons.record(session.id, request.path)
+                  : Effect.void,
+              ),
+              Effect.flatMap(withLink),
+            );
           case "list":
             return sessions.list;
           case "status":
@@ -157,7 +199,11 @@ export class DaemonServer extends Context.Service<
           case "stack":
             return sessions.stack(request);
           case "layer":
-            return sessions.layer(request, onProgress);
+            return viewerPort.pipe(
+              Effect.andThen(sessions.layer(request, onProgress)),
+              Effect.tap(({ session }) => addons.inherit(request.session, session.id)),
+              Effect.flatMap(withLink),
+            );
           case "diff":
             return sessions.diff(request);
           case "files":
@@ -176,15 +222,30 @@ export class DaemonServer extends Context.Service<
           case "delete":
             return sessions
               .delete(request)
-              .pipe(Effect.tap(({ sessionId }) => navigation.retire(sessionId)));
+              .pipe(
+                Effect.tap(({ sessionId }) =>
+                  Effect.andThen(navigation.retire(sessionId), addons.forget(sessionId)),
+                ),
+              );
           case "definition":
-            return navigation.definition(request);
+            return Effect.flatMap(addons.current(request.session), (addon) =>
+              navigation.definition({ ...request, addon }),
+            );
           case "references":
-            return navigation.references(request);
+            return Effect.flatMap(addons.current(request.session), (addon) =>
+              navigation.references({ ...request, addon }),
+            );
           case "identifiers":
-            return navigation.identifiers(request);
-          case "navigation":
-            return navigation.status(request);
+            return Effect.flatMap(addons.current(request.session), (addon) =>
+              navigation.identifiers({ ...request, addon }),
+            );
+          case "navigation": {
+            const { recheck, ...readiness } = request;
+            return Effect.flatMap(
+              recheck ? addons.recheck(request.session) : addons.current(request.session),
+              (addon) => navigation.status({ ...readiness, addon }),
+            );
+          }
         }
       };
       // Accepted connections that have not replied yet; idle shutdown must not interrupt them.
@@ -198,59 +259,38 @@ export class DaemonServer extends Context.Service<
             "daemon identity changed or upgrade is in progress; no review command was executed",
         });
 
-      /**
-       * Streams one session's committed changes: `ready`, then each change, until `deleted`, the
-       * client hanging up, or the daemon exiting. A frame the client does not take within a second
-       * overflows the subscription: the connection is dropped rather than left silently stale, so
-       * the subscriber knows to resynchronize.
-       */
-      const serveSubscription = Effect.fn("DaemonServer.subscription")(function* (
-        message: Extract<DaemonMessage, { readonly subscribe: unknown }>,
-        pull: Effect.Effect<unknown, Socket.SocketError>,
-        writer: Socket.Writer,
-      ) {
-        const send = (event: SubscriptionEvent) =>
-          writer.write(`${encodeEvent(event)}\n`).pipe(Effect.timeout("1 second"));
-        const forward = Effect.gen(function* () {
-          if (draining || message.version !== daemonVersion || message.instanceId !== instanceId)
-            return yield* send({ kind: "failed", error: identityChanged() });
-          const subscribed = yield* Effect.result(sessions.subscribe(message.subscribe));
-          if (Result.isFailure(subscribed))
-            return yield* send({ kind: "failed", error: subscribed.failure });
-          const { version, events } = subscribed.success;
-          yield* send({ kind: "ready", daemon: instanceId, ...version });
-          while (true) {
-            const change = yield* Queue.take(events);
-            yield* send(change);
-            if (change.kind === "deleted") return;
-          }
-        });
-        // A hang-up ends the subscription now, not at the next change.
-        yield* Effect.raceFirst(forward, Effect.forever(pull)).pipe(
-          // Destroy rather than end: a stalled reader would hold a graceful close open forever.
-          Effect.catchTag("TimeoutError", () => writer.write(new Socket.CloseEvent())),
-        );
-      });
+      // An HTTP operation counts as active like a socket request, so neither a restart nor idle
+      // exit lands in the middle of it. An event stream does not: the daemon exiting ends it.
+      const viewerOperations: ViewerOperations = {
+        operation: (request) =>
+          Effect.acquireUseRelease(
+            Ref.update(active, (n) => n + 1),
+            () =>
+              draining ? Effect.fail(identityChanged()) : dispatch(request, () => Effect.void),
+            () => Ref.update(active, (n) => n - 1),
+          ),
+        subscribe: (request) =>
+          Stream.unwrap(
+            Effect.gen(function* () {
+              if (draining) return yield* identityChanged();
+              const { version, events } = yield* sessions.subscribe(request);
+              return Stream.concat(
+                Stream.succeed<SubscriptionEvent>({
+                  kind: "ready",
+                  daemon: instanceId,
+                  ...version,
+                }),
+                Stream.fromQueue(events).pipe(Stream.takeUntil(({ kind }) => kind === "deleted")),
+              );
+            }),
+          ),
+      };
 
       const handleConnection = Effect.fnUntraced(
         function* (socket: Socket.Socket) {
-          // A subscription gives its count back once classified, so it never holds off a restart
-          // or idle exit; the daemon exiting closes it instead.
-          let counted = false;
-          const uncount = Effect.suspend(() => {
-            if (!counted) return Effect.void;
-            counted = false;
-            return Ref.update(active, (n) => n - 1);
-          });
           yield* Effect.acquireRelease(
-            Ref.update(active, (n) => n + 1).pipe(
-              Effect.andThen(
-                Effect.sync(() => {
-                  counted = true;
-                }),
-              ),
-            ),
-            () => uncount,
+            Ref.update(active, (n) => n + 1),
+            () => Ref.update(active, (n) => n - 1),
           );
           const pull = yield* Socket.readerBytes(socket);
           const line = yield* readLine(pull);
@@ -285,10 +325,6 @@ export class DaemonServer extends Context.Service<
           if (Result.isFailure(decoded))
             return yield* writeLine(encodeReply({ ok: false, error: decoded.failure }));
           const message = decoded.success;
-          if ("subscribe" in message) {
-            yield* uncount;
-            return yield* serveSubscription(message, pull, writer);
-          }
           const reply: Reply = yield* Effect.gen(function* () {
             if ("command" in message && message.command === "daemon.info")
               return { version: daemonVersion, instanceId };
@@ -367,6 +403,25 @@ export class DaemonServer extends Context.Service<
         yield* acquirePidFile;
         // Only the socket owner reads the store: a rival may have changed it since we started.
         yield* sessions.load;
+        // Bound after the socket, so a daemon that lost the socket never holds a port, and closed
+        // before it, so the next daemon finds the port free again.
+        const scope = yield* Effect.scope;
+        let bound: number | undefined;
+        const binding = Semaphore.withPermit(yield* Semaphore.make(1));
+        viewerPort = binding(
+          Effect.suspend(() =>
+            bound !== undefined
+              ? Effect.succeed(bound)
+              : Effect.all([Effect.fromResult(firstPort), webAssetsOrNotice(webUiDir)]).pipe(
+                  Effect.flatMap(([first, assets]) =>
+                    serveViewer(first, browserApp(assets, viewerOperations)),
+                  ),
+                  Scope.provide(scope),
+                  Effect.tap((port) => Effect.sync(() => void (bound = port))),
+                ),
+          ),
+        );
+        yield* Effect.ignore(viewerPort);
         yield* Effect.raceAllFirst([
           server.run(handleConnection),
           untilIdle,

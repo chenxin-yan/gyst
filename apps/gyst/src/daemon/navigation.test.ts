@@ -4,7 +4,7 @@ import {
   type AddonDiscovery,
   type ByteRange,
   navigationInstallCommand,
-  type Request,
+  type BrowserRequest,
   type TextPoint,
 } from "@gyst/core";
 import {
@@ -49,7 +49,7 @@ import { daemonVersion } from "./protocol.ts";
 import { Sessions } from "./sessions.ts";
 import { SessionStore } from "./store.ts";
 
-type Input<C extends Request["command"]> = Extract<Request, { readonly command: C }>;
+type Input<C extends BrowserRequest["command"]> = Extract<BrowserRequest, { readonly command: C }>;
 type Target = Pick<Input<"definition">, "session" | "snapshotId" | "side" | "file">;
 
 const repoRoot = fileURLToPath(new URL("../../../../", import.meta.url));

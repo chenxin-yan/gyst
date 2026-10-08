@@ -3,14 +3,15 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as NodeSocket from "@effect/platform-node/NodeSocket";
 import {
   BadArgs,
+  type BrowserRequest,
+  navigationAddon,
   type Reply,
   ReplySchema,
   type Request,
   type Session,
-  type SubscriptionEvent,
-  SubscriptionEventSchema,
 } from "@gyst/core";
 import {
+  ConfigProvider,
   Crypto,
   Deferred,
   Effect,
@@ -20,14 +21,21 @@ import {
   PlatformError,
   Schedule,
   Schema,
-  Stream,
 } from "effect";
 import * as Socket from "effect/socket/Socket";
-import { mkdtemp, readdir, rm } from "node:fs/promises";
-import { once } from "node:events";
-import { createConnection, createServer } from "node:net";
+import { chmod, mkdtemp, readdir, realpath, rm, symlink, writeFile } from "node:fs/promises";
+import { connect, createServer, type Server } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import {
+  freePort,
+  indexHtml,
+  openStream,
+  type RawStream,
+  send as sendHttp,
+  webUiFixture,
+} from "../../tests/http.ts";
+import { WebUiDir } from "../web/server.ts";
 import { manifestOf, noGitHub, publishingContent } from "./capture-doubles.ts";
 import { Git } from "./git.ts";
 import { Navigation } from "./navigation.ts";
@@ -51,6 +59,9 @@ const slowRoot = "/slow";
 
 let dataDir: string;
 let socketPath: string;
+let fixture: Awaited<ReturnType<typeof webUiFixture>>;
+/** Where this file's daemons start looking for a viewer port; never 4978, a real daemon's. */
+let viewerStart: number;
 let statusHeld: Deferred.Deferred<void>;
 let statusRelease: Deferred.Deferred<void>;
 let progressGate: Deferred.Deferred<void> | undefined;
@@ -146,7 +157,20 @@ const navigation = Layer.succeed(
       }),
   }),
 );
-const serverLayerOver = (platform: Layer.Layer<Layer.Success<typeof NodeServices.layer>>) =>
+/** The viewer's settings: the SPA fixture and `GYST_PORT`, by default this file's start port. */
+const viewerSettings = (port: () => string = () => String(viewerStart)) =>
+  Layer.unwrap(
+    Effect.sync(() =>
+      Layer.merge(
+        Layer.succeed(WebUiDir, fixture.dir),
+        ConfigProvider.layer(ConfigProvider.fromUnknown({ GYST_PORT: port() })),
+      ),
+    ),
+  );
+const serverLayerOver = (
+  platform: Layer.Layer<Layer.Success<typeof NodeServices.layer>>,
+  settings = viewerSettings(),
+) =>
   DaemonServer.layer.pipe(
     Layer.provide(
       Sessions.layer.pipe(
@@ -155,6 +179,7 @@ const serverLayerOver = (platform: Layer.Layer<Layer.Success<typeof NodeServices
     ),
     Layer.provide(navigation),
     Layer.provide(paths),
+    Layer.provide(settings),
     Layer.provide(platform),
   );
 const serverLayer = serverLayerOver(NodeServices.layer);
@@ -183,11 +208,106 @@ const openedId = (reply: Reply) => {
 const remove = (session: string) => send({ command: "delete", session, requestId: session });
 const ok = (reply: Reply) => reply.ok;
 
+/** The port a reply's viewer link names. */
+const linkPort = (reply: Reply) => {
+  if (!reply.ok) throw new Error(`open failed: ${reply.error.message}`);
+  const { link } = reply.value as { link: string };
+  const match = /^http:\/\/localhost:(\d+)\/session\/[^/]+$/.exec(link);
+  if (!match) throw new Error(`not a viewer link: ${link}`);
+  return Number(match[1]);
+};
+
+/** A browser on the daemon's viewer at `port`, as the link names it unless `host` says otherwise. */
+const browserAt = (port: number, host = `localhost:${port}`) => {
+  const headers = [
+    ["host", host],
+    ["origin", `http://${host}`],
+  ] as const;
+  return {
+    operation: (request: BrowserRequest | Record<string, unknown>) =>
+      Effect.promise(() =>
+        sendHttp(port, {
+          method: "POST",
+          target: "/api/operation",
+          headers: [...headers, ["content-type", "application/json"]],
+          body: JSON.stringify(request),
+        }),
+      ).pipe(
+        Effect.map((response) => ({
+          status: response.status,
+          // A refused request has no body.
+          reply: response.body === "" ? undefined : decodeReply(response.body),
+        })),
+      ),
+    events: (session: string) =>
+      Effect.promise(() =>
+        openStream(port, { target: "/api/events", headers, body: JSON.stringify({ session }) }),
+      ),
+    get: (target: string) =>
+      Effect.promise(() => sendHttp(port, { target, headers: [["host", host]] })),
+  };
+};
+
+/** Each event's frame in order; `undefined` once the daemon ends the stream. */
+const framesOf = (stream: RawStream) => {
+  const frames = stream.frames();
+  return Effect.promise(() => frames.next()).pipe(
+    Effect.map((frame) => (frame.done ? undefined : JSON.parse(frame.value))),
+    Effect.timeout("5 seconds"),
+  );
+};
+
+/** Listeners on `count` consecutive loopback ports from a free one, released after the test. */
+const occupy = async (count: number) => {
+  for (;;) {
+    const first = await freePort();
+    const servers: Server[] = [];
+    const taken = await Promise.all(
+      Array.from(
+        { length: count },
+        (_, n) =>
+          new Promise<boolean>((resolve) => {
+            const server = createServer();
+            servers.push(server);
+            server.once("error", () => resolve(false));
+            server.listen(first + n, "127.0.0.1", () => resolve(true));
+          }),
+      ),
+    );
+    const release = () =>
+      Promise.all(
+        servers.map(
+          (server) =>
+            new Promise((resolve) =>
+              server.listening ? server.close(resolve) : resolve(undefined),
+            ),
+        ),
+      );
+    if (taken.every(Boolean)) return { first, release };
+    await release();
+  }
+};
+
+const refused = (port: number, address = "127.0.0.1") =>
+  new Promise<boolean>((resolve) => {
+    const socket = connect({ port, host: address });
+    socket.once("connect", () => {
+      socket.destroy();
+      resolve(false);
+    });
+    socket.once("error", () => resolve(true));
+  });
+
 beforeAll(async () => {
   dataDir = await mkdtemp(join(tmpdir(), "gyst-server-"));
   socketPath = join(dataDir, "daemon.sock");
+  fixture = await webUiFixture();
+  viewerStart = await freePort();
 });
-afterAll(() => rm(dataDir, { recursive: true, force: true }));
+afterAll(async () => {
+  await rm(dataDir, { recursive: true, force: true });
+  await rm(fixture.root, { recursive: true, force: true });
+});
 
 describe("DaemonServer", () => {
   it("keeps an open queued behind the idle check alive during final-session shutdown", async () => {
@@ -279,7 +399,7 @@ describe("DaemonServer", () => {
     expect((await readdir(dataDir)).filter((name) => name.startsWith("daemon.sock"))).toEqual([]);
   }, 10_000);
 
-  it("rejects argv, removed operations, directory selection and missing intent before any use case runs", async () => {
+  it("rejects argv, removed and human operations, directory selection and missing intent before any use case runs", async () => {
     await Effect.runPromise(
       Effect.gen(function* () {
         const server = yield* DaemonServer;
@@ -300,6 +420,26 @@ describe("DaemonServer", () => {
           { command: "refresh", session: "x", patch },
           { command: "delete", session: "x" },
           { command: "apply", session: "x" },
+          // Human and viewer operations arrive only through the HTTP adapter.
+          {
+            command: "viewed",
+            session: "x",
+            snapshotId: "0".repeat(64),
+            revision: 0,
+            requestId: "r",
+            hunkIds: [],
+            viewed: true,
+          },
+          { command: "layer", session: "x", number: 1 },
+          { command: "navigation", session: "x", snapshotId: "0".repeat(64) },
+          {
+            command: "definition",
+            session: "x",
+            snapshotId: "0".repeat(64),
+            side: "new",
+            file: "a.ts",
+            position: { line: 1, character: 0 },
+          },
         ]) {
           const reply = yield* exchange({ ...info, request });
           expect(reply.ok ? reply : reply.error).toMatchObject({
@@ -307,79 +447,106 @@ describe("DaemonServer", () => {
             message: "invalid daemon request; update the CLI if its protocol is older",
           });
         }
+        // Subscriptions are the viewer's too.
+        const subscribed = yield* exchange({ ...info, subscribe: { session: "x" } });
+        expect(subscribed.ok ? subscribed : subscribed.error).toMatchObject({ _tag: "bad_args" });
         expect(files.size).toBe(0);
         yield* Fiber.interrupt(running);
       }).pipe(Effect.provide(serverLayer)),
     );
   }, 10_000);
 
-  it("dispatches navigation with the launcher's add-on and retires analysis on refresh and delete", async () => {
-    await Effect.runPromise(
-      Effect.gen(function* () {
-        navigationCalls.length = 0;
-        const server = yield* DaemonServer;
-        const running = yield* Effect.forkChild(server.run);
-        const session = openedId(
-          yield* open("/navigate").pipe(
-            Effect.retry({ schedule: Schedule.spaced("10 millis"), times: 100 }),
-          ),
-        );
-        const status = yield* send({ command: "status", session });
-        if (!status.ok) throw new Error("status failed");
-        const snapshotId = (status.value as { session: { snapshotId: string } }).session.snapshotId;
-        // Ordinary review operations never reach navigation.
-        expect(navigationCalls).toEqual([]);
-
-        const addon = {
-          kind: "available",
-          entry: "/opt/gyst-navigation-typescript",
-          version: "1",
-        } as const;
-        const target = { session, snapshotId, side: "new", file: "a.ts" } as const;
-        const position = { line: 1, character: 0 };
-        const requests = [
-          { command: "definition", ...target, position, addon },
-          { command: "references", ...target, position, addon },
-          { command: "identifiers", ...target, line: 1, addon },
-          { command: "navigation", session, snapshotId, addon },
-        ] as const;
-        for (const request of requests) expect(ok(yield* send(request))).toBe(true);
-        expect(navigationCalls).toEqual(requests);
-        const answered = yield* send(requests[1]);
-        expect(answered.ok && answered.value).toMatchObject({
-          query: "references",
-          snapshotId,
-          outcome: { kind: "no-symbol" },
-        });
-        const readiness = yield* send(requests[3]);
-        expect(readiness.ok && readiness.value).toEqual({
-          sessionId: session,
-          snapshotId,
-          addon: { kind: "available", version: "1" },
-          sides: { old: { kind: "stopped" }, new: { kind: "queued" } },
-        });
-
-        navigationCalls.length = 0;
-        const refreshed = yield* send({ command: "refresh", session });
-        if (!refreshed.ok) throw new Error("refresh failed");
-        const current = (refreshed.value as { session: { snapshotId: string } }).session.snapshotId;
-        expect(navigationCalls).toEqual([{ retire: session, keep: current }]);
-        // A browser-shaped request without the launcher's discovery is refused before dispatch.
-        for (const request of [requests[0], requests[3]]) {
-          const { addon: _, ...unbound } = request;
-          expect(yield* send(unbound as unknown as Request)).toMatchObject({
-            ok: false,
-            error: { _tag: "bad_args" },
-          });
-        }
-        expect(ok(yield* remove(session))).toBe(true);
-        expect(navigationCalls).toEqual([
-          { retire: session, keep: current },
-          { retire: session, keep: undefined },
-        ]);
-        yield* Fiber.interrupt(running);
-      }).pipe(Effect.provide(serverLayer)),
+  it("discovers the add-on on the PATH a session was last opened with and retires analysis on refresh and delete", async () => {
+    const bin = await mkdtemp(join(dataDir, "bin-"));
+    const later = await mkdtemp(join(dataDir, "later-"));
+    // A stand-in add-on whose handshake answers as this release; it runs with an empty environment.
+    const script = join(dataDir, "fake-addon.js");
+    await writeFile(
+      script,
+      `process.stdout.write(JSON.stringify(${JSON.stringify({
+        name: navigationAddon.name,
+        version: daemonVersion,
+        protocol: navigationAddon.protocol,
+        engine: { ok: true, version: "7.0.2" },
+      })}) + "\\n");\n`,
     );
+    await chmod(script, 0o755);
+    const available = { kind: "available", entry: await realpath(script), version: daemonVersion };
+    // The daemon's own PATH holds an add-on; it must never be searched.
+    const daemonBin = await mkdtemp(join(dataDir, "daemon-bin-"));
+    await symlink(script, join(daemonBin, navigationAddon.bin));
+    const inherited = process.env.PATH;
+    process.env.PATH = `${daemonBin}:${inherited ?? ""}`;
+    try {
+      await Effect.runPromise(
+        Effect.gen(function* () {
+          navigationCalls.length = 0;
+          const server = yield* DaemonServer;
+          const running = yield* Effect.forkChild(server.run);
+          const opened = yield* send({
+            command: "open",
+            cwd: "/navigate",
+            scope: { kind: "uncommitted" },
+            path: `/nonexistent:${bin}`,
+          }).pipe(Effect.retry({ schedule: Schedule.spaced("10 millis"), times: 100 }));
+          const session = openedId(opened);
+          const browser = browserAt(linkPort(opened));
+          const status = yield* send({ command: "status", session });
+          if (!status.ok) throw new Error("status failed");
+          const snapshotId = (status.value as { session: { snapshotId: string } }).session
+            .snapshotId;
+          // Ordinary review operations never reach navigation.
+          expect(navigationCalls).toEqual([]);
+
+          const target = { session, snapshotId, side: "new", file: "a.ts" } as const;
+          const position = { line: 1, character: 0 };
+          const queries = [
+            { command: "definition", ...target, position },
+            { command: "references", ...target, position },
+            { command: "identifiers", ...target, line: 1 },
+            { command: "navigation", session, snapshotId },
+          ] as const;
+          for (const query of queries)
+            expect((yield* browser.operation(query)).reply?.ok).toBe(true);
+          expect(navigationCalls).toEqual(
+            queries.map((query) => ({ ...query, addon: { kind: "missing" } })),
+          );
+
+          // Check again looks on the same PATH, so an install into one of its directories counts.
+          yield* Effect.promise(() => symlink(script, join(bin, navigationAddon.bin)));
+          navigationCalls.length = 0;
+          yield* browser.operation(queries[0]);
+          yield* browser.operation({ ...queries[3], recheck: true });
+          yield* browser.operation(queries[0]);
+          expect(navigationCalls).toEqual([
+            { ...queries[0], addon: { kind: "missing" } },
+            { ...queries[3], addon: available },
+            { ...queries[0], addon: available },
+          ]);
+
+          // The latest CLI invocation's PATH replaces it; one without the add-on finds none.
+          navigationCalls.length = 0;
+          expect(ok(yield* send({ command: "open", session, path: later }))).toBe(true);
+          yield* browser.operation(queries[3]);
+          expect(navigationCalls).toEqual([{ ...queries[3], addon: { kind: "missing" } }]);
+
+          navigationCalls.length = 0;
+          const refreshed = yield* send({ command: "refresh", session });
+          if (!refreshed.ok) throw new Error("refresh failed");
+          const current = (refreshed.value as { session: { snapshotId: string } }).session
+            .snapshotId;
+          expect(navigationCalls).toEqual([{ retire: session, keep: current }]);
+          expect(ok(yield* remove(session))).toBe(true);
+          expect(navigationCalls).toEqual([
+            { retire: session, keep: current },
+            { retire: session, keep: undefined },
+          ]);
+          yield* Fiber.interrupt(running);
+        }).pipe(Effect.provide(serverLayer)),
+      );
+    } finally {
+      process.env.PATH = inherited;
+    }
   }, 10_000);
 
   it("writes capture progress lines before the reply, which clients with or without a handler decode", async () => {
@@ -583,10 +750,6 @@ describe("DaemonServer", () => {
   });
 });
 
-const decodeEvent = Schema.decodeUnknownSync(Schema.fromJsonString(SubscriptionEventSchema), {
-  onExcessProperty: "error",
-});
-type Info = typeof DaemonInfoSchema.Type;
 /** Starts the daemon and returns its fiber and identity once it answers. */
 const started = Effect.gen(function* () {
   const server = yield* DaemonServer;
@@ -597,32 +760,20 @@ const started = Effect.gen(function* () {
   if (!hello.ok) throw new Error("handshake failed");
   return { running, info: Schema.decodeUnknownSync(DaemonInfoSchema)(hello.value) };
 });
-/** A raw subscription over the socket; each pull is the next decoded frame. */
-const subscribeRaw = Effect.fn("subscribeRaw")(function* (message: unknown) {
-  const socket = yield* NodeSocket.makeNet({ path: socketPath });
-  const next = lineReader(yield* Socket.readerBytes(socket));
-  yield* writeLine(socket, JSON.stringify(message));
-  return Effect.map(next, decodeEvent);
+/** Opens `cwd`'s session over the socket, with a browser on the viewer its link names. */
+const openViewed = Effect.fn("openViewed")(function* (cwd: string) {
+  const reply = yield* open(cwd);
+  return { id: openedId(reply), browser: browserAt(linkPort(reply)) };
 });
-const subscribe = (info: Info, session: string) =>
-  subscribeRaw({ ...info, subscribe: { session } });
-/** The daemon ended the connection: the next read sees a clean close. */
-const ended = (next: Effect.Effect<SubscriptionEvent, Socket.SocketError>) =>
-  next.pipe(
-    Effect.flip,
-    Effect.map((error) => error.reason._tag),
-    Effect.timeout("2 seconds"),
-  );
 const versionOf = (id: string) => {
   const session = files.get(id)!;
   return { sessionId: id, snapshotId: session.snapshotId, revision: session.revision };
 };
-/** Toggles Viewed on the session's first hunk against its saved revision. */
-const toggle = (info: Info, id: string, n: number) => {
+/** The human toggles Viewed on the session's first hunk against its saved revision. */
+const toggle = (browser: ReturnType<typeof browserAt>, id: string, n: number) => {
   const session = files.get(id)!;
-  return exchange({
-    ...info,
-    request: {
+  return browser
+    .operation({
       command: "viewed",
       session: id,
       snapshotId: session.snapshotId,
@@ -630,57 +781,162 @@ const toggle = (info: Info, id: string, n: number) => {
       requestId: `${id}-${n}`,
       hunkIds: [session.hunks[0]!.id],
       viewed: n % 2 === 0,
-    },
-  });
+    })
+    .pipe(Effect.map(({ reply }) => reply!));
 };
 
-describe("DaemonServer subscriptions", () => {
+describe("DaemonServer viewer", () => {
   // Each test's daemon loads `files`; earlier tests leave sessions there.
   beforeEach(() => files.clear());
 
-  it("streams ready, each committed change, then deleted and EOF", async () => {
+  it("serves the SPA and operations on loopback from the first free port, which every link names", async () => {
+    const taken = await occupy(1);
+    try {
+      await Effect.runPromise(
+        Effect.gen(function* () {
+          const { running } = yield* started;
+          const opened = yield* open("/served");
+          const port = linkPort(opened);
+          expect(port).toBe(taken.first + 1);
+          const id = openedId(opened);
+          expect(opened.ok && opened.value).toMatchObject({
+            created: true,
+            link: `http://localhost:${port}/session/${id}`,
+          });
+          // Reopening names the same port: the daemon keeps it for its lifetime.
+          expect(linkPort(yield* send({ command: "open", session: id }))).toBe(port);
+          // Loopback IPv4 only.
+          expect(yield* Effect.promise(() => refused(port, "::1"))).toBe(true);
+
+          const browser = browserAt(port);
+          const shell = yield* browser.get(`/session/${id}`);
+          expect([shell.status, shell.body, shell.header("referrer-policy")]).toEqual([
+            200,
+            indexHtml,
+            "no-referrer",
+          ]);
+          // A browser behind an SSH forward on another local port names that port.
+          const forwarded = browserAt(port, "localhost:14978");
+          expect((yield* forwarded.get(`/session/${id}`)).status).toBe(200);
+          const listed = yield* forwarded.operation({ command: "list" });
+          expect(listed.status).toBe(200);
+          expect(listed.reply).toMatchObject({ ok: true, value: { sessions: [{ id }] } });
+          const reopened = yield* browser.operation({ command: "open", session: id });
+          expect(reopened.reply).toMatchObject({
+            ok: true,
+            value: {
+              created: false,
+              session: { id },
+              link: `http://localhost:${port}/session/${id}`,
+            },
+          });
+          // A DNS-rebinding name resolves to loopback too, but is not a loopback name.
+          const rebound = browserAt(port, `attacker.example:${port}`);
+          expect((yield* rebound.get(`/session/${id}`)).status).toBe(403);
+          expect((yield* rebound.operation({ command: "list" })).status).toBe(403);
+          yield* Fiber.interrupt(running);
+          expect(yield* Effect.promise(() => refused(port))).toBe(true);
+        }).pipe(
+          Effect.provide(
+            serverLayerOver(
+              NodeServices.layer,
+              viewerSettings(() => String(taken.first)),
+            ),
+          ),
+        ),
+      );
+    } finally {
+      await taken.release();
+    }
+  }, 10_000);
+
+  it("fails opening with an error naming the range while every port is taken, then binds one", async () => {
+    const taken = await occupy(10);
+    const range = `127.0.0.1:${taken.first}-${taken.first + 9}`;
+    try {
+      await Effect.runPromise(
+        Effect.gen(function* () {
+          const { running } = yield* started;
+          // Socket operations need no viewer.
+          expect(yield* send({ command: "list" })).toEqual({ ok: true, value: { sessions: [] } });
+          const refusedOpen = yield* open("/no-port");
+          expect(refusedOpen.ok ? refusedOpen : refusedOpen.error).toMatchObject({
+            _tag: "daemon_unreachable",
+            message: expect.stringContaining(range),
+          });
+          expect(files.size).toBe(0);
+          yield* Effect.promise(() => taken.release());
+          const opened = yield* open("/port-freed");
+          expect(linkPort(opened)).toBe(taken.first);
+          yield* Fiber.interrupt(running);
+        }).pipe(
+          Effect.provide(
+            serverLayerOver(
+              NodeServices.layer,
+              viewerSettings(() => String(taken.first)),
+            ),
+          ),
+        ),
+      );
+    } finally {
+      await taken.release();
+    }
+  }, 10_000);
+
+  it("names an invalid GYST_PORT when opening", async () => {
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        const { running } = yield* started;
+        const reply = yield* open("/bad-port");
+        expect(reply.ok ? reply : reply.error).toMatchObject({
+          _tag: "daemon_unreachable",
+          message: "GYST_PORT must be a port number from 1 to 65535",
+        });
+        yield* Fiber.interrupt(running);
+      }).pipe(
+        Effect.provide(
+          serverLayerOver(
+            NodeServices.layer,
+            viewerSettings(() => "70000"),
+          ),
+        ),
+      ),
+    );
+  }, 10_000);
+
+  it("streams ready, each committed change, then deleted and the end", async () => {
     await Effect.runPromise(
       Effect.gen(function* () {
         const { running, info } = yield* started;
-        const id = openedId(yield* open("/subscribed"));
-        const next = yield* subscribe(info, id);
+        const { id, browser } = yield* openViewed("/subscribed");
+        const stream = yield* browser.events(id);
+        expect([stream.status, stream.header("content-type")]).toEqual([200, "text/event-stream"]);
+        const next = framesOf(stream);
         expect(yield* next).toEqual({ kind: "ready", daemon: info.instanceId, ...versionOf(id) });
-        expect(ok(yield* toggle(info, id, 0))).toBe(true);
+        expect((yield* toggle(browser, id, 0)).ok).toBe(true);
         expect(yield* next).toEqual({ kind: "changed", ...versionOf(id) });
-        expect(ok(yield* toggle(info, id, 1))).toBe(true);
+        expect((yield* toggle(browser, id, 1)).ok).toBe(true);
         expect(yield* next).toEqual({ kind: "changed", ...versionOf(id) });
         expect(ok(yield* remove(id))).toBe(true);
         expect(yield* next).toEqual({ kind: "deleted", sessionId: id });
-        expect(yield* ended(next)).toBe("SocketCloseError");
+        expect(yield* next).toBeUndefined();
         // Nothing else holds the daemon: the final delete still lets it exit idle.
         yield* Fiber.join(running).pipe(Effect.timeout("2 seconds"));
       }).pipe(Effect.scoped, Effect.provide(serverLayer)),
     );
   }, 10_000);
 
-  it("refuses an unknown session or a stale identity with one failed frame", async () => {
+  it("refuses an unknown session with one failed frame, and malformed browser input with bad_args", async () => {
     await Effect.runPromise(
       Effect.gen(function* () {
-        const { running, info } = yield* started;
-        const id = openedId(yield* open("/refused"));
+        const { running } = yield* started;
+        const { id, browser } = yield* openViewed("/refused");
         const before = files.get(id);
-        const unknown = yield* subscribe(info, "missing");
-        expect(yield* unknown).toMatchObject({ kind: "failed", error: { _tag: "no_session" } });
-        expect(yield* ended(unknown)).toBe("SocketCloseError");
-        for (const stale of [
-          { ...info, instanceId: "another-daemon" },
-          { ...info, version: "0.0.0" },
-        ]) {
-          const next = yield* subscribeRaw({ ...stale, subscribe: { session: id } });
-          expect(yield* next).toMatchObject({
-            kind: "failed",
-            error: { _tag: "daemon_unreachable", message: expect.stringContaining("identity") },
-          });
-          expect(yield* ended(next)).toBe("SocketCloseError");
-        }
-        // An excess field is a bad request, answered like any other, not a subscription.
-        const reply = yield* exchange({ ...info, subscribe: { session: id, extra: true } });
-        expect(reply.ok ? reply : reply.error).toMatchObject({ _tag: "bad_args" });
+        const unknown = framesOf(yield* browser.events("missing"));
+        expect(yield* unknown).toMatchObject({ kind: "failed", error: { code: "no_session" } });
+        expect(yield* unknown).toBeUndefined();
+        const malformed = yield* browser.operation({ command: "list", extra: true });
+        expect([malformed.status, malformed.reply?.ok]).toEqual([400, false]);
         expect(files.get(id)).toBe(before);
         yield* Fiber.interrupt(running);
       }).pipe(Effect.scoped, Effect.provide(serverLayer)),
@@ -690,31 +946,28 @@ describe("DaemonServer subscriptions", () => {
   it("never misses a mutation that races the subscription", async () => {
     await Effect.runPromise(
       Effect.gen(function* () {
-        const { running, info } = yield* started;
-        const id = openedId(yield* open("/race"));
+        const { running } = yield* started;
+        const { id, browser } = yield* openViewed("/race");
         const seen = { inReady: 0, asChange: 0 };
         for (let n = 0; n < 20; n++) {
-          yield* Effect.scoped(
-            Effect.gen(function* () {
-              const [next, mutated] = yield* Effect.all(
-                [
-                  Effect.sleep(`${n % 4} millis`).pipe(Effect.andThen(subscribe(info, id))),
-                  toggle(info, id, n),
-                ],
-                { concurrency: "unbounded" },
-              );
-              expect(ok(mutated)).toBe(true);
-              const final = versionOf(id).revision;
-              const ready = yield* next;
-              if (ready.kind !== "ready") throw new Error(`expected ready, got ${ready.kind}`);
-              if (ready.revision === final) return void seen.inReady++;
-              expect(yield* next.pipe(Effect.timeout("2 seconds"))).toEqual({
-                kind: "changed",
-                ...versionOf(id),
-              });
-              seen.asChange++;
-            }),
+          const [stream, mutated] = yield* Effect.all(
+            [
+              Effect.sleep(`${n % 4} millis`).pipe(Effect.andThen(browser.events(id))),
+              toggle(browser, id, n),
+            ],
+            { concurrency: "unbounded" },
           );
+          expect(mutated.ok).toBe(true);
+          const final = versionOf(id).revision;
+          const next = framesOf(stream);
+          const ready = yield* next;
+          if (ready.kind !== "ready") throw new Error(`expected ready, got ${ready.kind}`);
+          if (ready.revision === final) seen.inReady++;
+          else {
+            expect(yield* next).toEqual({ kind: "changed", ...versionOf(id) });
+            seen.asChange++;
+          }
+          stream.close();
         }
         expect(seen.inReady + seen.asChange).toBe(20);
         yield* Fiber.interrupt(running);
@@ -722,40 +975,37 @@ describe("DaemonServer subscriptions", () => {
     );
   }, 20_000);
 
-  it("drops a subscriber that stops reading, which resubscribes at the final revision", async () => {
+  it("coalesces changes for a subscriber that stops reading, which then catches up to the latest", async () => {
     await Effect.runPromise(
       Effect.gen(function* () {
-        const { running, info } = yield* started;
-        const id = openedId(yield* open("/overflow"));
-        // Never read: the daemon's writes back up until one takes longer than a second.
-        const stalled = createConnection(socketPath);
-        stalled.on("error", () => {});
-        yield* Effect.promise(() => once(stalled, "connect"));
-        stalled.write(`${JSON.stringify({ ...info, subscribe: { session: id } })}\n`);
-        const deadline = Date.now() + 15_000;
-        let n = 0;
-        while (!stalled.destroyed && Date.now() < deadline) {
-          expect(ok(yield* toggle(info, id, n++))).toBe(true);
-          // The daemon reads and ignores these; once it has dropped the connection, writing fails.
-          if (n % 50 === 0) stalled.write(" ");
-        }
-        expect(stalled.destroyed).toBe(true);
-        const next = yield* subscribe(info, id);
-        expect(yield* next).toEqual({ kind: "ready", daemon: info.instanceId, ...versionOf(id) });
-        expect(versionOf(id).revision).toBe(n);
+        const { running } = yield* started;
+        const { id, browser } = yield* openViewed("/stalled");
+        // Not read while the human keeps toggling: nothing may leave it silently behind.
+        const stalled = yield* browser.events(id);
+        for (let n = 0; n < 200; n++) expect((yield* toggle(browser, id, n)).ok).toBe(true);
+        const latest = versionOf(id).revision;
+        expect(latest).toBe(200);
+        const next = framesOf(stalled);
+        let frame = yield* next;
+        expect(frame).toMatchObject({ kind: "ready" });
+        while (frame.revision < latest) frame = yield* next;
+        expect(frame).toEqual({ kind: "changed", ...versionOf(id) });
+        stalled.close();
         yield* Fiber.interrupt(running);
-      }).pipe(Effect.scoped, Effect.provide(serverLayer)),
+      }).pipe(Effect.provide(serverLayer)),
     );
   }, 30_000);
 
-  it("admits a newer daemon's restart with a subscription open, which then ends", async () => {
+  it("admits a newer daemon's restart with a subscription open, which ends, and the next daemon serves the same port", async () => {
     await Effect.runPromise(
       Effect.gen(function* () {
         const first = yield* Effect.gen(function* () {
           const { running, info } = yield* started;
-          const id = openedId(yield* open("/restart"));
-          expect(ok(yield* toggle(info, id, 0))).toBe(true);
-          const next = yield* subscribe(info, id);
+          const opened = yield* open("/restart");
+          const id = openedId(opened);
+          const browser = browserAt(linkPort(opened));
+          expect((yield* toggle(browser, id, 0)).ok).toBe(true);
+          const next = framesOf(yield* browser.events(id));
           expect(yield* next).toMatchObject({ kind: "ready", revision: versionOf(id).revision });
           const saved = yield* inspectSavedSessions;
           expect(
@@ -766,15 +1016,16 @@ describe("DaemonServer subscriptions", () => {
               fingerprint: saved.fingerprint,
             }),
           ).toEqual({ ok: true, value: { restarting: true } });
-          expect(yield* ended(next)).toBe("SocketCloseError");
+          expect(yield* next).toBeUndefined();
           yield* Fiber.join(running).pipe(Effect.timeout("2 seconds"));
-          return { info, id };
+          return { info, id, port: linkPort(opened) };
         }).pipe(Effect.scoped, Effect.provide(serverLayer));
-        // The next daemon is a new generation over the same committed state.
+        // The next daemon is a new generation over the same committed state, at the same address,
+        // so an open tab's resubscription reaches it.
         yield* Effect.gen(function* () {
           const { running, info } = yield* started;
           expect(info.instanceId).not.toBe(first.info.instanceId);
-          const next = yield* subscribe(info, first.id);
+          const next = framesOf(yield* browserAt(first.port).events(first.id));
           expect(yield* next).toEqual({
             kind: "ready",
             daemon: info.instanceId,
@@ -784,92 +1035,6 @@ describe("DaemonServer subscriptions", () => {
           yield* Fiber.interrupt(running);
         }).pipe(Effect.scoped, Effect.provide(serverLayer));
       }).pipe(Effect.provide(paths), Effect.provide(NodeServices.layer)),
-    );
-  }, 10_000);
-});
-
-describe("DaemonClient.subscribe over the daemon socket", () => {
-  beforeEach(() => files.clear());
-  const clientLayer = DaemonClient.layer.pipe(
-    Layer.provide(paths),
-    Layer.provide(NodeServices.layer),
-  );
-
-  it("yields ready then changes, fails for an unknown session, and closes when the consumer stops", async () => {
-    await Effect.runPromise(
-      Effect.gen(function* () {
-        const { running, info } = yield* started;
-        const client = yield* DaemonClient;
-        const id = openedId(yield* open("/client"));
-        expect(
-          yield* client.subscribe({ session: "missing" }).pipe(Stream.runCollect, Effect.flip),
-        ).toMatchObject({ _tag: "no_session" });
-
-        const heard: SubscriptionEvent[] = [];
-        const consumer = yield* Effect.forkChild(
-          Stream.runForEach(client.subscribe({ session: id }), (event) =>
-            Effect.sync(() => void heard.push(event)),
-          ),
-        );
-        const heardCount = (count: number) =>
-          Effect.sync(() => heard.length).pipe(
-            Effect.repeat({ until: (n) => n >= count, schedule: Schedule.spaced("5 millis") }),
-            Effect.timeout("2 seconds"),
-          );
-        yield* heardCount(1);
-        expect(ok(yield* toggle(info, id, 0))).toBe(true);
-        yield* heardCount(2);
-        expect(heard).toEqual([
-          { kind: "ready", daemon: info.instanceId, ...versionOf(id), revision: 0 },
-          { kind: "changed", ...versionOf(id) },
-        ]);
-        yield* Fiber.interrupt(consumer);
-        expect(ok(yield* toggle(info, id, 1))).toBe(true);
-        const again = yield* client
-          .subscribe({ session: id })
-          .pipe(Stream.take(1), Stream.runCollect);
-        expect(again).toEqual([{ kind: "ready", daemon: info.instanceId, ...versionOf(id) }]);
-        yield* Fiber.interrupt(running);
-      }).pipe(Effect.provide(Layer.merge(serverLayer, clientLayer))),
-    );
-  }, 10_000);
-
-  it("ends when the daemon exits, and resubscribing reaches the next daemon at the same revision", async () => {
-    await Effect.runPromise(
-      Effect.gen(function* () {
-        const client = yield* DaemonClient;
-        const first = yield* Effect.gen(function* () {
-          const { running, info } = yield* started;
-          const id = openedId(yield* open("/client-restart"));
-          expect(ok(yield* toggle(info, id, 0))).toBe(true);
-          const heard: SubscriptionEvent[] = [];
-          const consumer = yield* Effect.forkChild(
-            Stream.runForEach(client.subscribe({ session: id }), (event) =>
-              Effect.sync(() => void heard.push(event)),
-            ),
-          );
-          yield* Effect.sync(() => heard.length).pipe(
-            Effect.repeat({ until: (n) => n >= 1, schedule: Schedule.spaced("5 millis") }),
-            Effect.timeout("2 seconds"),
-          );
-          yield* Fiber.interrupt(running);
-          // A daemon exit is a clean end of the stream, not a failure.
-          yield* Fiber.join(consumer).pipe(Effect.timeout("2 seconds"));
-          expect(heard).toEqual([{ kind: "ready", daemon: info.instanceId, ...versionOf(id) }]);
-          return { info, id };
-        }).pipe(Effect.provide(serverLayer));
-        yield* Effect.gen(function* () {
-          const { running, info } = yield* started;
-          expect(info.instanceId).not.toBe(first.info.instanceId);
-          const again = yield* client
-            .subscribe({ session: first.id })
-            .pipe(Stream.take(1), Stream.runCollect);
-          expect(again).toEqual([
-            { kind: "ready", daemon: info.instanceId, ...versionOf(first.id), revision: 1 },
-          ]);
-          yield* Fiber.interrupt(running);
-        }).pipe(Effect.provide(serverLayer));
-      }).pipe(Effect.provide(clientLayer)),
     );
   }, 10_000);
 });

@@ -16,7 +16,7 @@ import {
 import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
-import { daemonVersion } from "../daemon/protocol.ts";
+import { daemonVersion } from "./protocol.ts";
 import { discoverAddon } from "./navigation-addon.ts";
 
 const repo = fileURLToPath(new URL("../../../../", import.meta.url));

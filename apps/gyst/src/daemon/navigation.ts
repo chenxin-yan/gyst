@@ -12,7 +12,7 @@ import {
   type NavigationStatusPayload,
   type NavigationUnavailable,
   type NoSession,
-  type Request,
+  type BrowserRequest,
   type SnapshotManifest,
   type TextPoint,
   type TextRange,
@@ -55,7 +55,16 @@ import { Paths } from "./paths.ts";
 import { daemonVersion } from "./protocol.ts";
 import { Sessions } from "./sessions.ts";
 
-type Input<C extends Request["command"]> = Extract<Request, { readonly command: C }>;
+/**
+ * A browser's navigation operation with the add-on the daemon found for its session; the browser
+ * itself can name neither the add-on nor where to look for it.
+ */
+type WithAddon<R> = R extends unknown
+  ? Omit<R, "recheck"> & { readonly addon: AddonDiscovery }
+  : never;
+type Input<C extends BrowserRequest["command"]> = WithAddon<
+  Extract<BrowserRequest, { readonly command: C }>
+>;
 type Target = Input<"definition" | "references" | "identifiers">;
 type Available = Extract<AddonDiscovery, { readonly kind: "available" }>;
 type Side = "old" | "new";

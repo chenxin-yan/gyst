@@ -9,7 +9,6 @@ import {
 } from "@gyst/core/wire";
 import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 import {
-  bootstrap,
   events,
   isExpectedFailure,
   isUncertain,
@@ -18,7 +17,7 @@ import {
   TransportError,
 } from "./api.ts";
 
-// Explicitly mocked transport: these tests pin the viewer's HTTP handling, not the launcher.
+// Explicitly mocked transport: these tests pin the viewer's HTTP handling, not the daemon.
 const respond = (status: number, body?: unknown) => {
   const fetch = vi.fn(async (_path: string, _init: RequestInit) =>
     body === undefined
@@ -47,30 +46,6 @@ const reason = (promise: Promise<unknown>) =>
     () => expect.unreachable("expected a failure"),
     (error: unknown) => error,
   );
-
-describe("bootstrap", () => {
-  it("posts the secret as a bearer credential and accepts 204", async () => {
-    const fetch = respond(204);
-    expect(await bootstrap("secret-1")).toBe(true);
-    const [path, init] = fetch.mock.calls[0]!;
-    expect(path).toBe("/bootstrap");
-    expect(init).toMatchObject({ method: "POST", headers: { authorization: "Bearer secret-1" } });
-    expect(init.body).toBeUndefined();
-  });
-
-  it("leaves a rejected secret to the existing cookie", async () => {
-    respond(401);
-    expect(await bootstrap("expired")).toBe(false);
-  });
-
-  it("reports a refused host without echoing the secret", async () => {
-    respond(403);
-    const error = await reason(bootstrap("secret-2"));
-    expect(error).toBeInstanceOf(TransportError);
-    expect(error).toMatchObject({ reason: "forbidden" });
-    expect((error as Error).message).not.toContain("secret-2");
-  });
-});
 
 describe("operation", () => {
   it("posts the raw browser request and decodes its payload", async () => {
@@ -132,8 +107,6 @@ describe("operation", () => {
   });
 
   it.each([
-    [401, undefined, "unauthorized"],
-    [401, { ok: true, value: { sessions: [] } }, "unauthorized"],
     [403, undefined, "forbidden"],
     [503, undefined, "unavailable"],
     [400, undefined, "unexpected"],
@@ -149,7 +122,7 @@ describe("operation", () => {
     expect(error).toMatchObject({ reason: expected });
   });
 
-  it("reports an unreachable launcher", async () => {
+  it("reports an unreachable daemon", async () => {
     vi.stubGlobal("fetch", () => Promise.reject(new TypeError("Failed to fetch")));
     expect(await reason(operation({ command: "list" }))).toMatchObject({ reason: "unavailable" });
   });
@@ -242,7 +215,6 @@ describe("events", () => {
   });
 
   it.each([
-    [401, "unauthorized"],
     [403, "forbidden"],
     [503, "unavailable"],
     [400, "unexpected"],
@@ -254,7 +226,7 @@ describe("events", () => {
     expect(error).toMatchObject({ reason: expected });
   });
 
-  it("reports an unreachable launcher, and lets go of the stream when the reader stops", async () => {
+  it("reports an unreachable daemon, and lets go of the stream when the reader stops", async () => {
     vi.stubGlobal("fetch", () => Promise.reject(new TypeError("Failed to fetch")));
     expect(await reason(all())).toMatchObject({ reason: "unavailable" });
     const fetch = stream([frame(ready), frame(changed)], undefined, true);
@@ -274,7 +246,6 @@ it("mints distinct 128-bit request ids", () => {
 
 describe("isExpectedFailure", () => {
   it.each([
-    new TransportError("unauthorized", "m"),
     new TransportError("forbidden", "m"),
     new TransportError("unavailable", "m"),
     new NoSession({ message: "m" }),
@@ -302,7 +273,6 @@ describe("isUncertain", () => {
     [new TransportError("unavailable", "m"), true],
     [new TransportError("unexpected", "m"), true],
     [new DaemonUnreachable({ message: "m" }), true],
-    [new TransportError("unauthorized", "m"), false],
     [new TransportError("forbidden", "m"), false],
     [new StaleRevision({ message: "m" }), false],
     [new ValidationFailed({ message: "m" }), false],
