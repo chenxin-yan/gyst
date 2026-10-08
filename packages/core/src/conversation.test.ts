@@ -14,7 +14,7 @@ import type { CapturedRange } from "./guidance.ts";
 import { setViewed } from "./human-action.ts";
 import { type Session, SessionSchema } from "./session.ts";
 import { statusOf } from "./status.ts";
-import { type Thread, type ThreadCode, ThreadsPayloadSchema } from "./thread.ts";
+import { type Thread, type ThreadCode, ThreadsPayloadSchema, type Wording } from "./thread.ts";
 
 const LATER = "2026-02-02T00:00:00.000Z";
 const SNAPSHOT = "snapshot";
@@ -66,6 +66,9 @@ const base: Session = {
   pickupReceipts: [],
 };
 
+/** Note n1 as a reader of `base` sees it. */
+const aboutB: Wording = { markdown: "About B.", references: [], anchor: range(2) };
+
 const captured: CapturedIndex[] = [
   {
     snapshotId: SNAPSHOT,
@@ -95,7 +98,7 @@ function post(
   session: Session,
   target: Extract<Act, { command: "draft" }>["target"],
   markdown: string,
-  extra: { wording?: string; kind?: "question" | "change"; id?: string } = {},
+  extra: { wording?: Wording; kind?: "question" | "change"; id?: string } = {},
 ) {
   const id = extra.id ?? markdown;
   const drafted = done(session, `draft-${id}`, {
@@ -201,10 +204,10 @@ describe("human conversation actions", () => {
     const stale = refused(base, "r1", {
       command: "draft",
       target: { kind: "note", note: "n1" },
-      wording: "An older wording.",
+      wording: { ...aboutB, markdown: "An older wording." },
     });
     expect(stale._tag).toBe("stale_revision");
-    const first = post(base, { kind: "note", note: "n1" }, "Why B?", { wording: "About B." });
+    const first = post(base, { kind: "note", note: "n1" }, "Why B?", { wording: aboutB });
     expect(first.session.threads[0]).toMatchObject({
       anchor: range(2),
       note: { id: "n1", removed: false },
@@ -228,12 +231,12 @@ describe("human conversation actions", () => {
       ).session!;
     const rewritten = rewrite(first.session, "B, explained better.");
     const second = post(rewritten, { kind: "note", note: "n1" }, "Thanks, and C?", {
-      wording: "B, explained better.",
+      wording: { ...aboutB, markdown: "B, explained better." },
     });
     const begun = done(second.session, "d3", {
       command: "draft",
       target: { kind: "note", note: "n1" },
-      wording: "B, explained better.",
+      wording: { ...aboutB, markdown: "B, explained better." },
     });
     const again = rewrite(begun.session!, "B, explained a third way.");
     const third = done(again, "s3", {
@@ -286,9 +289,9 @@ describe("human conversation actions", () => {
   });
 
   it("deletes a Pending message without cascading; an emptied thread goes, its note stays", () => {
-    const first = post(base, { kind: "note", note: "n1" }, "One?", { wording: "About B." });
+    const first = post(base, { kind: "note", note: "n1" }, "One?", { wording: aboutB });
     const second = post(first.session, { kind: "note", note: "n1" }, "Two?", {
-      wording: "About B.",
+      wording: aboutB,
     });
     const once = done(second.session, "x1", {
       command: "retract",
@@ -395,7 +398,7 @@ describe("human conversation actions", () => {
     const drafted = done(base, "d", {
       command: "draft",
       target: { kind: "note", note: "n1" },
-      wording: "About B.",
+      wording: aboutB,
     });
     const moved = reanchor(drafted.session!);
     // The draft sits with its note now, but keeps the code it was begun against.
@@ -425,6 +428,32 @@ describe("human conversation actions", () => {
       code: { kind: "text", lines: ["b"] },
       earlierCode: [{ anchor: range(2), code: { kind: "text", lines: ["B"] } }],
     });
+    // A reader that saw the note on its earlier code, its words unchanged, begins no reply on the
+    // code it moved to: neither a first reply to the note nor one in its thread.
+    const unseen = reanchor(base);
+    expect(
+      refused(unseen, "d1", {
+        command: "draft",
+        target: { kind: "note", note: "n1" },
+        wording: aboutB,
+      }),
+    ).toMatchObject({ _tag: "stale_revision" });
+    const first = post(base, { kind: "note", note: "n1" }, "Why B?", { wording: aboutB });
+    expect(
+      refused(reanchor(first.session), "d2", {
+        command: "draft",
+        target: { kind: "thread", thread: first.thread },
+        wording: aboutB,
+      }),
+    ).toMatchObject({ _tag: "stale_revision" });
+    // Read again, the note's new code is what a reply begins on.
+    expect(
+      done(unseen, "d3", {
+        command: "draft",
+        target: { kind: "note", note: "n1" },
+        wording: { ...aboutB, anchor: old },
+      }).session!.drafts[0],
+    ).toMatchObject({ anchor: old, wording: { anchor: old } });
   });
 
   it("pins a draft's links where it was begun and keeps an edit's unchanged links on theirs", () => {
@@ -533,7 +562,7 @@ describe("human conversation actions", () => {
     const drafted = done(base, "d", {
       command: "draft",
       target: { kind: "note", note: "n1" },
-      wording: "About B.",
+      wording: aboutB,
     });
     const removed = Result.getOrThrow(
       applyBatch(
