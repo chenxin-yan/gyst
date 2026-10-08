@@ -226,9 +226,11 @@ describe("GitHub PR sessions through the installed CLI", () => {
     };
     expect(restacked.a.headRefOid).toBe(a2);
     for (const layer of Object.values(restacked)) await fake.pullRequest(layer);
-    const refreshed = json(await gyst("refresh", "--session", b));
-    expect(refreshed.session.snapshotId).not.toBe(snapshotB);
-    expect((await manifestOf(box, refreshed.session.snapshotId)).provenance).toEqual({
+    const refreshed = json(
+      await gyst("refresh", "--session", b, "--snapshot", snapshotB, "--request-id", "restack"),
+    );
+    expect(refreshed.snapshotId).not.toBe(snapshotB);
+    expect((await manifestOf(box, refreshed.snapshotId)).provenance).toEqual({
       kind: "pr",
       base: a2,
       head: restacked.b.headRefOid,

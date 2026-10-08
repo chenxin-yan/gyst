@@ -635,8 +635,12 @@ describe("Navigation over real captures and the workspace add-on", () => {
         yield* Effect.promise(() =>
           writeFile(join(cwd, "src/use.ts"), `${changed}export const five = 5;\n`),
         );
-        const refreshed = yield* sessions.refresh({ command: "refresh", session: session.id });
-        const current = refreshed.session.snapshotId;
+        const current = (yield* sessions.refresh({
+          command: "refresh",
+          session: session.id,
+          snapshotId: session.snapshotId,
+          requestId: "refresh",
+        })).snapshotId;
         expect(current).not.toBe(session.snapshotId);
         yield* navigation.retire(session.id, current);
         yield* Deferred.succeed(held.release, undefined);
@@ -1246,8 +1250,13 @@ describe("Navigation lifecycle", () => {
         yield* Effect.promise(() =>
           writeFile(join(cwd, "src/use.ts"), `${newUse}export const five = 5;\n`),
         );
-        const refreshed = yield* sessions.refresh({ command: "refresh", session: session.id });
-        yield* navigation.retire(session.id, refreshed.session.snapshotId);
+        const refreshed = yield* sessions.refresh({
+          command: "refresh",
+          session: session.id,
+          snapshotId: session.snapshotId,
+          requestId: "refresh",
+        });
+        yield* navigation.retire(session.id, refreshed.snapshotId);
         expect((yield* Fiber.join(query)).outcome).toEqual({
           kind: "unavailable",
           reason: { kind: "historical" },
@@ -1259,7 +1268,7 @@ describe("Navigation lifecycle", () => {
           kind: "unavailable",
           reason: { kind: "historical" },
         });
-        expect((yield* readiness(session.id, refreshed.session.snapshotId)).sides).toEqual({
+        expect((yield* readiness(session.id, refreshed.snapshotId)).sides).toEqual({
           old: { kind: "stopped" },
           new: { kind: "stopped" },
         });

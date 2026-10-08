@@ -214,11 +214,23 @@ export class DaemonServer extends Context.Service<
             return sessions.apply(request);
           case "viewed":
             return sessions.viewed(request);
-          // A replaced or deleted snapshot's analysis stops with it, before the reply.
+          // A replaced or deleted snapshot's analysis stops with it, before the reply. A replayed
+          // refresh may name a snapshot a later one replaced, which must not be kept instead.
           case "refresh":
             return sessions
               .refresh(request, onProgress)
-              .pipe(Effect.tap(({ session }) => navigation.retire(session.id, session.snapshotId)));
+              .pipe(
+                Effect.tap(({ sessionId, snapshotId, replaced }) =>
+                  replaced
+                    ? sessions
+                        .snapshot({ session: sessionId, snapshotId })
+                        .pipe(
+                          Effect.andThen(navigation.retire(sessionId, snapshotId)),
+                          Effect.ignore,
+                        )
+                    : Effect.void,
+                ),
+              );
           case "delete":
             return sessions
               .delete(request)

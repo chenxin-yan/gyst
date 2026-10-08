@@ -1945,7 +1945,7 @@ describe("installed gyst in a sandboxed browser", () => {
     await crumbIs(page, "demo/bulk...paged");
     await expect.poll(() => listings.length).toBe(2);
     git("branch", "-f", "paged", "paged~1");
-    await gyst("session", "refresh", "--session", id);
+    await gyst("session", "refresh", "--session", id, "--snapshot", captured, "--request-id", "r");
     const refreshed = await snapshotOf();
     expect(refreshed).not.toBe(captured);
     release();
@@ -3247,7 +3247,16 @@ describe("installed gyst in a sandboxed browser", () => {
       ops: [referenceOps[2]],
     });
     git("branch", "-f", "peek", "walk-next");
-    await gyst("session", "refresh", "--session", id);
+    await gyst(
+      "session",
+      "refresh",
+      "--session",
+      id,
+      "--snapshot",
+      snapshotId,
+      "--request-id",
+      "r",
+    );
     const page = await newPage();
     await page.setViewportSize({ width: 1280, height: 1200 });
     const reads: any[] = [];

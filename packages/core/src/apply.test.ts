@@ -79,6 +79,7 @@ const session: Session = {
   receiptTexts: [],
   applyReceipts: [],
   viewedReceipts: [],
+  refreshReceipts: [],
 };
 
 const sides: [string, CapturedSide][] = [
@@ -440,6 +441,7 @@ describe("applyBatch", () => {
           { type: "note.update", id: "n1", markdown: "x" },
           create(range("a.ts", "old", 2)),
         ]),
+        session,
       ),
     ).toEqual([
       { path: "a.ts", side: "new" },
@@ -492,6 +494,7 @@ describe("applyBatch", () => {
           { type: "group.update", id: "g1", overview: null },
           { type: "note.update", id: "n1", markdown: "[x](gyst:old/live.ts#L1)" },
         ]),
+        session,
       ),
     ).toEqual([
       { path: "support.ts", side: "new" },
@@ -589,7 +592,13 @@ describe("applyBatch", () => {
       { type: "walkthrough.update", overview: markdown },
       { type: "group.update", id: "g1", overview: markdown },
     ]);
-    const refreshed = refreshSession({ ...published, snapshotId: "next" }, hunks, LATER);
+    // Nothing captured maps the pins onto "next", so the texts turn Outdated with their pins kept.
+    const refreshed = refreshSession(
+      published,
+      { snapshotId: "next", snapshot: { files: [], hunks } },
+      new Map(),
+      LATER,
+    );
     const authored = [pin(range("support.ts", "new", 1, 2))];
     expect(refreshed.overview?.references).toEqual(authored);
     expect(refreshed.groups[0]?.overview?.references).toEqual(authored);
@@ -710,6 +719,9 @@ describe("applyBatch", () => {
       totalHunks: 5,
       overviewMissing: true,
       groupsMissingOverview: [],
+      overviewOutdated: false,
+      groupsOutdated: [],
+      notesOutdated: [],
     });
     expect(statusOf(session).preparation).toEqual({
       state: "incomplete",
@@ -717,6 +729,9 @@ describe("applyBatch", () => {
       totalHunks: 5,
       overviewMissing: false,
       groupsMissingOverview: ["g2"],
+      overviewOutdated: false,
+      groupsOutdated: [],
+      notesOutdated: [],
     });
     const complete = applied([third, { type: "group.update", id: "g2", overview: "Second." }]);
     expect(statusOf(complete).preparation).toEqual({
@@ -725,6 +740,9 @@ describe("applyBatch", () => {
       totalHunks: 5,
       overviewMissing: false,
       groupsMissingOverview: [],
+      overviewOutdated: false,
+      groupsOutdated: [],
+      notesOutdated: [],
     });
     const status = statusOf(
       applied([{ type: "walkthrough.update", overview: null }], complete, "k2"),
@@ -732,6 +750,138 @@ describe("applyBatch", () => {
     expect(status.preparation).toMatchObject({ state: "incomplete", overviewMissing: true });
     expect(statusOf({ ...plain, overview: text("Overview only.") }).preparation.state).toBe(
       "incomplete",
+    );
+  });
+});
+
+describe("Outdated guidance", () => {
+  const earlier = (range: CodeRange) => ({ snapshotId: "earlier", ...range });
+  const link = "Read [the helper](gyst:new/support.ts#L1-L2).";
+  // As a refresh leaves it: pins to the replaced snapshot and an anchor that no longer maps.
+  const outdated: Session = {
+    ...session,
+    overview: {
+      markdown: link,
+      references: [earlier(range("support.ts", "new", 1, 2))],
+      outdated: ["code"],
+    },
+    groups: [
+      {
+        ...session.groups[0]!,
+        overview: { ...text("First group."), outdated: ["code"] },
+        notes: [
+          { ...note("n1", range("a.ts", "new", 2)), outdated: ["references"] },
+          {
+            ...note("gone", range("a.ts", "new", 40)),
+            anchor: earlier(range("a.ts", "new", 40)),
+            outdated: ["code"],
+          },
+        ],
+      },
+      session.groups[1]!,
+    ],
+  };
+
+  it("revalidates unchanged wording against the batch's snapshot without touching Viewed", () => {
+    const ops: ApplyOp[] = [
+      { type: "walkthrough.revalidate" },
+      { type: "group.revalidate", id: "g1" },
+      { type: "note.revalidate", id: "n1" },
+    ];
+    const revalidated = applied(ops, outdated);
+    expect(revalidated.overview).toEqual({
+      markdown: link,
+      references: [pin(range("support.ts", "new", 1, 2))],
+    });
+    expect(revalidated.groups[0]!.overview).toEqual(text("First group."));
+    expect(revalidated.groups[0]!.notes[0]).toEqual(note("n1", range("a.ts", "new", 2)));
+    expect(unviewedBy(ops, outdated)).toEqual([]);
+    expect(capturedTargetsOf(batch(ops), outdated)).toEqual([{ path: "support.ts", side: "new" }]);
+    // The note still anchored to the replaced snapshot keeps the walkthrough incomplete.
+    expect(statusOf(revalidated).preparation).toMatchObject({
+      state: "incomplete",
+      overviewOutdated: false,
+      groupsOutdated: [],
+      notesOutdated: ["gone"],
+    });
+  });
+
+  it("re-anchors a note in place, unviewing its new hunks, before it can be revalidated", () => {
+    expect(rejected([{ type: "note.revalidate", id: "gone" }], outdated).detail).toEqual([
+      {
+        opIndex: 0,
+        message: "note gone is anchored to an earlier snapshot; re-anchor it with note.update",
+      },
+    ]);
+    const ops: ApplyOp[] = [
+      { type: "note.update", id: "gone", anchor: range("a.ts", "new", 11) },
+      { type: "note.revalidate", id: "gone" },
+    ];
+    const reanchored = applied(ops, outdated);
+    expect(reanchored.groups[0]!.notes.map(({ id }) => id)).toEqual(["n1", "gone"]);
+    expect(reanchored.groups[0]!.notes[1]).toEqual(note("gone", range("a.ts", "new", 11)));
+    expect(unviewedBy(ops, outdated)).toEqual(["a2"]);
+  });
+
+  it("never verifies unavailable context or guidance that is not Outdated", () => {
+    const unavailable: Session = {
+      ...outdated,
+      overview: {
+        markdown: "See [the image](gyst:new/image.png#L1) and [live](gyst:new/live.ts#L1).",
+        references: [],
+        outdated: ["references"],
+      },
+    };
+    expect(rejected([{ type: "walkthrough.revalidate" }], unavailable).detail).toEqual([
+      {
+        opIndex: 0,
+        message:
+          "reference gyst:new/image.png#L1: the new side of image.png is binary, not captured text",
+      },
+      {
+        opIndex: 0,
+        message: "reference gyst:new/live.ts#L1: live.ts is not in the captured snapshot",
+      },
+    ]);
+    expect(rejected([{ type: "group.revalidate", id: "g2" }], outdated).detail).toEqual([
+      { opIndex: 0, message: "the overview of group g2 does not exist" },
+    ]);
+    expect(rejected([{ type: "note.revalidate", id: "n1" }]).detail).toEqual([
+      { opIndex: 0, message: "note n1 is not Outdated" },
+    ]);
+    // A newer snapshot than the one the agent checked conflicts.
+    const stale = applyBatch(
+      outdated,
+      { ...batch([{ type: "walkthrough.revalidate" }]), snapshotId: "earlier" },
+      captured,
+      LATER,
+    );
+    expect(Result.getOrThrow(Result.flip(stale))._tag).toBe("stale_revision");
+  });
+
+  it("keeps Outdated through unrelated edits, and an edit of the wording clears it", () => {
+    const unrelated = applied([{ type: "group.update", id: "g2", overview: "Second." }], outdated);
+    expect(unrelated.overview?.outdated).toEqual(["code"]);
+    expect(unrelated.groups[0]!.notes[1]!.outdated).toEqual(["code"]);
+    const same = applied(
+      [
+        { type: "walkthrough.update", overview: link },
+        { type: "note.update", id: "n1", markdown: "About n1." },
+      ],
+      outdated,
+    );
+    expect(same.overview?.outdated).toEqual(["code"]);
+    expect(same.groups[0]!.notes[0]!.outdated).toEqual(["references"]);
+    const rewritten = applied(
+      [
+        { type: "walkthrough.update", overview: "Rewritten." },
+        { type: "note.update", id: "n1", markdown: "Rewritten n1." },
+      ],
+      outdated,
+    );
+    expect(rewritten.overview).toEqual(text("Rewritten."));
+    expect(rewritten.groups[0]!.notes[0]).toEqual(
+      note("n1", range("a.ts", "new", 2), "Rewritten n1."),
     );
   });
 });

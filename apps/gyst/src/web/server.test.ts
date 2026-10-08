@@ -335,6 +335,7 @@ describe("browserApp operations", () => {
       { command: "code", session: "s1", snapshotId, file: "src/a.ts", side: "old", startLine: 3 },
       { command: "code", session: "s1", snapshotId, file: "src/a.ts", side: "new", offset: 7 },
       { command: "delete", session: "s1", requestId: "r1" },
+      { command: "refresh", session: "s1", snapshotId, requestId: "r1" },
     ];
     for (const request of requests) {
       const response = await operation(request);
