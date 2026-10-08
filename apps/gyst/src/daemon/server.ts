@@ -404,20 +404,35 @@ export class DaemonServer extends Context.Service<
         // Only the socket owner reads the store: a rival may have changed it since we started.
         yield* sessions.load;
         // Bound after the socket, so a daemon that lost the socket never holds a port, and closed
-        // before it, so the next daemon finds the port free again.
+        // before it, so the next daemon finds the port free again. Open tabs and SSH forwards name
+        // the last daemon's port, so the next one takes it first, even once a lower one is free.
         const scope = yield* Effect.scope;
         let bound: number | undefined;
         const binding = Semaphore.withPermit(yield* Semaphore.make(1));
+        const lastPort = fs.readFileString(paths.viewerPortPath).pipe(
+          Effect.map(Number),
+          Effect.orElseSucceed(() => undefined),
+        );
         viewerPort = binding(
           Effect.suspend(() =>
             bound !== undefined
               ? Effect.succeed(bound)
-              : Effect.all([Effect.fromResult(firstPort), webAssetsOrNotice(webUiDir)]).pipe(
-                  Effect.flatMap(([first, assets]) =>
-                    serveViewer(first, browserApp(assets, viewerOperations)),
+              : Effect.all([
+                  Effect.fromResult(firstPort),
+                  webAssetsOrNotice(webUiDir),
+                  lastPort,
+                ]).pipe(
+                  Effect.flatMap(([first, assets, last]) =>
+                    serveViewer(first, browserApp(assets, viewerOperations), last),
                   ),
                   Scope.provide(scope),
                   Effect.tap((port) => Effect.sync(() => void (bound = port))),
+                  // Only a preference: without it the next daemon scans the range from the start.
+                  Effect.tap((port) =>
+                    Effect.ignore(
+                      fs.writeFileString(paths.viewerPortPath, `${port}\n`, { mode: 0o600 }),
+                    ),
+                  ),
                 ),
           ),
         );
