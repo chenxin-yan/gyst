@@ -98,11 +98,7 @@ async function serve() {
     send(port, { method, target, headers: [["host", host]] });
   const allowed = [["host", host], origin] as const;
   const events = (session: string) =>
-    openStream(port, {
-      target: "/api/events",
-      headers: allowed,
-      body: JSON.stringify({ session }),
-    });
+    openStream(port, { target: `/api/events?session=${session}`, headers: allowed });
   return { port, host, origin, allowed, operation, get, events };
 }
 
@@ -459,82 +455,60 @@ describe("browserApp events", () => {
   it("applies the operation route's Host, Origin and forwarding rules before the daemon", async () => {
     subscribed = [];
     const { port, host, origin, allowed } = await serve();
-    const attempt = (method: string, headers: ReadonlyArray<readonly [string, string]>) =>
-      send(port, { method, target: "/api/events", headers, body: '{"session":"s1"}' });
+    const attempt = async (headers: ReadonlyArray<readonly [string, string]>) => {
+      const stream = await openStream(port, { target: "/api/events?session=s1", headers });
+      stream.close();
+      return stream.status;
+    };
 
-    const get = await attempt("GET", allowed);
-    expect([get.status, get.header("allow")]).toEqual([405, "POST"]);
-    expect((await attempt("PUT", allowed)).status).toBe(405);
-    expect((await attempt("POST", [["host", `attacker.example:${port}`], origin])).status).toBe(
-      403,
-    );
+    const post = await send(port, { method: "POST", target: "/api/events", headers: allowed });
+    expect([post.status, post.header("allow")]).toEqual([405, "GET"]);
+    expect(await attempt([["host", `attacker.example:${port}`], origin])).toBe(403);
     for (const name of ["forwarded", "x-forwarded-host", "x-forwarded-for"])
-      expect([
-        name,
-        (await attempt("POST", [...allowed, [name, "attacker.example"]])).status,
-      ]).toEqual([name, 403]);
+      expect([name, await attempt([...allowed, [name, "attacker.example"]])]).toEqual([name, 403]);
     for (const origins of [[], ["null"], ["http://attacker.example"], [`https://${host}`]])
       expect(
-        (
-          await attempt("POST", [
-            ["host", host],
-            ...origins.map((value) => ["origin", value] as const),
-          ])
-        ).status,
+        await attempt([["host", host], ...origins.map((value) => ["origin", value] as const)]),
       ).toBe(403);
     expect(subscribed).toEqual([]);
 
     // Behind an SSH forward the browser-visible port differs from the listener's.
     const sshHost = "localhost:48809";
     const forwarded = await openStream(port, {
-      target: "/api/events",
+      target: "/api/events?session=s1",
       headers: [
         ["host", sshHost],
         ["origin", `http://${sshHost}`],
       ],
-      body: '{"session":"s1"}',
     });
-    expect(forwarded.status).toBe(200);
+    expect(forwarded.status).toBe(101);
     expect(await collect(forwarded)).toEqual(liveEvents);
     expect(subscribed).toEqual([{ session: "s1" }]);
   });
 
-  it("rejects an unreadable, malformed or non-subscription body with bad_args before the daemon", async () => {
+  it("rejects a malformed or non-subscription query with bad_args, and a plain GET, before the daemon", async () => {
     subscribed = [];
     const { port, allowed } = await serve();
-    for (const body of [
-      "",
-      "{",
-      "[]",
-      "{}",
-      JSON.stringify({ session: 1 }),
-      JSON.stringify({ session: "s1", daemon: "d0" }),
-      JSON.stringify({ command: "status", session: "s1" }),
-    ]) {
-      const response = await send(port, {
-        method: "POST",
-        target: "/api/events",
-        headers: allowed,
-        body,
-      });
-      expect([body, response.status]).toEqual([body, 400]);
-      expect(JSON.parse(response.body)).toEqual({
-        ok: false,
-        error: { code: "bad_args", message: "expected one session subscription as JSON" },
-      });
+    for (const query of ["", "?", "?sessions=s1", "?session=s1&daemon=d0", "?x=1"]) {
+      const stream = await openStream(port, { target: `/api/events${query}`, headers: allowed });
+      expect([query, stream.status]).toEqual([query, 400]);
     }
+    const response = await send(port, { target: "/api/events?x=1", headers: allowed });
+    expect(JSON.parse(response.body)).toEqual({
+      ok: false,
+      error: { code: "bad_args", message: "expected one session subscription" },
+    });
+    const plain = await send(port, { target: "/api/events?session=s1", headers: allowed });
+    expect([plain.status, plain.header("upgrade")]).toEqual([426, "websocket"]);
     expect(subscribed).toEqual([]);
   });
 
-  it("streams the subscription's frames verbatim and in order with safe headers", async () => {
+  it("sends the subscription's events verbatim and in order, one message each", async () => {
     subscribed = [];
     const { events } = await serve();
     const stream = await events("s1");
-    expect(stream.status).toBe(200);
-    expect(stream.header("content-type")).toBe("text/event-stream");
-    expect(stream.header("cache-control")).toBe("no-store");
-    expect(stream.header("referrer-policy")).toBe("no-referrer");
-    expect(stream.header("x-content-type-options")).toBe("nosniff");
+    expect(stream.status).toBe(101);
+    expect(stream.header("upgrade")).toBe("websocket");
     expect(stream.header("access-control-allow-origin")).toBeUndefined();
     expect(stream.header("set-cookie")).toBeUndefined();
     const raw: string[] = [];

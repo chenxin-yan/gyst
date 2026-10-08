@@ -17,9 +17,10 @@ import { ByteSize, Config, Context, Effect, Exit, Schema, Scope, Stream } from "
 import * as HttpIncomingMessage from "effect/http/HttpIncomingMessage";
 import { HttpServerRequest } from "effect/http/HttpServerRequest";
 import * as HttpServerResponse from "effect/http/HttpServerResponse";
+import * as Socket from "effect/socket/Socket";
 import { readdir, readFile } from "node:fs/promises";
 import { createServer } from "node:http";
-import type { AddressInfo } from "node:net";
+import type { AddressInfo, Socket as NetSocket } from "node:net";
 import { extname, join, relative, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { webPaths } from "@gyst/core/web";
@@ -127,11 +128,10 @@ const decodeOperation = Schema.decodeUnknownEffect(Schema.fromJsonString(Browser
   onExcessProperty: "error",
 });
 const encodeReply = Schema.encodeSync(ReplySchema);
-const decodeSubscribe = Schema.decodeUnknownEffect(Schema.fromJsonString(SubscribeRequestSchema), {
+const decodeSubscribe = Schema.decodeUnknownEffect(SubscribeRequestSchema, {
   onExcessProperty: "error",
 });
 const encodeEvent = Schema.encodeSync(SubscriptionEventSchema);
-const eventFrame = (event: SubscriptionEvent) => `data: ${JSON.stringify(encodeEvent(event))}\n\n`;
 
 // The viewer loads only its own scripts and talks only to the daemon; nothing an agent wrote can
 // make the page fetch, however a renderer handles it. Styles stay inline-capable because Mermaid's
@@ -217,37 +217,44 @@ const operation = (operations: ViewerOperations) =>
   });
 
 /**
- * One session's subscription as SSE frames until it ends. A refusal or failure becomes one final
- * `failed` frame, since the status is already sent. The client closing interrupts this and closes
- * the subscription, and the browser resubscribes on any end.
+ * One session's subscription, named by the query, as WebSocket messages until it ends. Not an SSE
+ * response: a browser opens at most six HTTP/1.1 connections per host across all its tabs, so six
+ * open readers would hold them all and queue every other load, read and write. Browsers pool
+ * WebSockets apart. A refusal or failure becomes one final `failed` message, since the upgrade is
+ * already sent. The browser hanging up ends the subscription; the browser resubscribes on any end.
  */
-const events = (operations: ViewerOperations) =>
+const events = (operations: ViewerOperations, query: string) =>
   Effect.gen(function* () {
-    const text = yield* readBody;
-    if (text._tag === "None")
-      return reply(400, { ok: false, error: new BadArgs({ message: "unreadable request body" }) });
-    const input = yield* decodeSubscribe(text.value).pipe(Effect.option);
+    const input = yield* decodeSubscribe(Object.fromEntries(new URLSearchParams(query))).pipe(
+      Effect.option,
+    );
     if (input._tag === "None")
       return reply(400, {
         ok: false,
-        error: new BadArgs({ message: "expected one session subscription as JSON" }),
+        error: new BadArgs({ message: "expected one session subscription" }),
       });
-    return HttpServerResponse.stream(
-      operations.subscribe(input.value).pipe(
+    const socket = yield* (yield* HttpServerRequest).upgrade.pipe(Effect.option);
+    if (socket._tag === "None") return status(426, { upgrade: "websocket" });
+    yield* Effect.gen(function* () {
+      const { pull } = yield* socket.value.reader;
+      const { write } = yield* socket.value.writer;
+      yield* operations.subscribe(input.value).pipe(
         Stream.catch((error) => Stream.succeed({ kind: "failed", error } as const)),
-        Stream.map(eventFrame),
-        Stream.encodeText,
-      ),
-      { contentType: "text/event-stream", headers: securityHeaders },
-    );
+        Stream.runForEach((event) => write(JSON.stringify(encodeEvent(event)))),
+        Effect.andThen(write(new Socket.CloseEvent())),
+        // The browser sends nothing; reading is how its hanging up is noticed.
+        Effect.raceFirst(Effect.forever(pull)),
+      );
+    }).pipe(Effect.scoped, Effect.ignore);
+    return HttpServerResponse.empty();
   });
 
 /**
  * The daemon's HTTP surface. Every request needs a loopback `Host` and no forwarding headers;
- * POSTs also need a matching `Origin`. Operations are strict `BrowserRequest`s answered with the
- * daemon's `Reply`; events stream one session's committed changes. Everything else is the packaged
- * SPA: exact files, then the shell for client routes, while `/api` and `/assets` misses stay real
- * errors.
+ * operations and the events handshake also need a matching `Origin`. Operations are strict
+ * `BrowserRequest`s answered with the daemon's `Reply`; events send one session's committed changes
+ * over a WebSocket. Everything else is the packaged SPA: exact files, then the shell for client
+ * routes, while `/api` and `/assets` misses stay real errors.
  */
 export const browserApp = (assets: WebAssets, operations: ViewerOperations) =>
   Effect.gen(function* () {
@@ -276,10 +283,16 @@ export const browserApp = (assets: WebAssets, operations: ViewerOperations) =>
     if (decoded.split("/").some((segment) => segment === "." || segment === ".."))
       return status(400);
 
-    if (path === webPaths.operation || path === webPaths.events) {
+    if (path === webPaths.operation) {
       if (request.method !== "POST") return status(405, { allow: "POST" });
       if (!isSameOrigin(host, single("origin"))) return status(403);
-      return yield* path === webPaths.events ? events(operations) : operation(operations);
+      return yield* operation(operations);
+    }
+    if (path === webPaths.events) {
+      if (request.method !== "GET") return status(405, { allow: "GET" });
+      // CORS does not cover WebSockets, so Origin is what refuses another site's page.
+      if (!isSameOrigin(host, single("origin"))) return status(403);
+      return yield* events(operations, request.url.slice(path.length + 1));
     }
     if (under(decoded, "/api")) return status(404);
     if (request.method !== "GET" && request.method !== "HEAD")
@@ -293,7 +306,7 @@ export const browserApp = (assets: WebAssets, operations: ViewerOperations) =>
 /**
  * Serves `app` on 127.0.0.1 at the first free port from `first` through the next nine, trying
  * `preferred` first when it is one of them, within the caller's scope, and returns that port.
- * Closing the scope drops every open connection first, so a browser's open event stream cannot hold
+ * Closing the scope drops every open connection first, so a browser's open WebSocket cannot hold
  * the daemon's exit.
  */
 export const serveViewer = <E, R>(
@@ -311,6 +324,12 @@ export const serveViewer = <E, R>(
     for (const port of ports) {
       const attempt = yield* Scope.fork(scope);
       const server = createServer();
+      // Every connection, upgraded ones included, which `closeAllConnections` misses.
+      const connections = new Set<NetSocket>();
+      server.on("connection", (connection) => {
+        connections.add(connection);
+        connection.once("close", () => connections.delete(connection));
+      });
       const bound = yield* NodeHttpServer.make(() => server, { host: "127.0.0.1", port }).pipe(
         Effect.tap((http) => http.serve(app)),
         Scope.provide(attempt),
@@ -319,10 +338,11 @@ export const serveViewer = <E, R>(
         Effect.catchTag("ServeError", () => Effect.as(Scope.close(attempt, Exit.void), false)),
       );
       if (!bound) continue;
-      // Registered after the server's own close, so it runs first.
+      // On the caller's scope, after the attempt's, so it runs before the HTTP and WebSocket
+      // servers close: both wait for every connection to end.
       yield* Scope.addFinalizer(
-        attempt,
-        Effect.sync(() => server.closeAllConnections()),
+        scope,
+        Effect.sync(() => connections.forEach((connection) => connection.destroy())),
       );
       return (server.address() as AddressInfo).port;
     }

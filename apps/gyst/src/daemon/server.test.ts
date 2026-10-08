@@ -255,7 +255,7 @@ const browserAt = (port: number, host = `localhost:${port}`) => {
       ),
     events: (session: string) =>
       Effect.promise(() =>
-        openStream(port, { target: "/api/events", headers, body: JSON.stringify({ session }) }),
+        openStream(port, { target: `/api/events?session=${encodeURIComponent(session)}`, headers }),
       ),
     get: (target: string) =>
       Effect.promise(() => sendHttp(port, { target, headers: [["host", host]] })),
@@ -1044,7 +1044,7 @@ describe("DaemonServer viewer", () => {
         const { running, info } = yield* started;
         const { id, browser } = yield* openViewed("/subscribed");
         const stream = yield* browser.events(id);
-        expect([stream.status, stream.header("content-type")]).toEqual([200, "text/event-stream"]);
+        expect([stream.status, stream.header("upgrade")]).toEqual([101, "websocket"]);
         const next = framesOf(stream);
         expect(yield* next).toEqual({ kind: "ready", daemon: info.instanceId, ...versionOf(id) });
         expect((yield* toggle(browser, id, 0)).ok).toBe(true);

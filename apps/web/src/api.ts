@@ -124,47 +124,39 @@ const decodeEvent = Schema.decodeUnknownSync(Schema.fromJsonString(SubscriptionE
 });
 
 /**
- * The session's committed-state invalidations as the daemon streams them, `ready` first, until
- * the stream ends or `signal` aborts. Throws a TransportError when it can't be opened or read.
+ * The session's committed-state invalidations as the daemon sends them over a WebSocket, `ready`
+ * first, until the daemon ends them or `signal` aborts. Throws a TransportError when the connection
+ * fails or breaks, or a message can't be read.
  */
 export async function* events(
   session: string,
   signal: AbortSignal,
 ): AsyncGenerator<SubscriptionEvent, void, undefined> {
-  const response = await post(webPaths.events, {
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ session }),
-    signal,
+  const url = new URL(webPaths.events, location.href);
+  url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
+  url.search = new URLSearchParams({ session }).toString();
+  const socket = new WebSocket(url);
+  const messages: unknown[] = [];
+  let closed: CloseEvent | undefined;
+  let wake = () => {};
+  socket.addEventListener("message", ({ data }) => {
+    messages.push(data);
+    wake();
   });
-  if (response.status !== 200) {
-    await drain(response);
-    throw failureOf(response.status);
-  }
-  if (response.headers.get("content-type")?.split(";")[0]?.trim() !== "text/event-stream") {
-    await drain(response);
-    throw new TransportError("unexpected", "gyst sent a stream this viewer can't read.");
-  }
-  const reader = response.body!.pipeThrough(new TextDecoderStream()).getReader();
+  socket.addEventListener("close", (event) => {
+    closed = event;
+    wake();
+  });
+  const abort = () => socket.close();
+  signal.addEventListener("abort", abort);
   try {
-    let buffered = "";
     for (;;) {
-      const { done, value } = await reader.read().catch(() => {
-        throw unavailable();
-      });
-      // An event cut off by the end was never sent whole, so it is dropped.
-      if (done) return;
-      buffered += value;
-      for (let end = buffered.indexOf("\n\n"); end >= 0; end = buffered.indexOf("\n\n")) {
-        const data = buffered
-          .slice(0, end)
-          .split("\n")
-          .filter((line) => line.startsWith("data:"))
-          .map((line) => line.slice(line.startsWith("data: ") ? 6 : 5))
-          .join("\n");
-        buffered = buffered.slice(end + 2);
-        if (data === "") continue;
+      if (signal.aborted) return;
+      const data = messages.shift();
+      if (data !== undefined) {
         let event: SubscriptionEvent;
         try {
+          if (typeof data !== "string") throw new Error("not a text message");
           event = decodeEvent(data);
         } catch (cause) {
           throw new TransportError("unexpected", "gyst sent an event this viewer can't read.", {
@@ -172,10 +164,15 @@ export async function* events(
           });
         }
         yield event;
-      }
+      } else if (closed !== undefined) {
+        // Only the daemon ends a subscription cleanly; any other close is a lost connection.
+        if (closed.code === 1000) return;
+        throw unavailable();
+      } else await new Promise<void>((resolve) => (wake = resolve));
     }
   } finally {
-    await reader.cancel().catch(() => undefined);
+    signal.removeEventListener("abort", abort);
+    socket.close();
   }
 }
 

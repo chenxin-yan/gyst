@@ -125,8 +125,8 @@ const operationsInFlight = new WeakMap<Page, Set<PageRequest>>();
  * A page closed after its test, which must see exactly the listed HTTP error responses
  * (`<path> <status>`) and problems: failed requests, page errors and console errors. Chromium's
  * "Failed to load resource" lines only repeat those responses and failures. A session page's
- * event stream fails by design whenever it is left, closed or its daemon stops, so only its
- * responses count.
+ * subscription is a WebSocket, not a request, so its ends, by design whenever the page is left,
+ * closed or its daemon stops, are not counted.
  */
 async function newPage(
   from: BrowserContext = context,
@@ -140,10 +140,7 @@ async function newPage(
     if (response.status() >= 400)
       seen.responses.push(`${path(response.url())} ${response.status()}`);
   });
-  page.on("requestfailed", (request) => {
-    if (!isEventsUrl(new URL(request.url())))
-      seen.problems.push(`requestfailed ${path(request.url())}`);
-  });
+  page.on("requestfailed", (request) => seen.problems.push(`requestfailed ${path(request.url())}`));
   const operations = new Set<PageRequest>();
   operationsInFlight.set(page, operations);
   page.on("request", (request) => {
@@ -177,8 +174,13 @@ async function settled(page: Page) {
   }, "the page's operations to settle");
 }
 
-/** Leaves the page's session streams unanswered, so it never hears of changes made elsewhere. */
-const holdEvents = (page: Page) => page.route(isEventsUrl, () => {});
+/**
+ * Leaves the page's session subscriptions unanswered, so it never hears of changes made elsewhere.
+ * Like every WebSocket route, it holds only documents loaded after it.
+ */
+const holdEvents = (page: Page) => page.routeWebSocket(isEventsUrl, () => {});
+/** The session a subscription names. */
+const subscribedTo = (url: string) => new URL(url).searchParams.get("session");
 
 /**
  * Holds the page's first `count` status reads once `armed`: each is sent to the real daemon, and
@@ -529,18 +531,19 @@ const raw = (
   new Promise<number | undefined>((resolve, reject) => {
     const { method = "GET", path = "/", headers = {}, body } = options;
     const request = httpRequest(
-      { host: "127.0.0.1", port, method, path, headers, setHost: false },
+      // A connection each: a refused upgrade's connection ends after its response.
+      { host: "127.0.0.1", port, method, path, headers, setHost: false, agent: false },
       (response) => {
         response.once("error", reject);
-        // An accepted event stream stays open: its status is all there is to read.
-        if (response.headers["content-type"]?.startsWith("text/event-stream")) {
-          resolve(response.statusCode);
-          return request.destroy();
-        }
         response.once("end", () => resolve(response.statusCode));
         response.resume();
       },
     );
+    // An accepted subscription stays open: its status is all there is to read.
+    request.once("upgrade", (response, socket) => {
+      resolve(response.statusCode);
+      socket.destroy();
+    });
     request.setTimeout(10_000, () => request.destroy(new Error(`${method} ${path} timed out`)));
     request.once("error", reject);
     request.end(body);
@@ -2132,13 +2135,23 @@ describe("installed gyst in a sandboxed browser", () => {
     const host = `localhost:${one.port}`;
     const origin = `http://${host}`;
     const op = JSON.stringify({ command: "list" });
-    const subscription = JSON.stringify({ session: one.id });
+    const subscription = `/api/events?session=${one.id}`;
     const good = { host, origin };
     const post = (path: string, headers: Record<string, string>, body?: string) => ({
       method: "POST",
       path,
       headers,
       ...(body === undefined ? {} : { body }),
+    });
+    const subscribe = (headers: Record<string, string>, path = subscription) => ({
+      path,
+      headers: {
+        ...headers,
+        connection: "upgrade",
+        upgrade: "websocket",
+        "sec-websocket-version": "13",
+        "sec-websocket-key": randomBytes(16).toString("base64"),
+      },
     });
     const cases = {
       "same-origin list": [post("/api/operation", good, op), 200],
@@ -2207,35 +2220,23 @@ describe("installed gyst in a sandboxed browser", () => {
         post("/api/operation", good, JSON.stringify({ command: "list", x: 1 })),
         400,
       ],
-      // The session stream answers to the same rules as an operation.
-      "same-origin events": [post("/api/events", good, subscription), 200],
-      "GET events": [{ path: "/api/events", headers: good }, 405],
-      "events no origin": [post("/api/events", { host }, subscription), 403],
-      "events cross origin": [
-        post("/api/events", { ...good, origin: "http://evil.localhost" }, subscription),
-        403,
-      ],
+      // The session subscription answers to the same rules as an operation.
+      "same-origin events": [subscribe(good), 101],
+      "POST events": [post("/api/events", good, ""), 405],
+      "events without upgrade": [{ path: subscription, headers: good }, 426],
+      "events no origin": [subscribe({ host }), 403],
+      "events cross origin": [subscribe({ ...good, origin: "http://evil.localhost" }), 403],
       "events rebinding host": [
-        post(
-          "/api/events",
-          { host: `attacker.example:${one.port}`, origin: `http://attacker.example:${one.port}` },
-          subscription,
-        ),
+        subscribe({
+          host: `attacker.example:${one.port}`,
+          origin: `http://attacker.example:${one.port}`,
+        }),
         403,
       ],
-      "events forwarded": [
-        post("/api/events", { ...good, forwarded: "host=evil" }, subscription),
-        403,
-      ],
-      "events x-forwarded-host": [
-        post("/api/events", { ...good, "x-forwarded-host": "evil" }, subscription),
-        403,
-      ],
-      "events malformed body": [post("/api/events", good, "{"), 400],
-      "events excess field": [
-        post("/api/events", good, JSON.stringify({ session: one.id, x: 1 })),
-        400,
-      ],
+      "events forwarded": [subscribe({ ...good, forwarded: "host=evil" }), 403],
+      "events x-forwarded-host": [subscribe({ ...good, "x-forwarded-host": "evil" }), 403],
+      "events no session": [subscribe(good, "/api/events"), 400],
+      "events excess field": [subscribe(good, `${subscription}&x=1`), 400],
     } as const;
     const statuses: Record<string, number | undefined> = {};
     for (const [name, [options]] of Object.entries(cases))
@@ -3868,11 +3869,12 @@ describe("installed gyst in a sandboxed browser", () => {
     for (const page of [a, b]) await page.setViewportSize({ width: 1280, height: 800 });
     let held = false;
     const { promise: released, resolve: release } = Promise.withResolvers<void>();
-    await b.route(isEventsUrl, async (route) => {
-      if (held) return route.continue();
-      held = true;
-      await released;
-      await route.continue();
+    await b.routeWebSocket(isEventsUrl, async (subscription) => {
+      if (!held) {
+        held = true;
+        await released;
+      }
+      subscription.connectToServer();
     });
     await a.goto(launched.url);
     await says(a, "Live");
@@ -3957,6 +3959,26 @@ describe("installed gyst in a sandboxed browser", () => {
       const operation = operationOf(request);
       if (operation?.command === "status" && operation.session === y) readsOfY++;
     });
+    // Once holding, X's subscriptions wait until the test ends the switching; its reads wait once
+    // X has been shown again, so the last switches leave X's loads unanswered.
+    const held: string[] = [];
+    let holding = false;
+    let holdReads = false;
+    const { promise: released, resolve: release } = Promise.withResolvers<void>();
+    await page.routeWebSocket(isEventsUrl, async (subscription) => {
+      if (holding && subscribedTo(subscription.url()) === x) {
+        held.push("events");
+        await released;
+      }
+      subscription.connectToServer();
+    });
+    await page.route(isOperationUrl, async (route) => {
+      const request = route.request();
+      if (!holdReads || request.postDataJSON()?.session !== x) return route.continue();
+      held.push(request.postDataJSON().command);
+      await released;
+      await route.continue().catch(() => {});
+    });
     await page.goto(launched.url);
     await crumbIs(page, "demo/main...live");
     await says(page, "Live");
@@ -3966,24 +3988,7 @@ describe("installed gyst in a sandboxed browser", () => {
     await says(page, "Live");
     await settled(page);
 
-    // From here X's streams wait until the test ends the switching; its reads wait once X has
-    // been shown again, so the last switches leave X's loads unanswered.
-    const held: string[] = [];
-    let holdReads = false;
-    const { promise: released, resolve: release } = Promise.withResolvers<void>();
-    await page.route(
-      (url) => isOperationUrl(url) || isEventsUrl(url),
-      async (route) => {
-        const request = route.request();
-        const events = isEventsUrl(new URL(request.url()));
-        if (request.postDataJSON()?.session !== x || (!events && !holdReads))
-          return route.continue();
-        held.push(events ? "events" : request.postDataJSON().command);
-        await released;
-        // A stream its reader left is already aborted.
-        await route.continue().catch(() => {});
-      },
-    );
+    holding = true;
     try {
       await page.evaluate(() => history.go(-2));
       await crumbIs(page, "demo/main...live");
@@ -4034,6 +4039,18 @@ describe("installed gyst in a sandboxed browser", () => {
     await page.setViewportSize({ width: 1280, height: 800 });
     const writes = viewedOf(page);
     const reads = statusReadsOf(page);
+    // Once the daemon is stopped, the page's next subscription waits for the test, so the outage
+    // stays in view.
+    let stopped = false;
+    let resubscribed = false;
+    const { promise: released, resolve: release } = Promise.withResolvers<void>();
+    await page.routeWebSocket(isEventsUrl, async (subscription) => {
+      if (stopped) {
+        resubscribed = true;
+        await released;
+      }
+      subscription.connectToServer();
+    });
     await page.goto(launched.url);
     await says(page, "Live");
     await viewedBox(page, "README.md").check();
@@ -4044,14 +4061,7 @@ describe("installed gyst in a sandboxed browser", () => {
     const position = await positionOf(page);
     expect(position.scrollTop).toBeGreaterThan(0);
 
-    // The page's next subscription waits for the test, so the outage stays in view.
-    let resubscribed = false;
-    const { promise: released, resolve: release } = Promise.withResolvers<void>();
-    await page.route(isEventsUrl, async (route) => {
-      resubscribed = true;
-      await released;
-      await route.continue().catch(() => {});
-    });
+    stopped = true;
     const daemon = await killDaemon(data, "SIGTERM");
     try {
       await says(page, "Reconnecting…");
@@ -4153,9 +4163,9 @@ describe("installed gyst in a sandboxed browser", () => {
     // connection's ready names it rather than announcing it after its read.
     let restarted = false;
     const { promise: applied, resolve: commit } = Promise.withResolvers<void>();
-    await page.route(isEventsUrl, async (route) => {
+    await page.routeWebSocket(isEventsUrl, async (subscription) => {
       if (restarted) await applied;
-      await route.continue().catch(() => {});
+      subscription.connectToServer();
     });
     await page.goto(launched.url);
     await says(page, "Live");
@@ -4427,7 +4437,9 @@ describe("installed gyst in a sandboxed browser", () => {
     const writes = viewedOf(page);
     const reads = statusReadsOf(page);
     let outage = false;
-    await page.route(isEventsUrl, (route) => (outage ? route.abort() : route.continue()));
+    await page.routeWebSocket(isEventsUrl, (subscription) =>
+      outage ? subscription.close() : subscription.connectToServer(),
+    );
     await page.route(isOperationUrl, (route) =>
       outage && route.request().postDataJSON()?.command === "status"
         ? route.fulfill({ status: 503, body: "" })
@@ -4499,6 +4511,34 @@ describe("installed gyst in a sandboxed browser", () => {
     expect(ownDaemon(daemon)).toBe(true);
     expect(await sessionIds()).toContain(id);
   }, 60_000);
+
+  it("keeps loads, reads and Viewed writes answered with more live tabs open than the browser's six connections per host", async () => {
+    const id = await freshSession();
+    const launched = await launchFor(id);
+    // One profile shares its connections to a host across tabs, and every tab here is visible.
+    const pages: Page[] = [];
+    for (let n = 0; n < 7; n++) {
+      const page = await newPage();
+      await page.setViewportSize({ width: 1280, height: 800 });
+      await page.goto(launched.url);
+      await says(page, "Live");
+      await settled(page);
+      expect(await page.evaluate(() => document.visibilityState)).toBe("visible");
+      pages.push(page);
+    }
+    const last = pages.at(-1)!;
+    const reads = statusReadsOf(last);
+    await viewedBox(pages[0]!, "README.md").check();
+    for (const page of pages) await says(page, "1/3 hunks viewed in 3 files");
+    await viewedBox(last, "app.ts").check();
+    for (const page of pages) await says(page, "2/3 hunks viewed in 3 files");
+    expect(await viewedIn(id)).toEqual(
+      new Set([...(await idsIn(id, "README.md")), ...(await idsIn(id, "app.ts"))]),
+    );
+    const revision = await applyFromCli(id);
+    await waitFor(() => reads.includes(revision), "the CLI's change to reach the last tab");
+    for (const page of pages) await settled(page);
+  }, 120_000);
 
   it("opens a GitHub PR from the root command and lists its native stack in a keyboard-operable header switcher", async () => {
     deletePullRequestSessionsAfter();
