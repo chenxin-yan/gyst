@@ -1849,6 +1849,59 @@ describe("installed gyst in a sandboxed browser", () => {
     await waitFor(async () => (await expanded("vendor/lib.js")) === "true", "lib unfolded");
   }, 60_000);
 
+  it("keeps a Generated file unfolded over a refresh that changed it elsewhere while the cursor is in a hunk that survived", async () => {
+    const cwd = join(root, "generated-refresh");
+    await mkdir(join(cwd, "dist"), { recursive: true });
+    const inRepo = (...args: string[]) => execFileSync("git", args, { cwd, env, stdio: "ignore" });
+    inRepo("init", "-q", "-b", "main");
+    inRepo("config", "user.email", "t@gyst.invalid");
+    inRepo("config", "user.name", "t");
+    await writeFile(join(cwd, ".gitattributes"), "dist/** linguist-generated\n");
+    const lines = Array.from({ length: 40 }, (_, index) => `line ${index + 1}`);
+    const bundle = (afterFive: string[]) =>
+      writeFile(
+        join(cwd, "dist/bundle.js"),
+        [
+          ...lines.slice(0, 5),
+          ...afterFive,
+          ...lines.slice(5, 30),
+          "added thirty",
+          ...lines.slice(30),
+        ]
+          .map((line) => `${line}\n`)
+          .join(""),
+      );
+    await writeFile(join(cwd, "dist/bundle.js"), lines.map((line) => `${line}\n`).join(""));
+    inRepo("add", ".");
+    inRepo("commit", "-qm", "init");
+    await bundle(["added five"]);
+    const launched = await launchIn(cwd);
+    onTestFinished(async () => {
+      await gyst("session", "delete", "--session", launched.id, "--request-id", randomUUID());
+      await rm(cwd, { recursive: true, force: true });
+    });
+
+    const page = await newPage();
+    await page.setViewportSize({ width: 1280, height: 800 });
+    await page.goto(`${launched.origin}${launched.path}`);
+    const expanded = () => foldToggle(page, "dist/bundle.js").getAttribute("aria-expanded");
+    await headingsAre(page, ["dist/bundle.js"]);
+    expect(await expanded()).toBe("false");
+    await foldToggle(page, "dist/bundle.js").click();
+    await waitFor(async () => (await expanded()) === "true", "bundle unfolded");
+    await keys(page, "g", "g", "]", "c", "]", "c");
+    await says(page, "bundle.js:32 · new");
+    await barOn(page, "added thirty");
+
+    // The first hunk grows a line, so the second survives a line further down.
+    await bundle(["added five", "added more"]);
+    await keys(page, "Shift+R");
+    await page.getByRole("main").getByText("added more", { exact: true }).waitFor();
+    await says(page, "bundle.js:33 · new");
+    await barOn(page, "added thirty");
+    expect(await expanded()).toBe("true");
+  }, 30_000);
+
   it("scrolls with movement keys in Mouse mode, without a cursor, and selects lines with the hover + and by dragging", async () => {
     const page = await newPage();
     await page.setViewportSize({ width: 1280, height: 800 });
