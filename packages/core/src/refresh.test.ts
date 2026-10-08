@@ -346,6 +346,26 @@ describe("refreshSession", () => {
     const changed = refreshSession(original, to(edited), fromAdded, LATER);
     expect(changed.groups[0]!.notes[0]!.outdated).toEqual(["references"]);
     expect(changed.viewedHunkIds).toEqual([hunkB]);
+    // With one of two identical added lines deleted, neither one is known to have survived.
+    const twice = helperAdds("h8", "@@ -1,2 +1,5 @@\n h1\n+x\n+y\n+y\n h2");
+    const once = helperAdds("h9", "@@ -1,2 +1,4 @@\n h1\n+x\n+y\n h2");
+    for (const line of [3, 4]) {
+      const duplicate = pin("helper.ts", "new", line);
+      const read: Session = {
+        ...original,
+        hunks: twice.hunks,
+        groups: [
+          group("ga", [hunkA], "a.ts", [note("na", pin("a.ts", "new", 10), [duplicate])]),
+          session().groups[1]!,
+        ],
+      };
+      const deleted = refreshSession(read, to(once), new Map([["s1", twice]]), LATER);
+      expect(deleted.groups[0]!.notes[0]).toMatchObject({
+        outdated: ["references"],
+        references: [duplicate],
+      });
+      expect(deleted.viewedHunkIds).toEqual([hunkB]);
+    }
   });
 
   it("cannot verify a reference whose pinned snapshot it cannot read", () => {
