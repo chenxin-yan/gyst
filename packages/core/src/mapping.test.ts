@@ -155,6 +155,25 @@ describe("mapRange", () => {
   it("maps nothing to a file the other snapshot lacks", () => {
     expect(mapRange(first, { files: [], hunks: [] }, range("new", 1))).toBeUndefined();
   });
+
+  it("maps nothing through a rename, whose differing sides have no hunks to say how", () => {
+    // As capture records an exact rename: the source deleted, the target added with its bytes.
+    const renamed = (source: string, bytes: string): SnapshotLines => ({
+      files: [
+        { path: source, old: blob(bytes), new: { kind: "absent" } },
+        { path: "a.ts", old: { kind: "absent" }, new: blob(bytes), renamedFrom: source },
+      ],
+      hunks: [],
+    });
+    const fromA = renamed("source-a.ts", "a");
+    expect(mapRange(fromA, renamed("source-b.ts", "b"), range("new", 1, 3))).toBeUndefined();
+    const source = { ...range("old", 1, 3), path: "source-a.ts" };
+    expect(mapRange(fromA, renamed("source-a.ts", "c"), source)).toBeUndefined();
+    // The same bytes, whichever file they came from, are the same lines.
+    expect(mapRange(fromA, renamed("source-b.ts", "a"), range("new", 1, 3))).toEqual(
+      range("new", 1, 3),
+    );
+  });
 });
 
 describe("matchHunks", () => {

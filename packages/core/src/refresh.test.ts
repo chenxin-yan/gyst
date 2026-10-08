@@ -314,6 +314,40 @@ describe("refreshSession", () => {
     expect(changed.viewedHunkIds).toEqual([hunkB]);
   });
 
+  it("marks guidance whose referenced rename target now holds other bytes, though neither capture diffs it", () => {
+    // As capture records an exact rename: the source deleted, the target added with its bytes.
+    const renamedFrom = (source: string, bytes: string): SnapshotLines => ({
+      files: [
+        ...first.files,
+        { path: source, old: blob(bytes), new: { kind: "absent" } },
+        { path: "target.ts", old: { kind: "absent" }, new: blob(bytes), renamedFrom: source },
+      ],
+      hunks: first.hunks,
+    });
+    const target = pin("target.ts", "new", 1);
+    const original: Session = {
+      ...session(),
+      groups: [
+        group("ga", [hunkA], "a.ts", [
+          { ...note("na", pin("a.ts", "new", 10)), references: [target] },
+        ]),
+        session().groups[1]!,
+      ],
+    };
+    const refreshed = refreshSession(
+      original,
+      to(renamedFrom("source-b.ts", "t2")),
+      new Map([["s1", renamedFrom("source-a.ts", "t1")]]),
+      LATER,
+    );
+    expect(refreshed.groups[0]!.notes[0]).toMatchObject({
+      outdated: ["references"],
+      references: [target],
+    });
+    expect(refreshed.groups[1]!.notes[0]!.outdated).toBeUndefined();
+    expect(refreshed.viewedHunkIds).toEqual([hunkB]);
+  });
+
   it("keeps guidance current when its referenced added lines survive edits beside them", () => {
     // The helper's working tree adds three lines after line 1; na references the last two.
     const helperAdds = (current: string, body: string) =>
