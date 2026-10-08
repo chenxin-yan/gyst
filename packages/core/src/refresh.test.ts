@@ -410,15 +410,29 @@ describe("refreshSession", () => {
       outdated: ["code", "references"],
     });
     expect(refreshed.viewedHunkIds).toEqual([b]);
-    // A2 was reverted: s1's a.ts is captured again, and the range maps beside A, still in ga.
-    const back = refreshSession(
-      refreshed,
-      to(spanning, "s3"),
+    // The reader marks A Viewed; then the helper changes again while A2 stays changed, so the note
+    // still sits on s1's code, and its surviving hunk A is unviewed again.
+    const helperAgain = lines(
+      { ...files, "a.ts": ["a0", "a6"], "helper.ts": ["h2", "h2"] },
+      { "a.ts": `${changeA}\n@@ -20 +20 @@\n-l20\n+X20`, "b.ts": changeB },
+    );
+    const again = refreshSession(
+      { ...refreshed, viewedHunkIds: [a, b] },
+      to(helperAgain, "s3"),
       new Map([...fromSpanning, ["s2", changed]]),
       LATER,
     );
+    expect(again.groups[0]!.notes[0]!.anchor).toEqual(pin("a.ts", "new", 10, 20));
+    expect(again.viewedHunkIds).toEqual([b]);
+    // A2 was reverted: s1's a.ts is captured again, and the range maps beside A, still in ga.
+    const back = refreshSession(
+      again,
+      to(spanning, "s4"),
+      new Map([...fromSpanning, ["s3", helperAgain]]),
+      LATER,
+    );
     expect(back.groups[0]!.notes[0]).toMatchObject({
-      anchor: { ...pin("a.ts", "new", 10, 20), snapshotId: "s3" },
+      anchor: { ...pin("a.ts", "new", 10, 20), snapshotId: "s4" },
       outdated: ["code", "references"],
     });
   });
