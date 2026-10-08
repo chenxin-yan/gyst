@@ -11,14 +11,25 @@ import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { daemonVersion } from "./protocol.ts";
 
-/** The packaged standalone reader (`dist/export`) beside the bundled `bin/gyst.js`. */
-export const installedExportTemplate = fileURLToPath(
-  new URL("../dist/export/index.html", import.meta.url),
+// Only the bundled `bin/gyst.js` has a packaged reader beside it. Run from source (apps/gyst/dev/gyst,
+// the dev viewer, `node apps/gyst/src/index.ts`), the checkout's own web build is the reader.
+const runsFromSource = import.meta.url.endsWith(".ts");
+
+/** The packaged standalone reader (`dist/export`), or from source the checkout's `apps/web/dist-export`. */
+export const defaultExportTemplate = fileURLToPath(
+  new URL(
+    runsFromSource ? "../../../web/dist-export/index.html" : "../dist/export/index.html",
+    import.meta.url,
+  ),
 );
 
-/** The standalone reader an export is built from: the packaged one, unless a test supplies its own. */
+const missingReader = runsFromSource
+  ? "the standalone walkthrough reader is not built; run pnpm --filter @gyst/web build in the gyst checkout"
+  : "the standalone walkthrough reader is not installed; reinstall @gyst/cli";
+
+/** The standalone reader an export is built from: the default one, unless a test supplies its own. */
 export const ExportTemplate = Context.Reference<string>("gyst/daemon/ExportTemplate", {
-  defaultValue: () => installedExportTemplate,
+  defaultValue: () => defaultExportTemplate,
 });
 
 const encodeExport = Schema.encodeSync(WalkthroughExportSchema);
@@ -39,7 +50,7 @@ export function walkthroughHtml(template: string, data: WalkthroughExport): stri
   return `${before}${json}${after}`;
 }
 
-/** The standalone file of an approved walkthrough, stamped now, built from the installed reader. */
+/** The standalone file of an approved walkthrough, stamped now, built from the `ExportTemplate` reader. */
 export const exportFile = Effect.fn("exportFile")(function* (approved: {
   readonly sessionId: string;
   readonly approval: string;
@@ -59,7 +70,7 @@ export const exportFile = Effect.fn("exportFile")(function* (approved: {
       }),
     catch: (cause) =>
       new InternalError({
-        message: "the standalone walkthrough reader is not installed; reinstall @gyst/cli",
+        message: missingReader,
         detail: cause instanceof Error ? cause.message : String(cause),
       }),
   });
