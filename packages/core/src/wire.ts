@@ -58,7 +58,27 @@ export {
   type StackMembership,
   StackMembershipSchema,
 } from "./github.ts";
-export { type Commit, type ContentSide, type ManifestFile, sameSide } from "./content.ts";
+export {
+  type Commit,
+  type ContentSide,
+  type ManifestFile,
+  type Provenance,
+  sameSide,
+} from "./content.ts";
+export {
+  disclosedSides,
+  type ExportPayload,
+  ExportPayloadSchema,
+  type ExportPreviewPayload,
+  ExportPreviewPayloadSchema,
+  noTextReason,
+  type PinnedSide,
+  readinessProblems,
+  type UnavailableTarget,
+  type Walkthrough,
+  type WalkthroughExport,
+  WalkthroughExportSchema,
+} from "./export.ts";
 export {
   anchoredHunkIds,
   type CapturedRange,
@@ -494,6 +514,18 @@ const reviewRequests = [
     snapshotId: SnapshotIdSchema,
     requestId: Schema.String,
   }),
+  /**
+   * What exporting the walkthrough would share, and the `approval` naming exactly that state. It
+   * reads captured content only, and changes nothing.
+   */
+  Schema.Struct({ command: Schema.Literal("preview"), ...exact }),
+  /**
+   * Generates the standalone walkthrough a human approved in its `preview`. Any change since to
+   * the snapshot, guidance or included content changes the approval, so this one is refused as
+   * stale and a new preview must be approved. The CLI asks a human at a terminal, the browser in
+   * its export dialog; the socket cannot tell a person from a process (ADR 0002).
+   */
+  Schema.Struct({ command: Schema.Literal("export"), ...exact, approval: Schema.String }),
 ] as const;
 
 /** A Pending human message as its author last read it, which an edit or deletion must still find. */
