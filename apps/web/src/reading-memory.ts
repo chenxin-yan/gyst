@@ -1,4 +1,4 @@
-import type { CapturedRange } from "@gyst/core/wire";
+import type { CapturedRange, Hunk } from "@gyst/core/wire";
 import type { Cursor, Opened } from "./cursor.ts";
 import type { InputMode } from "./keymap.ts";
 import type { BackStack, Peek, Restore } from "./navigation.ts";
@@ -25,20 +25,43 @@ export type ReadingPlace = {
 /**
  * Each session's reading place for this page's lifetime, so switching between stack layers (or any
  * sessions) and back resumes where the reader was. Kept per session ID, so one session's place never
- * leaks into another. After a refresh the place carries over only where it names something that can
- * survive one: the view, the input mode and the file at the top. Lines, folds, a cursor, an expanded
- * reference and Back belong to the snapshot they were read in.
+ * leaks into another. After a refresh the view and the input mode carry over, and the top position,
+ * the cursor and opened lines in a file whose hunks the refresh left exactly as they were; elsewhere
+ * only the file at the top. An expanded reference and Back belong to the snapshot they were read in.
  */
-const places = new Map<string, { snapshotId: string; place: ReadingPlace }>();
+const places = new Map<
+  string,
+  { snapshotId: string; hunks: readonly Hunk[]; place: ReadingPlace }
+>();
 
-export const remember = (sessionId: string, snapshotId: string, place: ReadingPlace) => {
-  places.set(sessionId, { snapshotId, place });
+export const remember = (
+  sessionId: string,
+  snapshotId: string,
+  hunks: readonly Hunk[],
+  place: ReadingPlace,
+) => {
+  places.set(sessionId, { snapshotId, hunks, place });
 };
 
-export const recall = (sessionId: string, snapshotId: string): ReadingPlace | undefined => {
+/** Each file's hunks as one text: identical exactly when the file's diff reads the same. */
+const diffsOf = (hunks: readonly Hunk[]) => {
+  const diffs = new Map<string, string>();
+  for (const { file, id, patch } of hunks)
+    diffs.set(file, `${diffs.get(file) ?? ""}${id}\0${patch}\0`);
+  return diffs;
+};
+
+export const recall = (
+  sessionId: string,
+  snapshotId: string,
+  hunks: readonly Hunk[],
+): ReadingPlace | undefined => {
   const saved = places.get(sessionId);
   if (saved === undefined || saved.snapshotId === snapshotId) return saved?.place;
-  const { review, inputMode, top } = saved.place;
+  const before = diffsOf(saved.hunks);
+  const after = diffsOf(hunks);
+  const unchanged = (file: string) => before.has(file) && before.get(file) === after.get(file);
+  const { review, inputMode, cursor, opened, top } = saved.place;
   return {
     review,
     captured: undefined,
@@ -46,10 +69,10 @@ export const recall = (sessionId: string, snapshotId: string): ReadingPlace | un
     peek: undefined,
     back: [],
     inputMode,
-    cursor: undefined,
-    opened: new Map(),
+    cursor: cursor !== undefined && unchanged(cursor.file) ? cursor : undefined,
+    opened: new Map([...opened].filter(([file]) => unchanged(file))),
     top:
-      top !== undefined && "position" in top
+      top !== undefined && "position" in top && !unchanged(top.position.file)
         ? { position: { file: top.position.file, side: undefined, line: undefined } }
         : top,
   };
