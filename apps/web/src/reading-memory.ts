@@ -31,7 +31,7 @@ export type ReadingPlace = {
  * file whose hunks the refresh left exactly as they were, its fold included. In another file the top
  * position and the cursor move with a hunk that survived exactly, whatever its line numbers; else
  * only the file at the top, and a cursor on its header, are kept, and the file is folded exactly when
- * the new snapshot records it Generated. An expanded reference and Back belong to the snapshot they
+ * the new snapshot records it Generated and no kept position is on one of its lines. An expanded reference and Back belong to the snapshot they
  * were read in.
  */
 const places = new Map<
@@ -93,6 +93,14 @@ export const recall = (
       : { file, side, line: moved };
   };
   const { review, inputMode, cursor, opened, folded, top } = saved.place;
+  const cursorAfter = cursor && cursorNow(cursor);
+  const topAfter =
+    top !== undefined && "position" in top ? { position: topNow(top.position) } : top;
+  // A folded file has no lines, so a file still holding the reader's line stays unfolded.
+  const reading = new Set<string>();
+  if (cursorAfter?.kind === "line") reading.add(cursorAfter.file);
+  if (topAfter !== undefined && "position" in topAfter && topAfter.position.line !== undefined)
+    reading.add(topAfter.position.file);
   return {
     review,
     captured: undefined,
@@ -100,12 +108,12 @@ export const recall = (
     peek: undefined,
     back: [],
     inputMode,
-    cursor: cursor && cursorNow(cursor),
+    cursor: cursorAfter,
     opened: new Map([...opened].filter(([file]) => unchanged(file))),
     folded: new Set([
       ...[...folded].filter(unchanged),
-      ...[...generated].filter((file) => !unchanged(file)),
+      ...[...generated].filter((file) => !unchanged(file) && !reading.has(file)),
     ]),
-    top: top !== undefined && "position" in top ? { position: topNow(top.position) } : top,
+    top: topAfter,
   };
 };
