@@ -23,7 +23,16 @@ import {
   Schema,
 } from "effect";
 import * as Socket from "effect/socket/Socket";
-import { chmod, mkdtemp, readdir, realpath, rm, symlink, writeFile } from "node:fs/promises";
+import {
+  chmod,
+  mkdtemp,
+  readdir,
+  readFile,
+  realpath,
+  rm,
+  symlink,
+  writeFile,
+} from "node:fs/promises";
 import { connect, createServer, type Server } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -926,6 +935,83 @@ describe("DaemonServer viewer", () => {
           yield* Fiber.interrupt(next.running);
         }).pipe(Effect.provide(layer)),
       );
+    } finally {
+      await taken.release();
+    }
+  }, 10_000);
+
+  it("restores its own port over one a losing rival recorded, so its next start keeps its links", async () => {
+    const portFile = join(dataDir, "viewer.port");
+    const recorded = Effect.promise(() => readFile(portFile, "utf8"));
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        const { running } = yield* started;
+        const opened = yield* open("/survivor");
+        const port = linkPort(opened);
+        // A starter that lost the stale-socket reclaim race bound the next port and recorded it.
+        yield* Effect.promise(() => writeFile(portFile, `${port + 1}\n`));
+        yield* recorded.pipe(
+          Effect.flatMap((content) =>
+            content === `${port}\n` ? Effect.void : Effect.fail("still the rival's port"),
+          ),
+          Effect.retry({ schedule: Schedule.spaced("50 millis"), times: 60 }),
+          Effect.ignore,
+        );
+        expect(yield* recorded).toBe(`${port}\n`);
+        yield* Fiber.interrupt(running);
+        const next = yield* started;
+        expect(linkPort(yield* send({ command: "open", session: openedId(opened) }))).toBe(port);
+        yield* Fiber.interrupt(next.running);
+      }).pipe(Effect.provide(serverLayer)),
+    );
+  }, 10_000);
+
+  it("keeps the last daemon's port preference when replacing it is cut off midway", async () => {
+    const taken = await occupy(1);
+    const portFile = join(dataDir, "viewer.port");
+    await writeFile(portFile, `${taken.first}\n`);
+    let cutOff = false;
+    // A daemon killed mid-write leaves the file it was writing empty.
+    const cutOffWrites = Layer.effect(
+      FileSystem.FileSystem,
+      Effect.map(FileSystem.FileSystem, (fs) =>
+        FileSystem.make({
+          ...fs,
+          writeFile: (path, data, options) =>
+            !path.startsWith(dataDir) || path === join(dataDir, "daemon.pid")
+              ? fs.writeFile(path, data, options)
+              : fs.writeFile(path, new Uint8Array(), options).pipe(
+                  Effect.andThen(Effect.sync(() => void (cutOff = true))),
+                  Effect.andThen(
+                    Effect.fail(
+                      PlatformError.badArgument({
+                        module: "test",
+                        method: "writeFile",
+                        description: "injected",
+                      }),
+                    ),
+                  ),
+                ),
+        }),
+      ),
+    );
+    try {
+      await Effect.runPromise(
+        Effect.gen(function* () {
+          const { running } = yield* started;
+          expect(linkPort(yield* open("/cut-off"))).toBe(taken.first + 1);
+          yield* Fiber.interrupt(running);
+        }).pipe(
+          Effect.provide(
+            serverLayerOver(
+              Layer.provideMerge(cutOffWrites, NodeServices.layer),
+              viewerSettings(() => String(taken.first)),
+            ),
+          ),
+        ),
+      );
+      expect(cutOff).toBe(true);
+      expect(await readFile(portFile, "utf8")).toBe(`${taken.first}\n`);
     } finally {
       await taken.release();
     }
