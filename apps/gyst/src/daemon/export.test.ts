@@ -3,7 +3,7 @@ import { walkthroughPlaceholder, walkthroughSlotId } from "@gyst/core/web";
 import { Effect, Schema } from "effect";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vite-plus/test";
 import { ExportTemplate, exportFile, walkthroughHtml } from "./export.ts";
 
@@ -93,7 +93,13 @@ describe("exportFile", () => {
     });
   });
 
-  it("fails as not installed when the reader template is missing, writing nothing", async () => {
+  it("reads the checkout's own reader build when run from source", () => {
+    expect(Effect.runSync(ExportTemplate)).toBe(
+      resolve(import.meta.dirname, "../../../web/dist-export/index.html"),
+    );
+  });
+
+  it("names the build to run when the reader template is missing, writing nothing", async () => {
     const error = await Effect.runPromise(
       Effect.flip(
         exportFile(approved).pipe(Effect.provideService(ExportTemplate, join(dir, "missing.html"))),
@@ -101,7 +107,8 @@ describe("exportFile", () => {
     );
     expect(error).toMatchObject({
       _tag: "internal_error",
-      message: "the standalone walkthrough reader is not installed; reinstall @gyst/cli",
+      message:
+        "the standalone walkthrough reader is not built; run pnpm --filter @gyst/web build in the gyst checkout",
     });
   });
 });
