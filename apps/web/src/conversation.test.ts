@@ -121,6 +121,25 @@ describe("replies against a note's wording", () => {
     expect(
       draftChange({ ...reply, note: { id: "n1", removed: true } }, [], notes, "s2")?.blocks,
     ).toBe(false);
+    // The agent re-anchored the note to the old side of the same lines, its wording unchanged: the
+    // draft followed it, and says it keeps the code it was begun on.
+    const switched = { ...note, anchor: { ...note.anchor, side: "old" as const } };
+    const followed = { ...reply, anchor: switched.anchor };
+    expect(draftChange(followed, [], new Map([[note.id, switched]]), "s2")).toEqual({
+      message:
+        "The note moved to other code since you began. Your reply keeps the code you began it against, a.ts:L4 · new.",
+      blocks: false,
+    });
+    expect(
+      draftChange(
+        { ...followed, wording: wording("Before.") },
+        [],
+        new Map([[note.id, { ...switched, markdown: "Now." }]]),
+        "s2",
+      )?.message,
+    ).toBe(
+      "The note changed and moved to other code since you began. Your reply keeps the wording and code you began it against, a.ts:L4 · new.",
+    );
     const resolved = thread("t", range("a.ts", 4), { resolved: true });
     expect(draftChange({ ...reply, thread: "t" }, [resolved], notes, "s2")?.blocks).toBe(true);
     const comment: Draft = { id: "c", snapshotId: "s1", anchor: range("a.ts", 2, 2, "s1") };
