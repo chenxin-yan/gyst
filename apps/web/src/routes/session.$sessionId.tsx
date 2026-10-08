@@ -1254,9 +1254,13 @@ function SessionReader(props: {
     }
     stepSearch(direction);
   };
-  /** Clears the highlight; the query stays for n and N. */
+  /**
+   * Clears the highlight; the query stays for n and N. A step still waiting for the scan is dropped,
+   * or it would show the highlight again and move once the scan ends.
+   */
   const closeSearch = () => {
     if (document.activeElement === searchInput.current) searchInput.current?.blur();
+    searchPending.current = undefined;
     setSearchShown(false);
   };
   // `/` focuses the field once it shows, after a dialog it was run from gave focus back.

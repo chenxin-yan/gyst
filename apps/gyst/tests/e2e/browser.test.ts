@@ -1453,6 +1453,27 @@ describe("installed gyst in a sandboxed browser", () => {
     await says(page, "1/400");
     await currentHitOn(page, "bulk 0 line 10 edited");
     expect(await cursorBar(page).isVisible()).toBe(false);
+
+    // Esc drops a step still waiting for the scan: the CPU is slowed so Enter lands before the scan
+    // of the new query ends, and once it ends the highlight stays cleared and nothing moves.
+    await settled(page);
+    const top = await panelTop(page);
+    const cdp = await page.context().newCDPSession(page);
+    await keys(page, "/");
+    await waitFor(() => hasFocus(searchField(page)), "the search field focused");
+    await cdp.send("Emulation.setCPUThrottlingRate", { rate: 50 });
+    await page.keyboard.type("bulk 399 line 12");
+    await page.keyboard.press("Enter");
+    await page.keyboard.press("Escape");
+    await cdp.send("Emulation.setCPUThrottlingRate", { rate: 1 });
+    await searchField(page).waitFor({ state: "detached" });
+    await new Promise((resolve) => setTimeout(resolve, 1500));
+    expect(await searchField(page).count()).toBe(0);
+    expect(await searchHits(page).count()).toBe(0);
+    expect(await panelTop(page)).toBe(top);
+    await keys(page, "/");
+    await says(page, "–/1");
+    await keys(page, "Escape");
     await settled(page);
     // Only the files scrolled to were read, never the whole view's 800 sides.
     expect(reads - before).toBeLessThan(200);
