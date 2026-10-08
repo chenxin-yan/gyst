@@ -312,6 +312,23 @@ const steady = async <T>(read: () => Promise<T>) => {
     last = next;
   }
 };
+/** The search field in the status line. */
+const searchField = (page: Page) => page.getByRole("searchbox", { name: "Search this view" });
+/** The search's highlighted lines in the panel; `[data-current]` marks the one gone to. */
+const searchHits = (page: Page) =>
+  page.getByRole("main").locator("[data-search-hit]").filter({ visible: true });
+/** Waits until the search highlights `text`'s line as the match gone to. */
+const currentHitOn = (page: Page, text: string) =>
+  waitFor(async () => {
+    const hit = await searchHits(page).and(page.locator("[data-current]")).boundingBox();
+    if (hit === null) return false;
+    for (const copy of await page.getByRole("main").getByText(text, { exact: true }).all()) {
+      const box = await copy.boundingBox();
+      if (box && Math.abs(box.y - hit.y) < 4 && box.x >= hit.x && box.x < hit.x + hit.width)
+        return true;
+    }
+    return false;
+  }, `the current match on ${text}`);
 /** A file header's fold toggle, whichever way it points. */
 const foldToggle = (page: Page, path: string) =>
   page
@@ -1365,6 +1382,82 @@ describe("installed gyst in a sandboxed browser", () => {
     expect(most.files).toBeLessThanOrEqual(1);
   }, 60_000);
 
+  it("searches hundreds of files in Mouse mode without reading their sides, scrolling to rows not yet rendered and wrapping, while typing stays responsive", async () => {
+    const id = await openRange("stress~1...stress");
+    onTestFinished(() =>
+      gyst("session", "delete", "--session", id, "--request-id", randomBytes(16).toString("hex")),
+    );
+    const page = await newPage();
+    await page.setViewportSize({ width: 1280, height: 800 });
+    let reads = 0;
+    page.on("request", (request) => {
+      if (operationOf(request)?.command === "code") reads++;
+    });
+    await page.goto(`${one.origin}/session/${id}`);
+    const pane = page.getByRole("main");
+    await pane.getByRole("heading", { name: "bulk/000.txt", exact: true }).waitFor();
+    await page
+      .getByRole("radiogroup", { name: "Input mode" })
+      .getByRole("radio", { name: "Mouse" })
+      .check();
+    await settled(page);
+    const before = reads;
+
+    // The main thread's long tasks while typing a query that matches 2,000 lines of 400 files:
+    // each shows lines 7-13, so line 10 old and new and lines 11-13.
+    await page.evaluate(() => {
+      const tasks: number[] = [];
+      Object.assign(window, { longTasks: tasks });
+      new PerformanceObserver((list) => {
+        for (const entry of list.getEntries()) tasks.push(entry.duration);
+      }).observe({ type: "longtask" });
+    });
+    await keys(page, "/");
+    const typed = performance.now();
+    await page.keyboard.type("line 1", { delay: 50 });
+    await says(page, "1/2000");
+    const counted = performance.now() - typed;
+    // Search reads no file's sides.
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    expect(reads).toBe(before);
+    const longest = Math.max(
+      0,
+      ...(await page.evaluate(() => (window as unknown as { longTasks: number[] }).longTasks)),
+    );
+    console.log(
+      `search: typed 6 characters and counted 2000 matches in ${Math.round(counted)} ms; longest main-thread task ${Math.round(longest)} ms`,
+    );
+    expect(longest).toBeLessThan(250);
+    expect(await searchHits(page).count()).toBeGreaterThan(1);
+
+    // The last file's edit, far below anything rendered, found from the captured hunks.
+    await searchField(page).fill("399 line 10 edited");
+    await says(page, "1/1");
+    await page.keyboard.press("Enter");
+    await pane.getByRole("heading", { name: "bulk/399.txt", exact: true }).waitFor();
+    await currentHitOn(page, "bulk 399 line 10 edited");
+    expect(await cursorBar(page).isVisible()).toBe(false);
+
+    // N from the first match wraps to the last; n wraps back to the first.
+    await keys(page, "g", "g");
+    await waitFor(async () => (await panelTop(page)) === 0, "the panel at its top");
+    await keys(page, "/");
+    await page.keyboard.type("line 10 edited");
+    await says(page, "1/400");
+    await page.keyboard.press("Enter");
+    await currentHitOn(page, "bulk 0 line 10 edited");
+    await keys(page, "Shift+N");
+    await says(page, "400/400");
+    await currentHitOn(page, "bulk 399 line 10 edited");
+    await keys(page, "n");
+    await says(page, "1/400");
+    await currentHitOn(page, "bulk 0 line 10 edited");
+    expect(await cursorBar(page).isVisible()).toBe(false);
+    await settled(page);
+    // Only the files scrolled to were read, never the whole view's 800 sides.
+    expect(reads - before).toBeLessThan(200);
+  }, 60_000);
+
   it("reads from the selection just shown, not a file restored before it, after short selections", async () => {
     const page = await newPage();
     await page.setViewportSize({ width: 1280, height: 800 });
@@ -1916,6 +2009,131 @@ describe("installed gyst in a sandboxed browser", () => {
     expect(await expanded()).toBe("true");
   }, 30_000);
 
+  it("searches the current view with /, n and N in Vim mode: literal smart-case over shown and opened lines, wrapping, never touching Viewed or other folds", async () => {
+    const page = await newPage();
+    await page.setViewportSize({ width: 1280, height: 800 });
+    const writes = viewedOf(page);
+    await page.goto(`${one.origin}${one.path}`);
+    const pane = page.getByRole("main");
+    await pane.getByText("uncommitted-edit").waitFor();
+    await says(page, "README.md · file");
+    const expanded = (path: string) => foldToggle(page, path).getAttribute("aria-expanded");
+    // The browser's own find keeps its key.
+    await page.evaluate(() => {
+      const seen: boolean[] = [];
+      Object.assign(window, { findKeys: seen });
+      addEventListener("keydown", (event) => {
+        if (event.ctrlKey && event.key === "f") seen.push(event.defaultPrevented);
+      });
+    });
+    await keys(page, "Control+f");
+    expect(
+      await page.evaluate(() => (window as unknown as { findKeys: boolean[] }).findKeys),
+    ).toEqual([false]);
+
+    // Typing searches as it goes, never running review keys; a capital makes it case-sensitive.
+    await keys(page, "/");
+    await waitFor(() => hasFocus(searchField(page)), "the search field focused");
+    await page.keyboard.type("LINE17");
+    await says(page, "No matches");
+    await searchField(page).fill("");
+    await page.keyboard.type("line17");
+    // long.ts lines 170-179 changed, each an old and a new line; line 17 is in a hidden range.
+    await says(page, "1/20");
+    await says(page, "README.md · file");
+    await page.keyboard.press("Enter");
+    expect(await hasFocus(searchField(page))).toBe(false);
+    await says(page, "long.ts:170 · old");
+    await barOn(page, "export const line170 = 170;");
+    await currentHitOn(page, "export const line170 = 170;");
+    expect(await searchHits(page).count()).toBeGreaterThan(1);
+    await keys(page, "n");
+    await says(page, "long.ts:170 · new");
+    await says(page, "2/20");
+    await currentHitOn(page, "export const line170 = 170 * 2;");
+    await keys(page, "Shift+N", "Shift+N");
+    await says(page, "long.ts:179 · new");
+    await says(page, "20/20");
+    await keys(page, "n");
+    await says(page, "long.ts:170 · old");
+    await says(page, "1/20");
+
+    // Esc clears the highlight and keeps the query, which n and N go on stepping through.
+    await keys(page, "Escape");
+    await searchField(page).waitFor({ state: "detached" });
+    expect(await searchHits(page).count()).toBe(0);
+    await says(page, "long.ts:170 · old");
+    await keys(page, "n");
+    await says(page, "long.ts:170 · new");
+    await says(page, "2/20");
+    await currentHitOn(page, "export const line170 = 170 * 2;");
+    await keys(page, "Escape");
+    await searchField(page).waitFor({ state: "detached" });
+
+    // A match in a folded file unfolds that file alone.
+    await keys(page, "g", "g");
+    await says(page, "README.md · file");
+    for (const path of ["README.md", "app.ts"]) await foldToggle(page, path).click();
+    await waitFor(
+      async () =>
+        (await expanded("README.md")) === "false" && (await expanded("app.ts")) === "false",
+      "README.md and app.ts folded",
+    );
+    // The command menu opens the field too, with the kept query.
+    await page.getByRole("button", { name: /^Commands/ }).click();
+    const menu = page.getByRole("dialog", { name: "Command menu" });
+    await menu.waitFor();
+    await page.keyboard.type("search the");
+    expect(await menu.getByRole("option").allTextContents()).toEqual(["Search the current view/"]);
+    await page.keyboard.press("Enter");
+    await menu.waitFor({ state: "detached" });
+    await waitFor(() => hasFocus(searchField(page)), "the search field focused");
+    expect(await searchField(page).inputValue()).toBe("line17");
+    await page.keyboard.type("const b");
+    await says(page, "1/2");
+    await page.keyboard.press("Enter");
+    await says(page, "app.ts:2 · old");
+    await waitFor(async () => (await expanded("app.ts")) === "true", "app.ts unfolded");
+    expect(await expanded("README.md")).toBe("false");
+    await barOn(page, `const b = '${hostile}';`);
+
+    // Another view runs the query again over its own files.
+    await page.getByRole("button", { name: "src/", exact: true }).click();
+    await headingsAre(page, ["src/long.ts"]);
+    await says(page, "No matches");
+    await page.getByRole("button", { name: "All changes", exact: true }).click();
+    await says(page, "1/2");
+
+    // Lines in a hidden range are found once the reader opens them.
+    await page.getByRole("button", { name: "src/", exact: true }).click();
+    await headingsAre(page, ["src/long.ts"]);
+    await keys(page, "/");
+    await page.keyboard.type("line12 =");
+    await says(page, "No matches");
+    await page.keyboard.press("Escape");
+    await searchField(page).waitFor({ state: "detached" });
+    await keys(page, "g", "g", "j");
+    await says(page, "long.ts · hidden lines");
+    await keys(page, "Enter");
+    await says(page, "long.ts:1 · new");
+    // Lines opening above the panel's top move it; n steps on once it settled.
+    await steady(() => panelTop(page));
+    await keys(page, "n");
+    await says(page, "long.ts:12 · new");
+    await says(page, "1/1");
+    await barOn(page, "export const line12 = 12;");
+
+    // A selection holds the cursor; n moves it again once the selection ends.
+    await keys(page, "g", "g", "j", "Shift+V", "n");
+    await says(page, "1 line selected");
+    await says(page, "long.ts:1 · new");
+    await keys(page, "Escape", "n");
+    await says(page, "long.ts:12 · new");
+    await settled(page);
+    // Search never writes Viewed.
+    expect(writes).toEqual([]);
+  }, 45_000);
+
   it("scrolls with movement keys in Mouse mode, without a cursor, and selects lines with the hover + and by dragging", async () => {
     const page = await newPage();
     await page.setViewportSize({ width: 1280, height: 800 });
@@ -2120,7 +2338,14 @@ describe("installed gyst in a sandboxed browser", () => {
     const help = page.getByRole("dialog", { name: "Keyboard shortcuts" });
     await help.waitFor();
     expect(await focused()).toEqual({ name: "Close Esc", visible: true });
-    for (const label of ["Next change", "Fold every file", "Command menu"])
+    for (const label of [
+      "Next change",
+      "Fold every file",
+      "Search the current view",
+      "Next search match",
+      "Previous search match",
+      "Command menu",
+    ])
       await help.getByText(label, { exact: true }).waitFor();
     // Keys of later tickets are not listed.
     expect(await help.getByText(/Reply|comment|Resolve/i).count()).toBe(0);
@@ -2889,6 +3114,49 @@ describe("installed gyst in a sandboxed browser", () => {
     await keys(page, "]", "n");
     await says(page, "c.ts:3 · old");
     await pane.getByText("Nothing reads three.").waitFor();
+  }, 30_000);
+
+  it("searches a group view's diff lines, not its overview or notes, keeps ]n for notes and searches the next group's view again", async () => {
+    const walk = await openWalk();
+    await publishWalk(walk);
+    const page = await newPage();
+    await page.setViewportSize({ width: 1280, height: 1200 });
+    await page.goto(`${one.origin}/session/${walk.id}`);
+    const pane = page.getByRole("main");
+    const side = page.getByRole("navigation", { name: "gyst" });
+    await side.getByRole("button", { name: /^Parse the config/ }).click();
+    await headingsAre(page, ["walk/b.ts", "walk/a.ts"]);
+    await pane.getByText("Five doubles too.").waitFor();
+    await says(page, "b.ts · file");
+    for (const prose of ["Five doubles", "every value", "Both doublings"]) {
+      await keys(page, "/");
+      await searchField(page).fill(prose);
+      await says(page, "No matches");
+      await page.keyboard.press("Escape");
+    }
+    // The group view shows every hunk of its files: a.ts's third one belongs to another group.
+    await keys(page, "/");
+    await searchField(page).fill("* 2");
+    await says(page, "1/4");
+    await page.keyboard.press("Enter");
+    await says(page, "b.ts:5 · new");
+    // ]n walks notes, not matches; n then steps on from the note's line.
+    await keys(page, "]", "n");
+    await says(page, "a.ts:20 · new");
+    await says(page, "1/4");
+    await keys(page, "n");
+    await says(page, "a.ts:40 · new");
+    await says(page, "4/4");
+    await keys(page, "[", "n");
+    await says(page, "a.ts:20 · new");
+    await says(page, "4/4");
+    // The next group's view: c.ts and a.ts's three hunks.
+    await keys(page, "Shift+J");
+    await headingsAre(page, ["walk/c.ts", "walk/a.ts"]);
+    await says(page, "3/3");
+    await keys(page, "Shift+N");
+    await says(page, "a.ts:10 · new");
+    await says(page, "1/3");
   }, 30_000);
 
   it("shares Viewed between group and file views, unviews exactly a reworded note's hunks and keeps Viewed across a reorder", async () => {
