@@ -29,6 +29,7 @@ export {
   pickUp,
   type PickupOutcome,
   recordedPickup,
+  threadAnchorsOf,
   threadsFor,
   type ThreadsRequest,
 } from "./conversation.ts";
