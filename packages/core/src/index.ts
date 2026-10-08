@@ -9,6 +9,7 @@ export {
   type CapturedSide,
   capturedSideKey,
   capturedTargetsOf,
+  earlierAnchorsOf,
   GroupCreateSchema,
   GroupDissolveSchema,
   GroupUpdateSchema,
