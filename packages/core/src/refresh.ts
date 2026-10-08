@@ -106,10 +106,15 @@ export function refreshSession(
       // A note reads beside its group's code, so one whose range maps only outside the group
       // stays on its earlier code, where the group still discloses it.
       const anchor = moved && after.some((id) => hunkIds.includes(id)) ? moved : undefined;
-      const before =
-        note.anchor.snapshotId === session.snapshotId
-          ? anchoredHunkIds(session.hunks, note.anchor)
-          : [];
+      const earlier = note.anchor.snapshotId !== session.snapshotId;
+      const before = earlier ? [] : anchoredHunkIds(session.hunks, note.anchor);
+      // A note kept on earlier code still reads beside its anchored hunks that survived since:
+      // its pinned snapshot's, through their exact counterparts in the replaced one.
+      const pinned = earlier ? linesOf(note.anchor.snapshotId) : undefined;
+      const counterparts = pinned && matchHunks(pinned.hunks, session.hunks);
+      const surviving = counterparts
+        ? anchoredHunkIds(pinned.hunks, note.anchor).flatMap((id) => counterparts.get(id)?.id ?? [])
+        : before;
       const references = referencesOf(note);
       const reasons: OutdatedReason[] = [];
       if (
@@ -122,7 +127,7 @@ export function refreshSession(
       if (references.changed) reasons.push("references");
       // Surviving hunks keep their id, so this reaches the note's former hunks that still exist.
       if (references.changedNow)
-        for (const id of [...before, ...(anchor ? after : [])]) unviewed.add(id);
+        for (const id of [...surviving, ...(anchor ? after : [])]) unviewed.add(id);
       return withReasons({ ...note, anchor: anchor ?? note.anchor }, reasons);
     });
     return {
