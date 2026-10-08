@@ -23,7 +23,6 @@ const authoredDir = fileURLToPath(new URL("../../skills/", import.meta.url));
 const skills = join(installed.packageDir, "skills");
 const workflows = ["gyst", "gyst-respond"];
 
-/** Every file under `dir`, as sorted paths relative to it. */
 const filesOf = async (dir: string) => {
   const entries = await readdir(dir, { recursive: true, withFileTypes: true });
   return entries
@@ -31,7 +30,6 @@ const filesOf = async (dir: string) => {
     .map((entry) => relative(dir, join(entry.parentPath, entry.name)))
     .sort();
 };
-/** Each shipped Markdown file of the authored workflows, by `<skill>/<path>`. */
 const shippedMarkdown = async () => {
   const texts = new Map<string, string>();
   for (const name of workflows)
