@@ -38,11 +38,12 @@ export type Choice = { query: Query; symbol: SemanticSymbol };
 /**
  * What a peek asks gyst, kept so Check again and Try again ask exactly that once more: the
  * identifiers on the origin line, for one query (`gd`, `gr`) or, from a right-click, for the symbol
- * under the pointer's token (UTF-16 units of the line); or one choice's answer.
+ * at the clicked character (its UTF-16 offset in the line, unknown where the browser can't place
+ * the click); or one choice's answer.
  */
 export type SemanticAsk =
   | { kind: "identifiers"; query: Query }
-  | { kind: "identifiers"; token: { start: number; end: number } }
+  | { kind: "identifiers"; character: number | undefined }
   | { kind: "query"; choice: Choice };
 
 /** How far the daemon is with the queried side while an answer is awaited. */
@@ -130,7 +131,8 @@ export type Next = { stage: SemanticStage } | { ask: SemanticAsk };
 
 /**
  * The stage after a line's identifiers. `gd`/`gr` offer every identifier, asking at once when
- * there is only one; a right-click offers both queries of the identifier under its token.
+ * there is only one; a right-click offers both queries of the identifier containing its character,
+ * or of every identifier on the line when none does.
  */
 export function afterIdentifiers(
   ask: Extract<SemanticAsk, { kind: "identifiers" }>,
@@ -148,23 +150,20 @@ export function afterIdentifiers(
       ? { stage: { kind: "none", message: `No symbol to look up on line ${reply.line}.`, gaps } }
       : { stage: { kind: "choose", choices, selected: 0, gaps } };
   }
-  const { start, end } = ask.token;
-  const symbol = outcome.identifiers.find(
-    ({ range }) => range.start.character < end && range.end.character > start,
+  const { character } = ask;
+  const clicked = outcome.identifiers.find(
+    ({ range }) =>
+      character !== undefined &&
+      range.start.character <= character &&
+      character < range.end.character,
   );
-  return symbol === undefined
-    ? { stage: { kind: "none", message: "No symbol to look up there.", gaps } }
-    : {
-        stage: {
-          kind: "choose",
-          choices: [
-            { query: "definition", symbol },
-            { query: "references", symbol },
-          ],
-          selected: 0,
-          gaps,
-        },
-      };
+  const choices = (clicked ? [clicked] : outcome.identifiers).flatMap((symbol) => [
+    { query: "definition" as const, symbol },
+    { query: "references" as const, symbol },
+  ]);
+  return choices.length === 0
+    ? { stage: { kind: "none", message: `No symbol to look up on line ${reply.line}.`, gaps } }
+    : { stage: { kind: "choose", choices, selected: 0, gaps } };
 }
 
 /** The stage a definition or usages answer shows. */

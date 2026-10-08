@@ -131,29 +131,44 @@ describe("afterIdentifiers", () => {
     });
   });
 
-  it("offers both queries of the identifier under a right-clicked token", () => {
-    const at = afterIdentifiers(
-      { kind: "identifiers", token: { start: 21, end: 25 } },
-      identifiers(three, plus, zero),
-    );
-    expect(at).toEqual({
+  it("offers both queries of the identifier containing the right-clicked character", () => {
+    const bothOf = (symbol: typeof plus) => ({
       stage: {
         kind: "choose",
         choices: [
-          { query: "definition", symbol: plus },
-          { query: "references", symbol: plus },
+          { query: "definition", symbol },
+          { query: "references", symbol },
         ],
         selected: 0,
         gaps: [],
       },
     });
-    // A token that only overlaps the identifier, as a highlighter may split one, still finds it.
-    expect(
-      afterIdentifiers({ kind: "identifiers", token: { start: 24, end: 26 } }, identifiers(plus)),
-    ).toMatchObject({ stage: { kind: "choose", choices: [{ symbol: plus }, { symbol: plus }] } });
-    expect(
-      afterIdentifiers({ kind: "identifiers", token: { start: 25, end: 26 } }, identifiers(plus)),
-    ).toEqual({ stage: { kind: "none", message: "No symbol to look up there.", gaps: [] } });
+    const line = identifiers(three, plus, zero);
+    expect(afterIdentifiers({ kind: "identifiers", character: 21 }, line)).toEqual(bothOf(plus));
+    expect(afterIdentifiers({ kind: "identifiers", character: 24 }, line)).toEqual(bothOf(plus));
+    // A line too long to highlight is one token from its first identifier to its last; the
+    // clicked character, not the token, names the symbol.
+    expect(afterIdentifiers({ kind: "identifiers", character: 38 }, line)).toEqual(bothOf(zero));
+  });
+
+  it("offers both queries of every identifier on the line when the right-click is on none", () => {
+    const every = {
+      stage: {
+        kind: "choose",
+        choices: [three, plus, zero].flatMap((symbol) => [
+          { query: "definition", symbol },
+          { query: "references", symbol },
+        ]),
+        selected: 0,
+        gaps: [],
+      },
+    };
+    const line = identifiers(three, plus, zero);
+    expect(afterIdentifiers({ kind: "identifiers", character: 25 }, line)).toEqual(every);
+    expect(afterIdentifiers({ kind: "identifiers", character: undefined }, line)).toEqual(every);
+    expect(afterIdentifiers({ kind: "identifiers", character: 25 }, identifiers())).toEqual({
+      stage: { kind: "none", message: "No symbol to look up on line 2.", gaps: [] },
+    });
   });
 
   it("keeps the known missing inputs of a line's identifiers, when it has none too", () => {
@@ -165,15 +180,15 @@ describe("afterIdentifiers", () => {
     expect(
       afterIdentifiers({ kind: "identifiers", query: "definition" }, lacking(three, plus)),
     ).toMatchObject({ stage: { kind: "choose", gaps } });
-    expect(
-      afterIdentifiers({ kind: "identifiers", token: { start: 21, end: 25 } }, lacking(plus)),
-    ).toMatchObject({ stage: { kind: "choose", gaps } });
+    expect(afterIdentifiers({ kind: "identifiers", character: 21 }, lacking(plus))).toMatchObject({
+      stage: { kind: "choose", gaps },
+    });
     expect(afterIdentifiers({ kind: "identifiers", query: "definition" }, lacking())).toEqual({
       stage: { kind: "none", message: "No symbol to look up on line 2.", gaps },
     });
-    expect(
-      afterIdentifiers({ kind: "identifiers", token: { start: 0, end: 1 } }, lacking(plus)),
-    ).toEqual({ stage: { kind: "none", message: "No symbol to look up there.", gaps } });
+    expect(afterIdentifiers({ kind: "identifiers", character: 0 }, lacking())).toEqual({
+      stage: { kind: "none", message: "No symbol to look up on line 2.", gaps },
+    });
   });
 
   it("keeps an unavailable reason and the ask that met it", () => {

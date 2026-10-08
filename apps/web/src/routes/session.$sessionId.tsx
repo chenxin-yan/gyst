@@ -1423,7 +1423,7 @@ function SessionReader(props: {
     () => (peek?.kind === "reference" ? () => readOnce(peek.target) : undefined),
     [peek, readOnce],
   );
-  /** Asks for a code line's symbols, for one query or (a right-click) at one token of it. */
+  /** Asks for a code line's symbols, for one query or (a right-click) at one character of it. */
   const lookUp = (at: { file: string; side: Side; line: number }, ask: SemanticAsk) => {
     // A file shown whole has one column, on the expanded reference's side.
     const side: CodeSide =
@@ -2111,7 +2111,7 @@ function SessionReader(props: {
                   if (vim) setCursor({ file: at.file, kind: "line", side, line: at.line });
                   lookUp(
                     { file: at.file, side, line: at.line },
-                    { kind: "identifiers", token: { start: at.start, end: at.end } },
+                    { kind: "identifiers", character: at.character },
                   );
                 }
           }
@@ -2330,10 +2330,42 @@ type Viewer = {
 };
 
 /**
- * A code token under the pointer: its file, the split column it is on (none in a file shown whole),
- * its line and its UTF-16 span of that line, as the renderer reports it.
+ * A right-clicked spot in code: its file, the split column it is on (none in a file shown whole),
+ * its line and the UTF-16 offset in that line of the clicked character, unknown where the browser
+ * can't place the click.
  */
-type SymbolAt = { file: string; side: Side | undefined; line: number; start: number; end: number };
+type SymbolAt = {
+  file: string;
+  side: Side | undefined;
+  line: number;
+  character: number | undefined;
+};
+
+/**
+ * The UTF-16 offset in a code token's text of the character a pointer event is on. A highlighting
+ * token can hold several identifiers (past the renderer's highlighting limit a whole line is one),
+ * so the token alone never names the symbol clicked.
+ */
+function offsetIn(token: HTMLElement, event: MouseEvent): number | undefined {
+  const root = token.getRootNode();
+  const caret = document.caretPositionFromPoint(event.clientX, event.clientY, {
+    shadowRoots: root instanceof ShadowRoot ? [root] : [],
+  });
+  if (!caret || !token.contains(caret.offsetNode)) return undefined;
+  const { offsetNode } = caret;
+  let { offset } = caret;
+  // The caret falls on the boundary nearest the pointer: after the character on its right half.
+  if (offsetNode instanceof Text && offset > 0) {
+    const previous = document.createRange();
+    previous.setStart(offsetNode, offset - 1);
+    previous.setEnd(offsetNode, offset);
+    if (event.clientX < previous.getBoundingClientRect().right) offset -= 1;
+  }
+  const before = document.createRange();
+  before.setStart(token, 0);
+  before.setEnd(offsetNode, offset);
+  return before.toString().length;
+}
 
 /** How far the cursor stays from the panel's edges, and how far in a pulled-back cursor lands. */
 const scrolloff = 96;
@@ -2844,7 +2876,9 @@ function ContinuousDiff(props: {
     });
   }, [props.files, diffs, props.folded, props.annotations, props.wholeFiles]);
 
-  const hovered = useRef<{ element: HTMLElement; at: SymbolAt }>(undefined);
+  const hovered = useRef<{ element: HTMLElement; start: number; at: Omit<SymbolAt, "character"> }>(
+    undefined,
+  );
   const options = useMemo(
     (): CodeViewReactOptions<DiffAnnotation, undefined> => ({
       theme: "catppuccin-mocha",
@@ -2866,17 +2900,16 @@ function ContinuousDiff(props: {
       enableGutterUtility: props.inputMode === "mouse",
       onGutterUtilityClick: (range, context) =>
         latest.current.onLines({ id: context.item.id, range }),
-      // The token under the pointer, which a right-click asks about. The renderer reports tokens
-      // only to these callbacks; a right-click alone reports nothing.
+      // The token under the pointer, within which a right-click asks about the clicked character.
+      // The renderer reports tokens only to these callbacks; a right-click alone reports nothing.
       onTokenEnter: (token, _event, context) => {
         hovered.current = {
           element: token.tokenElement,
+          start: token.lineCharStart,
           at: {
             file: context.item.id,
             side: "side" in token ? token.side : undefined,
             line: token.lineNumber,
-            start: token.lineCharStart,
-            end: token.lineCharEnd,
           },
         };
       },
@@ -2948,7 +2981,11 @@ function ContinuousDiff(props: {
         if (!token || !onSymbol || event.shiftKey || !event.composedPath().includes(token.element))
           return;
         event.preventDefault();
-        onSymbol(token.at);
+        const offset = offsetIn(token.element, event);
+        onSymbol({
+          ...token.at,
+          character: offset === undefined ? undefined : token.start + offset,
+        });
       };
       node.addEventListener("contextmenu", onMenu);
       node.addEventListener("wheel", manual, { passive: true });

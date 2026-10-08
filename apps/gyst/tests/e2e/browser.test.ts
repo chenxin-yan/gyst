@@ -655,11 +655,19 @@ const hasFocus = (locator: ReturnType<Page["locator"]>) =>
   locator.evaluate((element) => element === document.activeElement);
 
 /**
- * A fresh session of the TS fixture (`mathFiles`) in its own repository, opened by `gyst` with
- * `dirs` first on its PATH, where the session finds the navigation add-on; deleted after the test.
+ * A fresh session of the TS fixture (`mathFiles`), with `edited` files added to its edits, in its
+ * own repository, opened by `gyst` with `dirs` first on its PATH, where the session finds the
+ * navigation add-on; deleted after the test.
  */
-async function navigationSession(name: string, ...dirs: string[]) {
-  const cwd = await gitProject(env, join(root, name), mathFiles.committed, mathFiles.edited);
+async function navigationSession(
+  name: string,
+  dirs: string[],
+  edited: Record<string, string> = {},
+) {
+  const cwd = await gitProject(env, join(root, name), mathFiles.committed, {
+    ...mathFiles.edited,
+    ...edited,
+  });
   const opened = succeeded(
     await run(installed.bin, [], { cwd, env: launchEnv(env, ...dirs), timeout: 60_000 }),
   );
@@ -3914,7 +3922,7 @@ describe("installed gyst in a sandboxed browser", () => {
   }, 30_000);
 
   it("follows a line's symbols to definitions and usages with gd, gr and a right-click on both sides, through Expand and nested Back, asking nothing until asked and never touching Viewed", async () => {
-    const session = await navigationSession("navigate", navigationBin);
+    const session = await navigationSession("navigate", [navigationBin]);
     const page = await newPage();
     await page.setViewportSize({ width: 1400, height: 1200 });
     const writes = viewedOf(page);
@@ -4118,8 +4126,49 @@ describe("installed gyst in a sandboxed browser", () => {
     await settled(page);
   }, 180_000);
 
+  it("asks about the right-clicked identifier on a line too long to highlight, not the line's first", async () => {
+    const line = `export const first = 1, second = first; /* ${"x".repeat(1100)} */`;
+    const session = await navigationSession("navigate-long", [navigationBin], {
+      "src/long.ts": `${line}\n`,
+    });
+    const page = await newPage();
+    await page.setViewportSize({ width: 1400, height: 1200 });
+    await page.goto(session.url);
+    const pane = page.getByRole("main");
+    await headingsAre(page, ["src/crlf.ts", "src/long.ts", "src/math.ts", "src/use.ts"]);
+    // Past the renderer's highlighting limit the line is one token, holding both identifiers.
+    const { x, y, token } = await pane
+      .getByText(line, { exact: true })
+      .first()
+      .evaluate((element, word) => {
+        const walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT);
+        let text = walker.nextNode();
+        while (text && !text.textContent!.includes(word)) text = walker.nextNode();
+        const start = text!.textContent!.indexOf(word);
+        const range = document.createRange();
+        range.setStart(text!, start);
+        range.setEnd(text!, start + word.length);
+        const box = range.getBoundingClientRect();
+        return {
+          x: box.x + box.width / 2,
+          y: box.y + box.height / 2,
+          token: text!.parentElement!.closest("[data-char]")?.textContent,
+        };
+      }, "second");
+    expect(token).toBe(line);
+    await page.mouse.click(x, y, { button: "right" });
+    const symbols = peekOf(page).getByRole("listbox", { name: "Symbols" });
+    await symbols.waitFor({ timeout: 60_000 });
+    expect(await optionsOf(symbols)).toEqual(
+      ["Definition", "Usages"].map(
+        (query) => `${query} of second${placeOf(1, line.indexOf("second"))}`,
+      ),
+    );
+    await settled(page);
+  }, 120_000);
+
   it("keeps the selected result in the selector's view without scrolling the review", async () => {
-    const session = await navigationSession("navigate-many", navigationBin);
+    const session = await navigationSession("navigate-many", [navigationBin]);
     const page = await newPage();
     await page.setViewportSize({ width: 1400, height: 1200 });
     // More usages than the selector shows at once: plus's own, each listed four times.
@@ -4173,7 +4222,7 @@ describe("installed gyst in a sandboxed browser", () => {
   it("offers the exact install command, Check again and Continue without navigation, and finds an npm install into the launch PATH with the same daemon", async () => {
     const prefix = join(root, "navigation-prefix");
     await mkdir(join(prefix, "bin"), { recursive: true });
-    const session = await navigationSession("install-navigation", join(prefix, "bin"));
+    const session = await navigationSession("install-navigation", [join(prefix, "bin")]);
     const daemon = await daemonPid(data);
     const page = await newPage();
     // Short, so the peek opens below the panel's bottom and has to scroll into view.
