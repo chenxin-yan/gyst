@@ -3,6 +3,7 @@ import { Effect, FileSystem, Option, Semaphore } from "effect";
 import type { ChildProcessSpawner } from "effect/process";
 import { delimiter, isAbsolute, join } from "node:path";
 import { handshakeAddon } from "./addon-handshake.ts";
+import { SessionStore } from "./store.ts";
 
 /**
  * Finds the navigation add-on on a CLI invocation's PATH, as a shell would, and validates it by its
@@ -37,10 +38,12 @@ export const discoverAddon = Effect.fn("discoverAddon")(function* (
 
 /**
  * Each session's add-on, discovered on the PATH of the latest CLI invocation that opened it, never
- * the daemon's own PATH (which may be stale) or anything a browser sends. Kept in memory: after a
- * daemon restart a session finds no add-on until a CLI opens it again.
+ * the daemon's own PATH (which may be stale) or anything a browser sends. The PATHs are saved, so a
+ * restarted daemon discovers on the same ones; discoveries are not.
  */
 export interface NavigationAddons {
+  /** Reads the saved PATHs of these sessions; a deleted session's leftover is dropped. */
+  load(sessionIds: ReadonlySet<string>): Effect.Effect<void>;
   /**
    * Records the PATH a CLI invocation opened the session with. A new invocation replaces the
    * last one and its discovery, so a changed Node, npm prefix or PATH takes effect.
@@ -64,9 +67,19 @@ export const makeNavigationAddons = Effect.fnUntraced(function* (runningVersion:
   const context = yield* Effect.context<
     FileSystem.FileSystem | ChildProcessSpawner.ChildProcessSpawner
   >();
+  const store = yield* SessionStore;
   // Discoveries run one at a time, so a slower earlier one never overwrites a recheck.
   const serialized = Semaphore.withPermit(yield* Semaphore.make(1));
   const launches = new Map<string, Launch>();
+  // Each save writes the map as it is once the previous save is done, so the last one is current.
+  const saving = Semaphore.withPermit(yield* Semaphore.make(1));
+  const save = saving(
+    Effect.suspend(() =>
+      store.saveLaunchPaths(
+        Object.fromEntries([...launches].map(([sessionId, { path }]) => [sessionId, path])),
+      ),
+    ),
+  );
   const discover = (sessionId: string) =>
     Effect.suspend(() => {
       const launch = launches.get(sessionId);
@@ -78,15 +91,28 @@ export const makeNavigationAddons = Effect.fnUntraced(function* (runningVersion:
       );
     });
   return {
-    record: (sessionId, launchPath) =>
-      Effect.sync(() => void launches.set(sessionId, { path: launchPath })),
-    inherit: (fromSessionId, toSessionId) =>
-      Effect.sync(() => {
-        const from = launches.get(fromSessionId);
-        if (from !== undefined && !launches.has(toSessionId))
-          launches.set(toSessionId, { path: from.path });
+    load: (sessionIds) =>
+      Effect.map(store.loadLaunchPaths, (saved) => {
+        launches.clear();
+        for (const [sessionId, path] of Object.entries(saved))
+          if (sessionIds.has(sessionId)) launches.set(sessionId, { path });
       }),
-    forget: (sessionId) => Effect.sync(() => void launches.delete(sessionId)),
+    // A session file is saved the same way, and its write failing is a defect there too.
+    record: (sessionId, launchPath) =>
+      Effect.sync(() => void launches.set(sessionId, { path: launchPath })).pipe(
+        Effect.andThen(save),
+        Effect.orDie,
+      ),
+    inherit: (fromSessionId, toSessionId) =>
+      Effect.suspend(() => {
+        const from = launches.get(fromSessionId);
+        if (from === undefined || launches.has(toSessionId)) return Effect.void;
+        launches.set(toSessionId, { path: from.path });
+        return Effect.orDie(save);
+      }),
+    // Only cleanup after the deletion committed: the next load drops what this could not.
+    forget: (sessionId) =>
+      Effect.sync(() => void launches.delete(sessionId)).pipe(Effect.andThen(save), Effect.ignore),
     current: (sessionId) =>
       serialized(
         Effect.suspend(() => {

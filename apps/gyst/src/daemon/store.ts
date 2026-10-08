@@ -14,6 +14,11 @@ const DeleteReceiptsFileSchema = Schema.fromJsonString(Schema.Array(DeleteReceip
 const decodeDeleteReceipts = Schema.decodeUnknownEffect(DeleteReceiptsFileSchema, {
   onExcessProperty: "error",
 });
+/** Session id to the `PATH` of the latest CLI invocation that opened it. */
+export type LaunchPaths = Readonly<Record<string, string>>;
+const decodeLaunchPaths = Schema.decodeUnknownEffect(
+  Schema.fromJsonString(Schema.Record(Schema.String, Schema.String)),
+);
 
 // Compare the exact persisted bytes again after the old daemon stops admitting commands.
 export const inspectSavedSessions = Effect.gen(function* () {
@@ -48,6 +53,13 @@ export class SessionStore extends Context.Service<
     saveDeleteReceipts(
       receipts: ReadonlyArray<DeleteReceipt>,
     ): Effect.Effect<void, PlatformError.PlatformError>;
+    /**
+     * Empty when absent or unreadable: losing them costs only navigation, until the CLI opens the
+     * session again.
+     */
+    readonly loadLaunchPaths: Effect.Effect<LaunchPaths>;
+    /** Replaces every session's `PATH` atomically, like a session save. */
+    saveLaunchPaths(launchPaths: LaunchPaths): Effect.Effect<void, PlatformError.PlatformError>;
   }
 >()("gyst/daemon/SessionStore") {
   static readonly layer = Layer.effect(
@@ -97,7 +109,23 @@ export class SessionStore extends Context.Service<
       const saveDeleteReceipts = (receipts: ReadonlyArray<DeleteReceipt>) =>
         writeAtomically(paths.deleteReceiptsPath, `${JSON.stringify(receipts)}\n`);
 
-      return SessionStore.of({ loadAll, save, remove, loadDeleteReceipts, saveDeleteReceipts });
+      const loadLaunchPaths = fs.readFileString(paths.launchPathsPath).pipe(
+        Effect.flatMap(decodeLaunchPaths),
+        Effect.orElseSucceed((): LaunchPaths => ({})),
+        Effect.withSpan("SessionStore.loadLaunchPaths"),
+      );
+      const saveLaunchPaths = (launchPaths: LaunchPaths) =>
+        writeAtomically(paths.launchPathsPath, `${JSON.stringify(launchPaths)}\n`);
+
+      return SessionStore.of({
+        loadAll,
+        save,
+        remove,
+        loadDeleteReceipts,
+        saveDeleteReceipts,
+        loadLaunchPaths,
+        saveLaunchPaths,
+      });
     }),
   );
 }

@@ -17,7 +17,7 @@ const daemonServer = layer(
     Layer.provide(
       Navigation.layer.pipe(
         Layer.provideMerge(Sessions.layer),
-        Layer.provide(
+        Layer.provideMerge(
           Layer.mergeAll(Git.layer, GitHub.layer, SessionStore.layer).pipe(
             Layer.provideMerge(CapturedContent.layer),
           ),
