@@ -217,6 +217,23 @@ const operation = (operations: ViewerOperations) =>
   });
 
 /**
+ * Waits until `connection` takes writes again. A WebSocket send never waits, so without this a
+ * reader that stops reading would have the daemon buffer every change; waiting leaves the newest
+ * in the subscription's queue instead.
+ */
+const drained = (connection: NetSocket) =>
+  Effect.callback<void>((resume) => {
+    if (!connection.writableNeedDrain || connection.destroyed) return resume(Effect.void);
+    const forget = () => connection.off("drain", done).off("close", done);
+    const done = () => {
+      forget();
+      resume(Effect.void);
+    };
+    connection.on("drain", done).on("close", done);
+    return Effect.sync(forget);
+  });
+
+/**
  * One session's subscription, named by the query, as WebSocket messages until it ends. Not an SSE
  * response: a browser opens at most six HTTP/1.1 connections per host across all its tabs, so six
  * open readers would hold them all and queue every other load, read and write. Browsers pool
@@ -233,14 +250,19 @@ const events = (operations: ViewerOperations, query: string) =>
         ok: false,
         error: new BadArgs({ message: "expected one session subscription" }),
       });
-    const socket = yield* (yield* HttpServerRequest).upgrade.pipe(Effect.option);
+    const request = yield* HttpServerRequest;
+    const socket = yield* request.upgrade.pipe(Effect.option);
     if (socket._tag === "None") return status(426, { upgrade: "websocket" });
+    // The upgraded WebSocket writes straight to the request's connection.
+    const connection = NodeHttpServerRequest.toIncomingMessage(request).socket;
     yield* Effect.gen(function* () {
       const { pull } = yield* socket.value.reader;
       const { write } = yield* socket.value.writer;
       yield* operations.subscribe(input.value).pipe(
         Stream.catch((error) => Stream.succeed({ kind: "failed", error } as const)),
-        Stream.runForEach((event) => write(JSON.stringify(encodeEvent(event)))),
+        Stream.runForEach((event) =>
+          write(JSON.stringify(encodeEvent(event))).pipe(Effect.andThen(drained(connection))),
+        ),
         Effect.andThen(write(new Socket.CloseEvent())),
         // The browser sends nothing; reading is how its hanging up is noticed.
         Effect.raceFirst(Effect.forever(pull)),

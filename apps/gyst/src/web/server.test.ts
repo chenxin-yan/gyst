@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, describe, expect, it, onTestFinished } from "vite-plus/test";
+import { afterAll, beforeAll, describe, expect, it, onTestFinished, vi } from "vite-plus/test";
 import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
 import {
   type BrowserRequest,
@@ -7,7 +7,7 @@ import {
   type SubscribeRequest,
   type SubscriptionEvent,
 } from "@gyst/core";
-import { Effect, Exit, Schedule, Scope, Stream } from "effect";
+import { Effect, Exit, Queue, Schedule, Scope, Stream } from "effect";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { rm } from "node:fs/promises";
@@ -51,9 +51,25 @@ const operations: ViewerOperations = {
       return Stream.concat(Stream.succeed(ready), Stream.never).pipe(
         Stream.ensuring(Effect.sync(() => void released++)),
       );
+    if (request.session === "flooded")
+      return Stream.unwrap(
+        Effect.gen(function* () {
+          const changes = yield* Queue.sliding<SubscriptionEvent>(1);
+          const subscription = { changes, taken: 0 };
+          flooded = subscription;
+          return Stream.concat(
+            Stream.succeed(ready),
+            Stream.fromQueue(changes).pipe(
+              Stream.tap(() => Effect.sync(() => subscription.taken++)),
+            ),
+          ).pipe(Stream.ensuring(Effect.sync(() => void released++)));
+        }),
+      );
     return Stream.make(...liveEvents);
   },
 };
+/** The open "flooded" subscription: the daemon's newest-only queue and how many changes left it. */
+let flooded: { readonly changes: Queue.Queue<SubscriptionEvent>; taken: number } | undefined;
 /** What the fake daemon was asked to subscribe to, and how many subscriptions it closed. */
 let subscribed: SubscribeRequest[] = [];
 let released = 0;
@@ -553,6 +569,43 @@ describe("browserApp events", () => {
     );
     expect(released).toBe(1);
   });
+
+  /** A "flooded" stream fed far more than the kernel's loopback buffers hold while nothing is read. */
+  const flood = async () => {
+    flooded = undefined;
+    released = 0;
+    const { events } = await serve();
+    const stream = await events("flooded");
+    onTestFinished(() => stream.close());
+    await vi.waitFor(() => expect(flooded).toBeDefined());
+    const context = "c".repeat(32 * 1024);
+    const offered = 1500;
+    for (let revision = 1; revision <= offered; revision++) {
+      Queue.offerUnsafe(flooded!.changes, { kind: "changed", ...version(revision), context });
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+    // What left the queue is all the daemon buffers for this reader.
+    expect(flooded!.taken).toBeLessThan(offered / 3);
+    return { stream, latest: { kind: "changed", ...version(offered), context }, offered };
+  };
+
+  it("holds a reader that stops reading to its newest change, which it reads on resuming", async () => {
+    const { stream, latest, offered } = await flood();
+    const read: { revision: number }[] = [];
+    for await (const frame of stream.frames()) {
+      read.push(JSON.parse(frame));
+      if (read.at(-1)!.revision === offered) break;
+    }
+    expect(read.length).toBeLessThan(offered / 3);
+    expect(read.at(-1)).toEqual(latest);
+  }, 30_000);
+
+  it("closes a stalled reader's subscription when it hangs up", async () => {
+    const { stream } = await flood();
+    expect(released).toBe(0);
+    stream.close();
+    await vi.waitFor(() => expect(released).toBe(1));
+  }, 30_000);
 });
 
 describe("browserApp navigation", () => {
