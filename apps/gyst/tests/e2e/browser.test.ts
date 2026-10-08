@@ -4751,7 +4751,10 @@ describe("installed gyst in a sandboxed browser", () => {
   it("walks threads sharing a range one by one, closes one with Esc, replies from Comments in place, peeks a reply's link and rereads after a failed read", async () => {
     const walk = await openWalk();
     await publishWalk(walk);
-    const page = await newPage(context, { problems: ["requestfailed /api/operation"] });
+    // The failed conversations read, then the failed messages read.
+    const page = await newPage(context, {
+      problems: ["requestfailed /api/operation", "requestfailed /api/operation"],
+    });
     await page.setViewportSize({ width: 1280, height: 1200 });
     const writes = viewedOf(page);
     // The threads whose messages the page reads: only open ones, and again only once changed.
@@ -4760,12 +4763,15 @@ describe("installed gyst in a sandboxed browser", () => {
       if (operationOf(request)?.command === "messages")
         messageReads.push(operationOf(request).thread);
     });
-    // Armed later: the next conversations read fails as if the connection dropped.
+    // Armed later: the next conversations read fails as if the connection dropped, and while
+    // `failMessages` holds, every messages read does.
     let failRead = false;
     let failed = 0;
+    let failMessages = false;
     await page.route(isOperationUrl, async (route) => {
-      if (!failRead || route.request().postDataJSON()?.command !== "conversations")
-        return route.fallback();
+      const command = route.request().postDataJSON()?.command;
+      if (failMessages && command === "messages") return route.abort();
+      if (!failRead || command !== "conversations") return route.fallback();
       failRead = false;
       failed++;
       await route.abort();
@@ -4894,6 +4900,33 @@ describe("installed gyst in a sandboxed browser", () => {
     // First and second were each read once, when opened; third again for its new reply.
     const thirdId = idOf("Third?");
     expect(messageReads).toEqual([first, idOf("Second?"), thirdId, thirdId]);
+
+    // x resolves the messages an open thread shows: a later answer it could not read yet keeps it open.
+    if ((await expanded()).join() !== "First?")
+      await threadOf("First?")
+        .getByRole("button", { name: /^Thread/ })
+        .click();
+    await threadOf("First?").getByText("It is like").waitFor();
+    failMessages = true;
+    const { revision } = await gyst("session", "status", "--session", walk.id);
+    await walk.publish(revision, "again", [
+      { type: "thread.reply", thread: first, markdown: "And it doubles." },
+    ]);
+    await threadOf("First?").getByText("Couldn't read the messages").waitFor();
+    await threadOf("First?").getByText("3 messages").waitFor();
+    await keys(page, "g", "g", "]", "t", "x");
+    await says(
+      page,
+      `Couldn't resolve the thread: thread ${first} changed since it was read; read it again`,
+    );
+    expect((await gyst("session", "status", "--session", walk.id)).threads).toMatchObject({
+      resolved: 0,
+    });
+    failMessages = false;
+    await threadOf("First?").getByRole("button", { name: "Try again" }).click();
+    await threadOf("First?").getByText("And it doubles.").waitFor();
+    await keys(page, "x");
+    await says(page, "Thread resolved; it stays in Comments (C).");
     expect(writes).toEqual([]);
   }, 60_000);
 

@@ -138,7 +138,10 @@ export function useConversations(
         const answer = operation({ command: "messages", session: sessionId, thread: id });
         messageReads.current.set(id, { version, read: answer });
         answer.then(
-          (payload) => void lastMessages.current.set(id, payload),
+          // An answer overtaken by a newer read is not shown, so it is not the last either.
+          (payload) =>
+            messageReads.current.get(id)?.read === answer &&
+            void lastMessages.current.set(id, payload),
           // A failed read is not kept, so the thread's next read asks again.
           () => messageReads.current.get(id)?.read === answer && messageReads.current.delete(id),
         );

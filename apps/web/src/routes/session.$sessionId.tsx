@@ -1939,7 +1939,12 @@ function SessionReader(props: {
         return setNotice(
           vim ? "Put the cursor on an open thread to resolve it." : "Open a thread to resolve it.",
         );
-      return void setResolved(at.thread.id, at.thread.version, true);
+      // An open thread names the messages it shows, which a newer listing may not have reached.
+      const read =
+        at.thread.id === expandedThread
+          ? conversations.messages.last(at.thread.id)?.version
+          : undefined;
+      return void setResolved(at.thread.id, read ?? at.thread.version, true);
     }
     if (id === "nextThread" || id === "previousThread")
       return stepThread(id === "nextThread" ? 1 : -1);
