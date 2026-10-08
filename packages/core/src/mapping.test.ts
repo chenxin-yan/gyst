@@ -66,6 +66,34 @@ describe("mapRange", () => {
     expect(mapRange(first, moved, range("new", 8, 9))).toBeUndefined();
   });
 
+  it("maps an unchanged line of a changed hunk through edits beside it", () => {
+    // The new side adds three lines after line 5; later captures edit or add lines beside them.
+    const added = snapshot("0", "7", "@@ -5,2 +5,5 @@\n l5\n+a\n+ref\n+b\n l6\n");
+    const adjacent = snapshot("0", "8", "@@ -5,2 +5,5 @@\n l5\n+A\n+ref\n+b\n l6\n");
+    expect(mapRange(added, adjacent, range("new", 7, 9))).toEqual(range("new", 7, 9));
+    expect(mapRange(added, adjacent, range("new", 6))).toBeUndefined();
+    const inserted = snapshot("0", "9", "@@ -5,2 +5,6 @@\n l5\n+a\n+new\n+ref\n+b\n l6\n");
+    expect(mapRange(added, inserted, range("new", 7, 9))).toEqual(range("new", 8, 10));
+    expect(mapRange(added, inserted, range("new", 5, 6))).toEqual(range("new", 5, 6));
+    expect(mapRange(added, inserted, range("new", 6, 7))).toBeUndefined();
+    // Identical lines either side of an insertion leave which one is the reference ambiguous.
+    const doubled = snapshot("0", "a", "@@ -5,2 +5,6 @@\n l5\n+a\n+ref\n+ref\n+b\n l6\n");
+    expect(mapRange(added, doubled, range("new", 7))).toBeUndefined();
+    expect(mapRange(added, doubled, range("new", 6))).toEqual(range("new", 6));
+    // A removed line maps the same way while the new side stays the same bytes.
+    const removed = snapshot("b", "0", "@@ -5,4 +5,2 @@\n l5\n-x\n-gone\n l6\n");
+    const edited = snapshot("c", "0", "@@ -5,4 +5,2 @@\n l5\n-y\n-gone\n l6\n");
+    expect(mapRange(removed, edited, range("old", 7, 8))).toEqual(range("old", 7, 8));
+    // Nothing maps through a changed hunk while both sides changed.
+    expect(
+      mapRange(
+        added,
+        { ...adjacent, files: [{ path: "a.ts", old: blob("d"), new: blob("8") }] },
+        range("new", 7),
+      ),
+    ).toBeUndefined();
+  });
+
   it("maps nothing to a file the other snapshot lacks", () => {
     expect(mapRange(first, { files: [], hunks: [] }, range("new", 1))).toBeUndefined();
   });
