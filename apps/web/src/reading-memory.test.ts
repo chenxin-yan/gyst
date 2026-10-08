@@ -13,6 +13,7 @@ const placeAt = (path: string, file: string | undefined): ReadingPlace => ({
   inputMode: "vim",
   cursor: undefined,
   opened: new Map(),
+  folded: new Set(),
   top: file === undefined ? undefined : { position: { file, side: undefined, line: undefined } },
 });
 
@@ -33,6 +34,7 @@ describe("reading memory", () => {
       inputMode: "mouse",
       cursor: { file: "src/b.ts", kind: "line", side: "additions", line: 12 },
       opened: new Map([["src/b.ts", new Map([[0, { fromStart: 20, fromEnd: 0 }]])]]),
+      folded: new Set(["src/a.ts"]),
       top: { position: { file: "src/b.ts", side: "additions", line: 9 } },
     };
     remember("b", "snap-b", [], b);
