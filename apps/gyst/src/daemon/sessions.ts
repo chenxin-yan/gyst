@@ -63,7 +63,7 @@ import {
 } from "effect";
 import { createHash } from "node:crypto";
 import { CapturedContent, codePage } from "./content.ts";
-import { Git } from "./git.ts";
+import { Git, type Generated } from "./git.ts";
 import { GitHub, type StackDiscovery } from "./github.ts";
 import { type DeleteReceipt, SessionStore } from "./store.ts";
 type SourceCheck = Omit<SourceCheckPayload, "sessionId" | "snapshotId" | "revision">;
@@ -138,6 +138,9 @@ const uncaptured = (manifest: SnapshotManifest) => {
     message: `the working tree has ${reasons} inputs that gyst does not capture, so it cannot tell whether they changed (first: ${sides[0]!.path})`,
   };
 };
+
+const generatedFilesOf = (manifest: SnapshotManifest) =>
+  manifest.files.flatMap(({ path, generated }) => (generated ? [path] : []));
 
 const decodeEnvelope = Schema.decodeUnknownEffect(Schema.fromJsonString(ApplyEnvelopeSchema), {
   onExcessProperty: "error",
@@ -336,15 +339,20 @@ export class Sessions extends Context.Service<
         root: string,
         scope: Scope,
         onProgress?: OnProgress,
+        generated?: Generated,
       ) {
         if (scope.kind !== "pr")
-          return { manifest: yield* git.capture(root, scope, onProgress), pullRequest: undefined };
+          return {
+            manifest: yield* git.capture(root, scope, onProgress, generated),
+            pullRequest: undefined,
+          };
         const { pullRequest, headRefOid } = yield* github.pullRequest(scope);
         const manifest = yield* git.capturePullRequest(
           root,
           scope,
           { baseRefName: pullRequest.baseRefName, headRefOid },
           onProgress,
+          generated,
         );
         return { manifest, pullRequest };
       });
@@ -387,6 +395,7 @@ export class Sessions extends Context.Service<
               updatedAt: now,
               revision: 0,
               hunks: manifest.hunks,
+              generatedFiles: generatedFilesOf(manifest),
               overview: null,
               groups: [],
               viewedHunkIds: [],
@@ -499,7 +508,9 @@ export class Sessions extends Context.Service<
             const { scope, repoRoot, snapshotId } = session;
             cached = yield* Effect.cachedWithTTL(
               Effect.gen(function* () {
-                const result = yield* acquire(repoRoot, scope).pipe(
+                // The snapshot's own Generated files: a check never asks Git's attributes again.
+                const generated = new Set(session.generatedFiles);
+                const result = yield* acquire(repoRoot, scope, undefined, generated).pipe(
                   Effect.timeout("2 seconds"),
                   // Every captured input counts, so a changed helper is a changed source.
                   Effect.map(({ manifest }) =>
@@ -550,11 +561,16 @@ export class Sessions extends Context.Service<
         if (request.file) hunks = hunks.filter((hunk) => hunk.file === request.file);
         if (selectors.length && hunks.length === 0)
           return yield* new ValidationFailed({ message: "diff selector matched nothing" });
+        const generated = new Set(session.generatedFiles);
+        const generatedFiles = [...new Set(hunks.map(({ file }) => file))]
+          .filter((file) => generated.has(file))
+          .sort();
         return {
           sessionId: session.id,
           snapshotId: session.snapshotId,
           revision: session.revision,
           hunks,
+          ...(generatedFiles.length > 0 && { generatedFiles }),
         } satisfies DiffPayload;
       }, Semaphore.withPermit(lock));
 
@@ -810,7 +826,8 @@ export class Sessions extends Context.Service<
             const session = yield* selected(request);
             const outcome = yield* Effect.fromResult(
               refreshOnto(
-                session,
+                // The fresh snapshot's Generated files, so a replaced snapshot carries its own.
+                { ...session, generatedFiles: generatedFilesOf(manifest) },
                 request,
                 { snapshotId, snapshot: manifest },
                 retained,

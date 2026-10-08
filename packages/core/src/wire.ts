@@ -102,6 +102,8 @@ export const DiffPayloadSchema = Schema.Struct({
   snapshotId: Schema.String,
   revision: Schema.Number,
   hunks: Schema.Array(HunkSchema),
+  /** Present only when some of these hunks' files are Generated: those files, in path order. */
+  generatedFiles: Schema.optional(Schema.Array(Schema.String)),
 });
 export type DiffPayload = typeof DiffPayloadSchema.Type;
 
