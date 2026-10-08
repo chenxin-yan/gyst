@@ -317,14 +317,19 @@ const searchField = (page: Page) => page.getByRole("searchbox", { name: "Search 
 /** The search's highlighted lines in the panel; `[data-current]` marks the one gone to. */
 const searchHits = (page: Page) =>
   page.getByRole("main").locator("[data-search-hit]").filter({ visible: true });
-/** Waits until the search highlights `text`'s line as the match gone to. */
+/** Waits until the search highlights `text`'s whole line as the match gone to. */
 const currentHitOn = (page: Page, text: string) =>
   waitFor(async () => {
     const hit = await searchHits(page).and(page.locator("[data-current]")).boundingBox();
     if (hit === null) return false;
     for (const copy of await page.getByRole("main").getByText(text, { exact: true }).all()) {
       const box = await copy.boundingBox();
-      if (box && Math.abs(box.y - hit.y) < 4 && box.x >= hit.x && box.x < hit.x + hit.width)
+      if (
+        box &&
+        Math.abs(box.y - hit.y) < 4 &&
+        box.x >= hit.x - 1 &&
+        box.x + box.width <= hit.x + hit.width + 1
+      )
         return true;
     }
     return false;
@@ -2164,6 +2169,40 @@ describe("installed gyst in a sandboxed browser", () => {
     // Search never writes Viewed.
     expect(writes).toEqual([]);
   }, 45_000);
+
+  it("highlights a search match across the one column split view shows for an added or deleted file", async () => {
+    const cwd = join(root, "one-column");
+    await mkdir(cwd);
+    const inRepo = (...args: string[]) => execFileSync("git", args, { cwd, env, stdio: "ignore" });
+    inRepo("init", "-q", "-b", "main");
+    inRepo("config", "user.email", "t@gyst.invalid");
+    inRepo("config", "user.name", "t");
+    await writeFile(join(cwd, "gone.ts"), "export const gone = 'only-old';\n");
+    inRepo("add", ".");
+    inRepo("commit", "-qm", "init");
+    await rm(join(cwd, "gone.ts"));
+    await writeFile(join(cwd, "added.ts"), "export const added = 'only-new';\n");
+    const launched = await launchIn(cwd);
+    onTestFinished(async () => {
+      await gyst("session", "delete", "--session", launched.id, "--request-id", randomUUID());
+      await rm(cwd, { recursive: true, force: true });
+    });
+
+    const page = await newPage();
+    await page.setViewportSize({ width: 1280, height: 800 });
+    await page.goto(`${launched.origin}${launched.path}`);
+    await page.getByRole("main").getByText("export const gone = 'only-old';").waitFor();
+    await keys(page, "/");
+    await waitFor(() => hasFocus(searchField(page)), "the search field focused");
+    await page.keyboard.type("only-");
+    await says(page, "1/2");
+    await page.keyboard.press("Enter");
+    await says(page, "added.ts:1 · new");
+    await currentHitOn(page, "export const added = 'only-new';");
+    await keys(page, "n");
+    await says(page, "gone.ts:1 · old");
+    await currentHitOn(page, "export const gone = 'only-old';");
+  }, 30_000);
 
   it("scrolls with movement keys in Mouse mode, without a cursor, and selects lines with the hover + and by dragging", async () => {
     const page = await newPage();

@@ -2392,7 +2392,12 @@ function ContinuousDiff(props: {
         if (below > 0 && below < height) height = below;
       }
       const half = rect.width / 2;
-      const full = mark.full || whole;
+      // Split view lays an added or deleted file out in its one side's column, full width.
+      const full =
+        mark.full ||
+        whole ||
+        rendered.item.fileDiff.type === "new" ||
+        rendered.item.fileDiff.type === "deleted";
       return {
         top: top + at.top,
         height,
