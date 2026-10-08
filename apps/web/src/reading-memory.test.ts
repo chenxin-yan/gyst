@@ -94,16 +94,21 @@ describe("reading memory", () => {
     // the top move with it. Its hidden ranges were renumbered, so their opened lines are not kept.
     const header = "@@ -9,3 +10,4 @@";
     const moved = { ...wide, header, patch: wide.patch.replace("@@ -8,3 +8,4 @@", header) };
-    expect(recall("d", "new", [moved, y], none)).toEqual({
+    const shifted = {
       ...deep,
       cursor: { file: "lib/x.ts", kind: "line", side: "additions", line: 12 },
       opened: new Map(),
       top: { position: { file: "lib/x.ts", side: "deletions", line: 10 } },
-    });
+    } satisfies ReadingPlace;
+    expect(recall("d", "new", [moved, y], none)).toEqual(shifted);
+    // A Generated file the reader is inside stays unfolded, so the place is there to return to.
+    const xGenerated = new Set(["lib/x.ts"]);
+    expect(recall("d", "new", [moved, y], xGenerated)).toEqual(shifted);
     // A changed hunk, or a line outside every hunk, keeps nothing to stand on: the file's top.
     const edited = hunk("lib/x.ts", "x2", "@@ -8,3 +8,4 @@\n c8\n-a\n+B\n+b2\n c10");
     const fileTop = { ...placeAt("lib", "lib/x.ts"), inputMode: "mouse" as const };
     expect(recall("d", "new", [edited, y], none)).toEqual(fileTop);
+    expect(recall("d", "new", [edited, y], xGenerated)).toEqual({ ...fileTop, folded: xGenerated });
     remember("d", "old", [wide, y], {
       ...deep,
       cursor: { file: "lib/x.ts", kind: "line", side: "additions", line: 20 },
