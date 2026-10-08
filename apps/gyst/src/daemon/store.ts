@@ -23,16 +23,21 @@ const decodeLaunchPaths = Schema.decodeUnknownEffect(
 
 // Temp + rename: a reader never sees a half-written file, and a writer killed midway leaves the old
 // one. The scope removes the temp directory whether or not the file was renamed out of it, so a
-// failed write leaves nothing.
+// failed write leaves nothing. Synced before the rename and its directory after: reclaiming content
+// trusts what is saved, so a crash must not bring back an older file naming reclaimed content.
 export const writeAtomically = Effect.fn("writeAtomically")(function* (
   path: string,
   content: string,
 ) {
   const fs = yield* FileSystem.FileSystem;
+  const synced = (file: string) =>
+    Effect.scoped(Effect.flatMap(fs.open(file, { flag: "r" }), (handle) => handle.sync));
   const temporary = yield* fs.makeTempFileScoped({ directory: dirname(path) });
   yield* fs.chmod(temporary, 0o600);
   yield* fs.writeFileString(temporary, content);
+  yield* synced(temporary);
   yield* fs.rename(temporary, path);
+  yield* synced(dirname(path));
 }, Effect.scoped);
 
 // Compare the exact persisted bytes again after the old daemon stops admitting commands.
