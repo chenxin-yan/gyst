@@ -10,6 +10,7 @@ import {
   SnapshotIdSchema,
   SnapshotManifestSchema,
   snapshotIdOf,
+  SourceUnavailable,
 } from "@gyst/core";
 import {
   Context,
@@ -17,15 +18,40 @@ import {
   FileSystem,
   Layer,
   Path,
-  type PlatformError,
+  PlatformError,
   Schema,
   type Scope,
+  Semaphore,
   Stream,
 } from "effect";
 import { createHash } from "node:crypto";
 import { Paths } from "./paths.ts";
 
-type Failure = BadArgs | InternalError | PlatformError.PlatformError;
+type ReadFailure = BadArgs | InternalError | PlatformError.PlatformError;
+/** A write may also run out of space (`storage_full`). */
+type Failure = ReadFailure | SourceUnavailable;
+
+/** What `reclaim` keeps: manifests by snapshot id and blobs by id. */
+export interface Retained {
+  readonly snapshots: ReadonlySet<string>;
+  readonly blobs: ReadonlySet<string>;
+}
+/** How many committed objects one `reclaim` removed. */
+export interface Reclaimed {
+  readonly snapshots: number;
+  readonly blobs: number;
+}
+
+/** Whether a write failed because the data directory's file system is out of space or quota. */
+const outOfSpace = (error: PlatformError.PlatformError) => {
+  const cause = error.reason.cause;
+  return (
+    typeof cause === "object" &&
+    cause !== null &&
+    "code" in cause &&
+    (cause.code === "ENOSPC" || cause.code === "EDQUOT")
+  );
+};
 
 const invalid =
   <S extends Schema.Top>(schema: S, message: string) =>
@@ -175,7 +201,8 @@ const missingAs =
 /**
  * Immutable captured content, separate from mutable `SessionStore` state. Under `dataDir/content/`:
  * `blobs/<sha256>` holds exact file bytes, `snapshots/<snapshotId>.json` canonical manifests and
- * `staging/` each write's own temporary directory. Nothing here deletes committed objects.
+ * `staging/` each write's own temporary directory. Only `reclaim` deletes committed objects, and
+ * only those its caller no longer retains, while nothing holds content.
  */
 export class CapturedContent extends Context.Service<
   CapturedContent,
@@ -185,15 +212,32 @@ export class CapturedContent extends Context.Service<
       bytes: Stream.Stream<Uint8Array, E>,
     ): Effect.Effect<{ readonly blob: string; readonly size: number }, E | Failure>;
     /** At most `range.length` bytes of a committed blob; see `ByteRangeSchema` for end semantics. */
-    readBlob(blob: string, range: ByteRange): Stream.Stream<Uint8Array, Failure>;
+    readBlob(blob: string, range: ByteRange): Stream.Stream<Uint8Array, ReadFailure>;
     /**
      * A private 0600 copy of a committed blob, for a tool that reads files (the diff engine).
      * It lives in this service's staging and is removed when the caller's scope closes.
      */
     materialize(blob: string): Effect.Effect<string, Failure, Scope.Scope>;
-    /** Commits a manifest whose every text side names a committed blob of the stated size. */
+    /**
+     * Commits a manifest whose every text side names a committed blob of the stated size. Blobs and
+     * manifest are on disk (fsync) when it succeeds, so a session may then name the snapshot.
+     */
     putManifest(manifest: SnapshotManifest): Effect.Effect<string, Failure>;
-    loadManifest(snapshotId: string): Effect.Effect<SnapshotManifest, Failure>;
+    loadManifest(snapshotId: string): Effect.Effect<SnapshotManifest, ReadFailure>;
+    /**
+     * Runs `effect` as a reader or writer of content that `reclaim` must not remove meanwhile: an
+     * operation holds from choosing what it reads, or starting what it publishes, until it is done
+     * (a session names the published snapshot, or the capture failed). Holds nest.
+     */
+    hold<A, E, R>(effect: Effect.Effect<A, E, R>): Effect.Effect<A, E, R>;
+    /**
+     * Once nothing holds content, removes every manifest and blob outside what `retained` returns,
+     * evaluated then, and every staging leftover. Holds starting meanwhile wait for it, while a
+     * reclaim still waiting for its moment never delays a hold.
+     */
+    reclaim<E, R>(
+      retained: Effect.Effect<Retained, E, R>,
+    ): Effect.Effect<Reclaimed, E | PlatformError.PlatformError, R>;
   }
 >()("gyst/daemon/CapturedContent") {
   static readonly layer = Layer.effect(
@@ -210,6 +254,29 @@ export class CapturedContent extends Context.Service<
         yield* fs.makeDirectory(directory, { recursive: true, mode: 0o700 });
       const blobFile = (blob: string) => path.join(blobs, blob);
       const manifestFile = (id: string) => path.join(snapshots, `${id}.json`);
+
+      // Each holder takes one permit and `reclaim` takes all of them. A smaller request may
+      // overtake a waiting larger one, so a waiting reclaim never blocks a holder, nested or not.
+      const permits = 2 ** 30;
+      const access = yield* Semaphore.make(permits);
+      const hold = access.withPermits(1);
+      const holdInScope = Effect.acquireRelease(access.take(1), () => access.release(1));
+
+      const spaceFailure = <A, E, R>(
+        effect: Effect.Effect<A, E | PlatformError.PlatformError, R>,
+      ) =>
+        Effect.mapError(effect, (error) =>
+          error instanceof PlatformError.PlatformError && outOfSpace(error)
+            ? new SourceUnavailable({
+                message: `gyst's data directory (${root}) is out of space: free space there, or delete saved sessions you no longer need with gyst session delete`,
+                detail: { reason: "storage_full", diagnostic: error.message },
+              })
+            : error,
+        );
+      // A committed name must survive a crash once a session names it: the bytes are synced before
+      // they are linked, and the directories holding the links before `putManifest` returns.
+      const synced = (file: string) =>
+        Effect.scoped(Effect.flatMap(fs.open(file, { flag: "r" }), (handle) => handle.sync));
 
       // A hard link publishes the complete staged file atomically and never replaces an existing
       // object, so committed content and its open readers are untouched. An existing object of the
@@ -253,9 +320,10 @@ export class CapturedContent extends Context.Service<
             Stream.run(fs.sink(staged, privateFile)),
           );
           const blob = hash.digest("hex");
+          yield* synced(staged);
           yield* commit(staged, blobFile(blob), size);
           return { blob, size };
-        }).pipe(Effect.scoped, Effect.withSpan("CapturedContent.putBlob"));
+        }).pipe(Effect.scoped, spaceFailure, hold, Effect.withSpan("CapturedContent.putBlob"));
 
       const readBlob = (blob: string, range: ByteRange) =>
         Effect.gen(function* () {
@@ -276,42 +344,51 @@ export class CapturedContent extends Context.Service<
       const materialize = (blob: string) =>
         Effect.gen(function* () {
           const id = yield* decodeBlobId(blob);
+          yield* holdInScope;
           const copy = yield* stage;
           yield* missingAs(
             "captured content not found",
             id,
           )(fs.stream(blobFile(id)).pipe(Stream.run(fs.sink(copy, privateFile))));
           return copy;
-        }).pipe(Effect.withSpan("CapturedContent.materialize"));
+        }).pipe(spaceFailure, Effect.withSpan("CapturedContent.materialize"));
 
-      const putManifest = Effect.fn("CapturedContent.putManifest")(function* (
-        manifest: SnapshotManifest,
-      ) {
-        const valid = yield* decodeManifest(manifest);
-        const sizes = new Map<string, number>();
-        for (const side of valid.files.flatMap((file) => [file.old, file.new])) {
-          if (side.kind !== "text") continue;
-          let size = sizes.get(side.blob);
-          if (size === undefined) {
-            const info = yield* fs
-              .stat(blobFile(side.blob))
-              .pipe(missingAs("snapshot manifest references missing captured content", side.blob));
-            size = Number(info.size);
-            sizes.set(side.blob, size);
+      const putManifest = Effect.fn("CapturedContent.putManifest")(
+        function* (manifest: SnapshotManifest) {
+          const valid = yield* decodeManifest(manifest);
+          const sizes = new Map<string, number>();
+          for (const side of valid.files.flatMap((file) => [file.old, file.new])) {
+            if (side.kind !== "text") continue;
+            let size = sizes.get(side.blob);
+            if (size === undefined) {
+              const info = yield* fs
+                .stat(blobFile(side.blob))
+                .pipe(
+                  missingAs("snapshot manifest references missing captured content", side.blob),
+                );
+              size = Number(info.size);
+              sizes.set(side.blob, size);
+            }
+            if (size !== side.size)
+              return yield* new BadArgs({
+                message: "snapshot manifest references inconsistent captured content",
+                detail: { blob: side.blob, size: side.size, stored: size },
+              });
           }
-          if (size !== side.size)
-            return yield* new BadArgs({
-              message: "snapshot manifest references inconsistent captured content",
-              detail: { blob: side.blob, size: side.size, stored: size },
-            });
-        }
-        const content = new TextEncoder().encode(canonicalManifestJson(valid));
-        const id = snapshotIdOf(valid);
-        const staged = yield* stage;
-        yield* fs.writeFile(staged, content, privateFile);
-        yield* commit(staged, manifestFile(id), content.byteLength);
-        return id;
-      }, Effect.scoped);
+          const content = new TextEncoder().encode(canonicalManifestJson(valid));
+          const id = snapshotIdOf(valid);
+          const staged = yield* stage;
+          yield* fs.writeFile(staged, content, privateFile);
+          yield* synced(staged);
+          yield* commit(staged, manifestFile(id), content.byteLength);
+          yield* synced(blobs);
+          yield* synced(snapshots);
+          return id;
+        },
+        Effect.scoped,
+        spaceFailure,
+        hold,
+      );
 
       const loadManifest = Effect.fn("CapturedContent.loadManifest")(function* (
         snapshotId: string,
@@ -332,7 +409,36 @@ export class CapturedContent extends Context.Service<
         return yield* decodeStoredManifest(text).pipe(Effect.mapError(() => corrupt));
       });
 
-      return CapturedContent.of({ putBlob, readBlob, materialize, putManifest, loadManifest });
+      const reclaim = <E, R>(retained: Effect.Effect<Retained, E, R>) =>
+        Effect.gen(function* () {
+          const keep = yield* retained;
+          let removedSnapshots = 0;
+          for (const name of yield* fs.readDirectory(snapshots)) {
+            if (keep.snapshots.has(name.replace(/\.json$/, ""))) continue;
+            yield* fs.remove(path.join(snapshots, name), { force: true });
+            removedSnapshots++;
+          }
+          let removedBlobs = 0;
+          for (const name of yield* fs.readDirectory(blobs)) {
+            if (keep.blobs.has(name)) continue;
+            yield* fs.remove(path.join(blobs, name), { force: true });
+            removedBlobs++;
+          }
+          // Every write stages under a hold, so with none held all staging is left over.
+          for (const name of yield* fs.readDirectory(staging))
+            yield* fs.remove(path.join(staging, name), { recursive: true, force: true });
+          return { snapshots: removedSnapshots, blobs: removedBlobs } satisfies Reclaimed;
+        }).pipe(access.withPermits(permits), Effect.withSpan("CapturedContent.reclaim"));
+
+      return CapturedContent.of({
+        putBlob,
+        readBlob,
+        materialize,
+        putManifest,
+        loadManifest,
+        hold,
+        reclaim,
+      });
     }),
   );
 }

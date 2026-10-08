@@ -79,7 +79,9 @@ let removeFails: boolean;
 let nextId: number;
 let gitPatch: string;
 let supporting: Record<string, string>;
-let patchEffect: Effect.Effect<SnapshotManifest, BadArgs | InternalError> | undefined;
+let patchEffect:
+  | Effect.Effect<SnapshotManifest, SourceUnavailable | BadArgs | InternalError>
+  | undefined;
 let manifestFails: boolean;
 let slowCapture: boolean;
 /** Files the capture double adds without content: binary, symlink or submodule sides. */
@@ -199,6 +201,7 @@ const writeFailure = PlatformError.systemError({
 
 const store = Layer.succeed(SessionStore, {
   loadAll: Effect.sync(() => [...files.values()]),
+  loadUndecodable: Effect.succeed([]),
   save: (session) =>
     Effect.suspend(() => {
       if (saveFails) return Effect.fail(writeFailure);

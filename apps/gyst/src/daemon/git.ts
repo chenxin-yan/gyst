@@ -17,6 +17,7 @@ import {
 } from "@gyst/core";
 import {
   Clock,
+  Config,
   Context,
   Data,
   Effect,
@@ -183,6 +184,71 @@ const eligibleText = <E>(bytes: Stream.Stream<Uint8Array, E>) => {
   );
 };
 
+/**
+ * The optional per-snapshot quota of captured text, each distinct blob counted once. There is no
+ * default. Read from the daemon's environment, so it applies from the daemon's next start; an
+ * invalid value fails each capture, which names it.
+ */
+const snapshotQuota = Config.option(Config.ByteSize("GYST_SNAPSHOT_QUOTA")).pipe(
+  Effect.mapError(
+    (error) =>
+      new BadArgs({
+        message: "GYST_SNAPSHOT_QUOTA must be a size with a unit, such as 500 MiB",
+        detail: error.message,
+      }),
+  ),
+);
+
+/** A file whose sides are the same captured text, with no mode change or rename: supporting. */
+const unchanged = ({ old, new: current, modeChange, renamedFrom }: ManifestFile) =>
+  modeChange === undefined &&
+  renamedFrom === undefined &&
+  old.kind === "text" &&
+  current.kind === "text" &&
+  old.blob === current.blob;
+
+/**
+ * `files` within a snapshot quota of `limit` bytes, each distinct blob counted once. Every changed
+ * file is required whole, else the capture fails; unchanged supporting files are then kept in path
+ * order while they fit, and each one that does not is marked `quota` on both sides.
+ */
+const withinQuota = (files: ReadonlyArray<ManifestFile>, limit: number) => {
+  const counted = new Set<string>();
+  let used = 0;
+  /** The bytes of the file's blobs not counted yet. */
+  const costOf = (file: ManifestFile) => {
+    const blobs = new Map<string, number>();
+    for (const side of [file.old, file.new])
+      if (side.kind === "text" && !counted.has(side.blob)) blobs.set(side.blob, side.size);
+    return blobs;
+  };
+  const count = (blobs: Map<string, number>) => {
+    for (const [blob, size] of blobs) {
+      counted.add(blob);
+      used += size;
+    }
+  };
+  for (const file of files) if (!unchanged(file)) count(costOf(file));
+  if (used > limit)
+    return Effect.fail(
+      new SourceUnavailable({
+        message: `the changed files need ${used} bytes of captured text, more than GYST_SNAPSHOT_QUOTA (${limit} bytes) allows; raise or unset it and start gyst again, or review a smaller scope`,
+        detail: { reason: "quota_exceeded" },
+      }),
+    );
+  const omitted: ContentSide = { kind: "unavailable", reason: "quota" };
+  return Effect.succeed(
+    files.map((file): ManifestFile => {
+      if (!unchanged(file)) return file;
+      const cost = costOf(file);
+      if (used + [...cost.values()].reduce((sum, size) => sum + size, 0) > limit)
+        return { ...file, old: omitted, new: omitted };
+      count(cost);
+      return file;
+    }),
+  );
+};
+
 /** Scopes captured from this checkout alone; a PR scope also needs what GitHub reports. */
 export type LocalScope = Exclude<Scope, { readonly kind: "pr" }>;
 /** What GitHub reports a PR's range must be captured at. */
@@ -203,6 +269,8 @@ export class Git extends Context.Service<
      * The whole recorded scope as an unpublished manifest: endpoints resolved once, every eligible
      * old/new project file's exact bytes committed to `CapturedContent`, and text hunks diffed from
      * those committed bytes. Refuses (retryably) when the working tree changes during capture.
+     * Under `GYST_SNAPSHOT_QUOTA` (see `withinQuota`) the changed files must fit or it fails, and
+     * supporting files left out are recorded as `quota`; their bytes are reclaimed later.
      * `onProgress` hears real counts (see `CaptureProgressSchema`): each phase's first and last,
      * and at most one every 100 ms between.
      */
@@ -211,7 +279,7 @@ export class Git extends Context.Service<
       scope: LocalScope,
       onProgress?: (progress: CaptureProgress) => Effect.Effect<void>,
       generated?: Generated,
-    ): Effect.Effect<SnapshotManifest, BadArgs | InternalError>;
+    ): Effect.Effect<SnapshotManifest, SourceUnavailable | BadArgs | InternalError>;
     /**
      * A PR scope captured like a range over `pullRequestRange`'s commits: the PR's own merge base
      * against its head, with every file of both trees, so inherited unchanged source stays readable.
@@ -961,13 +1029,16 @@ export class Git extends Context.Service<
           if (textual && !same && !renamed.has(path))
             diffed.push({ path, old: old.side, new: current.side });
         }
+        const quota = yield* snapshotQuota;
+        const captured =
+          quota._tag === "Some" ? yield* withinQuota(files, Number(quota.value)) : files;
         const hunks = [];
         yield* report("diff", 0, diffed.length);
         for (const [index, { path, old, new: current }] of diffed.entries()) {
           hunks.push(...(yield* hunksOf(path, old, current)));
           yield* report("diff", index + 1, diffed.length);
         }
-        return { scope, provenance, files, hunks } satisfies SnapshotManifest;
+        return { scope, provenance, files: captured, hunks } satisfies SnapshotManifest;
       });
 
       /**

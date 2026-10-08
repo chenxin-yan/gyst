@@ -30,6 +30,7 @@ import {
   type PullRequest,
   type PullRequestContext,
   pullRequestStatusOf,
+  keepsFile,
   pickUp,
   pinnedSnapshotIds,
   recordedPickup,
@@ -37,6 +38,7 @@ import {
   refresh as refreshOnto,
   type RefreshPayload,
   type Request,
+  retainedFiles,
   setViewed,
   type Scope,
   type Session,
@@ -79,7 +81,7 @@ import {
   Stream,
 } from "effect";
 import { createHash } from "node:crypto";
-import { CapturedContent, codePage } from "./content.ts";
+import { CapturedContent, codePage, type Reclaimed } from "./content.ts";
 import { Git, type Generated } from "./git.ts";
 import { GitHub, type StackDiscovery } from "./github.ts";
 import { type DeleteReceipt, SessionStore } from "./store.ts";
@@ -238,8 +240,8 @@ export class Sessions extends Context.Service<
       request: Input<"diff">,
     ): Effect.Effect<DiffPayload, BadArgs | NoSession | ValidationFailed>;
     /**
-     * Reads name the session's current snapshot, or an earlier one its guidance still pins
-     * (`pinnedSnapshotIds`): any other id is `stale_revision` carrying the current one. Everything
+     * Reads name the session's current snapshot, or an earlier one it still pins, and of that only
+     * the files it keeps (`retainedFiles`): any other is `stale_revision` carrying the current one. Everything
      * is read from captured content, never a checkout, and a read that has selected its snapshot
      * finishes against it even if a refresh replaces it meanwhile.
      */
@@ -344,6 +346,17 @@ export class Sessions extends Context.Service<
      * changed on disk.
      */
     readonly load: Effect.Effect<void, PlatformError.PlatformError>;
+    /**
+     * Removes the captured content no saved session retains (`retainedFiles`), once no operation
+     * holds content. The daemon runs it in the background after loading, deleting, refreshing and a
+     * failed capture, and before retrying a capture that ran out of space. A session file this
+     * version cannot read keeps every snapshot it names; a manifest that cannot be read reclaims
+     * nothing.
+     */
+    readonly reclaim: Effect.Effect<
+      Reclaimed,
+      PlatformError.PlatformError | BadArgs | InternalError | SourceUnavailable
+    >;
     /** Resolves once a delete has removed the last session; a later open arms it again. */
     readonly idle: Effect.Effect<void>;
     /** Waits for in-flight mutations, so an open racing the idle check is counted. */
@@ -393,7 +406,7 @@ export class Sessions extends Context.Service<
       const publish = (manifest: SnapshotManifest) =>
         content.putManifest(manifest).pipe(
           Effect.mapError((error) =>
-            error._tag === "internal_error"
+            error._tag === "internal_error" || error._tag === "source_unavailable"
               ? error
               : new InternalError({
                   message: "could not publish the captured snapshot",
@@ -416,6 +429,70 @@ export class Sessions extends Context.Service<
       // Only the final publication takes `lock`, against the session as it is by then.
       const sourceLock = yield* Semaphore.make(1);
       const underLock = Semaphore.withPermit(lock);
+      // A read holds content from choosing its snapshot until it is done, so a reclaim after a
+      // refresh or deletion meanwhile cannot remove what it reads.
+      const holding = <A, E, R>(effect: Effect.Effect<A, E, R>) => content.hold(effect);
+
+      // Every root of captured content is a saved session's (`retainedFiles`); receipts embed the
+      // code they return rather than naming it. A durable reader added later adds its roots here.
+      const retainedContent = Effect.gen(function* () {
+        const saved = yield* underLock(Effect.sync(() => [...sessions.values()]));
+        const kept = new Map<string, Set<string> | "all">();
+        const keep = (snapshotId: string, paths: ReadonlySet<string> | "all") => {
+          const prior = kept.get(snapshotId);
+          kept.set(
+            snapshotId,
+            prior === "all" || paths === "all" ? "all" : new Set([...(prior ?? []), ...paths]),
+          );
+        };
+        for (const session of saved)
+          for (const [snapshotId, paths] of retainedFiles(session)) keep(snapshotId, paths);
+        // A saved review this version cannot read is still a saved review: keep whole every
+        // snapshot its file names.
+        for (const text of yield* store.loadUndecodable)
+          for (const id of new Set(text.match(/[0-9a-f]{64}/g)))
+            if (
+              !kept.has(id) &&
+              (yield* content.loadManifest(id).pipe(Effect.option))._tag === "Some"
+            )
+              keep(id, "all");
+        const blobs = new Set<string>();
+        for (const [snapshotId, paths] of kept)
+          for (const file of (yield* content.loadManifest(snapshotId)).files)
+            if (paths === "all" || paths.has(file.path))
+              for (const side of [file.old, file.new])
+                if (side.kind === "text") blobs.add(side.blob);
+        return { snapshots: new Set(kept.keys()), blobs };
+      });
+      const reclaim = content.reclaim(retainedContent).pipe(Effect.withSpan("Sessions.reclaim"));
+      const reclaims = yield* Queue.sliding<void>(1);
+      yield* Queue.take(reclaims).pipe(
+        Effect.andThen(reclaim),
+        Effect.catchCause((cause) =>
+          Effect.logWarning("could not reclaim captured content", cause),
+        ),
+        Effect.forever,
+        Effect.forkScoped,
+      );
+      const requestReclaim = Effect.sync(() => {
+        Queue.offerUnsafe(reclaims, undefined);
+      });
+      const storageFull = (error: { readonly _tag: string }) =>
+        error._tag === "source_unavailable" &&
+        (error as SourceUnavailable).detail.reason === "storage_full";
+      /**
+       * Runs one capture to publication holding content, so nothing it stages or publishes is
+       * reclaimed before a session names it. What a failed capture committed is reclaimed later;
+       * out of space, it reclaims at once and tries once more before refusing.
+       */
+      const capturing = <A, E extends { readonly _tag: string }, R>(
+        attempt: Effect.Effect<A, E, R>,
+      ) => {
+        const once = content.hold(attempt).pipe(Effect.onError(() => requestReclaim));
+        return once.pipe(
+          Effect.catchIf(storageFull, () => reclaim.pipe(Effect.ignore, Effect.andThen(once))),
+        );
+      };
 
       /** The recorded scope's manifest; a PR's range comes from what GitHub reports now. */
       const acquire = Effect.fn("Sessions.acquire")(function* (
@@ -499,7 +576,7 @@ export class Sessions extends Context.Service<
             return opened(session, true);
           }),
         );
-      });
+      }, capturing);
 
       const open = Effect.fn("Sessions.open")(function* (
         request: Input<"open">,
@@ -597,18 +674,20 @@ export class Sessions extends Context.Service<
               Effect.gen(function* () {
                 // The snapshot's own Generated files: a check never asks Git's attributes again.
                 const generated = new Set(session.generatedFiles);
-                const result = yield* acquire(repoRoot, scope, undefined, generated).pipe(
-                  Effect.timeout("2 seconds"),
-                  // Every captured input counts, so a changed helper is a changed source.
-                  Effect.map(({ manifest }) =>
-                    snapshotIdOf(manifest) !== snapshotId
-                      ? { state: "changed" as const }
-                      : (uncaptured(manifest) ?? { state: "unchanged" as const }),
-                  ),
-                  Effect.catch((error) =>
-                    Effect.succeed({ state: "unavailable" as const, message: error.message }),
-                  ),
-                );
+                const result = yield* content
+                  .hold(acquire(repoRoot, scope, undefined, generated))
+                  .pipe(
+                    Effect.timeout("2 seconds"),
+                    // Every captured input counts, so a changed helper is a changed source.
+                    Effect.map(({ manifest }) =>
+                      snapshotIdOf(manifest) !== snapshotId
+                        ? { state: "changed" as const }
+                        : (uncaptured(manifest) ?? { state: "unchanged" as const }),
+                    ),
+                    Effect.catch((error) =>
+                      Effect.succeed({ state: "unavailable" as const, message: error.message }),
+                    ),
+                  );
                 return { ...result, checkedAt: DateTime.formatIso(yield* DateTime.now) };
               }),
               "5 seconds",
@@ -704,18 +783,32 @@ export class Sessions extends Context.Service<
         return { sessionId: session.id, snapshotId: session.snapshotId, manifest };
       });
 
-      /** Like `snapshot`, but also an earlier snapshot the session's guidance still pins. */
+      /**
+       * Like `snapshot`, but also an earlier snapshot the session still pins, with only the files it
+       * keeps of it (`retainedFiles`); `file`, when named, must be one of them.
+       */
       const pinned = Effect.fn("Sessions.pinned")(function* (request: {
         readonly session: string;
         readonly snapshotId: string;
+        readonly file?: string;
       }) {
         const session = yield* underLock(selected(request));
-        if (!pinnedSnapshotIds(session).includes(request.snapshotId))
+        const kept = retainedFiles(session).get(request.snapshotId);
+        if (!kept)
           return yield* new StaleRevision({
             message: `snapshot ${request.snapshotId} is not the current snapshot of session ${session.id}, nor one its guidance still pins; read the session again`,
             detail: { snapshotId: session.snapshotId },
           });
-        const manifest = yield* manifestOf(request.snapshotId);
+        if (request.file !== undefined && !keepsFile(session, request.snapshotId, request.file))
+          return yield* new StaleRevision({
+            message: `snapshot ${request.snapshotId} is not the current snapshot of session ${session.id}, and nothing in the session still pins its ${request.file}; read the session again`,
+            detail: { snapshotId: session.snapshotId },
+          });
+        const captured = yield* manifestOf(request.snapshotId);
+        const manifest =
+          kept === "all"
+            ? captured
+            : { ...captured, files: captured.files.filter(({ path }) => kept.has(path)) };
         return { sessionId: session.id, snapshotId: request.snapshotId, manifest };
       });
 
@@ -734,7 +827,7 @@ export class Sessions extends Context.Service<
           files: page.entries,
           next: page.next,
         } satisfies FilesPayload;
-      });
+      }, holding);
 
       const commits = Effect.fn("Sessions.commits")(function* (request: Input<"commits">) {
         const { sessionId, snapshotId, manifest } = yield* snapshot(request);
@@ -771,7 +864,7 @@ export class Sessions extends Context.Service<
           ...identity,
           content: { kind: "text", size: side.size, ...page },
         } satisfies CodePayload;
-      });
+      }, holding);
 
       const load = Effect.gen(function* () {
         const receipts = yield* store.loadDeleteReceipts;
@@ -786,6 +879,8 @@ export class Sessions extends Context.Service<
           if (deleted.has(session.id)) yield* store.remove(session.id).pipe(Effect.ignore);
           else sessions.set(session.id, session);
         }
+        // Whatever a crash left staged or unpublished is reclaimed by the daemon that owns the store.
+        yield* requestReclaim;
       }).pipe(Semaphore.withPermit(lock), Effect.withSpan("Sessions.load"));
 
       /**
@@ -867,7 +962,7 @@ export class Sessions extends Context.Service<
             return outcome.status;
           }),
         );
-      });
+      }, holding);
 
       const viewed = Effect.fn("Sessions.viewed")(function* (request: Input<"viewed">) {
         const session = yield* selected(request);
@@ -935,14 +1030,13 @@ export class Sessions extends Context.Service<
 
       const converseIn = Effect.fn("Sessions.converse")(function* (request: ConversationRequest) {
         const before = yield* underLock(selected(request));
-        // A replay needs no content, and a snapshot the session no longer pins is refused as stale.
-        const retained = new Set(pinnedSnapshotIds(before));
+        // A replay needs no content, and a file the session no longer keeps is refused as stale.
         const targets = before.conversationReceipts.some(
           ({ requestId }) => requestId === request.requestId,
         )
           ? []
-          : conversationTargetsOf(request, before).filter(({ snapshotId }) =>
-              retained.has(snapshotId),
+          : conversationTargetsOf(request, before).filter(({ snapshotId, range }) =>
+              keepsFile(before, snapshotId, range.path),
             );
         const captured: CapturedIndex[] = [];
         for (const [snapshotId, ranges] of Map.groupBy(targets, (target) => target.snapshotId))
@@ -962,7 +1056,7 @@ export class Sessions extends Context.Service<
             return outcome.result;
           }),
         );
-      });
+      }, holding);
 
       /** The captured lines of each anchor of the threads not in `code` yet, added to it. */
       const readThreadCode = Effect.fn("Sessions.readThreadCode")(function* (
@@ -1028,7 +1122,7 @@ export class Sessions extends Context.Service<
             return outcome.result;
           }),
         );
-      });
+      }, holding);
 
       /**
        * The lines of every snapshot `session` pins, read from captured content. A pinned snapshot
@@ -1043,51 +1137,53 @@ export class Sessions extends Context.Service<
         return lines;
       });
 
-      const refresh = Effect.fn("Sessions.refresh")(function* (
-        request: Input<"refresh">,
-        onProgress?: OnProgress,
-      ) {
-        const observed = yield* underLock(selected(request));
-        // A recorded or stale request captures nothing.
-        const recorded = yield* Effect.fromResult(recordedRefresh(observed, request));
-        if (recorded) return recorded;
-        // A PR re-reads only its range; its stack context changes on an explicit recheck alone.
-        const { manifest } = yield* acquire(observed.repoRoot, observed.scope, onProgress);
-        const snapshotId =
-          snapshotIdOf(manifest) === observed.snapshotId
-            ? observed.snapshotId
-            : yield* publish(manifest);
-        const retained = yield* pinnedLinesOf(observed);
-        return yield* underLock(
-          Effect.gen(function* () {
-            // The session as it is now: work saved during the capture is reconciled too, and a
-            // deletion during it wins (the published manifest stays, unreferenced, until #93).
-            const session = yield* selected(request);
-            const outcome = yield* Effect.fromResult(
-              refreshOnto(
-                // The fresh snapshot's Generated files, so a replaced snapshot carries its own.
-                { ...session, generatedFiles: generatedFilesOf(manifest) },
-                request,
-                { snapshotId, snapshot: manifest },
-                retained,
-                DateTime.formatIso(yield* DateTime.now),
-              ),
-            );
-            if (outcome.session) {
-              // Effect and receipt are one file: saved before memory changes.
-              yield* store.save(outcome.session).pipe(Effect.orDie);
-              sessions.set(session.id, outcome.session);
-              // This capture is newer than any cached check, replaced snapshot or not.
-              sourceChecks.delete(session.id);
-              if (outcome.result.replaced) {
-                announceChanged(outcome.session);
-                announceLayers(outcome.session);
+      const refresh = Effect.fn("Sessions.refresh")(
+        function* (request: Input<"refresh">, onProgress?: OnProgress) {
+          const observed = yield* underLock(selected(request));
+          // A recorded or stale request captures nothing.
+          const recorded = yield* Effect.fromResult(recordedRefresh(observed, request));
+          if (recorded) return recorded;
+          // A PR re-reads only its range; its stack context changes on an explicit recheck alone.
+          const { manifest } = yield* acquire(observed.repoRoot, observed.scope, onProgress);
+          const snapshotId =
+            snapshotIdOf(manifest) === observed.snapshotId
+              ? observed.snapshotId
+              : yield* publish(manifest);
+          const retained = yield* pinnedLinesOf(observed);
+          return yield* underLock(
+            Effect.gen(function* () {
+              // The session as it is now: work saved during the capture is reconciled too, and a
+              // deletion during it wins (the published manifest is then reclaimed).
+              const session = yield* selected(request);
+              const outcome = yield* Effect.fromResult(
+                refreshOnto(
+                  // The fresh snapshot's Generated files, so a replaced snapshot carries its own.
+                  { ...session, generatedFiles: generatedFilesOf(manifest) },
+                  request,
+                  { snapshotId, snapshot: manifest },
+                  retained,
+                  DateTime.formatIso(yield* DateTime.now),
+                ),
+              );
+              if (outcome.session) {
+                // Effect and receipt are one file: saved before memory changes.
+                yield* store.save(outcome.session).pipe(Effect.orDie);
+                sessions.set(session.id, outcome.session);
+                // This capture is newer than any cached check, replaced snapshot or not.
+                sourceChecks.delete(session.id);
+                if (outcome.result.replaced) {
+                  announceChanged(outcome.session);
+                  announceLayers(outcome.session);
+                  yield* requestReclaim;
+                }
               }
-            }
-            return outcome.result;
-          }),
-        );
-      }, Semaphore.withPermit(sourceLock));
+              return outcome.result;
+            }),
+          );
+        },
+        capturing,
+        Semaphore.withPermit(sourceLock),
+      );
 
       const remove = Effect.fn("Sessions.delete")(function* (request: Input<"delete">) {
         const { requestId } = request;
@@ -1123,8 +1219,10 @@ export class Sessions extends Context.Service<
             ),
           ),
         );
-        // Only cleanup remains: the next load removes a file this could not.
+        // Only cleanup remains: the next load removes a file this could not, and content no other
+        // session retains is reclaimed in the background.
         yield* store.remove(session.id).pipe(Effect.ignore);
+        yield* requestReclaim;
         if (sessions.size === 0) yield* idle.open;
         return { deleted: true, sessionId: session.id } satisfies DeletePayload;
       }, Semaphore.withPermit(lock));
@@ -1173,6 +1271,7 @@ export class Sessions extends Context.Service<
         delete: remove,
         subscribe,
         load,
+        reclaim,
         idle: idle.await,
         isEmpty: Semaphore.withPermit(
           lock,

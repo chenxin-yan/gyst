@@ -103,6 +103,7 @@ const git = Layer.succeed(Git, {
 });
 const store = Layer.succeed(SessionStore, {
   loadAll: Effect.sync(() => [...files.values()]),
+  loadUndecodable: Effect.succeed([]),
   save: (session) => Effect.sync(() => void files.set(session.id, session)),
   remove: (id) => Effect.sync(() => void files.delete(id)),
   loadDeleteReceipts: Effect.succeed([]),
