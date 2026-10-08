@@ -21,8 +21,9 @@ export const ContentSideSchema = Schema.Union([
   /** The file does not exist on this side (added or deleted). */
   Schema.Struct({ kind: Schema.Literal("absent") }),
   /**
-   * The path exists but its content is not captured: not reviewable text, or (`quota`) an unchanged
-   * supporting file the configured snapshot quota left out. Never substituted with live content.
+   * The path exists but its content is not captured: not reviewable text, or (`quota`) text of a
+   * file with no reviewed change that the configured snapshot quota left out. Never substituted
+   * with live content.
    */
   Schema.Struct({
     kind: Schema.Literal("unavailable"),
