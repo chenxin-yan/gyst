@@ -24,7 +24,9 @@ import {
   isAlive,
   json,
   killDaemon,
+  launchEnv,
   launchViewer,
+  npm,
   run,
   sandbox,
   succeeded,
@@ -47,30 +49,6 @@ const install = navigationInstallCommand(version);
 
 type Sandbox = Awaited<ReturnType<typeof sandbox>>;
 type Viewer = Awaited<ReturnType<typeof launchViewer>>;
-
-/**
- * A launch PATH: `dirs` first, then the sandbox's, minus any directory that already holds an
- * add-on, so a developer's own global install never stands in for the one a test chose.
- */
-const launchEnv = (box: Sandbox, ...dirs: string[]): NodeJS.ProcessEnv => ({
-  ...box.env,
-  PATH: [
-    ...dirs,
-    ...(box.env.PATH ?? "")
-      .split(delimiter)
-      .filter((dir) => dir !== "" && !existsSync(join(dir, navigationAddon.bin))),
-  ].join(delimiter),
-});
-
-/** npm beside the Node under test, with the runner's own npm cache. */
-const npm = async (cwd: string, ...args: string[]) =>
-  succeeded(
-    await run(join(dirname(process.execPath), "npm"), [...args, "--no-audit", "--no-fund"], {
-      cwd,
-      env: { ...process.env, PATH: `${dirname(process.execPath)}${delimiter}${process.env.PATH}` },
-      timeout: 180_000,
-    }),
-  );
 
 const escape = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 /**
@@ -220,7 +198,7 @@ describe("TS/JS navigation through the installed add-on", () => {
   it("reviews without the add-on, names the exact install command and starts nothing", async () => {
     const box = await sandbox();
     const cwd = await math(box, "no-addon");
-    const viewer = await launchViewer([], { cwd, env: launchEnv(box) });
+    const viewer = await launchViewer([], { cwd, env: launchEnv(box.env) });
     const diff = ok(await viewer.operation({ command: "diff", session: viewer.id }));
     const ids = { session: viewer.id, snapshotId: diff.snapshotId };
     ok(await viewer.operation({ command: "open", session: viewer.id }));
@@ -266,7 +244,7 @@ describe("TS/JS navigation through the installed add-on", () => {
     const cwd = await math(box, "install-later");
     const prefix = join(box.root, "npm-global");
     await mkdir(join(prefix, "bin"), { recursive: true });
-    const viewer = await launchViewer([], { cwd, env: launchEnv(box, join(prefix, "bin")) });
+    const viewer = await launchViewer([], { cwd, env: launchEnv(box.env, join(prefix, "bin")) });
     const { status, definition } = await queries(viewer);
     expect((await status()).addon).toEqual({ kind: "missing", install });
     const daemon = await daemonPid(box.data);
@@ -289,14 +267,14 @@ describe("TS/JS navigation through the installed add-on", () => {
     const box = await sandbox();
     const cwd = await math(box, "other-prefix");
     // The shared install exists, but its bin directory is not on this invocation's PATH.
-    const first = await launchViewer([], { cwd, env: launchEnv(box) });
+    const first = await launchViewer([], { cwd, env: launchEnv(box.env) });
     const before = await queries(first);
     expect((await before.status(true)).addon).toEqual({ kind: "missing", install });
     const daemon = await daemonPid(box.data);
 
     const second = await launchViewer(["--session", first.id], {
       cwd,
-      env: launchEnv(box, navigationBin),
+      env: launchEnv(box.env, navigationBin),
     });
     const after = await queries(second);
     expect((await after.status()).addon).toEqual({ kind: "available", version });
@@ -323,7 +301,10 @@ describe("TS/JS navigation through the installed add-on", () => {
     await mkdir(otherBin);
     await symlink(join(other, entry), join(otherBin, navigationAddon.bin));
 
-    const viewer = await launchViewer([], { cwd, env: launchEnv(box, otherBin, navigationBin) });
+    const viewer = await launchViewer([], {
+      cwd,
+      env: launchEnv(box.env, otherBin, navigationBin),
+    });
     const mismatched = { kind: "mismatched", found: "0.0.1", install };
     const { status, definition } = await queries(viewer);
     expect(await status()).toMatchObject({
@@ -338,7 +319,7 @@ describe("TS/JS navigation through the installed add-on", () => {
 
     // With this release's add-on, project inputs are gaps and non-sources, never add-on states.
     const matching = await queries(
-      await launchViewer(["--session", viewer.id], { cwd, env: launchEnv(box, navigationBin) }),
+      await launchViewer(["--session", viewer.id], { cwd, env: launchEnv(box.env, navigationBin) }),
     );
     const found = located(await matching.definition("new", "src/use.ts", at(newUse, 2, "plus")));
     expect(found.gaps).toEqual([
@@ -366,7 +347,7 @@ describe("TS/JS navigation through the installed add-on", () => {
 
     const viewer = await launchViewer([], {
       cwd,
-      env: launchEnv(box, join(local, "node_modules", ".bin")),
+      env: launchEnv(box.env, join(local, "node_modules", ".bin")),
     });
     const { ids, status, definition } = await queries(viewer);
     const daemon = await daemonPid(box.data);
@@ -395,7 +376,7 @@ describe("TS/JS navigation through the installed add-on", () => {
   it("answers both sides on the packaged engine from captured text, with the request's identity", async () => {
     const box = await sandbox();
     const cwd = await math(box, "both-sides");
-    const viewer = await launchViewer([], { cwd, env: launchEnv(box, navigationBin) });
+    const viewer = await launchViewer([], { cwd, env: launchEnv(box.env, navigationBin) });
     const { ids, definition, references, identifiers } = await queries(viewer);
     // Captured content is the only input: the checkout is gone before the first query.
     await rm(cwd, { recursive: true, force: true });
@@ -498,7 +479,7 @@ describe("TS/JS navigation through the installed add-on", () => {
       { "src/pad.js": `${pad}export const padded = pad("a");\n` },
     );
     // The command starts the daemon, so the fake npm is first on both of their PATHs.
-    const viewer = await launchViewer([], { cwd, env: launchEnv(box, fake, navigationBin) });
+    const viewer = await launchViewer([], { cwd, env: launchEnv(box.env, fake, navigationBin) });
     const { definition, references } = await queries(viewer);
     const daemon = await daemonPid(box.data);
     if (readsEnviron) expect(environ(daemon).PATH?.split(delimiter)[0]).toBe(fake);
@@ -545,7 +526,7 @@ describe("TS/JS navigation through the installed add-on", () => {
       },
     );
     await write(box.data, { "secret/hidden.ts": `export const secret = "${secret}";\n` });
-    const viewer = await launchViewer([], { cwd, env: launchEnv(box, navigationBin) });
+    const viewer = await launchViewer([], { cwd, env: launchEnv(box.env, navigationBin) });
     const { ids, status, definition, references } = await queries(viewer);
 
     const lib = located(await definition("new", "src/lib-use.ts", at(libUse, 2, "console")));
@@ -606,19 +587,19 @@ describe("TS/JS navigation through the installed add-on", () => {
     );
     git(box, cwd, "commit", "-qam", "move add");
     await write(cwd, { "src/use.ts": `${newUse}export const five = plus(four, 1);\n` });
-    const viewer = await launchViewer([], { cwd, env: launchEnv(box, navigationBin) });
+    const viewer = await launchViewer([], { cwd, env: launchEnv(box.env, navigationBin) });
     // Each session finds the add-on on the PATH it was last opened with, which a restarted daemon
     // keeps: the commands that restart it below open nothing and have no add-on on their PATH.
     const openRange = async (...selection: string[]) =>
       json(
         await run(installed.bin, ["session", "open", ...selection], {
           cwd,
-          env: launchEnv(box, navigationBin),
+          env: launchEnv(box.env, navigationBin),
         }),
       ).session.id;
     const range = await openRange("HEAD~1..HEAD");
     const restartDaemon = async () =>
-      succeeded(await run(installed.bin, ["session", "list"], { cwd, env: launchEnv(box) }));
+      succeeded(await run(installed.bin, ["session", "list"], { cwd, env: launchEnv(box.env) }));
     const a = await queries(viewer);
     const b = await queries(viewer, range);
     let most = 0;
@@ -707,7 +688,7 @@ describe("TS/JS navigation over this repository", () => {
 
     const viewer = await launchViewer(["HEAD~1..HEAD"], {
       cwd: clone,
-      env: launchEnv(box, navigationBin),
+      env: launchEnv(box.env, navigationBin),
     });
     const { ids, status, definition, references } = await queries(viewer);
     const capturedFiles = new Set<string>();
