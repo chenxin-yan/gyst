@@ -949,6 +949,7 @@ export class Sessions extends Context.Service<
             yield* capturedIndexOf(
               snapshotId,
               ranges.map(({ range: { path, side } }) => ({ path, side })),
+              [],
             ),
           );
         return yield* underLock(
