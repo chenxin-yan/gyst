@@ -38,7 +38,11 @@ export class TransportError extends Error {
   }
 }
 
-const isDaemonError = Schema.is(DaemonError);
+const daemonError = Schema.is(DaemonError);
+
+/** Whether a failure is the daemon's domain error, and the one with `tag` when that is given. */
+export const isDaemonError = (error: unknown, tag?: DaemonError["_tag"]): error is DaemonError =>
+  daemonError(error) && (tag === undefined || error._tag === tag);
 
 /**
  * Failures the viewer explains in place and that say nothing about a gyst defect: host,

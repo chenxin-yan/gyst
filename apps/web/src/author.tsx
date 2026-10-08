@@ -1,11 +1,11 @@
 // The sidebar entry and main-panel card for the change author's own explanation: a PR session's
 // description, or a recorded range session's captured commit messages. Derivations live in
 // author.ts.
-import type { CommitsPayload, DaemonError, PullRequest } from "@gyst/core/wire";
+import type { CommitsPayload, PullRequest } from "@gyst/core/wire";
 import * as stylex from "@stylexjs/stylex";
 import { useRouter } from "@tanstack/react-router";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { isExpectedFailure, operation } from "./api.ts";
+import { isDaemonError, isExpectedFailure, operation } from "./api.ts";
 import { commitParts } from "./author.ts";
 import { FailureNotice, PillButton, useMounted } from "./components.tsx";
 import { RichText } from "./rich.tsx";
@@ -150,12 +150,6 @@ export function useRangeCommits(sessionId: string, snapshotId: string, wanted: b
   } satisfies RangeCommits;
 }
 
-const isStale = (error: unknown) =>
-  typeof error === "object" &&
-  error !== null &&
-  "_tag" in error &&
-  error._tag === ("stale_revision" satisfies DaemonError["_tag"]);
-
 /**
  * The commit messages a recorded range captured with its snapshot, oldest first, as plain text:
  * Git messages are not Markdown, so nothing in them is interpreted.
@@ -196,7 +190,7 @@ export function CommitsCard(props: { id: string; range: string; commits: RangeCo
       {failure !== undefined && (
         <>
           <FailureNotice error={failure} />
-          {isStale(failure) ? (
+          {isDaemonError(failure, "stale_revision") ? (
             <PillButton onClick={() => void router.invalidate()}>Reload session</PillButton>
           ) : (
             <PillButton onClick={load}>Retry loading commits</PillButton>

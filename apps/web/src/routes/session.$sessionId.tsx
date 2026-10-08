@@ -1,6 +1,5 @@
 import {
   type CapturedRange,
-  type DaemonError,
   type FilesPayload,
   type Hunk,
   pullRequestUrlOf,
@@ -42,6 +41,7 @@ import {
 import { flushSync } from "react-dom";
 import {
   events,
+  isDaemonError,
   isExpectedFailure,
   isUncertain,
   newRequestId,
@@ -184,9 +184,6 @@ export const Route = createFileRoute("/session/$sessionId")({
   component: SessionPage,
   notFoundComponent: SessionNotFound,
 });
-
-const isDaemonError = (error: unknown, tag: DaemonError["_tag"]) =>
-  typeof error === "object" && error !== null && "_tag" in error && error._tag === tag;
 
 function SessionPage() {
   const { session, hunks, snapshotId, files, status } = Route.useLoaderData();
