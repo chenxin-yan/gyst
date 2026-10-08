@@ -149,6 +149,39 @@ describe("CapturedContent blobs", () => {
     expect(await staged()).toEqual([]);
   });
 
+  it("syncs a new blob before linking it, and an existing one never again", async () => {
+    const calls: string[] = [];
+    const observed = Layer.effect(
+      FileSystem.FileSystem,
+      Effect.map(FileSystem.FileSystem, (fs): FileSystem.FileSystem => ({
+        ...fs,
+        open: (path, options) =>
+          Effect.map(fs.open(path, options), (handle) =>
+            Object.create(handle, {
+              sync: {
+                value: Effect.andThen(
+                  Effect.sync(() => calls.push("sync")),
+                  handle.sync,
+                ),
+              },
+            }),
+          ),
+        link: (from, to) =>
+          Effect.andThen(
+            Effect.sync(() => calls.push("link")),
+            fs.link(from, to),
+          ),
+      })),
+    ).pipe(Layer.provide(NodeServices.layer));
+    const bytes = encoder.encode("synced once\n");
+    const putObserved = runWith(observed);
+    await putObserved(CapturedContent.use((content) => content.putBlob(Stream.make(bytes))));
+    expect(calls).toEqual(["sync", "link"]);
+    calls.length = 0;
+    await putObserved(CapturedContent.use((content) => content.putBlob(Stream.make(bytes))));
+    expect(calls).toEqual(["link"]);
+  });
+
   it("removes only its own staging when the input fails or is interrupted", async () => {
     const committed = await put(unicode);
     const before = await blobs();

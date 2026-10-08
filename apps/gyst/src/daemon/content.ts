@@ -321,7 +321,8 @@ export class CapturedContent extends Context.Service<
             Stream.run(fs.sink(staged, privateFile)),
           );
           const blob = hash.digest("hex");
-          yield* synced(staged);
+          // An existing blob was synced before it was linked, so recapturing it costs no sync.
+          if (!(yield* fs.exists(blobFile(blob)))) yield* synced(staged);
           yield* commit(staged, blobFile(blob), size);
           return { blob, size };
         }).pipe(writing, Effect.withSpan("CapturedContent.putBlob"));
