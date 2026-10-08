@@ -26,7 +26,7 @@ A PR session's status `pullRequest` gives its whole native stack: ordered layers
 
 Read status, `gyst session diff --session <id>`, surrounding code, callers and relevant tests. Narrow reads with `--file`, `--group` or `--hunk` as needed. `gyst session files` and `gyst session code`, with `--session <id> --snapshot <snapshotId>` from status or diff, read the snapshot's captured files, unchanged ones included, rather than the live checkout, which may have changed since.
 
-Before publishing, assign **every snapshot hunk to exactly one planned group** and choose the complete order. Group by review question, not filename: an entry point, implementation and tests can belong together across files. Independent changes can be one-hunk groups. Include mechanical changes.
+Before publishing, assign **every snapshot hunk to exactly one planned group** and choose the complete order. Group by review question, not filename: an entry point, implementation and tests can belong together across files. Independent changes can be one-hunk groups. Include mechanical changes. Files Git attributes mark generated or vendored (`generated` in status `files`, `generatedFiles` in diff) start folded for the human; group them like any other change.
 
 Order concepts before consequences, and members along the explanation: entry point → behavior → tests. Keep the plan in agent context; publish only finished groups.
 
