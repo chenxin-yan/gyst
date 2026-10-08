@@ -144,8 +144,20 @@ const changed = (old: CapturedSide, current: CapturedSide) =>
 const generatedAttributes = ["linguist-generated", "linguist-vendored"];
 // As Linguist reads them: set, or any value but `false`. `unset` (`-attr`) and `unspecified` are not.
 const marks = (info: string) => info !== "unspecified" && info !== "unset" && info !== "false";
-/** Paths per `git check-attr`, by argv bytes, well under the platform's argument limit. */
-const checkAttrBytes = 64 * 1024;
+/** Splits per-item arguments into runs of about 64 KiB each, well under the platform's argument limit. */
+const argvChunks = <T>(items: readonly T[], bytesOf: (item: T) => number): T[][] => {
+  const chunks: T[][] = [];
+  let bytes = Number.POSITIVE_INFINITY;
+  for (const item of items) {
+    if (bytes >= 64 * 1024) {
+      chunks.push([]);
+      bytes = 0;
+    }
+    chunks.at(-1)!.push(item);
+    bytes += bytesOf(item);
+  }
+  return chunks;
+};
 
 /** Why bytes that were read are not eligible text; the staged copy is discarded, never committed. */
 class Ineligible extends Data.TaggedError("Ineligible")<{
@@ -653,18 +665,8 @@ export class Git extends Context.Service<
         paths: readonly string[],
         extra?: Record<string, string>,
       ) {
-        const chunks: string[][] = [];
-        let bytes = Number.POSITIVE_INFINITY;
-        for (const path of paths) {
-          if (bytes >= checkAttrBytes) {
-            chunks.push([]);
-            bytes = 0;
-          }
-          chunks.at(-1)!.push(path);
-          bytes += Buffer.byteLength(path) + 1;
-        }
         const marked = new Set<string>();
-        for (const chunk of chunks) {
+        for (const chunk of argvChunks(paths, (path) => Buffer.byteLength(path) + 1)) {
           const result = yield* run(
             root,
             ["check-attr", "-z", "--source", source, ...generatedAttributes, "--", ...chunk],
@@ -706,12 +708,17 @@ export class Git extends Context.Service<
           const privateIndex = ["-c", "core.hooksPath=/dev/null", "-c", "core.splitIndex=false"];
           const failed = (result: { stderr: string }, step: string) =>
             new BadArgs({ message: result.stderr.trim() || `git ${step} failed` });
-          if (files.length > 0) {
-            const copies: string[] = [];
-            for (const { blob } of files) copies.push(yield* content.materialize(blob));
+          const staged: Array<{ path: string; copy: string }> = [];
+          for (const { path, blob } of files)
+            staged.push({ path, copy: yield* content.materialize(blob) });
+          // Each file adds its copy to `hash-object` and `--cacheinfo 100644,<object id>,<path>` to
+          // `update-index`; 96 bytes bound the fixed words and the longest (SHA-256) object id.
+          const argBytes = ({ path, copy }: { path: string; copy: string }) =>
+            Buffer.byteLength(path) + Buffer.byteLength(copy) + 96;
+          for (const chunk of argvChunks(staged, argBytes)) {
             const hashed = yield* run(
               root,
-              ["hash-object", "-w", "--no-filters", "--", ...copies],
+              ["hash-object", "-w", "--no-filters", "--", ...chunk.map(({ copy }) => copy)],
               extra,
             );
             if (hashed.exitCode !== 0) return yield* failed(hashed, "hash-object");
@@ -722,7 +729,7 @@ export class Git extends Context.Service<
                 ...privateIndex,
                 "update-index",
                 "--add",
-                ...files.flatMap(({ path }, at) => ["--cacheinfo", `100644,${oids[at]},${path}`]),
+                ...chunk.flatMap(({ path }, at) => ["--cacheinfo", `100644,${oids[at]},${path}`]),
               ],
               extra,
             );
