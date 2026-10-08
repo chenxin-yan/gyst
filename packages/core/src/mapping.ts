@@ -187,8 +187,9 @@ function lineMapper(
   };
   /**
    * A line only this side of a changed hunk holds maps as the same line when every line between it
-   * and the nearest unchanged line before or after it is the same in both snapshots, and both ways
-   * agree.
+   * and the nearest unchanged line before or after it is the same in both snapshots. It must map to
+   * one line read either way, and that line must map back to it read either way: beside an
+   * identical line inserted or deleted, which one stayed is ambiguous.
    */
   const alignChanged = ({ hunk, row }: NonNullable<Located["within"]>) => {
     const index = hunk.rows.indexOf(row);
@@ -214,12 +215,16 @@ function lineMapper(
       fromLines.at(-1 - suffix)!.token === toLines.at(-1 - suffix)!.token
     )
       suffix++;
-    const byStart = at < prefix ? at : undefined;
-    const byEnd =
-      at >= fromLines.length - suffix ? at + toLines.length - fromLines.length : undefined;
-    if (byStart !== undefined && byEnd !== undefined && byStart !== byEnd) return undefined;
-    const found = byStart ?? byEnd;
-    return found === undefined ? undefined : toLines[found]!.line;
+    const grown = toLines.length - fromLines.length;
+    /** Where the line at `position` of a segment `length` lines long stays, read from either end. */
+    const readings = (position: number, length: number, shift: number) => [
+      ...(position < prefix ? [position] : []),
+      ...(position >= length - suffix ? [position + shift] : []),
+    ];
+    const [stays, ...others] = readings(at, fromLines.length, grown);
+    if (stays === undefined || others.some((each) => each !== stays)) return undefined;
+    const back = readings(stays, toLines.length, -grown);
+    return back.every((each) => each === at) ? toLines[stays]!.line : undefined;
   };
   return (line) => {
     const at = locate(parsedFrom, side, line);

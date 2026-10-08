@@ -80,10 +80,19 @@ describe("mapRange", () => {
     const doubled = snapshot("0", "a", "@@ -5,2 +5,6 @@\n l5\n+a\n+ref\n+ref\n+b\n l6\n");
     expect(mapRange(added, doubled, range("new", 7))).toBeUndefined();
     expect(mapRange(added, doubled, range("new", 6))).toEqual(range("new", 6));
+    // So does deleting one of two identical lines: neither one is the line that stayed.
+    expect(mapRange(doubled, added, range("new", 7))).toBeUndefined();
+    expect(mapRange(doubled, added, range("new", 8))).toBeUndefined();
+    expect(mapRange(doubled, added, range("new", 6))).toEqual(range("new", 6));
+    expect(mapRange(doubled, added, range("new", 9))).toEqual(range("new", 8));
     // A removed line maps the same way while the new side stays the same bytes.
     const removed = snapshot("b", "0", "@@ -5,4 +5,2 @@\n l5\n-x\n-gone\n l6\n");
     const edited = snapshot("c", "0", "@@ -5,4 +5,2 @@\n l5\n-y\n-gone\n l6\n");
     expect(mapRange(removed, edited, range("old", 7, 8))).toEqual(range("old", 7, 8));
+    const removedTwice = snapshot("e", "0", "@@ -5,5 +5,2 @@\n l5\n-x\n-gone\n-gone\n l6\n");
+    expect(mapRange(removedTwice, removed, range("old", 7))).toBeUndefined();
+    expect(mapRange(removedTwice, removed, range("old", 8))).toBeUndefined();
+    expect(mapRange(removedTwice, removed, range("old", 6))).toEqual(range("old", 6));
     // Nothing maps through a changed hunk while both sides changed.
     expect(
       mapRange(
