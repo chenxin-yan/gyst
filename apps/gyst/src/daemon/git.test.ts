@@ -905,8 +905,8 @@ describe("Git.capture", () => {
     await write("same-as-a.txt", 10, "a");
     git(cwd, "add", ".");
     git(cwd, "commit", "-qm", "supporting");
-    // Reviewed: tracked.txt (4 bytes before, 5 after) and an added 30-byte file. A mode change
-    // is not reviewed; a rename is not either, but its record names its 5 bytes.
+    // Reviewed: tracked.txt (4 bytes before, 5 after) and an added 30-byte file. Neither a mode
+    // change nor a rename is reviewed.
     await writeFile(join(cwd, "tracked.txt"), "two!\n");
     await write("new.txt", 30);
     await chmod(join(cwd, "e-mode.txt"), 0o755);
@@ -923,8 +923,8 @@ describe("Git.capture", () => {
         undefined,
         { GYST_SNAPSHOT_QUOTA: size },
       );
-    // 44 bytes are required, so 11 are left: a-small fits, then neither b-large nor the files
-    // after it, while same-as-a costs nothing more, its bytes already counted.
+    // 39 bytes are required, so 16 are left: a-small fits, then nothing until the 5-byte rename,
+    // whose two paths share it, while same-as-a costs nothing more, its bytes already counted.
     const manifest = await quota("55 B");
     const omitted = { kind: "unavailable", reason: "quota" };
     expect(manifest.files.map(({ path }) => path)).toEqual([
@@ -949,6 +949,7 @@ describe("Git.capture", () => {
       new: omitted,
       modeChange: { old: "100644", new: "100755" },
     });
+    expect(fileOf(manifest, "f-moved.txt")?.old.kind).toBe("text");
     expect(fileOf(manifest, "g-moved.txt")).toMatchObject({
       new: { kind: "text" },
       renamedFrom: "f-moved.txt",
@@ -986,7 +987,7 @@ describe("Git.capture", () => {
       Effect.flip(Git.use((g) => g.capture(cwd, { kind: "uncommitted" }))),
       undefined,
       undefined,
-      { GYST_SNAPSHOT_QUOTA: "43 B" },
+      { GYST_SNAPSHOT_QUOTA: "38 B" },
     );
     expect(refused).toMatchObject({
       _tag: "source_unavailable",
@@ -1004,6 +1005,40 @@ describe("Git.capture", () => {
       message: expect.stringContaining("GYST_SNAPSHOT_QUOTA"),
     });
     expect(await staging()).toEqual([]);
+  });
+
+  it("leaves out a pure rename beyond a snapshot quota the reviewed edit fits, keeping its record", async () => {
+    const cwd = await repo("quota-rename");
+    await writeFile(join(cwd, "big-old.txt"), "r".repeat(1000));
+    git(cwd, "add", ".");
+    git(cwd, "commit", "-qm", "big");
+    await writeFile(join(cwd, "tracked.txt"), "two!\n");
+    await rm(join(cwd, "big-old.txt"));
+    await writeFile(join(cwd, "big-new.txt"), "r".repeat(1000));
+    const manifest = await run(
+      Effect.gen(function* () {
+        const manifest = yield* Git.use((g) => g.capture(cwd, { kind: "uncommitted" }));
+        yield* CapturedContent.use((c) => c.putManifest(manifest));
+        return manifest;
+      }),
+      undefined,
+      undefined,
+      { GYST_SNAPSHOT_QUOTA: "100 B" },
+    );
+    const omitted = { kind: "unavailable", reason: "quota" };
+    expect(fileOf(manifest, "big-old.txt")).toEqual({
+      path: "big-old.txt",
+      old: omitted,
+      new: { kind: "absent" },
+    });
+    expect(fileOf(manifest, "big-new.txt")).toEqual({
+      path: "big-new.txt",
+      old: { kind: "absent" },
+      new: omitted,
+      renamedFrom: "big-old.txt",
+    });
+    expect(hunkFiles(manifest)).toEqual(["tracked.txt"]);
+    expect(await blobs()).not.toContain(sha256("r".repeat(1000)));
   });
 
   it("reports a failed content write as an actionable error and leaves no staging", async () => {

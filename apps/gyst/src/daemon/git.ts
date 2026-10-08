@@ -216,7 +216,9 @@ const snapshotQuota = Config.option(Config.ByteSize("GYST_SNAPSHOT_QUOTA")).pipe
 /**
  * `files` within a snapshot quota of `limit` bytes, each distinct blob counted once. The `reviewed`
  * files are required whole, else the capture fails; every other file's text is then kept in path
- * order while it fits, and each of its text sides that does not is marked `quota`.
+ * order while it fits, and each of its text sides that does not is marked `quota`. A rename's two
+ * paths share their one blob, so the first one's turn decides both, as its record requires: the
+ * second then costs nothing, or no less than the first did with no less used.
  */
 const withinQuota = (
   files: ReadonlyArray<ManifestFile>,
@@ -1063,10 +1065,14 @@ export class Git extends Context.Service<
           if (textual && !same && !renamed.has(path))
             diffed.push({ path, old: old.side, new: current.side });
         }
-        // A rename is not reviewed, but its record names its bytes, so it is required too.
-        const reviewed = new Set([...diffed.map(({ path }) => path), ...renamed]);
         const captured =
-          limit._tag === "Some" ? yield* withinQuota(files, reviewed, Number(limit.value)) : files;
+          limit._tag === "Some"
+            ? yield* withinQuota(
+                files,
+                new Set(diffed.map(({ path }) => path)),
+                Number(limit.value),
+              )
+            : files;
         if (unstored)
           for (const file of captured)
             for (const side of [file.old, file.new]) {

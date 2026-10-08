@@ -104,6 +104,23 @@ describe("SnapshotManifestSchema", () => {
       { ...base, hunks: [{ ...manifest.hunks[0], file: "a.old" }] },
     ])
       expect(Result.isFailure(decode(invalid))).toBe(true);
+    // A snapshot quota leaves out both sides' bytes or neither; the record stays.
+    const quota = { kind: "unavailable", reason: "quota" };
+    const leftOut = {
+      ...base,
+      files: [
+        { ...gone, old: quota },
+        { ...added, new: quota },
+      ],
+    };
+    expect(Result.isSuccess(decode(leftOut))).toBe(true);
+    for (const invalid of [
+      { ...base, files: [{ ...gone, old: quota }, added] },
+      { ...base, files: [gone, { ...added, new: quota }] },
+      { ...leftOut, files: [leftOut.files[0], { ...added, new: { ...quota, reason: "binary" } }] },
+      { ...leftOut, hunks: [{ ...manifest.hunks[0], file: "b.new" }] },
+    ])
+      expect(Result.isFailure(decode(invalid))).toBe(true);
     // A rename that changes mode records the source's mode as the old one, on the target only.
     const change = { old: "100644", new: "100755" };
     expect(
