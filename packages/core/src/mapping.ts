@@ -214,6 +214,43 @@ function lineMapper(
 }
 
 /**
+ * Whether the code `range`, pinned in `pinned`, stands for in `from` reads differently in `to`. In
+ * `from` that is the lines `range` maps to, widened past lines that no longer map to the nearest
+ * that do (or the file's start), so a reference that already changed is compared where it now
+ * stands, never rebound. Undefined when nothing bounds it, so only its whole side can tell.
+ */
+export function contextChanged(
+  pinned: SnapshotLines,
+  from: SnapshotLines,
+  to: SnapshotLines,
+  range: CodeRange,
+): boolean | undefined {
+  const into = lineMapper(pinned, from, range);
+  if (!into) return undefined;
+  let low: number | undefined;
+  for (let line = range.startLine; low === undefined && line > 0; line--) low = into(line);
+  // Past either snapshot's hunks a line maps unless none outside them does, so the nearest line
+  // that maps lies within as many lines as those hunks hold.
+  const rows = [...pinned.hunks, ...from.hunks]
+    .filter((hunk) => hunk.file === range.path)
+    .reduce((count, hunk) => count + hunk.patch.split("\n").length, 0);
+  let high: number | undefined;
+  for (let line = range.endLine; high === undefined && line <= range.endLine + rows; line++)
+    high = into(line);
+  if (high === undefined || (low !== undefined && low > high)) return undefined;
+  const across = lineMapper(from, to, range);
+  if (!across) return true;
+  // From the file's start, the lines must still start it.
+  let previous = low === undefined ? 0 : across(low);
+  for (let line = (low ?? 0) + 1; line <= high; line++) {
+    const next = across(line);
+    if (previous === undefined || next !== previous + 1) return true;
+    previous = next;
+  }
+  return previous === undefined;
+}
+
+/**
  * `range`, read in `from`, as the same lines of `to`: every line must map, unchanged and
  * unambiguously, to one contiguous range of the same file and side. A side with identical bytes
  * maps to itself. Otherwise a line of a hunk maps through that hunk's exact counterpart; an
