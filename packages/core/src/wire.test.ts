@@ -412,7 +412,7 @@ describe("daemon wire envelopes", () => {
 
   it("frames subscriptions as versioned invalidations, not state or history", () => {
     const decodeEvent = Schema.decodeUnknownSync(publicWire.SubscriptionEventSchema, strict);
-    const version = { sessionId: "s1", snapshotId: snapshotId, revision: 4 };
+    const version = { sessionId: "s1", snapshotId: snapshotId, revision: 4, conversations: "v1" };
     for (const event of [
       { kind: "ready", daemon: "instance", ...version },
       { kind: "changed", ...version },

@@ -828,7 +828,12 @@ const openViewed = Effect.fn("openViewed")(function* (cwd: string) {
 });
 const versionOf = (id: string) => {
   const session = files.get(id)!;
-  return { sessionId: id, snapshotId: session.snapshotId, revision: session.revision };
+  return {
+    sessionId: id,
+    snapshotId: session.snapshotId,
+    revision: session.revision,
+    conversations: expect.any(String),
+  };
 };
 /** The human toggles Viewed on the session's first hunk against its saved revision. */
 const toggle = (browser: ReturnType<typeof browserAt>, id: string, n: number) => {

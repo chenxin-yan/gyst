@@ -73,11 +73,22 @@ let flooded: { readonly changes: Queue.Queue<SubscriptionEvent>; taken: number }
 /** What the fake daemon was asked to subscribe to, and how many subscriptions it closed. */
 let subscribed: SubscribeRequest[] = [];
 let released = 0;
-const version = (revision: number) => ({ sessionId: "s1", snapshotId, revision });
+const version = (revision: number) => ({
+  sessionId: "s1",
+  snapshotId,
+  revision,
+  conversations: "v1",
+});
 const liveEvents: SubscriptionEvent[] = [
   { kind: "ready", daemon: "d1", ...version(0) },
   { kind: "changed", ...version(1) },
-  { kind: "changed", sessionId: "s1", snapshotId: "1".repeat(64), revision: 2 },
+  {
+    kind: "changed",
+    sessionId: "s1",
+    snapshotId: "1".repeat(64),
+    revision: 2,
+    conversations: "v1",
+  },
   { kind: "deleted", sessionId: "s1" },
 ];
 

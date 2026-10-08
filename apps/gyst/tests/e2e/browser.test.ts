@@ -1682,8 +1682,7 @@ describe("installed gyst in a sandboxed browser", () => {
     const commands: string[] = [];
     third.on("request", (request) => {
       const operation = operationOf(request);
-      // Conversations are read again on each change too; Viewed's own order is what counts here.
-      if (operation && operation.command !== "conversations") commands.push(operation.command);
+      if (operation) commands.push(operation.command);
     });
     let lost = false;
     await third.route(isOperationUrl, async (route) => {
@@ -4408,9 +4407,20 @@ describe("installed gyst in a sandboxed browser", () => {
   it("comments on code and replies to a note from the keyboard, Pending until the agent's pickup, with the agent's answer, Outdated wording and resolution live", async () => {
     const walk = await openWalk();
     await publishWalk(walk);
-    const page = await newPage();
+    // The first send's reply is lost after gyst committed it.
+    const page = await newPage(context, { problems: ["requestfailed /api/operation"] });
     await page.setViewportSize({ width: 1280, height: 1200 });
     const writes = viewedOf(page);
+    const sends: any[] = [];
+    let lose = true;
+    await page.route(isOperationUrl, async (route) => {
+      if (route.request().postDataJSON()?.command !== "send") return route.fallback();
+      sends.push(route.request().postDataJSON());
+      if (!lose) return route.fallback();
+      lose = false;
+      await route.fetch();
+      await route.abort();
+    });
     await page.goto(`${one.origin}/session/${walk.id}`);
     const pane = page.getByRole("main");
     await page
@@ -4438,8 +4448,11 @@ describe("installed gyst in a sandboxed browser", () => {
     expect(await field.inputValue()).toBe("Why *double* jk?\nTwo lines.");
     await composer.getByRole("combobox", { name: "Kind" }).selectOption("change");
     await field.press("Enter");
+    // The reply was lost, but the live link announces the committed thread: sent once, not twice.
     await composer.waitFor({ state: "detached" });
+    expect(sends).toEqual([expect.objectContaining({ kind: "change" })]);
     await pane.locator("[data-thread]").getByText("Pending").waitFor();
+    expect(await pane.locator("[data-thread]").getByText("1 message").count()).toBe(1);
     const codeId = await pane.locator("[data-thread]").getAttribute("data-thread");
     const code = pane.locator(`[data-thread="${codeId}"]`);
     // Status counts it without its body.
@@ -5803,8 +5816,7 @@ describe("installed gyst in a sandboxed browser", () => {
     const commands: string[] = [];
     page.on("request", (request) => {
       const operation = operationOf(request);
-      // Conversations are read again on each change too; Viewed's own order is what counts here.
-      if (operation && operation.command !== "conversations") commands.push(operation.command);
+      if (operation) commands.push(operation.command);
     });
     let lost = false;
     await page.route(isOperationUrl, async (route) => {

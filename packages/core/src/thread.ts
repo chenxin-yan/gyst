@@ -90,6 +90,8 @@ export const ConversationsPayloadSchema = Schema.Struct({
   sessionId: Schema.String,
   snapshotId: Schema.String,
   revision: Schema.Number,
+  /** The `conversations` identity a subscription announces for these threads. */
+  version: Schema.String,
   threads: Schema.Array(ThreadSchema),
   drafts: Schema.Array(DraftSchema),
 });

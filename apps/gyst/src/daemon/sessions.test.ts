@@ -1696,6 +1696,36 @@ describe("Sessions conversations", () => {
     ]);
   });
 
+  it("announces another conversations identity for a thread change, never for Viewed alone", async () => {
+    await run(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const { session, sent } = yield* commented("Why?", "c1");
+          const { version, events } = yield* Sessions.use((s) =>
+            s.subscribe({ session: session.id }),
+          );
+          const [hunk] = (yield* Sessions.use((s) =>
+            s.diff({ command: "diff", session: session.id }),
+          )).hunks;
+          yield* viewedNow(session.id, [hunk!.id], "v1");
+          const viewed = yield* Queue.take(events);
+          expect(viewed).toMatchObject({ kind: "changed", conversations: version.conversations });
+          yield* act({
+            command: "resolve",
+            session: session.id,
+            requestId: "r1",
+            thread: sent.thread!,
+            resolved: true,
+          });
+          const resolved = yield* Queue.take(events);
+          expect(resolved.kind === "changed" && resolved.conversations).not.toBe(
+            version.conversations,
+          );
+        }),
+      ),
+    );
+  });
+
   it("serializes a pending edit against a pickup, which returns what the edit committed", async () => {
     await run(
       Effect.gen(function* () {
@@ -2306,7 +2336,12 @@ describe("Sessions.subscribe", () => {
   const subscribe = (session = persisted.id) => Sessions.use((s) => s.subscribe({ session }));
   const versionNow = (session = persisted.id) => {
     const saved = files.get(session)!;
-    return { sessionId: saved.id, snapshotId: saved.snapshotId, revision: saved.revision };
+    return {
+      sessionId: saved.id,
+      snapshotId: saved.snapshotId,
+      revision: saved.revision,
+      conversations: expect.any(String),
+    };
   };
   const apply = (revision: number, idempotencyKey: string) =>
     Sessions.use((s) =>
@@ -2334,6 +2369,7 @@ describe("Sessions.subscribe", () => {
             sessionId: persisted.id,
             snapshotId: persisted.snapshotId,
             revision: persisted.revision,
+            conversations: expect.any(String),
           });
           expect(yield* Queue.poll(events)).toEqual(Option.none());
           expect((yield* Effect.flip(subscribe("nope")))._tag).toBe("no_session");
