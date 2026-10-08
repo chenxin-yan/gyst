@@ -31,7 +31,7 @@ export type Row =
 export type HiddenRange = { index: number; old: number; new: number; size: number };
 
 // The renderer's side boundaries: a side with no lines in a hunk starts after its `@@` number.
-const startBoundary = (start: number, count: number) => start - (count === 0 ? 0 : 1);
+export const startBoundary = (start: number, count: number) => start - (count === 0 ? 0 : 1);
 
 /**
  * The file's hidden ranges with their exact sizes. A partial diff (captured sides not loaded yet)
