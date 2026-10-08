@@ -1,5 +1,5 @@
 import { type Walkthrough, type WalkthroughExport, WalkthroughExportSchema } from "@gyst/core";
-import { walkthroughSlot } from "@gyst/core/web";
+import { walkthroughPlaceholder, walkthroughSlotId } from "@gyst/core/web";
 import { Effect, Schema } from "effect";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -7,7 +7,7 @@ import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vite-plus/test";
 import { ExportTemplate, exportFile, walkthroughHtml } from "./export.ts";
 
-const template = `<!doctype html><html><head><script type="application/json" id="${walkthroughSlot.id}">${walkthroughSlot.placeholder}</script></head><body><script type="module">start()</script></body></html>`;
+const template = `<!doctype html><html><head><script type="application/json" id="${walkthroughSlotId}">${walkthroughPlaceholder}</script></head><body><script type="module">start()</script></body></html>`;
 
 const hostile = "</script><script>alert(1)</script><!-- &amp; \u2028\u2029 </SCRIPT>";
 const blob = "a".repeat(64);
@@ -32,7 +32,7 @@ const data: WalkthroughExport = {
 
 /** The text of the page's data element, as an HTML parser reads it. */
 const slotText = (html: string) => {
-  const open = `<script type="application/json" id="${walkthroughSlot.id}">`;
+  const open = `<script type="application/json" id="${walkthroughSlotId}">`;
   const start = html.indexOf(open) + open.length;
   return html.slice(start, html.indexOf("</script>", start));
 };
@@ -42,7 +42,7 @@ describe("walkthroughHtml", () => {
     const html = walkthroughHtml(template, data);
     expect(html.match(/<\/script/gi)).toHaveLength(2);
     expect(html).not.toContain("<!--");
-    expect(html).not.toContain(walkthroughSlot.placeholder);
+    expect(html).not.toContain(walkthroughPlaceholder);
     expect(slotText(html)).not.toMatch(/[<>&\u2028\u2029]/);
     expect(
       Schema.decodeUnknownSync(Schema.fromJsonString(WalkthroughExportSchema))(slotText(html)),
@@ -52,7 +52,7 @@ describe("walkthroughHtml", () => {
 
   it("needs a template with exactly one data slot", () => {
     expect(() => walkthroughHtml("<!doctype html>", data)).toThrow(/exactly one data slot/);
-    expect(() => walkthroughHtml(`${template}${walkthroughSlot.placeholder}`, data)).toThrow(
+    expect(() => walkthroughHtml(`${template}${walkthroughPlaceholder}`, data)).toThrow(
       /exactly one data slot/,
     );
   });

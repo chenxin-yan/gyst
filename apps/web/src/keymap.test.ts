@@ -184,6 +184,34 @@ describe("commands", () => {
     expect(completesSequence({ key: "R" }, { key: "g", at: 1000 }, 1500)).toBe(false);
   });
 
+  // A standalone walkthrough reads: navigation, folds, layouts, peeks and Back, never a write.
+  it("leaves only reading commands to a standalone walkthrough", () => {
+    const writes = [
+      "comment",
+      "reply",
+      "resolve",
+      "comments",
+      "nextThread",
+      "previousThread",
+      "viewed",
+      "refresh",
+      "check",
+      "export",
+    ];
+    for (const mode of ["vim", "mouse"] as const) {
+      const ids = commandsFor(mode, true).map(({ id }) => id);
+      expect(ids).toEqual(
+        commandsFor(mode)
+          .map(({ id }) => id)
+          .filter((id) => !writes.includes(id)),
+      );
+      expect(ids).toEqual(
+        expect.arrayContaining(["nextFile", "nextGroup", "nextNote", "unfoldAll", "back", "split"]),
+      );
+    }
+    expect(commandsFor("vim", false).map(({ id }) => id)).toContain("export");
+  });
+
   // Caps Lock types `M` without Shift, and another layout types `ь` on the M key.
   it("runs a key only for the character its binding names", () => {
     const event = (key: string, init: Partial<KeyboardEvent> = {}) => ({ ...init, key });

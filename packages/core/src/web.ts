@@ -3,11 +3,11 @@ export const webPaths = {
   events: "/api/events",
 } as const;
 
+/** The id of the standalone walkthrough template's one data slot: a JSON script element. */
+export const walkthroughSlotId = "gyst-walkthrough";
+
 /**
- * The standalone walkthrough template's one data slot: a JSON script element with this id whose
- * whole text is `placeholder`, which the daemon replaces with an export's data.
+ * The whole text of that slot in the template, which the daemon replaces with an export's data.
+ * Apart from the build and the daemon, nothing names it, so the template's code never contains it.
  */
-export const walkthroughSlot = {
-  id: "gyst-walkthrough",
-  placeholder: "__GYST_WALKTHROUGH__",
-} as const;
+export const walkthroughPlaceholder = "__GYST_WALKTHROUGH__";

@@ -5,7 +5,7 @@ import {
   type WalkthroughExport,
   WalkthroughExportSchema,
 } from "@gyst/core";
-import { walkthroughSlot } from "@gyst/core/web";
+import { walkthroughPlaceholder } from "@gyst/core/web";
 import { Context, DateTime, Effect, Schema } from "effect";
 import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
@@ -29,7 +29,7 @@ const encodeExport = Schema.encodeSync(WalkthroughExportSchema);
  * guidance can end the script element, open a comment in it or become markup.
  */
 export function walkthroughHtml(template: string, data: WalkthroughExport): string {
-  const [before, after, ...rest] = template.split(walkthroughSlot.placeholder);
+  const [before, after, ...rest] = template.split(walkthroughPlaceholder);
   if (after === undefined || rest.length > 0)
     throw new Error("the standalone reader template must have exactly one data slot");
   const json = JSON.stringify(encodeExport(data)).replace(

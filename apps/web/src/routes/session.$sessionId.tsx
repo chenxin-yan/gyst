@@ -112,6 +112,7 @@ import {
   switched,
 } from "../cursor.ts";
 import { CapturedHeader, useWholeSides } from "../expanded.tsx";
+import { ExportDialog, StandaloneTitle } from "../export.tsx";
 import { contentLoader, hydrationConcurrency, hydrationWindow, nearbyItems } from "../hydration.ts";
 import {
   type Command,
@@ -184,6 +185,7 @@ import { SearchField, type SearchSource, useSearchScan } from "../search.tsx";
 import type { CodeSide, SemanticAsk } from "../semantic.ts";
 import { SemanticPeekView, semanticKey, useSemanticNavigation } from "../semantic.tsx";
 import { StackSwitcher } from "../stack.tsx";
+import { standalone } from "../standalone.ts";
 import { media, theme } from "../tokens.stylex.ts";
 import {
   checkboxOf,
@@ -570,7 +572,7 @@ function SessionReader(props: {
   const [folded, setFolded] = useState<ReadonlySet<string>>(
     () => recalled?.folded ?? generatedOf(props.status),
   );
-  const [dialog, setDialog] = useState<"menu" | "help" | "comments">();
+  const [dialog, setDialog] = useState<"menu" | "help" | "comments" | "export">();
   // Hidden lines opened per file. They live here, not in the renderer, which forgets them with
   // an item it drops; bumping the version re-reads the cursor model after the renderer opened some.
   const [opened] = useState(() => recalled?.opened ?? new Map<string, Map<number, Opened>>());
@@ -1935,7 +1937,7 @@ function SessionReader(props: {
             ? refocus.target
             : undefined
         }
-        onReply={() => replyTo({ note: annotation.note.id })}
+        onReply={standalone ? undefined : () => replyTo({ note: annotation.note.id })}
       />
     );
 
@@ -1944,7 +1946,8 @@ function SessionReader(props: {
     if (id !== "nextNote" && id !== "previousNote") lastNote.current = undefined;
     setRefocus(undefined);
     setNotice(undefined);
-    if (id === "menu" || id === "help" || id === "comments") return setDialog(id);
+    if (id === "menu" || id === "help" || id === "comments" || id === "export")
+      return setDialog(id);
     if (id !== "nextThread" && id !== "previousThread") lastThread.current = undefined;
     if (id === "comment") return comment();
     if (id === "reply") return reply();
@@ -2179,7 +2182,7 @@ function SessionReader(props: {
       runRef.current(id);
     };
   const bindingOptions = { ignoreInputs: false, preventDefault: false, stopPropagation: false };
-  const commands = commandsFor(inputMode);
+  const commands = commandsFor(inputMode, standalone);
   const bindings = commands.flatMap((command) =>
     command.keys.map((keys) => ({ ...command, keys })),
   );
@@ -2243,32 +2246,43 @@ function SessionReader(props: {
     <Frame
       fill
       top={
-        <>
-          <Crumb session={session} />
-          {progress.pullRequest && (
-            <StackSwitcher
-              sessionId={session.id}
-              pullRequest={progress.pullRequest}
-              viewedCount={progress.state.viewed.size}
+        standalone ? (
+          <>
+            <StandaloneTitle />
+            <span {...stylex.props(styles.grow)} />
+            <PillButton onClick={() => setDialog("menu")}>
+              Commands <kbd {...stylex.props(styles.kbd)}>⌘K</kbd>
+            </PillButton>
+          </>
+        ) : (
+          <>
+            <Crumb session={session} />
+            {progress.pullRequest && (
+              <StackSwitcher
+                sessionId={session.id}
+                pullRequest={progress.pullRequest}
+                viewedCount={progress.state.viewed.size}
+              />
+            )}
+            <span {...stylex.props(styles.grow)} />
+            <PillButton onClick={() => setDialog("menu")}>
+              Commands <kbd {...stylex.props(styles.kbd)}>⌘K</kbd>
+            </PillButton>
+            <PillButton onClick={() => setDialog("export")}>Export…</PillButton>
+            <PillButton onClick={() => setDialog("comments")}>
+              Comments
+              {openThreads > 0 && <span {...stylex.props(styles.count)}>{openThreads} open</span>}
+            </PillButton>
+            <AllSessionsLink />
+            {/* Keyed: switching sessions on this route starts a new deletion intent, never B's retry. */}
+            <DeleteSession
+              key={session.id}
+              session={session}
+              onDeleted={() => navigate({ to: "/" })}
+              popover
             />
-          )}
-          <span {...stylex.props(styles.grow)} />
-          <PillButton onClick={() => setDialog("menu")}>
-            Commands <kbd {...stylex.props(styles.kbd)}>⌘K</kbd>
-          </PillButton>
-          <PillButton onClick={() => setDialog("comments")}>
-            Comments
-            {openThreads > 0 && <span {...stylex.props(styles.count)}>{openThreads} open</span>}
-          </PillButton>
-          <AllSessionsLink />
-          {/* Keyed: switching sessions on this route starts a new deletion intent, never B's retry. */}
-          <DeleteSession
-            key={session.id}
-            session={session}
-            onDeleted={() => navigate({ to: "/" })}
-            popover
-          />
-        </>
+          </>
+        )
       }
       side={
         <>
@@ -2293,7 +2307,7 @@ function SessionReader(props: {
           )}
           <WalkthroughNav
             status={status}
-            viewed={progress.state.viewed}
+            viewed={standalone ? undefined : progress.state.viewed}
             view={review}
             onView={chooseView}
           />
@@ -2339,7 +2353,9 @@ function SessionReader(props: {
               {selected} {selected === 1 ? "line" : "lines"} selected
             </span>
           )}
-          {lines !== null && <PillButton onClick={() => run("comment")}>Comment</PillButton>}
+          {lines !== null && !standalone && (
+            <PillButton onClick={() => run("comment")}>Comment</PillButton>
+          )}
           <Switch
             label="Diff layout"
             name="diff-layout"
@@ -2353,6 +2369,11 @@ function SessionReader(props: {
           />
           {captured ? (
             <span>Captured file</span>
+          ) : standalone ? (
+            <span>
+              {hunkCount} {hunkCount === 1 ? "hunk" : "hunks"} in {shown.length}{" "}
+              {shown.length === 1 ? "file" : "files"}
+            </span>
           ) : (
             <span>
               {viewedCount}/{hunkCount} {hunkCount === 1 ? "hunk" : "hunks"} viewed in{" "}
@@ -2364,11 +2385,13 @@ function SessionReader(props: {
               {notice}
             </span>
           )}
-          <LiveStatus
-            live={live.state}
-            replaced={behind(live.state, progress.state) === "replaced"}
-            catchingUp={synchronizing(live.state, progress.state)}
-          />
+          {!standalone && (
+            <LiveStatus
+              live={live.state}
+              replaced={behind(live.state, progress.state) === "replaced"}
+              catchingUp={synchronizing(live.state, progress.state)}
+            />
+          )}
           <span {...stylex.props(styles.grow)} />
           {searchShown && (
             <SearchField
@@ -2388,9 +2411,11 @@ function SessionReader(props: {
           >
             Keys <kbd {...stylex.props(styles.kbd)}>?</kbd>
           </button>
-          <span>
-            session <code>{session.id}</code>
-          </span>
+          {!standalone && (
+            <span>
+              session <code>{session.id}</code>
+            </span>
+          )}
         </>
       }
     >
@@ -2545,7 +2570,7 @@ function SessionReader(props: {
                 folded={diffs.has(path) ? folded.has(path) : undefined}
                 onFold={() => setFolds([path], !folded.has(path))}
                 viewed={
-                  hunkIds.length === 0
+                  hunkIds.length === 0 || standalone
                     ? undefined
                     : {
                         ...box,
@@ -2565,6 +2590,12 @@ function SessionReader(props: {
           onRun={run}
           // Each dialog clears only itself: the menu's queued close can land after help opened.
           onClose={() => setDialog((open) => (open === "menu" ? undefined : open))}
+        />
+      )}
+      {dialog === "export" && (
+        <ExportDialog
+          sessionId={session.id}
+          onClose={() => setDialog((open) => (open === "export" ? undefined : open))}
         />
       )}
       {dialog === "help" && (
@@ -3307,7 +3338,7 @@ function ContinuousDiff(props: {
       unsafeCSS: fileBoxCSS,
       // Dragging line numbers selects lines in both modes; Mouse mode adds the hover +.
       enableLineSelection: true,
-      enableGutterUtility: props.inputMode === "mouse",
+      enableGutterUtility: props.inputMode === "mouse" && !standalone,
       onGutterUtilityClick: (range, context) =>
         latest.current.onLines({ id: context.item.id, range }),
       // The token under the pointer, within which a right-click asks about the clicked character.
