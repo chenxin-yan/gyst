@@ -1,12 +1,12 @@
 // The sidebar entry and main-panel card for the change author's own explanation: a PR session's
 // description, or a recorded range session's captured commit messages. Derivations live in
 // author.ts.
-import type { Commit, DaemonError, PullRequest } from "@gyst/core/wire";
+import type { CommitsPayload, DaemonError, PullRequest } from "@gyst/core/wire";
 import * as stylex from "@stylexjs/stylex";
 import { useRouter } from "@tanstack/react-router";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { isExpectedFailure, operation } from "./api.ts";
-import { commitParts, describes, shortCommitId } from "./author.ts";
+import { commitParts } from "./author.ts";
 import { FailureNotice, PillButton, useMounted } from "./components.tsx";
 import { RichText } from "./rich.tsx";
 import { theme } from "./tokens.stylex.ts";
@@ -75,7 +75,7 @@ export function DescriptionCard(props: { id: string; pullRequest: PullRequest; h
         <span {...stylex.props(styles.title)}>{pullRequest.title}</span>
         <GitHubLink href={props.href} number={pullRequest.number} />
       </p>
-      {describes(pullRequest.description) ? (
+      {pullRequest.description.trim() !== "" ? (
         <RichText markdown={pullRequest.description} references={[]} onReference={noReference} />
       ) : (
         <p {...stylex.props(styles.missing)}>This pull request has no description.</p>
@@ -86,7 +86,7 @@ export function DescriptionCard(props: { id: string; pullRequest: PullRequest; h
 
 /** The commits read so far, oldest first, and where the next page starts. */
 export type RangeCommits = {
-  read: { commits: readonly Commit[]; total: number; next: string | null } | undefined;
+  read: Pick<CommitsPayload, "commits" | "total" | "next"> | undefined;
   loading: boolean;
   failure: unknown;
   /** Reads the next page, or again the page that failed. */
@@ -181,7 +181,7 @@ export function CommitsCard(props: { id: string; range: string; commits: RangeCo
                 <li key={commit.id} {...stylex.props(styles.commit)}>
                   <p>
                     <code title={commit.id} {...stylex.props(styles.mono, styles.id)}>
-                      {shortCommitId(commit.id)}
+                      {commit.id.slice(0, 7)}
                     </code>{" "}
                     <span {...stylex.props(styles.subject)}>{subject}</span>
                   </p>
