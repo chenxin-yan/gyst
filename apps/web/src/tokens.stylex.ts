@@ -35,6 +35,7 @@ export const theme = stylex.defineVars({
   del: palette.red,
   changed: palette.blue,
   hunkHeader: palette.peach,
+  match: palette.peach,
   sans: '"Inter", system-ui, sans-serif',
   "--mono": '"JetBrains Mono", ui-monospace, monospace',
 });
