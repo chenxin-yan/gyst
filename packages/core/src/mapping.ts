@@ -1,5 +1,5 @@
 import type { ContentSide, ManifestFile } from "./content.ts";
-import type { CodeRange, CodeSide } from "./guidance.ts";
+import { anchoredHunkIds, type CodeRange, type CodeSide } from "./guidance.ts";
 import type { Hunk } from "./session.ts";
 
 /** What line mapping reads from a snapshot: each file's side identities, and its hunks. */
@@ -38,6 +38,19 @@ export function matchHunks(old: readonly Hunk[], fresh: readonly Hunk[]): Map<st
       for (const [index, hunk] of olds.entries()) matches.set(hunk.id, same[index]!);
   }
   return matches;
+}
+
+/**
+ * The hunks of `current` a note kept on earlier code still reads beside: those `anchor` spans
+ * among `pinned`, its own snapshot's hunks, through their exact counterparts.
+ */
+export function survivingHunkIds(
+  pinned: readonly Hunk[],
+  current: readonly Hunk[],
+  anchor: CodeRange,
+): string[] {
+  const counterparts = matchHunks(pinned, current);
+  return anchoredHunkIds(pinned, anchor).flatMap((id) => counterparts.get(id)?.id ?? []);
 }
 
 const hunkHeader = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/;

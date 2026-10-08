@@ -13,9 +13,10 @@ import {
   type Note,
 } from "./guidance.ts";
 import { hash } from "./hash.ts";
+import { survivingHunkIds } from "./mapping.ts";
 import { inspectMarkdown } from "./markdown.ts";
 import { TitleSchema } from "./metadata.ts";
-import type { ReceiptStatus, Session, StatusPayload } from "./session.ts";
+import type { Hunk, ReceiptStatus, Session, StatusPayload } from "./session.ts";
 import { statusOf } from "./status.ts";
 
 export const WalkthroughUpdateSchema = Schema.Struct({
@@ -115,12 +116,14 @@ export type CapturedSide =
   | Exclude<ContentSide, { readonly kind: "text" }>
   | { readonly kind: "missing" };
 /**
- * The captured line counts a batch's written ranges are checked against, read by the caller
- * from `snapshotId`'s content: apply itself never reads content.
+ * What the caller reads for a batch from captured content, as apply itself never reads content:
+ * the line counts of `snapshotId`'s sides its written ranges are checked against, and the hunks
+ * of each earlier snapshot a note it may change is still anchored on (see `earlierAnchorsOf`).
  */
 export type CapturedIndex = {
   readonly snapshotId: string;
   readonly sides: ReadonlyMap<string, CapturedSide>;
+  readonly earlierHunks: ReadonlyMap<string, readonly Hunk[]>;
 };
 export const capturedSideKey = (side: CodeSide, path: string) => `${side}\0${path}`;
 
@@ -147,6 +150,27 @@ export function capturedTargetsOf(
     if (typeof markdown === "string") inspectMarkdown(markdown).references.forEach(target);
   }
   return [...targets.values()];
+}
+
+/**
+ * The earlier snapshots whose hunks `applyBatch` needs for this envelope: those the notes it may
+ * edit, re-anchor or remove, a dissolved group's included, are still anchored on.
+ */
+export function earlierAnchorsOf(envelope: ApplyEnvelope, session: Session): string[] {
+  const named = new Set(
+    envelope.ops.flatMap((op) =>
+      op.type === "note.update" || op.type === "note.remove"
+        ? [op.id]
+        : op.type === "group.dissolve"
+          ? (session.groups.find(({ id }) => id === op.id)?.notes.map(({ id }) => id) ?? [])
+          : [],
+    ),
+  );
+  const snapshotIds = session.groups
+    .flatMap(({ notes }) => notes)
+    .filter(({ id, anchor }) => named.has(id) && anchor.snapshotId !== session.snapshotId)
+    .map(({ anchor }) => anchor.snapshotId);
+  return [...new Set(snapshotIds)];
 }
 
 /** The stored text a revalidation op names, if it exists. */
@@ -219,19 +243,27 @@ function capturedProblem(captured: CapturedIndex, range: CodeRange): string | un
 
 /**
  * Viewed is unset on the hunks whose guidance changed between `before` and `after`: a note added,
- * removed, edited or re-anchored unviews the hunks of both anchors; a group or walkthrough
- * overview edited or removed unviews that group's or every grouped hunk. A first overview,
- * reordering, titles and membership alone change nothing, and agents never set Viewed.
+ * removed, edited or re-anchored unviews the hunks of both anchors (of one kept on earlier code,
+ * those that survived since, read in `earlierHunks`); a group or walkthrough overview edited or
+ * removed unviews that group's or every grouped hunk. A first overview, reordering, titles and
+ * membership alone change nothing, and agents never set Viewed.
  */
-function invalidatedHunkIds(before: Session, after: MutableSession): Set<string> {
+function invalidatedHunkIds(
+  before: Session,
+  after: MutableSession,
+  earlierHunks: CapturedIndex["earlierHunks"],
+): Set<string> {
   const unviewed = new Set<string>();
   const unview = (ids: Iterable<string>) => {
     for (const id of ids) unviewed.add(id);
   };
-  const anchored = (note: Note | undefined) =>
-    note && note.anchor.snapshotId === before.snapshotId
-      ? anchoredHunkIds(before.hunks, note.anchor)
-      : [];
+  const anchored = (note: Note | undefined) => {
+    if (!note) return [];
+    if (note.anchor.snapshotId === before.snapshotId)
+      return anchoredHunkIds(before.hunks, note.anchor);
+    const pinned = earlierHunks.get(note.anchor.snapshotId);
+    return pinned ? survivingHunkIds(pinned, before.hunks, note.anchor) : [];
+  };
   const notesOf = (groups: Session["groups"]) =>
     new Map(groups.flatMap(({ notes }) => notes.map((note) => [note.id, note] as const)));
   const notesBefore = notesOf(before.groups);
@@ -604,7 +636,7 @@ export function applyBatch(
       new ValidationFailed({ message: "apply validation failed", detail: errors }),
     );
 
-  const unviewed = invalidatedHunkIds(session, draft);
+  const unviewed = invalidatedHunkIds(session, draft, captured.earlierHunks);
   draft.viewedHunkIds = draft.viewedHunkIds.filter((id) => !unviewed.has(id));
   for (const group of draft.groups) sortNotes(draft, group);
   draft.revision++;

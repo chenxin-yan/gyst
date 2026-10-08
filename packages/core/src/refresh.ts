@@ -15,6 +15,7 @@ import {
   matchHunks,
   sideChanged,
   type SnapshotLines,
+  survivingHunkIds,
 } from "./mapping.ts";
 import type { RefreshPayload, Session } from "./session.ts";
 import type { BrowserRequest } from "./wire.ts";
@@ -111,9 +112,8 @@ export function refreshSession(
       // A note kept on earlier code still reads beside its anchored hunks that survived since:
       // its pinned snapshot's, through their exact counterparts in the replaced one.
       const pinned = earlier ? linesOf(note.anchor.snapshotId) : undefined;
-      const counterparts = pinned && matchHunks(pinned.hunks, session.hunks);
-      const surviving = counterparts
-        ? anchoredHunkIds(pinned.hunks, note.anchor).flatMap((id) => counterparts.get(id)?.id ?? [])
+      const surviving = pinned
+        ? survivingHunkIds(pinned.hunks, session.hunks, note.anchor)
         : before;
       const references = referencesOf(note);
       const reasons: OutdatedReason[] = [];

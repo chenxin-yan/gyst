@@ -9,6 +9,7 @@ import {
   type CapturedSide,
   capturedSideKey,
   capturedTargetsOf,
+  earlierAnchorsOf,
 } from "./apply.ts";
 import type { CodeRange, Note } from "./guidance.ts";
 import { refreshSession } from "./refresh.ts";
@@ -91,7 +92,11 @@ const sides: [string, CapturedSide][] = [
   ["new\0image.png", { kind: "unavailable", reason: "binary" }],
   ["new\0live.ts", { kind: "missing" }],
 ];
-const captured: CapturedIndex = { snapshotId: SNAPSHOT, sides: new Map(sides) };
+const captured: CapturedIndex = {
+  snapshotId: SNAPSHOT,
+  sides: new Map(sides),
+  earlierHunks: new Map(),
+};
 
 const batch = (ops: ApplyOp[], idempotencyKey = "key", revision = 3): ApplyEnvelope => ({
   revision,
@@ -610,7 +615,7 @@ describe("applyBatch", () => {
           revision: refreshed.revision,
           snapshotId: "next",
         },
-        { snapshotId: "next", sides: new Map() },
+        { snapshotId: "next", sides: new Map(), earlierHunks: new Map() },
         LATER,
       ),
     ).session!;
@@ -821,6 +826,53 @@ describe("Outdated guidance", () => {
     expect(reanchored.groups[0]!.notes.map(({ id }) => id)).toEqual(["n1", "gone"]);
     expect(reanchored.groups[0]!.notes[1]).toEqual(note("gone", range("a.ts", "new", 11)));
     expect(unviewedBy(ops, outdated)).toEqual(["a2"]);
+  });
+
+  it("unviews the surviving hunks of a note kept on earlier code when it is removed or re-anchored", () => {
+    // Note span covers a1 and a2 of g1, which also holds a3; a refresh changes a2 alone.
+    const spanning: Session = {
+      ...session,
+      groups: [
+        {
+          ...session.groups[0]!,
+          overview: null,
+          hunkIds: ["a1", "a2", "a3"],
+          notes: [note("span", range("a.ts", "new", 2, 11))],
+        },
+        { ...session.groups[1]!, hunkIds: ["b1"], files: ["b.ts"] },
+      ],
+    };
+    const changed = hunks.map((each) =>
+      each.id === "a2" ? hunk("a2x", "a.ts", "@@ -10,3 +10,3 @@\n x\n-y\n+W\n z") : each,
+    );
+    const refreshed = refreshSession(
+      spanning,
+      { snapshotId: "next", snapshot: { files: [], hunks: changed } },
+      new Map([[SNAPSHOT, { files: [], hunks }]]),
+      LATER,
+    );
+    expect(refreshed.groups[0]!.notes[0]!.anchor.snapshotId).toBe(SNAPSHOT);
+    expect(refreshed.viewedHunkIds).toEqual(["a1", "a3", "a4", "b1"]);
+    const next: CapturedIndex = {
+      ...captured,
+      snapshotId: "next",
+      earlierHunks: new Map([[SNAPSHOT, hunks]]),
+    };
+    const unviewed = (ops: ApplyOp[]) => {
+      const envelope = { ...batch(ops), revision: refreshed.revision, snapshotId: "next" };
+      const viewed = Result.getOrThrow(applyBatch(refreshed, envelope, next, LATER)).session!
+        .viewedHunkIds;
+      return refreshed.viewedHunkIds.filter((id) => !viewed.includes(id));
+    };
+    expect(earlierAnchorsOf(batch([{ type: "note.remove", id: "span" }]), refreshed)).toEqual([
+      SNAPSHOT,
+    ]);
+    expect(unviewed([{ type: "note.remove", id: "span" }])).toEqual(["a1"]);
+    expect(
+      unviewed([{ type: "note.update", id: "span", anchor: range("a.ts", "new", 31) }]),
+    ).toEqual(["a1", "a3"]);
+    expect(unviewed([{ type: "group.dissolve", id: "g1" }])).toEqual(["a1"]);
+    expect(unviewed([{ type: "note.update", id: "span", markdown: "About span." }])).toEqual([]);
   });
 
   it("never verifies unavailable context or guidance that is not Outdated", () => {

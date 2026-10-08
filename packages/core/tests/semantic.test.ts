@@ -59,6 +59,7 @@ const captured = (session: Session): CapturedIndex => ({
       ]),
     ),
   ),
+  earlierHunks: new Map(),
 });
 const apply = (session: Session, envelope: ApplyEnvelope) =>
   applyBatch(session, envelope, captured(session), "later");

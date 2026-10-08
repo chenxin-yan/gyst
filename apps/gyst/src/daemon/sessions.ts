@@ -8,10 +8,12 @@ import {
   capturedSideKey,
   capturedTargetsOf,
   type CaptureProgress,
+  earlierAnchorsOf,
   type CodePayload,
   type DeletePayload,
   type FilesPayload,
   GitHubUnavailableReasonSchema,
+  type Hunk,
   InternalError,
   type DiffPayload,
   type ListPayload,
@@ -678,13 +680,24 @@ export class Sessions extends Context.Service<
         }
       }).pipe(Semaphore.withPermit(lock), Effect.withSpan("Sessions.load"));
 
-      /** The line counts of the named sides of a snapshot, counted like `code` pages count them. */
+      /**
+       * The line counts of the named sides of a snapshot, counted like `code` pages count them, and
+       * the hunks of the named earlier snapshots. An earlier snapshot that cannot be read is left
+       * out, so its notes' surviving hunks cannot be named.
+       */
       const capturedIndexOf = Effect.fn("Sessions.capturedIndexOf")(function* (
         snapshotId: string,
         targets: ReturnType<typeof capturedTargetsOf>,
+        earlier: readonly string[],
       ) {
+        const earlierHunks = new Map<string, readonly Hunk[]>();
+        for (const id of earlier) {
+          const manifest = yield* content.loadManifest(id).pipe(Effect.option);
+          if (manifest._tag === "Some") earlierHunks.set(id, manifest.value.hunks);
+        }
         const sides = new Map<string, CapturedSide>();
-        if (targets.length === 0) return { snapshotId, sides } satisfies CapturedIndex;
+        if (targets.length === 0)
+          return { snapshotId, sides, earlierHunks } satisfies CapturedIndex;
         const manifest = yield* manifestOf(snapshotId);
         for (const { path, side: name } of targets) {
           const side = manifest.files.find((file) => file.path === path)?.[name];
@@ -704,7 +717,7 @@ export class Sessions extends Context.Service<
           const lines = lfs + (last !== undefined && last !== 10 ? 1 : 0);
           sides.set(capturedSideKey(name, path), { kind: "text", lines });
         }
-        return { snapshotId, sides } satisfies CapturedIndex;
+        return { snapshotId, sides, earlierHunks } satisfies CapturedIndex;
       });
 
       const apply = Effect.fn("Sessions.apply")(function* (request: Input<"apply">) {
@@ -723,8 +736,16 @@ export class Sessions extends Context.Service<
         const captured =
           before.snapshotId !== envelope.snapshotId ||
           before.applyReceipts.some(({ key }) => key === envelope.idempotencyKey)
-            ? ({ snapshotId: before.snapshotId, sides: new Map() } satisfies CapturedIndex)
-            : yield* capturedIndexOf(before.snapshotId, capturedTargetsOf(envelope, before));
+            ? ({
+                snapshotId: before.snapshotId,
+                sides: new Map(),
+                earlierHunks: new Map(),
+              } satisfies CapturedIndex)
+            : yield* capturedIndexOf(
+                before.snapshotId,
+                capturedTargetsOf(envelope, before),
+                earlierAnchorsOf(envelope, before),
+              );
         return yield* underLock(
           Effect.gen(function* () {
             const session = yield* selected(request);

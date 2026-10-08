@@ -2768,6 +2768,73 @@ describe("Sessions captured reads over real captures", () => {
     );
   });
 
+  it("re-anchoring a note a refresh kept on earlier code unviews its surviving hunks too", async () => {
+    const numbered = Array.from({ length: 40 }, (_, index) => `a${index + 1}\n`).join("");
+    const edited = (twenty: string) =>
+      numbered.replace("a10\n", "x10\n").replace("a20\n", twenty).replace("a30\n", "x30\n");
+    const cwd = await repo("historical", { "a.ts": numbered });
+    await writeFile(join(cwd, "a.ts"), edited("x20\n"));
+    await runReal(
+      Effect.gen(function* () {
+        const sessions = yield* Sessions;
+        const { session } = yield* sessions.open({ command: "open", cwd, scope: uncommitted });
+        const hunkIds = (yield* sessions.diff({ command: "diff", session: session.id })).hunks.map(
+          ({ id }) => id,
+        );
+        const [first, , third] = hunkIds;
+        yield* sessions.apply({
+          command: "apply",
+          session: session.id,
+          batch: JSON.stringify({
+            revision: 0,
+            snapshotId: session.snapshotId,
+            idempotencyKey: "publish",
+            ops: [
+              {
+                type: "group.create",
+                id: "g",
+                title: "Edits",
+                overview: "Three edits.",
+                memberHunkIds: hunkIds,
+              },
+              {
+                type: "note.create",
+                id: "n",
+                group: "g",
+                anchor: { path: "a.ts", side: "new", startLine: 10, endLine: 20 },
+                markdown: "Spans the first two edits.",
+              },
+            ],
+          }),
+        });
+        yield* viewedNow(session.id, hunkIds, "read");
+        // The second edit changes, so the note stays on the first snapshot's code.
+        yield* Effect.promise(() => writeFile(join(cwd, "a.ts"), edited("y20\n")));
+        const refreshed = yield* refreshNow(session.id);
+        const kept = yield* sessions.status({ command: "status", session: session.id });
+        expect(kept.groups[0]?.notes[0]?.anchor.snapshotId).toBe(session.snapshotId);
+        expect(kept.viewedHunkIds).toEqual([first, third]);
+        const reanchored = yield* sessions.apply({
+          command: "apply",
+          session: session.id,
+          batch: JSON.stringify({
+            revision: refreshed.revision,
+            snapshotId: refreshed.snapshotId,
+            idempotencyKey: "re-anchor",
+            ops: [
+              {
+                type: "note.update",
+                id: "n",
+                anchor: { path: "a.ts", side: "new", startLine: 30, endLine: 30 },
+              },
+            ],
+          }),
+        });
+        expect(reanchored.viewedHunkIds).toEqual([]);
+      }),
+    );
+  });
+
   it("rejects a replaced snapshot as stale and finishes an in-flight read against its own", async () => {
     const cwd = await repo("stale", { "a.txt": "before\n" });
     await writeFile(join(cwd, "a.txt"), "during\n");
