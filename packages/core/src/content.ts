@@ -28,6 +28,12 @@ export const ContentSideSchema = Schema.Union([
 ]);
 export type ContentSide = typeof ContentSideSchema.Type;
 
+/** The same captured content; two unavailable sides with one reason hold no bytes to compare. */
+export const sameSide = (old: ContentSide, current: ContentSide) =>
+  old.kind === current.kind &&
+  (old.kind !== "text" || (current.kind === "text" && old.blob === current.blob)) &&
+  (old.kind !== "unavailable" || (current.kind === "unavailable" && old.reason === current.reason));
+
 /** A regular file's Git mode: executable or not. */
 export const FileModeSchema = Schema.Literals(["100644", "100755"]);
 

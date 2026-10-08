@@ -50,7 +50,7 @@ export {
   type StackMembership,
   StackMembershipSchema,
 } from "./github.ts";
-export { type ContentSide, type ManifestFile } from "./content.ts";
+export { type ContentSide, type ManifestFile, sameSide } from "./content.ts";
 export {
   anchoredHunkIds,
   type CapturedRange,

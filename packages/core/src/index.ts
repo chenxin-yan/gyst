@@ -33,6 +33,7 @@ export {
   ManifestFileSchema,
   type Provenance,
   ProvenanceSchema,
+  sameSide,
   type SnapshotManifest,
   SnapshotIdSchema,
   SnapshotManifestSchema,
