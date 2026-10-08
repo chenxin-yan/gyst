@@ -563,7 +563,7 @@ describe("refreshSession conversations", () => {
       { ...files, "a.ts": ["a0", "a2"] },
       { "a.ts": `@@ -1,0 +2,2 @@\n+i1\n+i2\n${changeA.replace("+9,3", "+11,3")}`, "b.ts": changeB },
     );
-    const wording = { markdown: "About na.", references: [helper] };
+    const wording = { markdown: "About na.", references: [helper], anchor: pin("a.ts", "new", 10) };
     const onNote = thread("on-note", pin("a.ts", "new", 10), {
       note: { id: "na", removed: false },
       messages: [{ ...asked("on-note-1"), wording }],
@@ -571,8 +571,14 @@ describe("refreshSession conversations", () => {
     // A thread whose note is gone stays where it was, even where a later note took the id.
     const orphan = thread("orphan", pin("a.ts", "new", 9), { note: { id: "na", removed: true } });
     const drafts: Draft[] = [
-      { id: "d-note", anchor: pin("a.ts", "new", 10), note: { id: "na", removed: false }, wording },
-      { id: "d-code", anchor: pin("a.ts", "new", 11) },
+      {
+        id: "d-note",
+        snapshotId: "s1",
+        anchor: pin("a.ts", "new", 10),
+        note: { id: "na", removed: false },
+        wording,
+      },
+      { id: "d-code", snapshotId: "s1", anchor: pin("a.ts", "new", 11) },
     ];
     const refreshed = refreshSession(
       { ...session(), threads: [onNote, orphan], drafts },
@@ -593,7 +599,7 @@ describe("refreshSession conversations", () => {
     expect(pinnedSnapshotIds(refreshed)).toEqual(["s2", "s1"]);
   });
 
-  it("pins the snapshots of every thread, message reference, reply wording and draft", () => {
+  it("pins the snapshots of every thread, message reference, reply wording and its note's code, and draft", () => {
     const at = (snapshotId: string): CapturedRange => ({ ...pin("a.ts", "new", 1), snapshotId });
     const pinned = pinnedSnapshotIds({
       ...session(),
@@ -606,7 +612,7 @@ describe("refreshSession conversations", () => {
             {
               ...asked("h"),
               references: [at("human")],
-              wording: { markdown: "w", references: [at("wording")] },
+              wording: { markdown: "w", references: [at("wording")], anchor: at("note-code") },
             },
             {
               id: "a",
@@ -621,13 +627,29 @@ describe("refreshSession conversations", () => {
       drafts: [
         {
           id: "d",
+          snapshotId: "draft-begun",
           anchor: at("draft"),
-          wording: { markdown: "w", references: [at("draft-wording")] },
+          wording: {
+            markdown: "w",
+            references: [at("draft-wording")],
+            anchor: at("draft-note-code"),
+          },
         },
       ],
     });
     expect(pinned.toSorted()).toEqual(
-      ["s1", "anchor", "human", "wording", "agent", "draft", "draft-wording"].toSorted(),
+      [
+        "s1",
+        "anchor",
+        "human",
+        "wording",
+        "note-code",
+        "agent",
+        "draft-begun",
+        "draft",
+        "draft-wording",
+        "draft-note-code",
+      ].toSorted(),
     );
   });
 });

@@ -965,7 +965,12 @@ describe("thread replies and note conversations", () => {
       },
     ],
     drafts: [
-      { id: "d1", anchor: pin(range("a.ts", "new", 2)), note: { id: "n1", removed: false } },
+      {
+        id: "d1",
+        snapshotId: SNAPSHOT,
+        anchor: pin(range("a.ts", "new", 2)),
+        note: { id: "n1", removed: false },
+      },
     ],
   };
 

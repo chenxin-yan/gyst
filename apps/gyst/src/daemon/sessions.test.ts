@@ -1696,11 +1696,11 @@ describe("Sessions conversations", () => {
     ]);
   });
 
-  it("announces another conversations identity for a thread change, never for Viewed alone", async () => {
+  it("announces another conversations identity for a thread or draft pin change, never for Viewed alone", async () => {
     await run(
       Effect.scoped(
         Effect.gen(function* () {
-          const { session, sent } = yield* commented("Why?", "c1");
+          const { session, sent, anchor } = yield* commented("Why?", "c1");
           const { version, events } = yield* Sessions.use((s) =>
             s.subscribe({ session: session.id }),
           );
@@ -1721,6 +1721,31 @@ describe("Sessions conversations", () => {
           expect(resolved.kind === "changed" && resolved.conversations).not.toBe(
             version.conversations,
           );
+          // A draft pin changes no revision, but another tab, or a later note removal, shows it.
+          const drafted = yield* act({
+            command: "draft",
+            session: session.id,
+            requestId: "d1",
+            target: { kind: "comment", anchor },
+          });
+          const pinned = yield* Queue.take(events);
+          expect(pinned).toMatchObject({
+            kind: "changed",
+            revision: resolved.kind === "changed" && resolved.revision,
+          });
+          expect(pinned.kind === "changed" && pinned.conversations).not.toBe(
+            resolved.kind === "changed" && resolved.conversations,
+          );
+          yield* act({
+            command: "discard",
+            session: session.id,
+            requestId: "x1",
+            draft: drafted.draft!,
+          });
+          const released = yield* Queue.take(events);
+          expect(released.kind === "changed" && released.conversations).toBe(
+            resolved.kind === "changed" && resolved.conversations,
+          );
         }),
       ),
     );
@@ -1737,6 +1762,7 @@ describe("Sessions conversations", () => {
             session: session.id,
             requestId: "e1",
             message: sent.message!,
+            seen: { markdown: "Typo?", kind: "question" },
             markdown: "Is n2 a typo?",
             kind: "change",
           }),
@@ -1754,9 +1780,10 @@ describe("Sessions conversations", () => {
           pending: false,
         });
         // Read means frozen: a later edit or delete is refused, and the correction is a new reply.
+        const seen = { markdown: "Is n2 a typo?", kind: "change" } as const;
         for (const late of [
-          { command: "edit", message: sent.message!, kind: "question" },
-          { command: "retract", message: sent.message! },
+          { command: "edit", message: sent.message!, seen, kind: "question" },
+          { command: "retract", message: sent.message!, seen },
         ] as const)
           expect(
             yield* Effect.flip(
@@ -1819,7 +1846,9 @@ describe("Sessions conversations", () => {
         const read = yield* Sessions.use((s) =>
           s.conversations({ command: "conversations", session: session.id }),
         );
-        expect(read.drafts).toEqual([{ id: drafted.draft, anchor }]);
+        expect(read.drafts).toEqual([
+          { id: drafted.draft, snapshotId: session.snapshotId, anchor },
+        ]);
         yield* act({
           command: "discard",
           session: session.id,

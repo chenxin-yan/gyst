@@ -272,7 +272,8 @@ function MessageItem(props: {
   onReference: (target: CapturedRange) => void;
 }) {
   const { message } = props;
-  const [editing, setEditing] = useState<DraftText>();
+  // `seen` is the message as the edit began; gyst refuses the edit if it changed elsewhere since.
+  const [editing, setEditing] = useState<{ seen: DraftText; text: DraftText }>();
   const [wording, setWording] = useState(false);
   const [busy, setBusy] = useState(false);
   const [failure, setFailure] = useState<string>();
@@ -322,16 +323,18 @@ function MessageItem(props: {
       {editing ? (
         <MessageField
           label="Edit message"
-          text={editing}
-          onText={setEditing}
+          text={editing.text}
+          onText={(text) => setEditing({ ...editing, text })}
           onSubmit={() => {
-            const markdown = editing.markdown !== message.markdown ? editing.markdown : undefined;
-            const kind = editing.kind !== human?.kind ? editing.kind : undefined;
+            const { seen, text } = editing;
+            const markdown = text.markdown !== seen.markdown ? text.markdown : undefined;
+            const kind = text.kind !== seen.kind ? text.kind : undefined;
             if (markdown === undefined && kind === undefined) return setEditing(undefined);
             void run(
               {
                 command: "edit",
                 message: message.id,
+                seen,
                 ...(markdown !== undefined && { markdown }),
                 ...(kind !== undefined && { kind }),
               },
@@ -353,12 +356,23 @@ function MessageItem(props: {
       )}
       {human?.pending && !editing && (
         <div {...stylex.props(styles.row)}>
-          <PillButton onClick={() => setEditing({ markdown: human.markdown, kind: human.kind })}>
+          <PillButton
+            onClick={() => {
+              const seen = { markdown: human.markdown, kind: human.kind };
+              setEditing({ seen, text: seen });
+            }}
+          >
             Edit
           </PillButton>
           <PillButton
             disabled={busy}
-            onClick={() => void run({ command: "retract", message: message.id })}
+            onClick={() =>
+              void run({
+                command: "retract",
+                message: message.id,
+                seen: { markdown: human.markdown, kind: human.kind },
+              })
+            }
           >
             Delete
           </PillButton>
