@@ -163,12 +163,11 @@ const styles = stylex.create({
     padding: "1px 6px",
     borderWidth: "1px",
     borderStyle: "solid",
-    borderColor: { default: theme.line, ":focus": theme["--accent"] },
+    borderColor: theme.line,
     borderRadius: "4px",
     backgroundColor: theme.surface,
     color: theme.ink,
     font: "inherit",
-    outline: "none",
   },
   count: { minWidth: "6ch", color: theme.ink },
   button: {
