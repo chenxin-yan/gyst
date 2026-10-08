@@ -53,6 +53,7 @@ import {
   statusOf,
   summaryOf,
   type Thread,
+  threadAnchorsOf,
   type ThreadCode,
   threadsFor,
   type ThreadsPayload,
@@ -119,9 +120,14 @@ export type SessionChange = Extract<SubscriptionEvent, { readonly kind: "changed
  * A session's version among `sessions`. A PR session's `context` covers what its status reports
  * apart from its own review state, which its revision already versions.
  */
-/** An identity of a session's threads and messages, announced so viewers reread only on change. */
+/**
+ * An identity of a session's threads, messages and draft pins, announced so viewers reread only
+ * on change.
+ */
 const conversationsOf = (session: Session) =>
-  createHash("sha256").update(JSON.stringify(session.threads)).digest("hex");
+  createHash("sha256")
+    .update(JSON.stringify([session.threads, session.drafts]))
+    .digest("hex");
 
 const versionOf = (session: Session, sessions: Iterable<Session>): SessionVersion => {
   const status = pullRequestStatusOf(session, sessions);
@@ -884,7 +890,10 @@ export class Sessions extends Context.Service<
         } satisfies ConversationsPayload;
       }, Semaphore.withPermit(lock));
 
-      /** Commits a conversation change: saved with its receipt before memory, announced if seen. */
+      /**
+       * Commits a conversation change: saved with its receipt before memory, and announced when a
+       * reader would see it, a draft pin made or released included.
+       */
       const commitConversation = Effect.fn("Sessions.commitConversation")(function* (
         before: Session,
         after: Session | undefined,
@@ -892,7 +901,11 @@ export class Sessions extends Context.Service<
         if (!after) return;
         yield* store.save(after).pipe(Effect.orDie);
         sessions.set(after.id, after);
-        if (after.revision === before.revision) return;
+        if (
+          after.revision === before.revision &&
+          conversationsOf(after) === conversationsOf(before)
+        )
+          return;
         announceChanged(after);
         announceLayers(after);
       });
@@ -927,12 +940,12 @@ export class Sessions extends Context.Service<
         );
       });
 
-      /** The captured lines of each thread's anchor not in `code` yet, added to it. */
+      /** The captured lines of each anchor of the threads not in `code` yet, added to it. */
       const readThreadCode = Effect.fn("Sessions.readThreadCode")(function* (
         read: Map<string, ThreadCode>,
         selection: readonly Thread[],
       ) {
-        for (const { anchor } of selection) {
+        for (const anchor of selection.flatMap(threadAnchorsOf)) {
           const key = anchorKey(anchor);
           if (read.has(key)) continue;
           const manifest = yield* Effect.option(manifestOf(anchor.snapshotId));
@@ -955,11 +968,7 @@ export class Sessions extends Context.Service<
             });
             continue;
           }
-          const text = yield* Stream.runFold(
-            blobOf(side.blob, side.size),
-            () => [] as Uint8Array[],
-            (chunks, chunk) => [...chunks, chunk],
-          ).pipe(
+          const text = yield* Stream.runCollect(blobOf(side.blob, side.size)).pipe(
             Effect.map((chunks) => Buffer.concat(chunks).toString("utf8")),
             Effect.option,
           );
@@ -984,10 +993,13 @@ export class Sessions extends Context.Service<
         return yield* underLock(
           Effect.gen(function* () {
             const session = yield* selected(request);
-            // A thread started or moved meanwhile is read now, so the recorded bundle is whole.
+            // A thread moved meanwhile is read now, so the recorded bundle is whole. What arrived
+            // since `before` waits for the next retrieval.
             yield* readThreadCode(threadCode, threadsFor(session, request.mode));
             const now = DateTime.formatIso(yield* DateTime.now);
-            const outcome = yield* Effect.fromResult(pickUp(session, request, threadCode, now));
+            const outcome = yield* Effect.fromResult(
+              pickUp(session, request, threadCode, now, before),
+            );
             yield* commitConversation(session, outcome.session);
             return outcome.result;
           }),

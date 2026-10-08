@@ -64,17 +64,29 @@ export function recordedPickup(
     : Result.fail(reused(request.requestId));
 }
 
+/** The captured ranges a retrieval returns code of: each thread's anchor, and the note anchors its replies were composed against. */
+export const threadAnchorsOf = (thread: Thread): CapturedRange[] => [
+  thread.anchor,
+  ...thread.messages.flatMap((message) =>
+    message.author === "human" && message.wording ? [message.wording.anchor] : [],
+  ),
+];
+
 /**
- * One retrieval, all at once: the threads `mode` selects now, each with its whole history and the
- * captured code of its anchor (`code`, by `anchorKey`), with exactly their Pending messages read and
- * so frozen. The bundle and its receipt are recorded together, so a retry, even after later
- * arrivals, returns this bundle; nothing a retrieval leaves out is frozen. Viewed is untouched.
+ * One retrieval, all at once: the threads `mode` selected in `invoked`, the session as the
+ * retrieval was asked for, each with its whole history and the captured code of its anchors
+ * (`code`, by `anchorKey`), with exactly their Pending messages of then read and so frozen. A
+ * message arriving since waits for the next retrieval; one edited since is returned as it is now,
+ * and one deleted since is gone. The bundle and its receipt are recorded together, so a retry, even
+ * after later arrivals, returns this bundle; nothing a retrieval leaves out is frozen. Viewed is
+ * untouched.
  */
 export function pickUp(
   session: Session,
   request: ThreadsRequest,
   code: ReadonlyMap<string, ThreadCode>,
   updatedAt: string,
+  invoked: Session = session,
 ): Result.Result<PickupOutcome, BadArgs | ValidationFailed> {
   if (!request.requestId)
     return Result.fail(new BadArgs({ message: "threads needs a request id" }));
@@ -82,22 +94,45 @@ export function pickUp(
   if (Result.isFailure(recorded)) return Result.fail(recorded.failure);
   if (recorded.success) return Result.succeed({ result: recorded.success });
   const draft = draftOf(session);
-  const selected = new Set(threadsFor(session, request.mode).map(({ id }) => id));
+  const chosen = threadsFor(invoked, request.mode);
+  const bound = new Set(
+    chosen.flatMap(({ messages }) =>
+      messages.flatMap((message) =>
+        message.author === "human" && message.pending ? [message.id] : [],
+      ),
+    ),
+  );
+  const selected = new Set(chosen.map(({ id }) => id));
+  const codeOf = (anchor: CapturedRange): ThreadCode =>
+    code.get(anchorKey(anchor)) ?? {
+      kind: "unavailable",
+      reason: "its captured content could not be read",
+    };
+  const later = (message: Thread["messages"][number]) =>
+    message.author === "human" && message.pending && !bound.has(message.id);
   const threads: ThreadsPayload["threads"][number][] = [];
   for (const thread of draft.threads) {
-    if (!selected.has(thread.id)) continue;
+    if (!selected.has(thread.id) || thread.resolved) continue;
     const unread: string[] = [];
-    thread.messages = thread.messages.map((message) => {
-      if (message.author !== "human" || !message.pending) return message;
+    const messages = thread.messages.map((message) => {
+      if (message.author !== "human" || !message.pending || !bound.has(message.id)) return message;
       unread.push(message.id);
       return { ...message, pending: false };
     });
+    // Its Pending messages of then were all deleted since: nothing is left to pick up.
+    if (request.mode === "pending" && unread.length === 0) continue;
+    thread.messages = messages;
+    const returned = { ...thread, messages: messages.filter((message) => !later(message)) };
+    const earlier = new Map(
+      threadAnchorsOf(returned)
+        .slice(1)
+        .filter((anchor) => anchorKey(anchor) !== anchorKey(thread.anchor))
+        .map((anchor) => [anchorKey(anchor), anchor]),
+    );
     threads.push({
-      ...thread,
-      code: code.get(anchorKey(thread.anchor)) ?? {
-        kind: "unavailable",
-        reason: "its captured content could not be read",
-      },
+      ...returned,
+      code: codeOf(thread.anchor),
+      earlierCode: [...earlier.values()].map((anchor) => ({ anchor, code: codeOf(anchor) })),
       unread,
     });
   }
@@ -123,7 +158,8 @@ export function pickUp(
 
 /**
  * The captured sides a conversation action needs line counts of, by snapshot: a new comment's
- * range, and the `gyst:` references of a message it writes, which pin to the current snapshot.
+ * range, and the `gyst:` references of a message it writes, which pin to the snapshot current
+ * when its draft was begun, or for an edit to the current one.
  */
 export function conversationTargetsOf(
   request: ConversationRequest,
@@ -131,9 +167,13 @@ export function conversationTargetsOf(
 ): { readonly snapshotId: string; readonly range: CodeRange }[] {
   if (request.command === "draft" && request.target.kind === "comment")
     return [{ snapshotId: request.target.anchor.snapshotId, range: request.target.anchor }];
+  const snapshotId =
+    request.command === "send"
+      ? session.drafts.find(({ id }) => id === request.draft)?.snapshotId
+      : session.snapshotId;
   if ((request.command === "send" || request.command === "edit") && request.markdown !== undefined)
     return inspectMarkdown(request.markdown).references.map((range) => ({
-      snapshotId: session.snapshotId,
+      snapshotId: snapshotId ?? session.snapshotId,
       range,
     }));
   return [];
@@ -144,8 +184,9 @@ const idOf = (kind: string, requestId: string) => hash(`${kind}\0${requestId}`);
 /**
  * One human conversation action, all or nothing, with its receipt. A recorded `requestId` answers
  * first, so a retry after a lost reply gets its original result however the session moved on.
- * Actions name their targets, never a revision. `captured` indexes the snapshots
- * `conversationTargetsOf` names. Viewed is never touched.
+ * Actions name their targets, never a revision; an edit or deletion also names the message as
+ * the human read it. `captured` indexes the snapshots `conversationTargetsOf` names. Viewed is
+ * never touched.
  */
 export function converse(
   session: Session,
@@ -206,31 +247,46 @@ function act(
     draft.revision++;
     draft.updatedAt = updatedAt;
   };
-  /** The Markdown of a human message, its references pinned to the current snapshot. */
-  const written = (markdown: string): Result.Result<Wording, StaleRevision | ValidationFailed> => {
+  /**
+   * The Markdown of a human message, each reference pinned to `snapshotId` unless it is one of
+   * `kept`, the references it already had, which keep their pins: a correction rebinds nothing.
+   */
+  const written = (
+    markdown: string,
+    snapshotId: string,
+    kept: readonly CapturedRange[] = [],
+  ): Result.Result<Omit<Wording, "anchor">, StaleRevision | ValidationFailed> => {
     const { references, problems } = inspectMarkdown(markdown);
     if (problems.length) return invalid("the message breaks the rich-content policy", problems);
-    if (references.length === 0) return Result.succeed({ markdown, references: [] });
-    const index = indexOf(session.snapshotId);
-    if (!index)
+    const keptOf = (range: CodeRange) =>
+      kept.find(
+        (pin) =>
+          pin.path === range.path &&
+          pin.side === range.side &&
+          pin.startLine === range.startLine &&
+          pin.endLine === range.endLine,
+      );
+    const fresh = references.filter((range) => !keptOf(range));
+    const index = indexOf(snapshotId);
+    if (fresh.length && !index)
       return Result.fail(
         new StaleRevision({
           message: "the snapshot changed while the message was checked; send it again",
           detail: { snapshotId: session.snapshotId },
         }),
       );
-    const problemsOf = references.flatMap((range) => {
-      const problem = capturedProblem(index, range);
+    const problemsOf = fresh.flatMap((range) => {
+      const problem = capturedProblem(index!, range);
       return problem ? [`reference gyst:${range.side}/${range.path}: ${problem}`] : [];
     });
     if (problemsOf.length)
       return invalid("the message has references outside captured text", problemsOf);
     return Result.succeed({
       markdown,
-      references: references.map((range) => ({ snapshotId: session.snapshotId, ...range })),
+      references: references.map((range) => keptOf(range) ?? { snapshotId, ...range }),
     });
   };
-  /** The note's text as the human sees it; `seen` must still be it, so nothing rebinds unseen. */
+  /** The note as the human sees it; `seen` must still be its text, so nothing rebinds unseen. */
   const wordingOf = (id: string, seen: string | undefined) => {
     const note = noteOf(id)!;
     if (seen !== note.markdown)
@@ -240,11 +296,22 @@ function act(
           detail: { snapshotId: session.snapshotId, revision: session.revision },
         }),
       );
-    return Result.succeed({ markdown: note.markdown, references: note.references });
+    return Result.succeed({
+      markdown: note.markdown,
+      references: note.references,
+      anchor: note.anchor,
+    });
   };
   const reopenFirst = (id: string) =>
     invalid(`thread ${id} is resolved; reopen it before replying`, { thread: id });
-  const pendingOnly = (id: string) => {
+  /** A Pending human message, still as the human last read it (`seen`), so no edit overwrites unseen. */
+  const pendingOnly = (
+    id: string,
+    seen: Pick<HumanMessage, "markdown" | "kind">,
+  ): Result.Result<
+    { thread: MutableThread; index: number; message: HumanMessage },
+    StaleRevision | ValidationFailed
+  > => {
     const found = messageOf(id);
     if (!found) return invalid(`message ${id} does not exist`, { message: id });
     const { message } = found;
@@ -254,6 +321,13 @@ function act(
       return invalid(`message ${id} was already read; send a correction as a new reply`, {
         message: id,
       });
+    if (message.markdown !== seen.markdown || message.kind !== seen.kind)
+      return Result.fail(
+        new StaleRevision({
+          message: `message ${id} changed since it was read; read it again`,
+          detail: { snapshotId: session.snapshotId, revision: session.revision },
+        }),
+      );
     return Result.succeed({ ...found, message });
   };
 
@@ -273,7 +347,7 @@ function act(
         const index = indexOf(anchor.snapshotId);
         const problem = index ? capturedProblem(index, anchor) : "its captured lines were not read";
         if (problem) return invalid(`cannot comment there: ${problem}`, { anchor });
-        draft.drafts.push({ id, anchor });
+        draft.drafts.push({ id, snapshotId: session.snapshotId, anchor });
         return Result.succeed({ draft: id });
       }
       if (target.kind === "thread") {
@@ -285,6 +359,7 @@ function act(
         if (wording && Result.isFailure(wording)) return Result.fail(wording.failure);
         draft.drafts.push({
           id,
+          snapshotId: session.snapshotId,
           anchor: thread.anchor,
           thread: thread.id,
           ...(thread.note && { note: thread.note }),
@@ -300,6 +375,7 @@ function act(
       if (Result.isFailure(wording)) return Result.fail(wording.failure);
       draft.drafts.push({
         id,
+        snapshotId: session.snapshotId,
         anchor: note.anchor,
         ...(thread && { thread: thread.id }),
         note: { id: note.id, removed: false },
@@ -314,7 +390,7 @@ function act(
           draft: request.draft,
         });
       const pinned = draft.drafts[at]!;
-      const text = written(request.markdown);
+      const text = written(request.markdown, pinned.snapshotId);
       if (Result.isFailure(text)) return Result.fail(text.failure);
       const message: HumanMessage = {
         id: idOf("message", request.requestId),
@@ -347,12 +423,12 @@ function act(
       return Result.succeed({ thread: thread.id, message: message.id });
     }
     case "edit": {
-      const found = pendingOnly(request.message);
+      const found = pendingOnly(request.message, request.seen);
       if (Result.isFailure(found)) return Result.fail(found.failure);
       const { thread, index, message } = found.success;
       let edited: HumanMessage = { ...message, ...(request.kind && { kind: request.kind }) };
       if (request.markdown !== undefined) {
-        const text = written(request.markdown);
+        const text = written(request.markdown, session.snapshotId, message.references);
         if (Result.isFailure(text)) return Result.fail(text.failure);
         edited = { ...edited, ...text.success };
       }
@@ -361,7 +437,7 @@ function act(
       return Result.succeed({ thread: thread.id, message: message.id });
     }
     case "retract": {
-      const found = pendingOnly(request.message);
+      const found = pendingOnly(request.message, request.seen);
       if (Result.isFailure(found)) return Result.fail(found.failure);
       const { thread, index, message } = found.success;
       thread.messages.splice(index, 1);

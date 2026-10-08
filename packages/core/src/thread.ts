@@ -5,10 +5,14 @@ import { CapturedRangeSchema, MarkdownSchema } from "./guidance.ts";
 export const MessageKindSchema = Schema.Literals(["question", "change"]);
 export type MessageKind = typeof MessageKindSchema.Type;
 
-/** A note's text as a human reply was composed against it, kept however the note changes later. */
+/**
+ * A note as a human reply was composed against it, kept however the note changes or moves later:
+ * its text and the code it was anchored to then.
+ */
 export const WordingSchema = Schema.Struct({
   markdown: MarkdownSchema,
   references: Schema.Array(CapturedRangeSchema),
+  anchor: CapturedRangeSchema,
 });
 export type Wording = typeof WordingSchema.Type;
 
@@ -66,10 +70,12 @@ export type Thread = typeof ThreadSchema.Type;
 /**
  * The context of a message being composed, pinned so refresh cannot reclaim it: a new comment on
  * `anchor`, a reply in `thread`, or a reply to `note`, with the `wording` it was composed against.
- * Its text stays in the browser; the pin lasts until it is sent or discarded.
+ * `snapshotId` was current when it was begun: its message's `gyst:` links pin there. Its text
+ * stays in the browser; the pin lasts until it is sent or discarded.
  */
 export const DraftSchema = Schema.Struct({
   id: Schema.String,
+  snapshotId: Schema.String,
   anchor: CapturedRangeSchema,
   thread: Schema.optional(Schema.String),
   note: Schema.optional(NoteLinkSchema),
@@ -115,9 +121,11 @@ export const ThreadCodeSchema = Schema.Union([
 export type ThreadCode = typeof ThreadCodeSchema.Type;
 
 /**
- * One retrieval of threads for the agent. Each thread carries its whole history and its original
- * code; `unread` names the human messages this retrieval read, and so froze. `progress` (Viewed of
- * the current hunks) and `openThreads` tell an empty bundle from a review still being read.
+ * One retrieval of threads for the agent. Each thread carries its whole history and the captured
+ * code of its anchor; `earlierCode` adds the code of each note anchor a reply was composed against
+ * where the note has since moved. `unread` names the human messages this retrieval read, and so
+ * froze. `progress` (Viewed of the current hunks) and `openThreads` tell an empty bundle from a
+ * review still being read.
  */
 export const ThreadsPayloadSchema = Schema.Struct({
   sessionId: Schema.String,
@@ -129,6 +137,9 @@ export const ThreadsPayloadSchema = Schema.Struct({
     Schema.Struct({
       ...ThreadSchema.fields,
       code: ThreadCodeSchema,
+      earlierCode: Schema.Array(
+        Schema.Struct({ anchor: CapturedRangeSchema, code: ThreadCodeSchema }),
+      ),
       unread: Schema.Array(Schema.String),
     }),
   ),
