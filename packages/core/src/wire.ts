@@ -9,9 +9,15 @@ import {
 } from "./content.ts";
 import { ErrorPayloadSchema } from "./errors.ts";
 import { PullRequestNumberSchema, PullRequestStatusSchema } from "./github.ts";
-import { CodeSideSchema, LineNumberSchema } from "./guidance.ts";
+import {
+  CapturedRangeSchema,
+  CodeSideSchema,
+  LineNumberSchema,
+  MarkdownSchema,
+} from "./guidance.ts";
 import { AddonStateSchema } from "./navigation.ts";
 import { HunkSchema, ScopeSchema, SessionSummarySchema } from "./session.ts";
+import { MessageKindSchema } from "./thread.ts";
 
 // `@gyst/core/wire` is the browser-safe entry: every contract the browser needs, without the
 // Node-only snapshot parsing and hashing the root `@gyst/core` export pulls in.
@@ -97,6 +103,34 @@ export {
   type ViewedPayload,
   ViewedPayloadSchema,
 } from "./session.ts";
+export {
+  type AgentMessage,
+  AgentMessageSchema,
+  type ConversationResult,
+  ConversationResultSchema,
+  type ConversationsPayload,
+  ConversationsPayloadSchema,
+  type Draft,
+  DraftSchema,
+  type HumanMessage,
+  HumanMessageSchema,
+  type Message,
+  type MessageKind,
+  MessageKindSchema,
+  MessageSchema,
+  type NoteLink,
+  NoteLinkSchema,
+  type Thread,
+  type ThreadCode,
+  ThreadCodeSchema,
+  type ThreadCounts,
+  ThreadCountsSchema,
+  ThreadSchema,
+  type ThreadsPayload,
+  ThreadsPayloadSchema,
+  type Wording,
+  WordingSchema,
+} from "./thread.ts";
 
 export const DiffPayloadSchema = Schema.Struct({
   sessionId: Schema.String,
@@ -496,6 +530,77 @@ export const BrowserRequestSchema = Schema.Union([
     viewed: Schema.Boolean,
   }),
   /**
+   * Every conversation and draft pin of the session, Pending bodies included, for their author.
+   * Reading freezes nothing: only the agent's retrieval (`threads`) reads a message.
+   */
+  Schema.Struct({ command: Schema.Literal("conversations"), ...exact }),
+  /**
+   * Human conversation actions. Each `requestId` is chosen before sending and reused for every
+   * retry, like `delete`; they name their targets, never a revision, so an agent's publication
+   * meanwhile does not refuse them. The socket cannot carry any of them.
+   *
+   * `draft` pins what a message is composed against before it is written: a new comment on a
+   * captured range of the current or a retained snapshot, a reply in a thread, or a reply to a
+   * note. A reply to a note, or in its thread, names the note `wording` the human sees; it must
+   * still be the note's text.
+   */
+  Schema.Struct({
+    command: Schema.Literal("draft"),
+    ...exact,
+    requestId: Schema.String,
+    target: Schema.Union([
+      Schema.Struct({ kind: Schema.Literal("comment"), anchor: CapturedRangeSchema }),
+      Schema.Struct({ kind: Schema.Literal("thread"), thread: Schema.String }),
+      Schema.Struct({ kind: Schema.Literal("note"), note: Schema.String }),
+    ]),
+    wording: Schema.optional(MarkdownSchema),
+  }),
+  /** Posts the message composed in `draft`, Pending, and releases the draft's pin. */
+  Schema.Struct({
+    command: Schema.Literal("send"),
+    ...exact,
+    requestId: Schema.String,
+    draft: Schema.String,
+    markdown: MarkdownSchema,
+    kind: MessageKindSchema,
+  }),
+  /** Edits a Pending human message's text or kind; once read it is frozen. */
+  Schema.Struct({
+    command: Schema.Literal("edit"),
+    ...exact,
+    requestId: Schema.String,
+    message: Schema.String,
+    markdown: Schema.optional(MarkdownSchema),
+    kind: Schema.optional(MessageKindSchema),
+  }).check(
+    Schema.makeFilter(
+      ({ markdown, kind }) =>
+        markdown !== undefined || kind !== undefined || "edit needs markdown or kind",
+    ),
+  ),
+  /** Deletes a Pending human message; a thread left with no message disappears, its note stays. */
+  Schema.Struct({
+    command: Schema.Literal("retract"),
+    ...exact,
+    requestId: Schema.String,
+    message: Schema.String,
+  }),
+  /** Resolves (or, with `resolved: false`, reopens) a thread. */
+  Schema.Struct({
+    command: Schema.Literal("resolve"),
+    ...exact,
+    requestId: Schema.String,
+    thread: Schema.String,
+    resolved: Schema.Boolean,
+  }),
+  /** Releases a draft's pin without sending it. */
+  Schema.Struct({
+    command: Schema.Literal("discard"),
+    ...exact,
+    requestId: Schema.String,
+    draft: Schema.String,
+  }),
+  /**
    * Navigation readiness of the session's current snapshot. `recheck` (Check again) has the daemon
    * look for the add-on again first, on the PATH the session was last opened with.
    */
@@ -533,6 +638,18 @@ export const RequestSchema = Schema.Union([
   ...reviewRequests,
   /** `batch` is the JSON apply envelope text; the use case validates it against `ApplyEnvelopeSchema`. */
   Schema.Struct({ command: Schema.Literal("apply"), ...exact, batch: Schema.String }),
+  /**
+   * The agent's retrieval of threads, one atomic mutation: `pending` takes the open threads with a
+   * Pending message as they are now, `open` every open thread. Either reads, and so freezes, exactly
+   * the Pending messages it returns. `requestId` is chosen before sending and reused for every
+   * retry, which returns the recorded bundle however the threads moved on.
+   */
+  Schema.Struct({
+    command: Schema.Literal("threads"),
+    ...exact,
+    mode: Schema.Literals(["pending", "open"]),
+    requestId: Schema.String,
+  }),
 ]);
 export type Request = typeof RequestSchema.Type;
 

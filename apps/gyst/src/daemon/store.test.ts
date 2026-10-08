@@ -26,6 +26,10 @@ const session = (id: string): Session => ({
   applyReceipts: [],
   viewedReceipts: [],
   refreshReceipts: [],
+  threads: [],
+  drafts: [],
+  conversationReceipts: [],
+  pickupReceipts: [],
 });
 
 const run = <A, E>(effect: Effect.Effect<A, E, SessionStore>) =>

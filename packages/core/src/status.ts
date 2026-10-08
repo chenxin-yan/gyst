@@ -1,5 +1,6 @@
 import { Struct } from "effect";
 import type { Preparation, Session, SessionSummary, StatusPayload } from "./session.ts";
+import type { ThreadCounts } from "./thread.ts";
 
 export const summaryOf = (session: Session): SessionSummary =>
   Struct.pick(session, ["id", "repoRoot", "scope", "snapshotId", "createdAt", "updatedAt"]);
@@ -43,6 +44,18 @@ function preparationOf(session: Session): Preparation {
   };
 }
 
+/** Open and resolved threads, and the Pending human messages anywhere; never a message body. */
+function threadCountsOf(session: Session): ThreadCounts {
+  let open = 0;
+  let pending = 0;
+  for (const thread of session.threads) {
+    if (!thread.resolved) open++;
+    for (const message of thread.messages)
+      if (message.author === "human" && message.pending) pending++;
+  }
+  return { open, resolved: session.threads.length - open, pending };
+}
+
 export function statusOf(session: Session): StatusPayload {
   const viewed = new Set(session.viewedHunkIds);
   const generated = new Set(session.generatedFiles);
@@ -61,6 +74,7 @@ export function statusOf(session: Session): StatusPayload {
     groups: session.groups.map((group) => ({ ...group, count: group.hunkIds.length })),
     preparation: preparationOf(session),
     viewedHunkIds: [...session.viewedHunkIds],
+    threads: threadCountsOf(session),
     files: [...files].map(([path, file]) => ({
       path,
       ...file,
