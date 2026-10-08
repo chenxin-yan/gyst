@@ -3985,7 +3985,7 @@ describe("installed gyst in a sandboxed browser", () => {
       `Definition of plus · new side · snapshot ${session.snapshot}`,
     );
     expect(await optionsOf(definitions)).toEqual([
-      `src/math.ts${placeOf(3, at(newMath, 3, "add").character)}`,
+      `math.tssrc/ · ${placeOf(3, at(newMath, 3, "add").character)}`,
     ]);
     await waitFor(async () => (await markedOf(page)).join("") === "add", "add previewed");
     expect(
@@ -4015,8 +4015,8 @@ describe("installed gyst in a sandboxed browser", () => {
     const usages = peek.getByRole("listbox", { name: "Usages" });
     await usages.waitFor();
     expect(await optionsOf(usages)).toEqual([
-      `src/math.ts${placeOf(3, at(newMath, 3, "first").character)}`,
-      `src/math.ts${placeOf(4, at(newMath, 4, "first").character)}`,
+      `math.tssrc/ · ${placeOf(3, at(newMath, 3, "first").character)}`,
+      `math.tssrc/ · ${placeOf(4, at(newMath, 4, "first").character)}`,
     ]);
     await waitFor(() => hasFocus(usages), "the usages focused");
     await page.keyboard.press("j");
@@ -4076,8 +4076,8 @@ describe("installed gyst in a sandboxed browser", () => {
       `Usages of plus · old side · snapshot ${session.snapshot}`,
     );
     expect(await optionsOf(usages)).toEqual([
-      `src/use.ts${placeOf(1, at(oldUse, 1, "plus").character)}`,
-      `src/use.ts${placeOf(2, at(oldUse, 2, "plus").character)}`,
+      `use.tssrc/ · ${placeOf(1, at(oldUse, 1, "plus").character)}`,
+      `use.tssrc/ · ${placeOf(2, at(oldUse, 2, "plus").character)}`,
     ]);
 
     // A right-click on a symbol offers both of its queries, without the browser's menu.
@@ -4098,7 +4098,7 @@ describe("installed gyst in a sandboxed browser", () => {
     await page.keyboard.press("Enter");
     await definitions.waitFor();
     expect(await optionsOf(definitions)).toEqual([
-      `src/math.ts${placeOf(3, at(newMath, 3, "add").character)}`,
+      `math.tssrc/ · ${placeOf(3, at(newMath, 3, "add").character)}`,
     ]);
     await page.keyboard.press("Escape");
     await peek.waitFor({ state: "detached" });
@@ -4173,7 +4173,7 @@ describe("installed gyst in a sandboxed browser", () => {
     const definitions = peek.getByRole("listbox", { name: "Definitions" });
     await definitions.waitFor({ timeout: 30_000 });
     expect(await optionsOf(definitions)).toEqual([
-      `src/math.ts${placeOf(3, at(newMath, 3, "add").character)}`,
+      `math.tssrc/ · ${placeOf(3, at(newMath, 3, "add").character)}`,
     ]);
     const rechecks = asked.filter(
       (operation) => operation.command === "navigation" && operation.recheck,

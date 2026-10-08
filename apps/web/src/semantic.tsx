@@ -343,10 +343,14 @@ export function SemanticPeekView(props: {
         <Listbox
           label={stage.choice.query === "definition" ? "Definitions" : "Usages"}
           selected={stage.selected}
-          rows={stage.locations.map(({ file, range }) => ({
-            title: file,
-            meta: `line ${range.start.line}, column ${range.start.character + 1}`,
-          }))}
+          // The file's name first: a monorepo's directories would push it out of the row.
+          rows={stage.locations.map(({ file, range }) => {
+            const slash = file.lastIndexOf("/");
+            return {
+              title: file.slice(slash + 1),
+              meta: `${slash >= 0 ? `${file.slice(0, slash + 1)} · ` : ""}line ${range.start.line}, column ${range.start.character + 1}`,
+            };
+          })}
           onPick={(index) => props.onSelect({ index })}
         />
       );
