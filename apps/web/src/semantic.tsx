@@ -368,9 +368,8 @@ export function SemanticPeekView(props: {
         <div {...stylex.props(styles.footer)}>
           {stage.outside > 0 && (
             <p role="note">
-              {stage.outside} more {stage.outside === 1 ? "lies" : "lie"} outside the captured
-              files, in packages gyst never captures, and {stage.outside === 1 ? "isn't" : "aren't"}{" "}
-              shown.
+              {stage.outside} more {stage.outside === 1 ? "lies" : "lie"} outside the captured files
+              and {stage.outside === 1 ? "isn't" : "aren't"} shown.
             </p>
           )}
           {stage.gaps.length > 0 && <Incomplete gaps={stage.gaps} empty={empty} />}
