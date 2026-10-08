@@ -4875,6 +4875,17 @@ describe("installed gyst in a sandboxed browser", () => {
     await inPlace.fill("Also twenty?");
     await inPlace.press("Enter");
     await threadOf("Third?").getByText("Also twenty?").waitFor();
+
+    // A link followed in Comments closes Comments and expands its target in the panel; Back returns.
+    await keys(page, "Shift+C");
+    const listed = comments.locator(`[data-thread="${first}"]`);
+    await listed.getByRole("button", { name: /a\.ts:L19/ }).click();
+    await listed.getByRole("button", { name: "line 40" }).click();
+    await comments.waitFor({ state: "detached" });
+    await headingsAre(page, ["src/long.ts"]);
+    await says(page, "long.ts:40 · new");
+    await keys(page, "Backspace");
+    await headingsAre(page, ["walk/b.ts", "walk/a.ts"]);
     expect(writes).toEqual([]);
   }, 60_000);
 

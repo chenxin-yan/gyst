@@ -1816,8 +1816,9 @@ function SessionReader(props: {
   };
   /**
    * A thread where it is read, in the panel or in Comments, with its reply composer if open here.
-   * In the panel its links peek beside it; Comments, a dialog, expands them instead. A reply to a
-   * thread the panel shows is written there, so Comments closes for it (`onShow`).
+   * In the panel its links peek beside it; from Comments, a dialog, Comments closes and the panel
+   * expands them, Back returning. A reply to a thread the panel shows is written there, so Comments
+   * closes for it (`onShow`).
    */
   const threadCard = (thread: Thread, located: boolean, composer: boolean, onShow?: () => void) => {
     const draft = composer && draftNow?.thread === thread.id ? draftNow : undefined;
@@ -1842,9 +1843,11 @@ function SessionReader(props: {
         }}
         onResolve={() => void setResolved(thread.id, !thread.resolved)}
         act={conversations.act}
-        onReference={
-          located ? expand : (target) => follow(target, { kind: "thread", threadId: thread.id })
-        }
+        onReference={(target) => {
+          if (!located) return follow(target, { kind: "thread", threadId: thread.id });
+          setDialog(undefined);
+          expand(target);
+        }}
         refocus={
           !located && refocus?.origin.kind === "thread" && refocus.origin.threadId === thread.id
             ? refocus.target
