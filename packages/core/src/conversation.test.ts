@@ -202,29 +202,46 @@ describe("human conversation actions", () => {
       note: { id: "n1", removed: false },
       messages: [{ wording: { markdown: "About B.", references: [] } }],
     });
-    // The agent rewrites the note; a later reply, in the same thread, keeps the new wording.
-    const rewritten = Result.getOrThrow(
-      applyBatch(
-        first.session,
-        {
-          revision: first.session.revision,
-          snapshotId: SNAPSHOT,
-          idempotencyKey: "rewrite",
-          ops: [{ type: "note.update", id: "n1", markdown: "B, explained better." }],
-        },
-        captured[0]!,
-        LATER,
-      ),
-    ).session!;
+    // The agent rewrites the note twice; each later reply, in the same thread, keeps the wording
+    // it was composed against, and a draft begun before a rewrite keeps the older one.
+    const rewrite = (session: Session, markdown: string) =>
+      Result.getOrThrow(
+        applyBatch(
+          session,
+          {
+            revision: session.revision,
+            snapshotId: SNAPSHOT,
+            idempotencyKey: markdown,
+            ops: [{ type: "note.update", id: "n1", markdown }],
+          },
+          captured[0]!,
+          LATER,
+        ),
+      ).session!;
+    const rewritten = rewrite(first.session, "B, explained better.");
     const second = post(rewritten, { kind: "note", note: "n1" }, "Thanks, and C?", {
       wording: "B, explained better.",
     });
-    expect(second.session.threads).toHaveLength(1);
+    const begun = done(second.session, "d3", {
+      command: "draft",
+      target: { kind: "note", note: "n1" },
+      wording: "B, explained better.",
+    });
+    const again = rewrite(begun.session!, "B, explained a third way.");
+    const third = done(again, "s3", {
+      command: "send",
+      draft: begun.result.draft!,
+      markdown: "Which is it?",
+      kind: "question",
+    }).session!;
+    expect(third.threads).toHaveLength(1);
     expect(
-      second.session.threads[0]!.messages.map(
+      third.threads[0]!.messages.map(
         (message) => "wording" in message && message.wording?.markdown,
       ),
-    ).toEqual(["About B.", "B, explained better."]);
+    ).toEqual(["About B.", "B, explained better.", "B, explained better."]);
+    // Every wording keeps its references' snapshots pinned.
+    expect(Schema.decodeUnknownSync(SessionSchema)(third)).toEqual(third);
   });
 
   it("lets only Pending human messages change, never once read or an agent's", () => {

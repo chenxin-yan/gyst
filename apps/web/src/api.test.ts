@@ -130,8 +130,21 @@ describe("operation", () => {
 });
 
 describe("events", () => {
-  const ready = { kind: "ready", daemon: "d1", sessionId: "s-1", snapshotId: "abc", revision: 2 };
-  const changed = { kind: "changed", sessionId: "s-1", snapshotId: "abc", revision: 3 };
+  const ready = {
+    kind: "ready",
+    daemon: "d1",
+    sessionId: "s-1",
+    snapshotId: "abc",
+    revision: 2,
+    conversations: "v1",
+  };
+  const changed = {
+    kind: "changed",
+    sessionId: "s-1",
+    snapshotId: "abc",
+    revision: 3,
+    conversations: "v1",
+  };
   const deleted = { kind: "deleted", sessionId: "s-1" };
   /** The viewer's WebSocket, driven by the test as the daemon would drive it. */
   class FakeSocket extends EventTarget {
