@@ -1,13 +1,13 @@
-import { execFileSync, spawn } from "node:child_process";
+import { execFileSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { mkdir, readdir, readFile, writeFile } from "node:fs/promises";
 import { get as httpGet } from "node:http";
 import { join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
-import { describe, expect, it, onTestFinished } from "vite-plus/test";
+import { describe, expect, it } from "vite-plus/test";
 
 import packageJson from "../../package.json" with { type: "json" };
-import { failed, installed, json, sandbox, succeeded, waitFor } from "./installed-gyst.ts";
+import { failed, installed, json, sandbox, succeeded, viewerLink } from "./installed-gyst.ts";
 
 const repoRoot = fileURLToPath(new URL("../../../../", import.meta.url));
 
@@ -45,7 +45,7 @@ describe("installed gyst CLI", () => {
     expect(existsSync(env.GYST_DATA_DIR!)).toBe(false);
   }, 20_000);
 
-  it("serves the packaged viewer for bare gyst until SIGINT, leaving the session to the CLI", async () => {
+  it("prints the daemon-served link for bare gyst and exits, as session open replies with it", async () => {
     const { root, env, gyst } = await sandbox();
     const cwd = join(root, "repo");
     const git = (...args: string[]) => execFileSync("git", args, { cwd, env, stdio: "ignore" });
@@ -64,48 +64,15 @@ describe("installed gyst CLI", () => {
     );
     await writeFile(join(cwd, "new.txt"), "hello\n");
 
-    const viewer = spawn(installed.bin, [], { cwd, env, stdio: ["ignore", "pipe", "pipe"] });
-    // Exit (or spawn failure) is recorded from the start, so cleanup can await it.
-    let exit: number | NodeJS.Signals | Error | undefined;
-    viewer.once("error", (error) => (exit ??= error));
-    viewer.once("close", (code, signal) => (exit ??= code ?? signal ?? "SIGKILL"));
-    const exited = async (description: string) => {
-      await waitFor(() => exit !== undefined, description);
-      if (exit instanceof Error) throw exit;
-      return exit;
-    };
-    // onTestFinished hooks run in reverse, so this finishes before the sandbox is removed.
-    onTestFinished(async () => {
-      if (exit === undefined) viewer.kill("SIGKILL");
-      await waitFor(() => exit !== undefined, "the viewer to exit during cleanup");
-    });
-    let stdout = "";
-    let stderr = "";
-    viewer.stdout.setEncoding("utf8").on("data", (chunk: string) => (stdout += chunk));
-    viewer.stderr.setEncoding("utf8").on("data", (chunk: string) => (stderr += chunk));
-    await waitFor(
-      () => stdout.includes("Press Ctrl-C") || exit !== undefined,
-      "the viewer to print its launch URL",
-      10_000,
-    );
-    if (exit !== undefined) throw new Error(`the viewer exited ${String(exit)} early: ${stderr}`);
-    // The URL carries the bootstrap secret, so only its shape is compared, never printed.
-    const url = stdout.split("\n").find((line) => line.startsWith("http://"));
-    const launch = url?.match(
-      /^http:\/\/(g-[0-9a-f]{32}\.localhost):(\d+)\/session\/([^/#]+)#[\w-]{43}$/,
-    );
-    expect(launch !== null && launch !== undefined).toBe(true);
-    const [, hostname, port, id] = launch!;
-
-    const served = await new Promise<{ status: number | undefined; body: string }>(
-      (resolve, reject) => {
+    // Bare gyst opens the session, prints its link and exits; without a terminal it opens no browser.
+    const opened = succeeded(await gyst(cwd, []));
+    const { link, port, id } = viewerLink(opened.stdout);
+    expect(opened.stdout).toBe(`${link}\n`);
+    expect(port).toBe(Number(env.GYST_PORT));
+    const get = (path: string, host = `localhost:${port}`) =>
+      new Promise<{ status: number | undefined; body: string }>((resolve, reject) => {
         const request = httpGet(
-          {
-            host: "127.0.0.1",
-            port,
-            path: `/session/${id}`,
-            headers: { host: `${hostname}:${port}` },
-          },
+          { host: "127.0.0.1", port, path, headers: { host } },
           (response) => {
             let body = "";
             response.once("error", reject);
@@ -115,16 +82,25 @@ describe("installed gyst CLI", () => {
         );
         request.setTimeout(5_000, () => request.destroy(new Error("shell request timed out")));
         request.once("error", reject);
-      },
-    );
+      });
+    // The daemon serves the packaged viewer after the command exits, at the link's own path.
+    const served = await get(new URL(link).pathname);
     expect(served.status).toBe(200);
     expect(served.body).toContain('<div id="app">');
+    const asset = served.body.match(/src="(\/assets\/[^"]+\.js)"/)?.[1];
+    expect((await get(asset!)).status).toBe(200);
+    expect((await get("/", `attacker.example:${port}`)).status).toBe(403);
 
-    viewer.kill("SIGINT");
-    expect(await exited("the viewer to exit on SIGINT")).toBe(130);
+    // `session open` takes the same selection and replies with the same link, opening nothing.
+    expect(json(await gyst(cwd, ["session", "open"]))).toMatchObject({
+      created: false,
+      session: { id },
+      link,
+    });
     expect(json(await gyst(cwd, ["session", "list"])).sessions).toEqual([
-      expect.objectContaining({ id: decodeURIComponent(id!), scope: { kind: "uncommitted" } }),
+      expect.objectContaining({ id, scope: { kind: "uncommitted" } }),
     ]);
+    expect(succeeded(await gyst(cwd, ["--session", id])).stdout).toBe(`${link}\n`);
   }, 30_000);
 
   it("reports the package version", async () => {

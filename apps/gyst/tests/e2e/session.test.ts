@@ -180,7 +180,9 @@ describe("gyst session CLI seam", () => {
     const failure = async (args: string[]) => failed(await gyst(cwd, ["session", ...args]));
     const opened = json(await gyst(cwd, ["session", "open"]));
     expect(opened.session.scope).toEqual({ kind: "uncommitted" });
-    expect(opened.launch).toEqual({ argv: ["gyst", "--session", opened.session.id] });
+    expect(opened.link).toBe(
+      `http://localhost:${box.env.GYST_PORT}/session/${encodeURIComponent(opened.session.id)}`,
+    );
     const range = json(await gyst(cwd, ["session", "open", "HEAD..HEAD"]));
     expect(range.session.scope).toEqual({ kind: "range", range: "HEAD..HEAD" });
     expect(json(await gyst(cwd, ["session", "open", "--session", range.session.id]))).toEqual(

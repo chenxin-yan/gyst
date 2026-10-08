@@ -1,6 +1,6 @@
-// The packed navigation add-on with the installed gyst: npm installs, launch-PATH discovery and
-// Check again through a real launch's HTTP bridge, and the daemon's engines on the add-on's own
-// pinned TypeScript, observed as processes.
+// The packed navigation add-on with the installed gyst: npm installs, discovery on the PATH the
+// session was last opened with and Check again through the daemon's HTTP viewer, and the daemon's
+// engines on the add-on's own pinned TypeScript, observed as processes.
 import { navigationAddon, navigationInstallCommand } from "@gyst/core";
 import { execFileSync, spawnSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
@@ -272,7 +272,7 @@ describe("TS/JS navigation through the installed add-on", () => {
     const daemon = await daemonPid(box.data);
 
     await npm(box.root, "install", "--global", "--prefix", prefix, navigation.tarball);
-    // The launch keeps its discovery until Check again.
+    // The daemon keeps the session's discovery until Check again.
     expect((await status()).addon).toEqual({ kind: "missing", install });
     expect(await status(true)).toMatchObject({
       addon: { kind: "available", version },
@@ -285,10 +285,10 @@ describe("TS/JS navigation through the installed add-on", () => {
     expect(isAlive(daemon)).toBe(true);
   }, 240_000);
 
-  it("needs a new launch for an add-on whose prefix is not on the launch PATH", async () => {
+  it("finds an add-on in another prefix once gyst opens the session again from a PATH that has it", async () => {
     const box = await sandbox();
     const cwd = await math(box, "other-prefix");
-    // The shared install exists, but its bin directory is not on this launch's PATH.
+    // The shared install exists, but its bin directory is not on this invocation's PATH.
     const first = await launchViewer([], { cwd, env: launchEnv(box) });
     const before = await queries(first);
     expect((await before.status(true)).addon).toEqual({ kind: "missing", install });
@@ -303,11 +303,8 @@ describe("TS/JS navigation through the installed add-on", () => {
     expect(
       located(await after.definition("old", "src/use.ts", at(oldUse, 2, "plus"))).locations,
     ).toEqual([{ file: "src/math.ts", range: span(oldMath, 1, "add") }]);
-    // Each launch keeps its own discovery; the first still cannot see the other prefix.
-    expect((await before.status(true)).addon).toEqual({ kind: "missing", install });
-    expect((await before.definition("old", "src/use.ts", at(oldUse, 2, "plus"))).outcome).toEqual(
-      addonUnavailable({ kind: "missing", install }),
-    );
+    // The daemon keeps the latest invocation's PATH for the session, whichever tab asks.
+    expect((await before.status(true)).addon).toEqual({ kind: "available", version });
     expect(await daemonPid(box.data)).toBe(daemon);
   }, 60_000);
 
@@ -500,7 +497,7 @@ describe("TS/JS navigation through the installed add-on", () => {
       { "package.json": packageJson, "src/pad.js": pad },
       { "src/pad.js": `${pad}export const padded = pad("a");\n` },
     );
-    // The launch starts the daemon, so the fake npm is first on both of their PATHs.
+    // The command starts the daemon, so the fake npm is first on both of their PATHs.
     const viewer = await launchViewer([], { cwd, env: launchEnv(box, fake, navigationBin) });
     const { definition, references } = await queries(viewer);
     const daemon = await daemonPid(box.data);
@@ -599,7 +596,16 @@ describe("TS/JS navigation through the installed add-on", () => {
     git(box, cwd, "commit", "-qam", "move add");
     await write(cwd, { "src/use.ts": `${newUse}export const five = plus(four, 1);\n` });
     const viewer = await launchViewer([], { cwd, env: launchEnv(box, navigationBin) });
-    const range = json(await box.gyst(cwd, ["session", "open", "HEAD~1..HEAD"])).session.id;
+    // Each session finds the add-on on the PATH it was last opened with, which a restarted daemon
+    // learns again from the next open.
+    const openRange = async (...selection: string[]) =>
+      json(
+        await run(installed.bin, ["session", "open", ...selection], {
+          cwd,
+          env: launchEnv(box, navigationBin),
+        }),
+      ).session.id;
+    const range = await openRange("HEAD~1..HEAD");
     const a = await queries(viewer);
     const b = await queries(viewer, range);
     let most = 0;
@@ -638,6 +644,7 @@ describe("TS/JS navigation through the installed add-on", () => {
 
     // A SIGKILLed daemon cannot stop its engine; the engine is told the daemon's processId and
     // loses its stdin. What happens is recorded, not required.
+    expect(await openRange("--session", range)).toBe(range);
     await plus(b, "new");
     const [engine] = engines(navigation.prefix);
     const killedAt = performance.now();
@@ -652,6 +659,7 @@ describe("TS/JS navigation through the installed add-on", () => {
     );
     expect(left).toHaveLength(1);
     // The next daemon clears the crashed one's materialization when navigation is next used.
+    expect(await openRange("--session", range)).toBe(range);
     await plus(b, "new");
     expect(await navigationDirs(box.data)).toHaveLength(1);
     expect(await navigationDirs(box.data)).not.toEqual(left);
@@ -675,7 +683,7 @@ describe("TS/JS navigation over this repository", () => {
     git(box, clone, "commit", "-qam", "add navigationUpdateCommand");
     const server = "apps/gyst/src/daemon/server.ts";
     const serverText = await readFile(join(clone, server), "utf8");
-    const addonFile = "apps/gyst/src/web/navigation-addon.ts";
+    const addonFile = "apps/gyst/src/daemon/navigation-addon.ts";
     const addonText = await readFile(join(clone, addonFile), "utf8");
     // Only the core file changes, and only after its last line, so these positions hold on both sides.
     const lineOf = (text: string, pattern: RegExp) => {
@@ -704,7 +712,10 @@ describe("TS/JS navigation over this repository", () => {
     };
     const declaration = lineOf(oldCore, /^export const navigationInstallCommand\b/);
     const declared = at(oldCore, declaration, "navigationInstallCommand");
-    const sessionsImport = lineOf(serverText, /^import \{ Sessions \} from "\.\/sessions\.ts";$/);
+    const sessionsImport = lineOf(
+      serverText,
+      /^import \{ type Opened, Sessions \} from "\.\/sessions\.ts";$/,
+    );
     const coreImport = lineOf(addonText, /from "@gyst\/core";$/);
 
     const newCold = await timed(() =>

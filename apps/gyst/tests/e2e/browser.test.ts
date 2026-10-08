@@ -1,12 +1,12 @@
-// The installed gyst in a real sandboxed Chromium: real foreground launches, their daemon and bridge,
-// and a private key-authenticated SSH local forward. Hard states (a held or lost reply, a broken
-// daemon answer) are produced by Playwright routing in front of the real bridge.
+// The installed gyst in a real sandboxed Chromium: real one-shot commands, the daemon that serves
+// their links, and a private key-authenticated SSH local forward. Hard states (a held or lost
+// reply, a broken daemon answer) are produced by Playwright routing in front of the real daemon.
 import { type ChildProcess, execFileSync, spawn, spawnSync } from "node:child_process";
 import { randomBytes, randomUUID } from "node:crypto";
 import { accessSync, constants } from "node:fs";
 import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { createServer as createHttpServer, request as httpRequest } from "node:http";
-import { type AddressInfo, createServer } from "node:net";
+import type { AddressInfo } from "node:net";
 import { homedir, userInfo } from "node:os";
 import { delimiter, join } from "node:path";
 import {
@@ -20,6 +20,7 @@ import {
 import { afterAll, beforeAll, describe, expect, it, onTestFinished } from "vite-plus/test";
 
 import { type FakeGh, type FakePullRequest, fakeGh, githubOrigin } from "../github.ts";
+import { freePort } from "../http.ts";
 import {
   commandLine,
   daemonPid,
@@ -31,20 +32,14 @@ import {
   killDaemon,
   run,
   stopDaemon,
+  succeeded,
+  viewerLink,
   waitFor,
 } from "./installed-gyst.ts";
 
 type Owned = { name: string; child: ChildProcess; out: string; exit?: number | string };
-type Launch = {
-  proc: Owned;
-  hostname: string;
-  port: number;
-  path: string;
-  id: string;
-  origin: string;
-  url: string;
-  secret: string;
-};
+/** The link a one-shot `gyst` printed, and its parts. */
+type Launch = { port: number; path: string; id: string; origin: string; url: string };
 
 const hostile = '<img src=x onerror="window.injected=1">';
 /** src/long.ts: 300 numbered lines; the uncommitted edit doubles 100–110 and 114–180. */
@@ -93,7 +88,6 @@ async function start(name: string, file: string, args: string[], cwd: string, re
     `${name} to be ready`,
     20_000,
   );
-  // stdout is left out: a launch prints its secret-bearing URL there.
   if (proc.exit !== undefined) throw new Error(`${name} exited ${proc.exit} early:\n${log}`);
   return Object.assign(proc, { log: () => log });
 }
@@ -104,39 +98,14 @@ async function stop(proc: Owned, signal: NodeJS.Signals) {
   return proc.exit;
 }
 
-/** One foreground `gyst` launch from `cwd`; stopped with SIGINT like Ctrl-C. */
+/** One `gyst` from `cwd`: it opens or reuses the session, prints its link and exits. */
 async function launchIn(cwd: string, ...args: string[]): Promise<Launch> {
-  const proc = await start(`gyst ${args.join(" ")}`, installed.bin, args, cwd, "Press Ctrl-C");
-  const url = proc.out.split("\n").find((line) => line.startsWith("http://")) ?? "";
-  const match = /^http:\/\/(g-[0-9a-f]{32}\.localhost):(\d+)(\/session\/[^#]+)#([\w-]{43})$/.exec(
-    url,
-  );
-  // The URL carries the bootstrap secret, so only its shape is reported.
-  if (!match) throw new Error("the launch URL lacks the .localhost host, session path or secret");
-  const [, hostname = "", port = "", path = "", secret = ""] = match;
-  return {
-    proc,
-    hostname,
-    port: Number(port),
-    path,
-    id: decodeURIComponent(path.slice("/session/".length)),
-    origin: `http://${hostname}:${port}`,
-    url,
-    secret,
-  };
+  const opened = succeeded(await run(installed.bin, args, { cwd, env, timeout: 60_000 }));
+  const { link, port, id } = viewerLink(opened.stdout);
+  const url = new URL(link);
+  return { port, path: url.pathname, id, origin: url.origin, url: link };
 }
 const launch = (...args: string[]) => launchIn(repo, ...args);
-
-/** Opens a launch link; Playwright's failure message quotes the URL, so its secret is masked. */
-async function go(page: Page, url: string) {
-  const secret = new URL(url).hash.slice(1);
-  try {
-    await page.goto(url);
-  } catch (error) {
-    // oxlint-disable-next-line preserve-caught-error -- the original error quotes the secret
-    throw new Error(String(error).replaceAll(secret, "<secret>"));
-  }
-}
 
 const gyst = async (...args: string[]) => json(await run(installed.bin, args, { cwd: repo, env }));
 const git = (...args: string[]) => execFileSync("git", args, { cwd: repo, env, stdio: "ignore" });
@@ -156,7 +125,7 @@ const operationsInFlight = new WeakMap<Page, Set<PageRequest>>();
  * A page closed after its test, which must see exactly the listed HTTP error responses
  * (`<path> <status>`) and problems: failed requests, page errors and console errors. Chromium's
  * "Failed to load resource" lines only repeat those responses and failures. A session page's
- * event stream fails by design whenever it is left, closed or its launcher stops, so only its
+ * event stream fails by design whenever it is left, closed or its daemon stops, so only its
  * responses count.
  */
 async function newPage(
@@ -212,7 +181,7 @@ async function settled(page: Page) {
 const holdEvents = (page: Page) => page.route(isEventsUrl, () => {});
 
 /**
- * Holds the page's first `count` status reads once `armed`: each is sent to the real bridge, and
+ * Holds the page's first `count` status reads once `armed`: each is sent to the real daemon, and
  * its answer waits until released.
  */
 async function heldStatusReads(page: Page, count: number, armed: () => boolean) {
@@ -238,7 +207,7 @@ async function heldStatusReads(page: Page, count: number, armed: () => boolean) 
   };
 }
 
-/** Sends the page's next delete to the real bridge, then drops its reply like a cut connection. */
+/** Sends the page's next delete to the real daemon, then drops its reply like a cut connection. */
 async function loseNextDeleteReply(page: Page) {
   let lost = false;
   await page.route(isOperationUrl, async (route) => {
@@ -365,14 +334,8 @@ async function freshSession(range = "main...live") {
   );
   return id;
 }
-/** A foreground launch of a saved session, stopped like Ctrl-C after the test. */
-async function launchFor(id: string) {
-  const launched = await launch("--session", id);
-  onTestFinished(async () => {
-    await stop(launched.proc, "SIGINT");
-  });
-  return launched;
-}
+/** The link of a saved session, as `gyst --session` prints it. */
+const launchFor = (id: string) => launch("--session", id);
 /** A CLI apply of no ops: a change committed elsewhere that only raises the revision. */
 async function applyFromCli(id: string): Promise<number> {
   const { revision, session } = await gyst("session", "status", "--session", id);
@@ -556,7 +519,7 @@ const headingsAre = (page: Page, paths: string[]) =>
   );
 
 /**
- * A raw request to a launch's listener with explicit headers, as a hostile client could send;
+ * A raw request to the daemon's viewer with explicit headers, as a hostile client could send;
  * resolves its status.
  */
 const raw = (
@@ -581,16 +544,6 @@ const raw = (
     request.setTimeout(10_000, () => request.destroy(new Error(`${method} ${path} timed out`)));
     request.once("error", reject);
     request.end(body);
-  });
-
-const freePort = () =>
-  new Promise<number>((resolve, reject) => {
-    const server = createServer()
-      .once("error", reject)
-      .listen(0, "127.0.0.1", () => {
-        const address = server.address();
-        server.close(() => resolve(typeof address === "object" && address ? address.port : 0));
-      });
   });
 
 /** The first executable `name` on PATH or in `extra` directories. */
@@ -651,7 +604,7 @@ describe("installed gyst in a sandboxed browser", () => {
     await mkdir(home);
     await mkdir(repo);
     await mkdir(join(root, "tmp"));
-    env = isolatedEnv(home, { GYST_DATA_DIR: data });
+    env = isolatedEnv(home, { GYST_DATA_DIR: data, GYST_PORT: String(await freePort()) });
     for (const name of ["SSH_AUTH_SOCK", "DISPLAY", "WAYLAND_DISPLAY"]) delete env[name];
 
     const origin = await githubOrigin(join(root, "github"));
@@ -826,8 +779,8 @@ describe("installed gyst in a sandboxed browser", () => {
       headless: true,
       // A cold Chrome on a shared CI runner can take longer than 20 s to start.
       timeout: 60_000,
-      // Proxy bypass selects direct transport; .localhost resolves natively (no hosts/resolver maps).
-      proxy: { server: "http://127.0.0.1:9", bypass: ".localhost,127.0.0.1" },
+      // Proxy bypass selects direct transport; localhost resolves natively (no hosts/resolver maps).
+      proxy: { server: "http://127.0.0.1:9", bypass: "localhost,127.0.0.1" },
       env: { ...env, TMPDIR: join(root, "tmp") },
     });
     context = await browser.newContext();
@@ -859,18 +812,17 @@ describe("installed gyst in a sandboxed browser", () => {
     // The file's first page starts Chrome's first sandboxed renderer, up to 5 s on a CI runner.
   }, 30_000);
 
-  it("opens the root launch's uncommitted scope at its deep path and strips the fragment", async () => {
+  it("opens the root command's uncommitted scope at its link's deep path, without signing in", async () => {
     one = await launch();
+    expect(one.url).toBe(`http://localhost:${env.GYST_PORT}/session/${one.id}`);
     const page = await newPage();
     const requests: PageRequest[] = [];
     page.on("request", (request) => requests.push(request));
-    await go(page, one.url);
+    await page.goto(one.url);
     const pane = page.getByRole("main");
     await pane.getByText("uncommitted-edit").waitFor();
     expect(await pane.getByText("range-only").count()).toBe(0);
-    expect(new URL(page.url()).hash).toBe("");
     expect(new URL(page.url()).pathname).toBe(one.path);
-    expect(await page.evaluate(() => location.href.includes("#"))).toBe(false);
     await crumbIs(page, "demo/uncommitted changes");
     expect(await page.getByRole("heading", { level: 1 }).getAttribute("title")).toBe(repo);
     const { sessions } = await gyst("session", "list");
@@ -883,11 +835,6 @@ describe("installed gyst in a sandboxed browser", () => {
       .map((request) => new URL(request.url()).pathname);
     expect(scripts.length).toBeGreaterThan(0);
     expect(scripts.filter((path) => !/^\/assets\/[^/]+\.js$/.test(path))).toEqual([]);
-    const bootstraps = requests.filter((r) => new URL(r.url()).pathname === "/bootstrap");
-    expect(bootstraps.map((r) => r.method())).toEqual(["POST"]);
-    const bootstrap = await bootstraps[0]!.allHeaders();
-    expect(bootstrap.authorization === `Bearer ${one.secret}`).toBe(true);
-    expect(bootstrap.origin).toBe(one.origin);
     const operations = requests.filter((r) => operationOf(r) !== undefined);
     // Eager captured-content reads are bounded and checked in their own test.
     const reads = operations.map(operationOf).filter((op) => op.command !== "code");
@@ -906,17 +853,8 @@ describe("installed gyst in a sandboxed browser", () => {
       ]);
     }
 
-    const [cookie, ...others] = (await context.cookies(one.origin)).filter(
-      (c) => c.name === "gyst_auth",
-    );
-    expect(others).toEqual([]);
-    expect([cookie?.domain, cookie?.path, cookie?.httpOnly, cookie?.sameSite]).toEqual([
-      one.hostname,
-      "/",
-      true,
-      "Strict",
-    ]);
-    expect(await page.evaluate(() => document.cookie)).toBe("");
+    // No login: nothing is stored for the origin.
+    expect(await context.cookies(one.origin)).toEqual([]);
 
     // The captured hostile line renders as text in the continuous diff, never as markup.
     expect(await pane.getByText(hostile).count()).toBe(1);
@@ -2108,13 +2046,11 @@ describe("installed gyst in a sandboxed browser", () => {
     expect(await page.getByRole("main").getByRole("status").count()).toBe(0);
   }, 60_000);
 
-  it("keeps the session across client navigation, cookie reload and a new tab; shows not-found views", async () => {
+  it("keeps the session across client navigation, reload and a new tab; shows not-found views", async () => {
     const page = await newPage();
     let documents = 0;
-    let bootstraps = 0;
     page.on("request", (request) => {
       if (request.resourceType() === "document") documents++;
-      if (new URL(request.url()).pathname === "/bootstrap") bootstraps++;
     });
     await page.goto(`${one.origin}${one.path}`);
     await page.getByRole("main").getByText("uncommitted-edit").waitFor();
@@ -2124,8 +2060,6 @@ describe("installed gyst in a sandboxed browser", () => {
     expect(documents).toBe(1);
     await page.reload();
     await page.getByRole("heading", { name: "Saved sessions" }).waitFor();
-    // The launch cookie authorizes the deep link and the reload; no page here sent a secret.
-    expect(bootstraps).toBe(0);
     // Each view's lazily split route chunks finish loading first, so the test's own next
     // navigation never aborts one and reads as a failed request.
     await page.waitForLoadState("networkidle");
@@ -2134,11 +2068,11 @@ describe("installed gyst in a sandboxed browser", () => {
     await page.waitForLoadState("networkidle");
     await page.goto(`${one.origin}/deliberately/unknown`);
     await page.getByRole("heading", { name: "Page not found" }).waitFor();
-    const host = `${one.hostname}:${one.port}`;
+    const host = `localhost:${one.port}`;
     expect(await raw(one.port, { path: "/assets/missing.js", headers: { host } })).toBe(404);
   }, 30_000);
 
-  it("shows Loading… while the session's real diff is held, then renders the bridge's reply", async () => {
+  it("shows Loading… while the session's real diff is held, then renders the daemon's reply", async () => {
     const page = await newPage();
     const { promise: released, resolve: release } = Promise.withResolvers<void>();
     const held: string[] = [];
@@ -2173,99 +2107,90 @@ describe("installed gyst in a sandboxed browser", () => {
     );
   }, 30_000);
 
-  it("runs a concurrent range launch in the same profile on its own host and cookie", async () => {
+  it("serves a second session's link from the same daemon origin in the same profile", async () => {
     two = await launch("main...feature");
-    expect(two.hostname).not.toBe(one.hostname);
+    expect(two.origin).toBe(one.origin);
+    expect(two.id).not.toBe(one.id);
     const page = await newPage();
-    await go(page, two.url);
+    await page.goto(two.url);
     await page.getByRole("main").getByText("range-only").waitFor();
     await crumbIs(page, "demo/main...feature");
     expect(await page.getByRole("main").getByText("uncommitted-edit").count()).toBe(0);
-    const cookieOf = async (origin: string) =>
-      (await context.cookies(origin)).filter((c) => c.name === "gyst_auth");
-    const [first] = await cookieOf(one.origin);
-    const [second] = await cookieOf(two.origin);
-    expect(second?.domain).toBe(two.hostname);
-    expect(first?.value === second?.value).toBe(false);
-    expect((await cookieOf(two.origin)).length).toBe(1);
     await page.goto(`${one.origin}/`);
     await page.getByRole("heading", { name: "Saved sessions" }).waitFor();
     expect(await sessionRows(page).count()).toBe(2);
   }, 30_000);
 
-  it("tells a fresh browser it is not signed in and a foreign link that it expired", async () => {
-    const guidance = /Run gyst \(or gyst --session <id>\)/;
-    const fresh = await newPage(await browser!.newContext(), {
-      responses: ["/api/operation 401"],
-    });
-    await fresh.goto(`${one.origin}/`);
-    const notSignedIn = await fresh.getByRole("alert").innerText();
-    expect(notSignedIn).toMatch(/This browser is not signed in to this gyst launch\./);
-    // The launcher is live, so this 401 must not claim it stopped.
-    expect(notSignedIn).not.toMatch(/expire|has stopped|ended/);
-    expect(notSignedIn).toMatch(/until (its|that) gyst stops/);
-    expect(notSignedIn).toMatch(guidance);
-
-    const foreign = await newPage(await browser!.newContext(), {
-      responses: ["/bootstrap 401", "/api/operation 401"],
-    });
-    await go(foreign, `${one.origin}/#${two.secret}`);
-    const expired = await foreign.getByRole("alert").innerText();
-    expect(expired).toMatch(/expired or belongs to another gyst launch/);
-    expect(expired).toMatch(/10 minutes/);
-    expect(expired).toMatch(guidance);
-    expect(new URL(foreign.url()).hash).toBe("");
-    expect([notSignedIn, expired].some((text) => text.includes(two.secret))).toBe(false);
+  it("serves a fresh browser profile with no sign-in", async () => {
+    const fresh = await newPage(await browser!.newContext());
+    await fresh.goto(one.url);
+    await fresh.getByRole("main").getByText("uncommitted-edit").waitFor();
+    expect(await fresh.getByRole("alert").count()).toBe(0);
   }, 30_000);
 
-  it("answers hostile and malformed bridge requests with the exact status", async () => {
-    const [cookie] = (await context.cookies(one.origin)).filter((c) => c.name === "gyst_auth");
-    const [cookie2] = (await context.cookies(two.origin)).filter((c) => c.name === "gyst_auth");
-    const host = `${one.hostname}:${one.port}`;
+  it("answers hostile and malformed viewer requests with the exact status", async () => {
+    const host = `localhost:${one.port}`;
     const origin = `http://${host}`;
     const op = JSON.stringify({ command: "list" });
     const subscription = JSON.stringify({ session: one.id });
-    const good = { host, origin, cookie: `gyst_auth=${cookie!.value}` };
+    const good = { host, origin };
     const post = (path: string, headers: Record<string, string>, body?: string) => ({
       method: "POST",
       path,
       headers,
       ...(body === undefined ? {} : { body }),
     });
-    const bearer = `Bearer ${randomBytes(32).toString("base64url")}`;
     const cases = {
-      "authorized list": [post("/api/operation", good, op), 200],
-      "cross-launch cookie": [
-        post("/api/operation", { ...good, cookie: `gyst_auth=${cookie2!.value}` }, op),
-        401,
+      "same-origin list": [post("/api/operation", good, op), 200],
+      "loopback address list": [
+        post(
+          "/api/operation",
+          { host: `127.0.0.1:${one.port}`, origin: `http://127.0.0.1:${one.port}` },
+          op,
+        ),
+        200,
       ],
-      "no cookie": [post("/api/operation", { host, origin }, op), 401],
-      "wrong bootstrap": [post("/bootstrap", { host, origin, authorization: bearer }), 401],
-      "no bootstrap": [post("/bootstrap", { host, origin }), 401],
-      "other launch host": [
-        post("/api/operation", { ...good, host: `${two.hostname}:${one.port}` }, op),
+      // An SSH forward on another local port: the browser names that port.
+      "forwarded port list": [
+        post("/api/operation", { host: "localhost:14978", origin: "http://localhost:14978" }, op),
+        200,
+      ],
+      // A DNS-rebinding page names its own host, which resolves to loopback.
+      "rebinding host": [{ headers: { host: `attacker.example:${one.port}` } }, 403],
+      "rebinding mutation": [
+        post(
+          "/api/operation",
+          { host: `attacker.example:${one.port}`, origin: `http://attacker.example:${one.port}` },
+          op,
+        ),
         403,
       ],
-      "loopback host": [{ headers: { host: `127.0.0.1:${one.port}` } }, 403],
-      "hostless port": [{ headers: { host: one.hostname } }, 403],
-      "port 0": [{ headers: { host: `${one.hostname}:0` } }, 403],
+      "localhost subdomain": [{ headers: { host: `g-1.localhost:${one.port}` } }, 403],
+      "port 0": [{ headers: { host: "localhost:0" } }, 403],
       "userinfo authority": [{ headers: { host: `u@${host}` } }, 403],
       forwarded: [{ headers: { host, forwarded: "host=evil" } }, 403],
       "x-forwarded-host": [{ headers: { host, "x-forwarded-host": "evil" } }, 403],
+      "x-forwarded-for": [
+        post("/api/operation", { ...good, "x-forwarded-for": "10.0.0.1" }, op),
+        403,
+      ],
       "cross origin": [
         post("/api/operation", { ...good, origin: "http://evil.localhost" }, op),
         403,
       ],
       "origin other port": [
-        post("/api/operation", { ...good, origin: `http://${one.hostname}:1` }, op),
+        post("/api/operation", { ...good, origin: "http://localhost:1" }, op),
+        403,
+      ],
+      "origin other loopback name": [
+        post("/api/operation", { ...good, origin: `http://127.0.0.1:${one.port}` }, op),
         403,
       ],
       "null origin": [post("/api/operation", { ...good, origin: "null" }, op), 403],
-      "no origin": [post("/api/operation", { host, cookie: good.cookie }, op), 403],
+      "no origin": [post("/api/operation", { host }, op), 403],
       "GET operation": [{ path: "/api/operation", headers: good }, 405],
       "PUT shell": [{ method: "PUT", headers: good }, 405],
       "reserved api route": [{ path: "/api/other", headers: good }, 404],
-      "reserved bootstrap subpath": [{ path: "/bootstrap/x", headers: good }, 404],
       "dot-dot traversal": [{ path: "/assets/../index.html", headers: good }, 400],
       "encoded traversal": [{ path: "/%2e%2e/etc/passwd", headers: good }, 400],
       "encoded slash": [{ path: "/assets%2findex.html", headers: good }, 400],
@@ -2274,20 +2199,28 @@ describe("installed gyst in a sandboxed browser", () => {
         post("/api/operation", good, JSON.stringify({ command: "shutdown" })),
         400,
       ],
+      "agent op": [
+        post("/api/operation", good, JSON.stringify({ command: "refresh", session: one.id })),
+        400,
+      ],
       "excess field": [
         post("/api/operation", good, JSON.stringify({ command: "list", x: 1 })),
         400,
       ],
       // The session stream answers to the same rules as an operation.
-      "authorized events": [post("/api/events", good, subscription), 200],
+      "same-origin events": [post("/api/events", good, subscription), 200],
       "GET events": [{ path: "/api/events", headers: good }, 405],
-      "events no origin": [post("/api/events", { host, cookie: good.cookie }, subscription), 403],
+      "events no origin": [post("/api/events", { host }, subscription), 403],
       "events cross origin": [
         post("/api/events", { ...good, origin: "http://evil.localhost" }, subscription),
         403,
       ],
-      "events other launch host": [
-        post("/api/events", { ...good, host: `${two.hostname}:${one.port}` }, subscription),
+      "events rebinding host": [
+        post(
+          "/api/events",
+          { host: `attacker.example:${one.port}`, origin: `http://attacker.example:${one.port}` },
+          subscription,
+        ),
         403,
       ],
       "events forwarded": [
@@ -2297,11 +2230,6 @@ describe("installed gyst in a sandboxed browser", () => {
       "events x-forwarded-host": [
         post("/api/events", { ...good, "x-forwarded-host": "evil" }, subscription),
         403,
-      ],
-      "events no cookie": [post("/api/events", { host, origin }, subscription), 401],
-      "events cross-launch cookie": [
-        post("/api/events", { ...good, cookie: `gyst_auth=${cookie2!.value}` }, subscription),
-        401,
       ],
       "events malformed body": [post("/api/events", good, "{"), 400],
       "events excess field": [
@@ -3728,13 +3656,13 @@ describe("installed gyst in a sandboxed browser", () => {
       .waitFor();
   }, 30_000);
 
-  it("stops each viewer with 130 on SIGINT and keeps the daemon and saved sessions", async () => {
+  it("serves saved sessions from the daemon alone once every command has exited", async () => {
     const daemon = await daemonPid(data);
     expect(ownDaemon(daemon)).toBe(true);
-    expect(await stop(one.proc, "SIGINT")).toBe(130);
-    expect(await stop(two.proc, "SIGINT")).toBe(130);
-    expect(ownDaemon(daemon)).toBe(true);
     expect(await sessionIds()).toEqual([one.id]);
+    const host = `localhost:${one.port}`;
+    expect(await raw(one.port, { path: one.path, headers: { host } })).toBe(200);
+    expect(ownDaemon(daemon)).toBe(true);
   }, 30_000);
 
   it("reuses the saved scope after moved refs and a daemon restart, and reopens it by exact id", async () => {
@@ -3743,6 +3671,8 @@ describe("installed gyst in a sandboxed browser", () => {
     git("commit", "-qam", "move feature");
     const three = await launch();
     expect(three.id).toBe(one.id);
+    // The next daemon binds the same port, so the old link and its open tabs reach it.
+    expect(three.url).toBe(one.url);
     const replacement = await daemonPid(data);
     expect(replacement).not.toBe(daemon);
     expect(ownDaemon(replacement)).toBe(true);
@@ -3750,12 +3680,11 @@ describe("installed gyst in a sandboxed browser", () => {
     four = await launch("--session", one.id);
     expect(four.id).toBe(one.id);
     const page = await newPage();
-    await go(page, four.url);
+    await page.goto(four.url);
     await page.getByRole("main").getByText("uncommitted-edit").waitFor();
     // Viewed progress was saved with the session and survives the restart.
     await viewedBox(page, "app.ts").waitFor();
     expect(await viewedBox(page, "app.ts").isChecked()).toBe(true);
-    expect(await stop(three.proc, "SIGINT")).toBe(130);
     const [reopened] = (await gyst("session", "list")).sessions;
     expect([reopened.id, reopened.snapshotId]).toEqual([saved.id, saved.snapshotId]);
     expect(await daemonPid(data)).toBe(replacement);
@@ -3805,19 +3734,18 @@ describe("installed gyst in a sandboxed browser", () => {
       "Local forwarding listening on 127.0.0.1",
     );
     const page = await newPage(await browser!.newContext());
-    await go(page, `http://${four.hostname}:${forward}${four.path}#${four.secret}`);
+    await page.goto(`http://localhost:${forward}${four.path}`);
     await page.getByRole("main").getByText("uncommitted-edit").waitFor();
     expect(new URL(page.url()).port).toBe(String(forward));
     expect(sshd.log()).toContain("Accepted publickey");
     expect(client.log()).toContain("is known and matches the ED25519 host key");
     // The session's event stream runs over the same forward.
     await says(page, "Live");
-    // Eager captured-file reads settle first, so stopping the launcher doesn't fail one mid-flight.
+    // Eager captured-file reads settle first, so closing the page doesn't fail one mid-flight.
     await settled(page);
-    expect(await stop(four.proc, "SIGINT")).toBe(130);
   }, 30_000);
 
-  // Live review: each test opens a fresh main...live session on launches of its own.
+  // Live review: each test opens a fresh main...live session and its own link.
   const idsIn = async (id: string, file: string) =>
     (await gyst("session", "diff", "--session", id)).hunks
       .filter((hunk: { file: string }) => hunk.file === file)
@@ -3867,7 +3795,7 @@ describe("installed gyst in a sandboxed browser", () => {
     const reads = statusReadsOf(b);
     const writes = viewedOf(b);
     for (const page of [a, b]) await page.setViewportSize({ width: 1280, height: 800 });
-    await go(a, launched.url);
+    await a.goto(launched.url);
     await b.goto(`${launched.origin}${launched.path}`);
     for (const page of [a, b]) {
       await says(page, "Live");
@@ -3917,7 +3845,7 @@ describe("installed gyst in a sandboxed browser", () => {
       await released;
       await route.continue();
     });
-    await go(a, launched.url);
+    await a.goto(launched.url);
     await says(a, "Live");
     try {
       // B has read status, but its subscription has not reached the daemon yet.
@@ -3957,7 +3885,7 @@ describe("installed gyst in a sandboxed browser", () => {
       await released;
       await route.fulfill({ response });
     });
-    await go(a, launched.url);
+    await a.goto(launched.url);
     await b.goto(`${launched.origin}${launched.path}`);
     for (const page of [a, b]) {
       await says(page, "Live");
@@ -4000,7 +3928,7 @@ describe("installed gyst in a sandboxed browser", () => {
       const operation = operationOf(request);
       if (operation?.command === "status" && operation.session === y) readsOfY++;
     });
-    await go(page, launched.url);
+    await page.goto(launched.url);
     await crumbIs(page, "demo/main...live");
     await says(page, "Live");
     await page.getByRole("banner").getByRole("link", { name: "All sessions" }).click();
@@ -4077,7 +4005,7 @@ describe("installed gyst in a sandboxed browser", () => {
     await page.setViewportSize({ width: 1280, height: 800 });
     const writes = viewedOf(page);
     const reads = statusReadsOf(page);
-    await go(page, launched.url);
+    await page.goto(launched.url);
     await says(page, "Live");
     await viewedBox(page, "README.md").check();
     await says(page, "1/3 hunks viewed in 3 files");
@@ -4106,10 +4034,12 @@ describe("installed gyst in a sandboxed browser", () => {
       expect(writes).toHaveLength(1);
       expect(await viewedBox(page, "src/long.ts").isChecked()).toBe(false);
       expect(isAlive(daemon)).toBe(false);
+      // The page cannot start a daemon; the next gyst command does, on the same port.
+      await gyst("session", "list");
     } finally {
       release();
     }
-    // The resubscription starts a new daemon; the session is reread, never recreated.
+    // The page resubscribes to the new daemon; the session is reread, never recreated.
     await says(page, "Live");
     const replacement = await daemonPid(data);
     expect(replacement).not.toBe(daemon);
@@ -4137,7 +4067,7 @@ describe("installed gyst in a sandboxed browser", () => {
     let armed = false;
     // B's first two status reads: one of A's change, then the new connection's.
     const held = await heldStatusReads(b, 2, () => armed);
-    await go(a, launched.url);
+    await a.goto(launched.url);
     await b.goto(`${launched.origin}${launched.path}`);
     for (const page of [a, b]) {
       await says(page, "Live");
@@ -4149,6 +4079,8 @@ describe("installed gyst in a sandboxed browser", () => {
       await says(a, "1/3 hunks viewed in 3 files");
       await held.fetched(0, "B's status read of the change");
       const daemon = await killDaemon(data, "SIGTERM");
+      // The next gyst command starts the next daemon, on the same port.
+      await gyst("session", "list");
       // B's resubscription is a new connection, which reads status of its own.
       await held.fetched(1, "the new connection's status read");
       expect(await daemonPid(data)).not.toBe(daemon);
@@ -4196,7 +4128,7 @@ describe("installed gyst in a sandboxed browser", () => {
       if (restarted) await applied;
       await route.continue().catch(() => {});
     });
-    await go(page, launched.url);
+    await page.goto(launched.url);
     await says(page, "Live");
     await settled(page);
     const before = (await gyst("session", "status", "--session", id)).revision;
@@ -4260,7 +4192,7 @@ describe("installed gyst in a sandboxed browser", () => {
       await route.fulfill({ response });
       answered.add(n);
     });
-    await go(page, launched.url);
+    await page.goto(launched.url);
     await says(page, "Live");
     await settled(page);
     const before = (await gyst("session", "status", "--session", id)).revision;
@@ -4269,6 +4201,8 @@ describe("installed gyst in a sandboxed browser", () => {
       await viewedBox(page, "README.md").click();
       await waitFor(() => fetched.has(0), "the first write to commit");
       const daemon = await killDaemon(data, "SIGTERM");
+      // The next gyst command starts the next daemon, on the same port.
+      await gyst("session", "list");
       // The new connection resends it with its request id rather than wait for its reply.
       await waitFor(() => writes.length === 2, "the resend over the new connection");
       expect(await daemonPid(data)).not.toBe(daemon);
@@ -4317,7 +4251,7 @@ describe("installed gyst in a sandboxed browser", () => {
     });
     let armed = false;
     const held = await heldStatusReads(page, 1, () => armed);
-    await go(page, launched.url);
+    await page.goto(launched.url);
     await says(page, "Live");
     await settled(page);
     armed = true;
@@ -4368,7 +4302,7 @@ describe("installed gyst in a sandboxed browser", () => {
       if (lost++ === 0) await cut;
       await route.abort();
     });
-    await go(page, launched.url);
+    await page.goto(launched.url);
     await says(page, "Live");
     await settled(page);
     await viewedBox(page, "README.md").click();
@@ -4420,7 +4354,7 @@ describe("installed gyst in a sandboxed browser", () => {
       await route.fetch();
       await route.abort();
     });
-    await go(page, launched.url);
+    await page.goto(launched.url);
     await says(page, "Live");
     await settled(page);
     const before = (await gyst("session", "status", "--session", id)).revision;
@@ -4470,7 +4404,7 @@ describe("installed gyst in a sandboxed browser", () => {
         ? route.fulfill({ status: 503, body: "" })
         : route.continue(),
     );
-    await go(page, launched.url);
+    await page.goto(launched.url);
     await says(page, "Live");
     await settled(page);
     outage = true;
@@ -4505,23 +4439,22 @@ describe("installed gyst in a sandboxed browser", () => {
     });
   }, 60_000);
 
-  it("stops only its own launch on SIGINT: that page reconnects while another launch's page stays live, keeping the daemon and the session", async () => {
+  it("ends only its own subscription when a tab closes: another tab stays live, keeping the daemon and the session", async () => {
     const id = await freshSession();
     const first = await launchFor(id);
     const second = await launchFor(id);
-    expect(second.hostname).not.toBe(first.hostname);
+    expect(second.url).toBe(first.url);
     const [left, kept] = [await newPage(), await newPage()];
     for (const page of [left, kept]) await page.setViewportSize({ width: 1280, height: 800 });
     const reads = statusReadsOf(kept);
-    await go(left, first.url);
-    await go(kept, second.url);
+    await left.goto(first.url);
+    await kept.goto(second.url);
     for (const page of [left, kept]) {
       await says(page, "Live");
       await settled(page);
     }
     const daemon = await daemonPid(data);
-    expect(await stop(first.proc, "SIGINT")).toBe(130);
-    await says(left, "Reconnecting…");
+    await left.close();
     await says(kept, "Live");
 
     const revision = await applyFromCli(id);
@@ -4533,17 +4466,16 @@ describe("installed gyst in a sandboxed browser", () => {
       revision: revision + 1,
       viewedHunkIds: await idsIn(id, "README.md"),
     });
-    await says(left, "Reconnecting…");
     expect(await daemonPid(data)).toBe(daemon);
     expect(ownDaemon(daemon)).toBe(true);
     expect(await sessionIds()).toContain(id);
   }, 60_000);
 
-  it("opens a GitHub PR from the root launch and lists its native stack in a keyboard-operable header switcher", async () => {
+  it("opens a GitHub PR from the root command and lists its native stack in a keyboard-operable header switcher", async () => {
     deletePullRequestSessionsAfter();
     const b = await launchIn(github.checkout, "--pr", pullRequestUrl(2));
     const page = await newPage();
-    await go(page, b.url);
+    await page.goto(b.url);
     await page.getByRole("main").getByText("b two").waitFor();
     await crumbIs(page, "checkout/acme/widgets#2");
     expect(await fileHeadings(page)).toEqual(["b.txt", "b2.txt"]);
@@ -4583,7 +4515,6 @@ describe("installed gyst in a sandboxed browser", () => {
     const asked = expect.arrayContaining(["api", "graphql", "number=2"]);
     expect(await github.fake.calls()).toEqual([asked, asked]);
     await settled(page);
-    expect(await stop(b.proc, "SIGINT")).toBe(130);
   }, 30_000);
 
   it("opens another layer from the switcher and returns, each session keeping its own Viewed and reading place", async () => {
@@ -4595,7 +4526,7 @@ describe("installed gyst in a sandboxed browser", () => {
       if (operationOf(request)?.command === "refresh") refreshes.push(operationOf(request));
     });
     await page.setViewportSize({ width: 1280, height: 800 });
-    await go(page, b.url);
+    await page.goto(b.url);
     await page.getByRole("main").getByText("b two").waitFor();
     const before = (await gyst("session", "status", "--session", b.id)).session;
     await says(page, "b.txt · file");
@@ -4662,7 +4593,6 @@ describe("installed gyst in a sandboxed browser", () => {
       [c, 3],
     ]);
     await settled(page);
-    expect(await stop(b.proc, "SIGINT")).toBe(130);
   }, 30_000);
 
   it("rechecks the native stack from the switcher, metadata only, keeping the last verified layers when GitHub fails", async () => {
@@ -4680,7 +4610,7 @@ describe("installed gyst in a sandboxed browser", () => {
     page.on("request", (request) => {
       if (operationOf(request)) operations.push(operationOf(request));
     });
-    await go(page, b.url);
+    await page.goto(b.url);
     await page.getByRole("main").getByText("b two").waitFor();
     const { snapshotId } = (await gyst("session", "status", "--session", b.id)).session;
     const { trigger, dialog } = switcher(page);
@@ -4746,7 +4676,6 @@ describe("installed gyst in a sandboxed browser", () => {
       expect(x + width).toBeLessThanOrEqual(panel.x + panel.width);
     }
     await settled(page);
-    expect(await stop(b.proc, "SIGINT")).toBe(130);
   }, 30_000);
 
   it("reads the stack context live again after a page read that was older than it, even once a Viewed change settles first", async () => {
@@ -4767,7 +4696,7 @@ describe("installed gyst in a sandboxed browser", () => {
       await released;
       await route.fulfill({ response });
     });
-    await go(page, b.url);
+    await page.goto(b.url);
     await page.getByRole("main").getByText("b two").waitFor();
     await says(page, "Live");
     await settled(page);
@@ -4804,7 +4733,6 @@ describe("installed gyst in a sandboxed browser", () => {
     await trigger.click();
     await dialog.waitFor();
     expect(await dialog.getByRole("status").textContent()).toBe(failed);
-    expect(await stop(b.proc, "SIGINT")).toBe(130);
   }, 30_000);
 
   it("updates another viewer's stack switcher live after a CLI recheck and a layer opened elsewhere, without a reload or moving its reader", async () => {
@@ -4818,7 +4746,7 @@ describe("installed gyst in a sandboxed browser", () => {
     viewer.on("request", (request) => {
       if (operationOf(request)?.command === "diff") reloads.push(operationOf(request));
     });
-    await go(opener, b.url);
+    await opener.goto(b.url);
     await viewer.goto(`${b.origin}${b.path}`);
     for (const page of [opener, viewer]) {
       await page.getByRole("main").getByText("b two").waitFor();
@@ -4880,6 +4808,5 @@ describe("installed gyst in a sandboxed browser", () => {
     expect(await positionOf(viewer)).toEqual(position);
     expect((await gyst("session", "status", "--session", b.id)).revision).toBe(revision);
     await settled(opener);
-    expect(await stop(b.proc, "SIGINT")).toBe(130);
   }, 30_000);
 });
