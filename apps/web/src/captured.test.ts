@@ -57,6 +57,12 @@ describe("referenceAvailability", () => {
         current(entry({ old: { kind: "unavailable", reason: "binary" } })),
       ),
     ).toEqual({ available: false, reason: "old side not captured: binary" });
+    // Left out by a snapshot quota: unavailable, never read from the checkout instead.
+    const omitted = { kind: "unavailable", reason: "quota" } as const;
+    expect(referenceAvailability(target, current(entry({ old: omitted, new: omitted })))).toEqual({
+      available: false,
+      reason: "new side not captured: left out by the snapshot quota",
+    });
   });
 
   it("leaves a file no loaded files page has listed yet to the read", () => {
