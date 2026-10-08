@@ -127,10 +127,10 @@ describe("installed gyst skills", () => {
       "walkthrough.update",
       "group.create",
       "group.update",
-      "group.revalidate",
       "note.create",
       "note.update",
       "note.revalidate",
+      "walkthrough.revalidate",
       "thread.reply",
     ]) {
       expect(referenceTypes).toContain(type);
