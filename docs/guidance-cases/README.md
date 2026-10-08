@@ -164,11 +164,12 @@ the generated `gyst-cli` reference for the session commands, or the authoring va
 
 - A broad rule, one that shapes all guidance, affects all four cases. That includes the
   workflow's planning and publishing steps and the authoring reference's sections on purpose and
-  reader, the pieces, mental model first, notes and their ranges, evidence, Markdown and
-  standalone guidance.
-- A rule specific to one kind of change affects its cases: behavior changes and edge cases
-  (`behavior-edge-case`, `stack-layer`), refactors (`invariant-refactor`), references
-  (`caller-and-helper`, `stack-layer`) and stack context (`stack-layer`).
+  reader, the pieces, notes and their ranges, evidence, Markdown and standalone guidance, and
+  the opening of "Mental model first".
+- A rule specific to one kind of change, such as one bullet under "Mental model first", affects
+  its cases: behavior changes and edge cases (`behavior-edge-case`, `stack-layer`), refactors
+  (`invariant-refactor`), references (`caller-and-helper`, `stack-layer`) and stack context
+  (`stack-layer`).
 - When unsure, rerun all four.
 
 Changing a case's repository changes its commits; rerun that case and list the new commits here.
