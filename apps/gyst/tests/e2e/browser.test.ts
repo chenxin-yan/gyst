@@ -1786,7 +1786,7 @@ describe("installed gyst in a sandboxed browser", () => {
           type: "group.create",
           id: "build",
           title: "Rebuild the bundle",
-          overview: "The source edit and its build output.",
+          overview: "The source edit and [its build output](gyst:new/dist/bundle.js#L1-L1).",
           memberHunkIds: diff.hunks.map(({ id }: { id: string }) => id),
           files: paths,
         },
@@ -1802,12 +1802,46 @@ describe("installed gyst in a sandboxed browser", () => {
     expect(await expanded("dist/bundle.js")).toBe("false");
     expect(await expanded("vendor/lib.js")).toBe("false");
 
+    // Away to the session list and back, client-side, as a switch to another session would.
+    const leaveAndReturn = async () => {
+      await settled(page);
+      await page.getByRole("link", { name: "All sessions" }).click();
+      await page.getByRole("heading", { name: "Saved sessions" }).waitFor();
+      await page.goBack();
+    };
+    // A reference expanded onto a Generated file shows it unfolded, and a return keeps it so.
+    await pane
+      .getByRole("region", { name: "Group overview" })
+      .getByRole("button", { name: "its build output" })
+      .click();
+    await peekOf(page).getByRole("button", { name: "Expand" }).click();
+    await headingsAre(page, ["dist/bundle.js"]);
+    await says(page, "bundle.js:1 · new");
+    await pane.getByText("dist/bundle.js two").waitFor();
+    await leaveAndReturn();
+    await headingsAre(page, ["dist/bundle.js"]);
+    await says(page, "bundle.js:1 · new");
+    await pane.getByText("dist/bundle.js two").waitFor();
+    await keys(page, "Backspace");
+    await headingsAre(page, paths);
+    expect(await expanded("dist/bundle.js")).toBe("false");
+
     // It unfolds like any other file, and its Viewed counts.
     await side.getByRole("button", { name: "All changes", exact: true }).click();
     await headingsAre(page, paths);
     await foldToggle(page, "dist/bundle.js").click();
     await waitFor(async () => (await expanded("dist/bundle.js")) === "true", "bundle unfolded");
     await pane.getByText("dist/bundle.js two").waitFor();
+    // A return keeps it unfolded, with the cursor read inside it.
+    await keys(page, "g", "g", "]", "c", "]", "c");
+    const inBundle = statusLine(page).getByText(/^bundle\.js:1 · /);
+    await inBundle.waitFor();
+    const reading = (await inBundle.textContent())!;
+    await leaveAndReturn();
+    await headingsAre(page, paths);
+    await says(page, reading);
+    expect(await expanded("dist/bundle.js")).toBe("true");
+    expect(await expanded("vendor/lib.js")).toBe("false");
     await viewedBox(page, "dist/bundle.js").check();
     await says(page, "1/3 hunks viewed in 3 files");
     // Checking folds it and unfolds the next unviewed file, Generated or not.

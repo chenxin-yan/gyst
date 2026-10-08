@@ -7,8 +7,9 @@ import type { ReviewView } from "./walkthrough.ts";
 /**
  * Where a reader left a session: its view, the captured target expanded over it with that file's
  * opened lines, the open peek and the places Back returns to, its input mode, Vim cursor, the hidden
- * lines it opened (a place inside them exists only once they open again) and what was at the
- * panel's top: a reading position, or an overview's offset.
+ * lines it opened (a place inside them exists only once they open again), its folded files (a
+ * place inside a file exists only while it is unfolded) and what was at the panel's top: a reading
+ * position, or an overview's offset.
  */
 export type ReadingPlace = {
   review: ReviewView;
@@ -19,6 +20,7 @@ export type ReadingPlace = {
   inputMode: InputMode;
   cursor: Cursor | undefined;
   opened: Map<string, Map<number, Opened>>;
+  folded: ReadonlySet<string>;
   top: Restore | undefined;
 };
 
