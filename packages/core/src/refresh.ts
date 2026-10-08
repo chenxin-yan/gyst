@@ -1,5 +1,5 @@
 import { Result } from "effect";
-import { draftOf } from "./draft.ts";
+import { draftOf, type MutableSession } from "./draft.ts";
 import { StaleRevision, ValidationFailed } from "./errors.ts";
 import {
   anchoredHunkIds,
@@ -45,7 +45,7 @@ export function refreshSession(
   fresh: FreshSnapshot,
   retained: ReadonlyMap<string, SnapshotLines>,
   updatedAt: string,
-): Session {
+): MutableSession {
   const draft = draftOf(session);
   const matches = matchHunks(session.hunks, fresh.snapshot.hunks);
   const survivorOf = new Map([...matches].map(([oldId, hunk]) => [hunk.id, oldId]));
@@ -201,9 +201,7 @@ export function refresh(
   if (Result.isFailure(recorded)) return Result.fail(recorded.failure);
   if (recorded.success) return Result.succeed({ result: recorded.success });
   const replaced = fresh.snapshotId !== session.snapshotId;
-  const draft = replaced
-    ? draftOf(refreshSession(session, fresh, retained, updatedAt))
-    : draftOf(session);
+  const draft = replaced ? refreshSession(session, fresh, retained, updatedAt) : draftOf(session);
   const result: RefreshPayload = {
     sessionId: session.id,
     previousSnapshotId: session.snapshotId,
