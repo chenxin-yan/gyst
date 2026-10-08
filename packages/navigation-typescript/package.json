@@ -16,9 +16,7 @@
   },
   "publishConfig": {
     "access": "public",
-    "bin": {
-      "gyst-navigation-typescript": "dist/cli.mjs"
-    }
+    "directory": ".crust/root"
   },
   "bin": {
     "gyst-navigation-typescript": "src/cli.ts"
@@ -26,10 +24,17 @@
   "scripts": {
     "build": "vp run build:task"
   },
-  "files": [
-    "dist"
-  ],
+  "crust": {
+    "runtime": "node",
+    "artifact": "package",
+    "external": [
+      "typescript"
+    ]
+  },
   "dependencies": {
     "typescript": "7.0.2"
+  },
+  "devDependencies": {
+    "@crustjs/crust": "0.5.5"
   }
 }

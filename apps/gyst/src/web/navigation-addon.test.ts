@@ -189,8 +189,9 @@ describe("navigation add-on release", () => {
     expect(addon.version).toBe(daemonVersion);
     expect(addon.name).toBe(navigationAddon.name);
     expect(addon.bin).toEqual({ [navigationAddon.bin]: "src/cli.ts" });
-    expect(addon.publishConfig.bin).toEqual({ [navigationAddon.bin]: "dist/cli.mjs" });
-    expect(addon.files).toEqual(["dist"]);
+    // Crust stages the published package, with the engine kept a dependency beside the bundle.
+    expect(addon.publishConfig.directory).toBe(".crust/root");
+    expect(addon.crust.external).toEqual(["typescript"]);
     const changesets = await readJson(".changeset", "config.json");
     expect(changesets.fixed).toContainEqual(["@gyst/cli", navigationAddon.name]);
   });

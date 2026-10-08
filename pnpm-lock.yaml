@@ -190,6 +190,11 @@ importers:
       typescript:
         specifier: 7.0.2
         version: 7.0.2
+    devDependencies:
+      '@crustjs/crust':
+        specifier: 0.5.5
+        version: 0.5.5(@crustjs/core@0.5.5(typescript@7.0.2))(typescript@7.0.2)
+    publishDirectory: .crust/root
 
 packages:
 

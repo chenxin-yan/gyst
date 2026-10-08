@@ -1,8 +1,14 @@
 #!/usr/bin/env node
 import { execFile } from "node:child_process";
+import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
-import packageJson from "../package.json" with { type: "json" };
+
+type Manifest = { name: string; version: string; dependencies: { typescript: string } };
+// Read where the add-on is installed rather than bundled, so a copy reports its own release.
+const packageJson = JSON.parse(
+  readFileSync(new URL("../package.json", import.meta.url), "utf8"),
+) as Manifest;
 
 /** The handshake and launch contract; gyst's `navigationAddon.protocol` must equal it. */
 const protocol = 1;

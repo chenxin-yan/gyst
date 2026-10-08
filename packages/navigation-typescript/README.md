@@ -32,5 +32,6 @@ The engine is always the one installed with this package, never a reviewed proje
 ## Developing
 
 In this repository, `packages/navigation-typescript/src/cli.ts` is the executable, run by Node
-directly; `pnpm build` bundles it into the published `dist/cli.mjs`. To make a source `gyst` find
-it, put a directory containing a `gyst-navigation-typescript` symlink to `src/cli.ts` on `PATH`.
+directly; `pnpm build` stages the published package in `.crust/root` with `crust build`, keeping
+the pinned engine a dependency beside the bundle. To make a source `gyst` find it, put a directory
+containing a `gyst-navigation-typescript` symlink to `src/cli.ts` on `PATH`.
