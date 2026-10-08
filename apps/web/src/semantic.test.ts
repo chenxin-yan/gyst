@@ -431,10 +431,20 @@ describe("SemanticPeekView", () => {
     expect(html).toContain(
       "package.json declares packages, and installed packages are never captured",
     );
-    expect(html).toContain(
-      "2 more lie outside the captured files, in packages gyst never captures, and aren't shown.",
-    );
+    expect(html).toContain("2 more lie outside the captured files and aren't shown.");
     expect(html).not.toContain("Expand");
+    expect(
+      text(
+        view({
+          kind: "locations",
+          choice: { query: "definition", symbol: plus },
+          locations: [],
+          outside: 1,
+          gaps: [],
+          selected: 0,
+        }),
+      ),
+    ).toContain("1 more lies outside the captured files and isn't shown.");
   });
 
   it("marks a line's symbols, or finding none there, potentially incomplete with their known missing inputs", () => {
