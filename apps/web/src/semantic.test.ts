@@ -385,7 +385,7 @@ describe("SemanticPeekView", () => {
     });
     expect(found).toContain('aria-label="Definition of plus · new side · snapshot aaaaaaa"');
     expect(found).toContain('role="listbox" aria-label="Definitions"');
-    expect(text(found)).toContain("src/math.tsline 3, column 17");
+    expect(text(found)).toContain("math.tssrc/ · line 3, column 17");
     expect(text(found)).toContain("Expand");
   });
 
