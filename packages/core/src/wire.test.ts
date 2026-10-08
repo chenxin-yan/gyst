@@ -3,7 +3,7 @@ import { Schema } from "effect";
 import { readFileSync } from "node:fs";
 import * as publicRoot from "@gyst/core";
 import * as publicWire from "@gyst/core/wire";
-import { BadArgs, ErrorPayloadSchema, NoSession } from "./errors.ts";
+import { BadArgs, ErrorPayloadSchema, NoSession, SourceUnavailable } from "./errors.ts";
 import { BrowserRequestSchema, ReplySchema, RequestSchema } from "./wire.ts";
 
 const strict = { onExcessProperty: "error" } as const;
@@ -73,6 +73,8 @@ describe("daemon wire envelopes", () => {
         endLine: 2,
       },
       { command: "code", session: "s1", snapshotId, file: "a", side: "old", offset: 0, endLine: 9 },
+      { command: "stack", session: "s1" },
+      { command: "layer", session: "s1", number: 3 },
     ])
       expect(decodeBrowserRequest(valid)).toEqual(valid);
     for (const invalid of [
@@ -96,6 +98,23 @@ describe("daemon wire envelopes", () => {
         hunkIds: ["h1"],
         viewed: true,
         role: "agent",
+      },
+      // A stack recheck names only the session; a layer only a PR number of that session's stack.
+      { command: "stack", session: "s1", cwd: "/repo" },
+      { command: "stack", session: "s1", repository: "acme/widgets" },
+      { command: "layer", session: "s1" },
+      { command: "layer", session: "s1", number: 0 },
+      { command: "layer", session: "s1", number: 1.5 },
+      { command: "layer", session: "s1", number: "3" },
+      { command: "layer", session: "s1", number: 3, cwd: "/repo" },
+      { command: "layer", session: "s1", number: 3, repository: "acme/gadgets" },
+      { command: "layer", session: "s1", number: 3, repoRoot: "/repo" },
+      { command: "layer", session: "s1", number: 3, path: "/repo" },
+      {
+        command: "layer",
+        session: "s1",
+        number: 3,
+        scope: { kind: "pr", repository: "acme/widgets", number: 3 },
       },
       // Group verdicts and the review queue are gone, not aliased.
       { command: "verdict", session: "s1", itemId: "g1" },
@@ -169,7 +188,22 @@ describe("daemon wire envelopes", () => {
       "NoSession",
       "DaemonUnreachable",
       "BadArgs",
+      "SourceUnavailable",
+      "SourceUnavailableReasonSchema",
       "InternalError",
+      "RepositorySchema",
+      "PullRequestNumberSchema",
+      "PullRequestScopeSchema",
+      "parsePullRequestUrl",
+      "pullRequestUrlOf",
+      "PullRequestStateSchema",
+      "PullRequestSchema",
+      "StackLayerSchema",
+      "StackMembershipSchema",
+      "GitHubUnavailableReasonSchema",
+      "PullRequestContextSchema",
+      "PullRequestStatusSchema",
+      "StackPayloadSchema",
     ] as const;
     const wireExports: Record<string, unknown> = { ...publicWire };
     const rootExports: Record<string, unknown> = { ...publicRoot };
@@ -237,6 +271,7 @@ describe("daemon wire envelopes", () => {
     expect([...seen].map((href) => href.slice(packageDir.href.length)).sort()).toEqual([
       "src/content.ts",
       "src/errors.ts",
+      "src/github.ts",
       "src/guidance.ts",
       "src/metadata.ts",
       "src/session.ts",
@@ -292,5 +327,31 @@ describe("daemon wire envelopes", () => {
     expect(JSON.stringify(encodeError(new BadArgs({ message: "x", detail: ["y"] })))).toBe(
       '{"code":"bad_args","message":"x","detail":["y"]}',
     );
+  });
+
+  it("round-trips a source_unavailable reason and diagnostic, rejecting unknown reasons", () => {
+    const unavailable = new SourceUnavailable({
+      message: "run gh auth login",
+      detail: { reason: "gh_unauthenticated", diagnostic: "gh: Bad credentials (HTTP 401)" },
+    });
+    const encoded = encodeError(unavailable);
+    expect(encoded).toEqual({
+      code: "source_unavailable",
+      message: "run gh auth login",
+      detail: { reason: "gh_unauthenticated", diagnostic: "gh: Bad credentials (HTTP 401)" },
+    });
+    const decoded = Schema.decodeUnknownSync(ErrorPayloadSchema)(
+      JSON.parse(JSON.stringify(encoded)),
+    );
+    expect(decoded).toBeInstanceOf(SourceUnavailable);
+    expect(decoded).toMatchObject({ message: unavailable.message, detail: unavailable.detail });
+    for (const detail of [undefined, { reason: "offline" }, {}])
+      expect(() =>
+        Schema.decodeUnknownSync(ErrorPayloadSchema)({
+          code: "source_unavailable",
+          message: "m",
+          detail,
+        }),
+      ).toThrow();
   });
 });

@@ -134,7 +134,8 @@ export function capturedRows(count: number, side: Side): Row[] {
 /** A place the cursor can stop, with the row it stands on (-1 for the header). */
 export type Stop = Cursor & { row: number };
 
-const lineOn = (row: Row, side: Side) => (side === "deletions" ? row.old : row.new);
+/** A row's line number on one side, if it has one there. */
+export const lineOn = (row: Row, side: Side) => (side === "deletions" ? row.old : row.new);
 
 /**
  * Where the cursor can stop in one file: its header, then (unless folded) each row. Stacked stops

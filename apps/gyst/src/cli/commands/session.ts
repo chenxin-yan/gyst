@@ -1,15 +1,83 @@
 import { defineArg, defineCommand } from "@crustjs/core";
 import { handler, layer } from "@crustjs/effect";
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import { BadArgs, type CaptureProgress, type Request, RequestSchema } from "@gyst/core";
+import {
+  BadArgs,
+  type CaptureProgress,
+  parsePullRequestUrl,
+  type Request,
+  RequestSchema,
+  type Scope,
+} from "@gyst/core";
 import { Effect, Layer, Schema, Stdio, Stream } from "effect";
 import { DaemonClient } from "../../daemon/client.ts";
+import { checkoutRepository } from "../../daemon/github.ts";
 import { Paths } from "../../daemon/paths.ts";
 
 export const daemonClient = layer(
   "daemonClient",
   DaemonClient.layer.pipe(Layer.provide(Paths.layer), Layer.provideMerge(NodeServices.layer)),
 );
+
+/** The positional's description, shared by the root launch and `session open`. */
+export const scopeArgDescription =
+  "A Git range such as main...feature; omitted, uncommitted changes";
+
+/** `--pr`, shared by the root launch and `session open`. */
+export const prFlag = {
+  name: "pr",
+  type: "string",
+  description:
+    "A GitHub PR: its number in this checkout's repository, or a URL such as https://github.com/owner/name/pull/123",
+} as const;
+
+/** A Git range. A URL is refused rather than read as a range: PRs have their own argument. */
+export const scopeOf = (target: string | undefined): Effect.Effect<Scope, BadArgs> => {
+  if (target === undefined) return Effect.succeed({ kind: "uncommitted" });
+  if (/^https?:\/\//iu.test(target))
+    return Effect.fail(
+      new BadArgs({
+        message: "expected a Git range such as main...feature; pass a GitHub PR with --pr",
+        detail: target,
+      }),
+    );
+  return Effect.succeed({ kind: "range", range: target });
+};
+
+/** A PR URL, or a PR number in the repository `gh` resolves for the current checkout. */
+const pullRequestScopeOf = Effect.fn("pullRequestScopeOf")(function* (target: string) {
+  const fromUrl = parsePullRequestUrl(target);
+  if (fromUrl) return fromUrl;
+  const number = Number(target);
+  if (!/^[1-9][0-9]*$/u.test(target) || !Number.isSafeInteger(number))
+    return yield* new BadArgs({
+      message:
+        "expected a PR number or a GitHub PR URL such as https://github.com/owner/name/pull/123",
+      detail: target,
+    });
+  const repository = yield* checkoutRepository(process.cwd());
+  return { kind: "pr", repository, number } satisfies Scope;
+});
+
+type OpenRequest = Extract<Request, { command: "open" }>;
+
+/** The open request `gyst` and `session open` both build from a Git range, `--pr` or `--session`. */
+export const openRequestOf = Effect.fn("openRequestOf")(function* (target: {
+  readonly range: string | undefined;
+  readonly pr: string | undefined;
+  readonly session: string | undefined;
+}) {
+  if ([target.range, target.pr, target.session].filter((given) => given !== undefined).length > 1)
+    return yield* new BadArgs({ message: "choose one of a Git range, --pr or --session" });
+  if (target.session !== undefined)
+    return { command: "open", session: target.session } satisfies OpenRequest;
+  return {
+    command: "open",
+    cwd: process.cwd(),
+    scope:
+      target.pr !== undefined ? yield* pullRequestScopeOf(target.pr) : yield* scopeOf(target.range),
+  } satisfies OpenRequest;
+});
 
 const sessionFlag = {
   name: "session",
@@ -89,42 +157,33 @@ const open = defineCommand(
   "open",
   {
     description:
-      "Open the session for uncommitted changes or a Git range, creating it only if none is saved; prints its identity without launching a viewer",
+      "Open the session for uncommitted changes, a Git range or a GitHub PR, creating it only if none is saved; prints its identity without launching a viewer",
   },
   (command) =>
     command
       .use(daemonClient)
-      .flags({
-        name: "session",
-        type: "string",
-        description: "Open this exact saved session id instead of selecting by scope",
-      })
-      .args(
-        defineArg("range", {
+      .flags(
+        {
+          name: "session",
           type: "string",
-          description: "A Git range such as main...feature; omitted, uncommitted changes",
-        }),
+          description: "Open this exact saved session id instead of selecting by scope",
+        },
+        prFlag,
       )
+      .args(defineArg("range", { type: "string", description: scopeArgDescription }))
       .action(
         handler(function* ({ args, flags, rawArgs, stdout }) {
           if (rawArgs.length > 0)
             return yield* new BadArgs({ message: "session open takes at most one Git range" });
-          if (flags.session !== undefined) {
-            if (args.range !== undefined)
-              return yield* new BadArgs({ message: "choose a Git range or --session, not both" });
-            return yield* call({ command: "open", session: flags.session }, stdout);
-          }
+          const request = yield* openRequestOf({
+            range: args.range,
+            pr: flags.pr,
+            session: flags.session,
+          });
           yield* call(
-            {
-              command: "open",
-              cwd: process.cwd(),
-              scope:
-                args.range === undefined
-                  ? { kind: "uncommitted" }
-                  : { kind: "range", range: args.range },
-            },
+            request,
             stdout,
-            terminalProgress(process.stderr),
+            "cwd" in request ? terminalProgress(process.stderr) : undefined,
           );
         }),
       ),
@@ -146,9 +205,16 @@ const check = defineCommand(
   (command) =>
     command
       .use(daemonClient)
-      .flags(sessionFlag)
+      .flags(sessionFlag, {
+        name: "stack",
+        type: "boolean",
+        description:
+          "Recheck a PR session's native GitHub stack metadata instead; never refreshes code or review state",
+      })
       .action(
-        handler(({ flags, stdout }) => call({ command: "check", session: flags.session }, stdout)),
+        handler(({ flags, stdout }) =>
+          call({ command: flags.stack ? "stack" : "check", session: flags.session }, stdout),
+        ),
       ),
 );
 const diff = defineCommand("diff", { description: "Read snapshot hunks" }, (command) =>

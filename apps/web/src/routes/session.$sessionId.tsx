@@ -70,6 +70,7 @@ import {
   edge,
   fileStep,
   hiddenRanges,
+  lineOn,
   type Model,
   moved,
   type Opened,
@@ -121,6 +122,8 @@ import {
   treeOf,
   wholeFileType,
 } from "../reader.ts";
+import { type ReadingPlace, recall, remember } from "../reading-memory.ts";
+import { StackSwitcher } from "../stack.tsx";
 import { media, theme } from "../tokens.stylex.ts";
 import {
   checkboxOf,
@@ -309,12 +312,21 @@ function useViewedProgress(
   // guidance replaces it: a read for Viewed alone keeps the views and the renderer's items, and
   // so the reading position, as they were.
   const [shown, setShown] = useState(status);
+  // A PR session's stack context, kept apart so a change of it never rebuilds the guidance views.
+  const [pullRequest, setPullRequest] = useState(status.pullRequest);
   const accepted = useRef(status.revision);
   const show = (next: StatusPayload) => {
-    if (next.session.snapshotId !== snapshotId || next.revision < accepted.current) return;
+    if (next.session.snapshotId !== snapshotId || next.revision < accepted.current) return false;
     accepted.current = next.revision;
     setShown((before) => (guidanceOf(next) === guidanceOf(before) ? before : next));
+    setPullRequest((before) =>
+      JSON.stringify(before) === JSON.stringify(next.pullRequest) ? before : next.pullRequest,
+    );
+    return true;
   };
+  // The announced stack context the shown status was read at: the revision doesn't version it, and
+  // the loader's read comes before any announcement, so until a live read it is unknown.
+  const contextRead = useRef<string>(undefined);
   const linked = useRef(live);
   linked.current = live;
   const mounted = useMounted();
@@ -325,13 +337,17 @@ function useViewedProgress(
     return next;
   };
   // A session reload reads status again; the same snapshot keeps this reader, so apply it here.
-  // A write on the wire answers for itself.
+  // A write on the wire answers for itself. The loader's read may be older than the live one
+  // shown, so its stack context is unknown until read live again; Viewed may not change with it,
+  // so that read is asked for here.
   const loaded = useRef(status);
   useEffect(() => {
     if (loaded.current === status) return;
     loaded.current = status;
-    show(status);
+    const taken = show(status);
+    if (taken) contextRead.current = undefined;
     if (latest.current.busy === undefined) apply({ type: "status", status: statusRead(status) });
+    if (taken) sync();
   });
   // The connection the write on the wire was sent over, and how many writes were sent: a status
   // read sent before the latest write says nothing of it.
@@ -385,6 +401,7 @@ function useViewedProgress(
     const mine = { generation, required };
     reading.current = mine;
     const since = sends.current;
+    const context = linked.current.now().known?.context;
     const current = () => mounted.current && linked.current.now().generation === generation;
     let recovering = false;
     void operation({ command: "status", session: sessionId })
@@ -395,7 +412,7 @@ function useViewedProgress(
         (answer) => {
           const { busy } = latest.current;
           if (!current()) return;
-          show(answer);
+          if (show(answer)) contextRead.current = context;
           if (
             sends.current === since &&
             (busy === undefined || (required && busy.kind === "rereading"))
@@ -438,10 +455,11 @@ function useViewedProgress(
       replayedAt.current = now.known;
       return send(replay);
     }
-    if (behind(now, current) === "read") read(generation, false);
+    if (behind(now, { ...current, context: contextRead.current }) === "read")
+      read(generation, false);
   };
   useEffect(sync, [live.state, state]);
-  return { state, write, status: shown };
+  return { state, write, status: shown, pullRequest };
 }
 
 /** Keydowns that type text rather than command the reader. */
@@ -469,18 +487,20 @@ function SessionReader(props: {
   const navigate = useNavigate();
   const router = useRouter();
   const [pages, setPages] = useState([props.firstPage]);
-  const [review, setReview] = useState<ReviewView>({ kind: "files", path: "" });
+  // Where the reader left this session earlier in this page's life, if in this snapshot.
+  const [recalled] = useState(() => recall(session.id, snapshotId));
+  const [review, setReview] = useState<ReviewView>(recalled?.review ?? { kind: "files", path: "" });
   const [mode, setMode] = useState<LayoutMode>("auto");
   const [width, setWidth] = useState(0);
   const [loads, setLoads] = useState<ReadonlyMap<string, FileLoad>>(new Map());
-  const [inputMode, setInputMode] = useState<InputMode>("vim");
-  const [cursor, setCursor] = useState<Cursor>();
+  const [inputMode, setInputMode] = useState<InputMode>(recalled?.inputMode ?? "vim");
+  const [cursor, setCursor] = useState<Cursor | undefined>(recalled?.cursor);
   const [lines, setLines] = useState<CodeViewLineSelection | null>(null);
   const [folded, setFolded] = useState<ReadonlySet<string>>(new Set());
   const [dialog, setDialog] = useState<"menu" | "help">();
   // Hidden lines opened per file. They live here, not in the renderer, which forgets them with
   // an item it drops; bumping the version re-reads the cursor model after the renderer opened some.
-  const [opened] = useState(() => new Map<string, Map<number, Opened>>());
+  const [opened] = useState(() => recalled?.opened ?? new Map<string, Map<number, Opened>>());
   const [, setOpenedVersion] = useState(0);
   const viewer = useRef<Viewer>(null);
   const live = useLiveSession(session.id);
@@ -488,10 +508,11 @@ function SessionReader(props: {
   const status = progress.status;
   const mounted = useMounted();
   // Captured-code navigation: the reference expanded in the main panel, the open peek, the places
-  // Back returns to, and the panel's restart key with where it starts. Never Viewed.
-  const [captured, setCaptured] = useState<CapturedRange>();
-  const [peek, setPeek] = useState<Peek>();
-  const [back, setBack] = useState<BackStack>([]);
+  // Back returns to, and the panel's restart key with where it starts. Never Viewed. A return from
+  // another session starts them as they were left.
+  const [captured, setCaptured] = useState<CapturedRange | undefined>(recalled?.captured);
+  const [peek, setPeek] = useState<Peek | undefined>(recalled?.peek);
+  const [back, setBack] = useState<BackStack>(recalled?.back ?? []);
   const [panel, setPanel] = useState<{ key: number; restore: Restore | undefined }>({
     key: 0,
     restore: undefined,
@@ -504,7 +525,7 @@ function SessionReader(props: {
   const peekOpener = useRef<HTMLElement | null>(null);
   const [refocus, setRefocus] = useState<{ origin: PeekOrigin; target: CapturedRange }>();
   // An expanded file opens its hidden lines in its own map, so Back finds the origin's as it was.
-  const expandedOpened = useRef(new Map<string, Map<number, Opened>>());
+  const expandedOpened = useRef(recalled?.expandedOpened ?? new Map<string, Map<number, Opened>>());
   const [notice, setNotice] = useState<string>();
   const readCode = useCallback<CodeRead>(
     (request) => operation({ ...request, session: session.id }),
@@ -725,6 +746,40 @@ function SessionReader(props: {
     },
     [followWindow],
   );
+  // This session's reading place, kept for a return from another session. The position at the top
+  // changes by scrolling alone, without a render, so the panel reports it. Until a return has put
+  // the recalled position back, the panel's own start is not the reader's place.
+  const readingPlace = useRef<ReadingPlace>({
+    review,
+    captured,
+    expandedOpened: expandedOpened.current,
+    peek,
+    back,
+    inputMode,
+    cursor,
+    opened,
+    top: recalled?.top,
+  });
+  readingPlace.current = {
+    ...readingPlace.current,
+    review,
+    captured,
+    expandedOpened: expandedOpened.current,
+    peek,
+    back,
+    inputMode,
+    cursor,
+  };
+  useEffect(() => remember(session.id, snapshotId, readingPlace.current));
+  const returning = useRef(recalled !== undefined);
+  const onPosition = useCallback(
+    (top: Restore) => {
+      if (returning.current) return;
+      readingPlace.current = { ...readingPlace.current, top };
+      remember(session.id, snapshotId, readingPlace.current);
+    },
+    [session.id, snapshotId],
+  );
 
   const tree = useMemo(
     () => treeOf([...manifest.map((file) => file.path), ...files.map((file) => file.path)]),
@@ -797,6 +852,62 @@ function SessionReader(props: {
       );
     return row && { file: target.file, side: "additions", line: row.new, full: true };
   };
+
+  // A return to this session puts the position it showed back at the top (an overview's offset, or
+  // a reading position), or else its cursor. Once the panel has a width: until then the layout may
+  // still switch, which resets the panel to its top. A line in hidden lines the reader had opened
+  // waits until its file loaded and the renderer opened them again, its file brought into view
+  // meanwhile so it loads. Moving the cursor or scrolling by hand first leaves the reader where
+  // they went.
+  const fileRevealed = useRef(false);
+  useEffect(() => {
+    if (!returning.current || width === 0 || recalled === undefined) return;
+    const view = viewer.current;
+    if (!view) return;
+    if (cursor !== recalled.cursor) return void (returning.current = false);
+    const restore = recalled.top;
+    if (restore !== undefined && "scrollTop" in restore) {
+      returning.current = false;
+      // After the renderer's first frames, which lay out the panel it starts at its top.
+      requestAnimationFrame(() =>
+        requestAnimationFrame(() => viewer.current?.scrollTo(restore.scrollTop)),
+      );
+      return;
+    }
+    const top = restore?.position;
+    if (top === undefined || !model.files.includes(top.file)) {
+      returning.current = false;
+      const mark = recalled.cursor && here ? markOf(here) : undefined;
+      if (mark) view.reveal(mark, "top");
+      return;
+    }
+    const side = top.side ?? "additions";
+    const diff = diffs.get(top.file);
+    // Until the renderer opened the file's hidden lines again, the line may be hidden, or sit
+    // lower once lines above it open.
+    const reopened = [...(openedNow.get(top.file) ?? [])].every(([index, open]) => {
+      if (diff === undefined || diff.isPartial) return false;
+      const range = hiddenRanges(diff).find((candidate) => candidate.index === index);
+      return (
+        range === undefined ||
+        ((open.fromStart === 0 || view.renders(top.file, range.new)) &&
+          (open.fromEnd === 0 || view.renders(top.file, range.new + range.size - 1)))
+      );
+    });
+    const ready =
+      reopened &&
+      (top.line === undefined ||
+        model.rows(top.file).some((row) => row.kind === "line" && lineOn(row, side) === top.line));
+    if (ready) {
+      returning.current = false;
+      const mark = { file: top.file, side, ...(top.line !== undefined && { line: top.line }) };
+      // After the renderer's next frame, which lays out the lines it has just opened again.
+      requestAnimationFrame(() => requestAnimationFrame(() => viewer.current?.reveal(mark, "top")));
+    } else if (!fileRevealed.current) {
+      fileRevealed.current = true;
+      view.reveal({ file: top.file, side }, "top");
+    }
+  });
 
   /** Moves the cursor (and a selection's moving end) and keeps it in view. */
   const go = (target: Cursor | undefined, how: "nearest" | "top" = "nearest") => {
@@ -1293,6 +1404,13 @@ function SessionReader(props: {
       top={
         <>
           <Crumb session={session} />
+          {progress.pullRequest && (
+            <StackSwitcher
+              sessionId={session.id}
+              pullRequest={progress.pullRequest}
+              viewedCount={progress.state.viewed.size}
+            />
+          )}
           <span {...stylex.props(styles.grow)} />
           <PillButton onClick={() => setDialog("menu")}>
             Commands <kbd {...stylex.props(styles.kbd)}>⌘K</kbd>
@@ -1530,7 +1648,11 @@ function SessionReader(props: {
             }
             setLines(vim && single ? null : next);
           }}
-          onManualScroll={pullBack}
+          onManualScroll={() => {
+            returning.current = false;
+            pullBack();
+          }}
+          onPosition={onPosition}
           renderHeader={(path) => {
             const file = shownByPath.get(path) ?? byPath.get(path)!;
             const hunkIds = hunkIdsOf(path);
@@ -1688,8 +1810,12 @@ type Viewer = {
   /** The header or line at the panel's top or bottom edge. */
   visibleAt(end: "top" | "bottom"): Cursor | undefined;
   fileInView(): string | undefined;
+  /** Whether a rendered file shows this new-side line rather than keeping it in a hidden range. */
+  renders(file: string, line: number): boolean;
   height(): number;
   scrollBy(pixels: number): void;
+  /** Scrolls to a pixel offset, as an overview's place is kept. */
+  scrollTo(top: number): void;
   scrollToEdge(end: "top" | "bottom"): void;
   /** Opens `count` hidden lines of a rendered file's range from both ends. */
   expand(file: string, range: number, count: number): void;
@@ -1743,6 +1869,11 @@ function ContinuousDiff(props: {
   loadDiffFiles: FileDiffContentsLoader;
   /** The files the panel shows now, after each render and scroll. */
   onWindow: (visible: readonly string[]) => void;
+  /**
+   * What is at the panel's top after each render and scroll that read it: a reading position, or
+   * above the first file (an overview) the panel's offset.
+   */
+  onPosition: (top: Restore) => void;
   onWidth: (width: number) => void;
   onOpened: () => void;
   onLineClick: (cursor: Cursor) => void;
@@ -1776,11 +1907,20 @@ function ContinuousDiff(props: {
     restoredTop.current = undefined;
     // The first line below the sticky file header is the one a reader sees at the top.
     const seen = scrollTop + headerHeight;
+    const first = latest.current.files[0];
+    const firstTop = first && viewer.getTopForItem(first.path);
+    if (firstTop !== undefined && seen < firstTop) {
+      // Above every file: no code position is the reader's any more, so none is restored.
+      position.current = undefined;
+      latest.current.onPosition({ scrollTop });
+      return;
+    }
     for (const { id, instance } of viewer.getRenderedItems()) {
       const top = viewer.getTopForItem(id);
       if (top === undefined || seen < top || seen >= top + instance.height) continue;
       const anchor = instance.getNumericScrollAnchor(seen - top);
       position.current = { file: id, side: anchor?.side, line: anchor?.lineNumber };
+      latest.current.onPosition({ position: position.current });
       return;
     }
   }, []);
@@ -1965,10 +2105,18 @@ function ContinuousDiff(props: {
         return undefined;
       },
       fileInView: () => position.current?.file ?? props.files[0]?.path,
+      renders(file, line) {
+        const rendered = view.current
+          ?.getInstance()
+          ?.getRenderedItems()
+          .find((item) => item.id === file);
+        return rendered?.type === "diff" && rendered.instance.isLineRenderable(line);
+      },
       height: () => node().clientHeight,
       scrollBy(pixels) {
         scrollTop((pendingTop.current ?? node().scrollTop) + pixels);
       },
+      scrollTo: scrollTop,
       scrollToEdge(end) {
         scrollTop(end === "top" ? 0 : node().scrollHeight);
       },
@@ -2008,6 +2156,7 @@ function ContinuousDiff(props: {
     const { opened, onOpened } = latest.current;
     const byRange = opened.get(file) ?? new Map<number, Opened>();
     let changed = false;
+    let reopened = false;
     for (const range of hiddenRanges(diff)) {
       if (range.size <= 1) continue;
       const mine = byRange.get(range.index) ?? { fromStart: 0, fromEnd: 0 };
@@ -2018,6 +2167,7 @@ function ContinuousDiff(props: {
       ) {
         if (mine.fromStart > 0) instance.expandHunk(range.index, "up", mine.fromStart);
         if (mine.fromEnd > 0) instance.expandHunk(range.index, "down", mine.fromEnd);
+        reopened = true;
         continue;
       }
       let { fromStart, fromEnd } = mine;
@@ -2027,9 +2177,9 @@ function ContinuousDiff(props: {
       byRange.set(range.index, { fromStart, fromEnd });
       changed = true;
     }
-    if (!changed) return;
-    opened.set(file, byRange);
-    onOpened();
+    if (changed) opened.set(file, byRange);
+    // Opened again too: a return to a reading place inside these lines waits for them.
+    if (changed || reopened) onOpened();
   }, []);
 
   // One item per file, reused while its fold and metadata are unchanged so the renderer keeps its

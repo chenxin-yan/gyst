@@ -7,8 +7,11 @@ import {
   type ManifestFile,
   parseFilePatch,
   type Provenance,
+  type PullRequestScope,
+  pullRequestUrlOf,
   type Scope,
   type SnapshotManifest,
+  SourceUnavailable,
 } from "@gyst/core";
 import {
   Clock,
@@ -19,12 +22,17 @@ import {
   Layer,
   PlatformError,
   Schema,
+  Semaphore,
   Stream,
 } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import { dirname } from "node:path";
 import { CapturedContent } from "./content.ts";
 import * as Worktree from "./worktree.ts";
+
+/** A raw remote URL naming a github.com repository over HTTPS or SSH. */
+const githubRemotePattern =
+  /^(?:https:\/\/(?:[^@/]+@)?github\.com\/|ssh:\/\/git@github\.com(?::22)?\/|git@github\.com:)(?<owner>[^/]+)\/(?<name>[^/]+?)(?:\.git)?\/?$/iu;
 
 /** `base..head` or `base...head`, either side defaulting to HEAD as in Git. */
 const rangePattern = /^(?<base>[^\s]*?)(?<dots>\.\.\.?)(?<head>[^\s.][^\s]*|)$/u;
@@ -90,7 +98,7 @@ export const nulFraming = () => {
 
 const diagnosticLimit = 8 * 1024;
 /** Drains a child's stderr completely, keeping only its first few KiB for error messages. */
-const diagnostics = <E>(stderr: Stream.Stream<Uint8Array, E>) => {
+export const diagnostics = <E>(stderr: Stream.Stream<Uint8Array, E>) => {
   const utf8 = new TextDecoder();
   return Stream.runFold(
     stderr,
@@ -149,6 +157,12 @@ const eligibleText = <E>(bytes: Stream.Stream<Uint8Array, E>) => {
   );
 };
 
+/** Scopes captured from this checkout alone; a PR scope also needs what GitHub reports. */
+export type LocalScope = Exclude<Scope, { readonly kind: "pr" }>;
+/** What GitHub reports a PR's range must be captured at. */
+export type PullRequestTarget = { readonly baseRefName: string; readonly headRefOid: string };
+type CommitProvenance = Exclude<Provenance, { readonly kind: "uncommitted" }>;
+
 export class Git extends Context.Service<
   Git,
   {
@@ -163,9 +177,31 @@ export class Git extends Context.Service<
      */
     capture(
       root: string,
-      scope: Scope,
+      scope: LocalScope,
       onProgress?: (progress: CaptureProgress) => Effect.Effect<void>,
     ): Effect.Effect<SnapshotManifest, BadArgs | InternalError>;
+    /**
+     * A PR scope captured like a range over `pullRequestRange`'s commits: the PR's own merge base
+     * against its head, with every file of both trees, so inherited unchanged source stays readable.
+     */
+    capturePullRequest(
+      root: string,
+      scope: PullRequestScope,
+      target: PullRequestTarget,
+      onProgress?: (progress: CaptureProgress) => Effect.Effect<void>,
+    ): Effect.Effect<SnapshotManifest, SourceUnavailable | BadArgs | InternalError>;
+    /**
+     * A PR's own range in a matching checkout: merge-base(base branch, PR head)..PR head, the head
+     * verified to be `headRefOid`. Fetches only into `refs/gyst/github/<repository>/pull/<n>/`.
+     */
+    pullRequestRange(
+      root: string,
+      scope: PullRequestScope,
+      target: PullRequestTarget,
+    ): Effect.Effect<
+      { readonly base: string; readonly head: string; readonly mergeBase: string },
+      SourceUnavailable | BadArgs
+    >;
   }
 >()("gyst/daemon/Git") {
   static readonly layer = Layer.effect(
@@ -296,6 +332,122 @@ export class Git extends Context.Service<
           head: tip,
           mergeBase: text(mergeBase.stdout).trim(),
         } satisfies Provenance;
+      });
+
+      const pullRequestRefs = yield* Semaphore.make(1);
+      /** The remote whose raw configured URL (before any insteadOf) names the PR's repository. */
+      const remoteFor = Effect.fn("Git.remoteFor")(function* (root: string, repository: string) {
+        const listed = yield* run(root, ["config", "-z", "--get-regexp", "^remote\\..*\\.url$"]);
+        // Exit 1: no remote is configured at all.
+        if (listed.exitCode !== 0 && listed.exitCode !== 1)
+          return yield* new BadArgs({ message: listed.stderr.trim() || "git config failed" });
+        const matching = text(listed.stdout)
+          .split("\0")
+          .flatMap((record) => {
+            const newline = record.indexOf("\n");
+            const parts = githubRemotePattern.exec(record.slice(newline + 1))?.groups;
+            return newline !== -1 &&
+              parts !== undefined &&
+              `${parts.owner}/${parts.name}`.toLowerCase() === repository
+              ? [record.slice("remote.".length, newline - ".url".length)]
+              : [];
+          });
+        const remote = matching.includes("origin") ? "origin" : matching[0];
+        if (remote === undefined)
+          return yield* new SourceUnavailable({
+            message: `this checkout has no remote for github.com/${repository}: run gyst from a clone of it`,
+            detail: { reason: "checkout_mismatch" },
+          });
+        return remote;
+      });
+
+      /**
+       * Fetches the PR head and its base branch into private refs, never touching HEAD, the index,
+       * branches, remote-tracking refs, tags or FETCH_HEAD, and returns the PR's own merge base.
+       */
+      const pullRequestRange = Effect.fn("Git.pullRequestRange")(function* (
+        root: string,
+        scope: PullRequestScope,
+        target: PullRequestTarget,
+      ) {
+        const url = pullRequestUrlOf(scope);
+        const remote = yield* remoteFor(root, scope.repository);
+        const baseRef = `refs/heads/${target.baseRefName}`;
+        if (
+          target.baseRefName.startsWith("-") ||
+          (yield* run(root, ["check-ref-format", baseRef])).exitCode !== 0
+        )
+          return yield* new SourceUnavailable({
+            message: `GitHub reported a base branch for ${url} that is not a valid branch name`,
+            detail: { reason: "github_failed", diagnostic: target.baseRefName },
+          });
+        // `%` never appears in a repository name, so escaping every `.` is injective and leaves no
+        // leading dot, `..` or `.lock` that Git would refuse in a ref.
+        const namespace = `refs/gyst/github/${scope.repository.replaceAll(".", "%2e")}/pull/${scope.number}`;
+        const objectsMissing = (message: string, diagnostic?: string) =>
+          new SourceUnavailable({
+            message,
+            detail: { reason: "objects_missing", ...(diagnostic && { diagnostic }) },
+          });
+        const fetchAndResolve = Effect.gen(function* () {
+          const fetched = yield* run(root, [
+            // The reference-transaction hook would otherwise run a project program.
+            "-c",
+            "core.hooksPath=/dev/null",
+            "fetch",
+            "--quiet",
+            "--no-tags",
+            "--no-prune",
+            "--no-write-fetch-head",
+            "--no-recurse-submodules",
+            "--no-auto-maintenance",
+            // Empty: no configured refspec opportunistically updates remote-tracking refs.
+            "--refmap=",
+            "--end-of-options",
+            remote,
+            `+refs/pull/${scope.number}/head:${namespace}/head`,
+            `+${baseRef}:${namespace}/base`,
+          ]).pipe(
+            Effect.timeoutOrElse({
+              duration: "2 minutes",
+              orElse: () =>
+                Effect.fail(objectsMissing(`fetching ${url} from remote ${remote} timed out`)),
+            }),
+          );
+          if (fetched.exitCode !== 0)
+            return yield* objectsMissing(
+              `could not fetch ${url} and its base branch ${target.baseRefName} from remote ${remote}`,
+              fetched.stderr.trim(),
+            );
+          const resolve = (ref: string) =>
+            Effect.map(
+              run(root, ["rev-parse", "--verify", "--quiet", `${ref}^{commit}`]),
+              (resolved) => (resolved.exitCode === 0 ? text(resolved.stdout).trim() : undefined),
+            );
+          const tip = yield* resolve(`${namespace}/head`);
+          const base = yield* resolve(`${namespace}/base`);
+          if (tip === undefined || base === undefined)
+            return yield* objectsMissing(`the fetched commits of ${url} are not readable`);
+          return { tip, base };
+        });
+        // Acquisitions of one PR share its private refs; one permit keeps another fetch from
+        // landing between this fetch and its two resolutions, which would mix two pairs.
+        const { tip, base } = yield* fetchAndResolve.pipe(Semaphore.withPermit(pullRequestRefs));
+        if (tip !== target.headRefOid)
+          return yield* new SourceUnavailable({
+            message: `${url} moved while gyst read it: open it again`,
+            detail: {
+              reason: "head_moved",
+              diagnostic: `expected ${target.headRefOid}, fetched ${tip}`,
+            },
+          });
+        const mergeBase = yield* run(root, ["merge-base", base, tip]);
+        if (mergeBase.exitCode !== 0)
+          return yield* objectsMissing(
+            `${url} has no merge base with ${target.baseRefName} in this checkout; if it is shallow, run git fetch --unshallow`,
+            mergeBase.stderr.trim(),
+          );
+        return { base, head: tip, mergeBase: text(mergeBase.stdout).trim() };
       });
 
       /** Every entry of a commit's tree by path, `node_modules` excluded; links are not entered. */
@@ -470,10 +622,12 @@ export class Git extends Context.Service<
         ),
       );
 
-      const capture = Effect.fn("Git.capture")(function* (
+      // A range and a PR share the commit-pair capture; only uncommitted work reads the checkout.
+      const snapshot = Effect.fn("Git.snapshot")(function* (
         root: string,
         scope: Scope,
-        onProgress: (progress: CaptureProgress) => Effect.Effect<void> = () => Effect.void,
+        commits: CommitProvenance | undefined,
+        onProgress: (progress: CaptureProgress) => Effect.Effect<void>,
       ) {
         const objects = new Map<string, ContentSide>();
         const read = { bytes: 0 };
@@ -491,8 +645,8 @@ export class Git extends Context.Service<
         });
         const sides: Array<{ path: string; old: CapturedSide; new: CapturedSide }> = [];
         let provenance: Provenance;
-        if (scope.kind === "range") {
-          provenance = yield* range(root, scope.range);
+        if (commits) {
+          provenance = commits;
           const oldTree = yield* tree(root, provenance.mergeBase ?? provenance.base);
           const newTree = yield* tree(root, provenance.head);
           const paths = [...new Set([...oldTree.keys(), ...newTree.keys()])].sort();
@@ -642,7 +796,26 @@ export class Git extends Context.Service<
         return { scope, provenance, files, hunks } satisfies SnapshotManifest;
       });
 
-      return Git.of({ repoRoot, capture });
+      const capture = Effect.fn("Git.capture")(function* (
+        root: string,
+        scope: LocalScope,
+        onProgress: (progress: CaptureProgress) => Effect.Effect<void> = () => Effect.void,
+      ) {
+        const commits = scope.kind === "range" ? yield* range(root, scope.range) : undefined;
+        return yield* snapshot(root, scope, commits, onProgress);
+      });
+
+      const capturePullRequest = Effect.fn("Git.capturePullRequest")(function* (
+        root: string,
+        scope: PullRequestScope,
+        target: PullRequestTarget,
+        onProgress: (progress: CaptureProgress) => Effect.Effect<void> = () => Effect.void,
+      ) {
+        const commits = yield* pullRequestRange(root, scope, target);
+        return yield* snapshot(root, scope, { kind: "pr", ...commits }, onProgress);
+      });
+
+      return Git.of({ repoRoot, capture, capturePullRequest, pullRequestRange });
     }),
   );
 }

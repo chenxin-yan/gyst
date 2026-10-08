@@ -1,11 +1,20 @@
 // The reader's live link to its session's committed state: which connection is current, whether
 // gyst can be reached, and the newest version the daemon announced. No React or DOM here, so the
 // fencing and recovery rules are unit tested on their own.
-import type { SubscriptionEvent } from "@gyst/core/wire";
+import type { SessionVersion, SubscriptionEvent } from "@gyst/core/wire";
 import { TransportError } from "./api.ts";
 
-/** A version of the session's committed state, as a status read or an announcement names it. */
-export type Version = { snapshotId: string; revision: number };
+/**
+ * A version of the session's committed state, as a status read or an announcement names it. A PR
+ * session's `context` changes with its stack context, which never moves the revision.
+ */
+export type Version = { snapshotId: string; revision: number; context?: string | undefined };
+
+const versionOf = ({ snapshotId, revision, context }: SessionVersion): Version => ({
+  snapshotId,
+  revision,
+  ...(context !== undefined && { context }),
+});
 
 export type LivePhase = "connecting" | "live" | "recovering" | "deleted" | "refused";
 
@@ -68,7 +77,7 @@ export function liveReducer(state: LiveState, event: LiveEvent): LiveState {
   const frame = event.event;
   switch (frame.kind) {
     case "ready": {
-      const version = { snapshotId: frame.snapshotId, revision: frame.revision };
+      const version = versionOf(frame);
       return {
         generation: state.generation,
         phase: "live",
@@ -80,7 +89,7 @@ export function liveReducer(state: LiveState, event: LiveEvent): LiveState {
     }
     case "changed":
       if (state.known !== undefined && frame.revision < state.known.revision) return state;
-      return { ...state, known: { snapshotId: frame.snapshotId, revision: frame.revision } };
+      return { ...state, known: versionOf(frame) };
     case "deleted":
       return { ...state, phase: "deleted" };
     case "failed":
@@ -93,14 +102,15 @@ export function liveReducer(state: LiveState, event: LiveEvent): LiveState {
 export const retryDelay = (attempts: number) => Math.min(250 * 2 ** attempts, 5_000);
 
 /**
- * Whether shown progress trails the committed state: current, behind so status is read again, or
- * of a snapshot a refresh replaced, which only a session reload can show.
+ * Whether shown progress trails the committed state: current, behind so status is read again (a
+ * newer revision, or another stack context than the one status was last read at), or of a
+ * snapshot a refresh replaced, which only a session reload can show.
  */
 export function behind(live: LiveState, shown: Version): "current" | "read" | "replaced" {
   const { known } = live;
   if (known === undefined) return "current";
   if (known.snapshotId !== shown.snapshotId) return "replaced";
-  return known.revision > shown.revision ? "read" : "current";
+  return known.revision > shown.revision || known.context !== shown.context ? "read" : "current";
 }
 
 /**

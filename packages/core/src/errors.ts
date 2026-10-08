@@ -1,4 +1,5 @@
 import { Schema, SchemaGetter } from "effect";
+import { GitHubUnavailableReasonSchema } from "./github.ts";
 
 export const ErrorCodeSchema = Schema.Literals([
   "stale_revision",
@@ -6,6 +7,7 @@ export const ErrorCodeSchema = Schema.Literals([
   "no_session",
   "daemon_unreachable",
   "bad_args",
+  "source_unavailable",
   "internal_error",
 ]);
 
@@ -25,6 +27,31 @@ export class DaemonUnreachable extends Schema.TaggedError<DaemonUnreachable>()(
   errorFields,
 ) {}
 export class BadArgs extends Schema.TaggedError<BadArgs>()("bad_args", errorFields) {}
+
+/**
+ * Why a PR's source could not be read: the host's `gh` is missing, unauthenticated or denied, GitHub
+ * failed, the checkout has no matching remote, required Git objects could not be fetched, or the
+ * PR head moved while it was being read (retry).
+ */
+export const SourceUnavailableReasonSchema = Schema.Literals([
+  ...GitHubUnavailableReasonSchema.literals,
+  "checkout_mismatch",
+  "objects_missing",
+  "head_moved",
+]);
+export type SourceUnavailableReason = typeof SourceUnavailableReasonSchema.Type;
+/** An environment problem on the gyst host, not a caller mistake; `message` says what to do. */
+export class SourceUnavailable extends Schema.TaggedError<SourceUnavailable>()(
+  "source_unavailable",
+  {
+    message: Schema.String,
+    /** `diagnostic` is the failing tool's bounded output, when there is one. */
+    detail: Schema.Struct({
+      reason: SourceUnavailableReasonSchema,
+      diagnostic: Schema.optional(Schema.String),
+    }),
+  },
+) {}
 /** A gyst defect, not a caller mistake: anything that is neither a domain error nor invalid input. */
 export class InternalError extends Schema.TaggedError<InternalError>()(
   "internal_error",
@@ -37,6 +64,7 @@ export const DaemonError = Schema.Union([
   NoSession,
   DaemonUnreachable,
   BadArgs,
+  SourceUnavailable,
   InternalError,
 ]);
 export type DaemonError = typeof DaemonError.Type;
@@ -44,7 +72,10 @@ export type DaemonError = typeof DaemonError.Type;
 /** Agents parse `code` on the wire; in-process the same error is a tagged class instance. */
 export const ErrorPayloadSchema = Schema.Struct({ code: ErrorCodeSchema, ...errorFields }).pipe(
   Schema.decodeTo(DaemonError, {
-    decode: SchemaGetter.transform(({ code, ...rest }) => ({ _tag: code, ...rest })),
+    // `DaemonError` then validates the error's own fields, such as `source_unavailable`'s detail.
+    decode: SchemaGetter.transform(
+      ({ code, ...rest }) => ({ _tag: code, ...rest }) as typeof DaemonError.Encoded,
+    ),
     encode: SchemaGetter.transform(({ _tag, ...rest }) => ({ code: _tag, ...rest })),
   }),
 );

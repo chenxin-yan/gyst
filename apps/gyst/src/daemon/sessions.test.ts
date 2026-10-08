@@ -9,9 +9,13 @@ import {
   type Session,
   type ManifestFile,
   pageBytes,
+  type PullRequest,
+  type PullRequestScope,
   type Request,
+  SessionSchema,
   type SnapshotManifest,
   snapshotIdOf,
+  SourceUnavailable,
 } from "@gyst/core";
 import {
   ConfigProvider,
@@ -24,6 +28,7 @@ import {
   Option,
   PlatformError,
   Queue,
+  Schema,
   Stream,
 } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
@@ -33,7 +38,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { manifestOf, publishingContent } from "./capture-doubles.ts";
 import { CapturedContent } from "./content.ts";
-import { Git } from "./git.ts";
+import { Git, type PullRequestTarget } from "./git.ts";
+import { GitHub, type StackDiscovery } from "./github.ts";
 import { Paths } from "./paths.ts";
 import { Sessions } from "./sessions.ts";
 import { type DeleteReceipt, SessionStore } from "./store.ts";
@@ -57,7 +63,15 @@ diff --git a/b.txt b/b.txt
 
 let files: Map<string, Session>;
 let deleteReceipts: ReadonlyArray<DeleteReceipt>;
-let captureCalls: Array<{ root: string; scope: Scope }>;
+let captureCalls: Array<{ root: string; scope: Scope; target?: PullRequestTarget }>;
+/** Every GitHub read, in order; local and range sessions must leave it empty. */
+let githubCalls: Array<{ method: "pullRequest" | "stack"; number: number }>;
+let headRefOid: string;
+let discovery: StackDiscovery;
+let pullRequestFailure: SourceUnavailable | undefined;
+/** Fields GitHub now reports differently for every PR, such as a new state. */
+let pullRequestEdit: Partial<PullRequest>;
+let pullRequestCaptureFailure: SourceUnavailable | undefined;
 let saveFails: boolean;
 let removeFails: boolean;
 let nextId: number;
@@ -86,6 +100,8 @@ const holdNextSave = Effect.gen(function* () {
   saveGate = held;
   return held;
 });
+/** When set, each stack discovery signals `started` and then waits for `release`. */
+let stackGate: { started: Deferred.Deferred<void>; release: Deferred.Deferred<void> } | undefined;
 /** Content publications and session saves, in order. */
 let commits: string[];
 
@@ -98,6 +114,18 @@ const crypto = Layer.succeed(
   }),
 );
 
+const capturing = (scope: Scope) =>
+  Effect.suspend(() => {
+    const captured =
+      patchEffect ?? Effect.sync(() => withUncaptured(manifestOf(gitPatch, scope, supporting)));
+    const delayed = slowCapture ? Effect.delay(captured, "20 millis") : captured;
+    return gate
+      ? Deferred.succeed(gate.started, undefined).pipe(
+          Effect.andThen(Deferred.await(gate.release)),
+          Effect.andThen(delayed),
+        )
+      : delayed;
+  });
 const git = Layer.succeed(Git, {
   repoRoot: (cwd) =>
     cwd.startsWith(root) || cwd.startsWith(otherRoot)
@@ -106,15 +134,49 @@ const git = Layer.succeed(Git, {
   capture: (root, scope) =>
     Effect.suspend(() => {
       captureCalls.push({ root, scope });
-      const captured =
-        patchEffect ?? Effect.sync(() => withUncaptured(manifestOf(gitPatch, scope, supporting)));
-      const delayed = slowCapture ? Effect.delay(captured, "20 millis") : captured;
-      return gate
-        ? Deferred.succeed(gate.started, undefined).pipe(
-            Effect.andThen(Deferred.await(gate.release)),
-            Effect.andThen(delayed),
+      return capturing(scope);
+    }),
+  capturePullRequest: (root, scope, target) =>
+    Effect.suspend(() => {
+      captureCalls.push({ root, scope, target });
+      const captured: Effect.Effect<SnapshotManifest, SourceUnavailable | BadArgs | InternalError> =
+        pullRequestCaptureFailure ? Effect.fail(pullRequestCaptureFailure) : capturing(scope);
+      return captured;
+    }),
+  pullRequestRange: () => Effect.die("Sessions captures PRs through capturePullRequest"),
+});
+
+const pullRequestOf = (number: number): PullRequest => ({
+  number,
+  title: `Layer ${number}`,
+  description: `Why layer ${number}`,
+  state: "open",
+  url: `https://github.com/acme/widgets/pull/${number}`,
+  baseRefName: number === 1 ? "main" : `layer-${number - 1}`,
+  headRefName: `layer-${number}`,
+});
+const github = Layer.succeed(GitHub, {
+  pullRequest: (scope) =>
+    Effect.suspend(() => {
+      githubCalls.push({ method: "pullRequest", number: scope.number });
+      return pullRequestFailure
+        ? Effect.fail(pullRequestFailure)
+        : Effect.succeed({
+            pullRequest: { ...pullRequestOf(scope.number), ...pullRequestEdit },
+            headRefOid,
+          });
+    }),
+  stack: (scope) =>
+    Effect.suspend(() => {
+      githubCalls.push({ method: "stack", number: scope.number });
+      const held = stackGate;
+      const answer = Effect.sync(() => discovery);
+      return held
+        ? Deferred.succeed(held.started, undefined).pipe(
+            Effect.andThen(Deferred.await(held.release)),
+            Effect.andThen(answer),
           )
-        : delayed;
+        : answer;
     }),
 });
 
@@ -167,7 +229,7 @@ const store = Layer.succeed(SessionStore, {
 });
 
 const sessionsLayer = Sessions.layer.pipe(
-  Layer.provide(Layer.mergeAll(git, store, crypto, content)),
+  Layer.provide(Layer.mergeAll(git, github, store, crypto, content)),
 );
 // Like the daemon: persisted sessions are loaded once the service is built, not while building it.
 // Each `run` is a fresh daemon over the same persisted files and receipts.
@@ -270,6 +332,23 @@ beforeEach(() => {
   files = new Map([[persisted.id, persisted]]);
   deleteReceipts = [];
   captureCalls = [];
+  githubCalls = [];
+  headRefOid = "1".repeat(40);
+  discovery = {
+    ok: true,
+    membership: {
+      membership: "stacked",
+      number: 7,
+      baseRefName: "main",
+      layers: [1, 2, 3].map((number) => ({
+        position: number,
+        pullRequest: pullRequestOf(number),
+      })),
+    },
+  };
+  pullRequestFailure = undefined;
+  pullRequestEdit = {};
+  pullRequestCaptureFailure = undefined;
   saveFails = false;
   removeFails = false;
   nextId = 0;
@@ -281,6 +360,7 @@ beforeEach(() => {
   uncaptured = [];
   gate = undefined;
   saveGate = undefined;
+  stackGate = undefined;
   commits = [];
 });
 
@@ -719,6 +799,425 @@ describe("Sessions.open", () => {
         }),
       ),
     );
+  });
+});
+
+describe("Sessions PR sessions", () => {
+  const layer2: PullRequestScope = { kind: "pr", repository: "acme/widgets", number: 2 };
+  const decodeSession = Schema.decodeUnknownSync(SessionSchema);
+  const unavailable = (reason: "gh_missing" | "objects_missing") =>
+    new SourceUnavailable({ message: `PR source unavailable: ${reason}`, detail: { reason } });
+
+  it("captures the PR's range at GitHub's head and stores its attempted stack discovery", async () => {
+    const opened = await run(openScope(layer2, `${root}/sub`));
+    expect(opened).toMatchObject({ created: true, session: { repoRoot: root, scope: layer2 } });
+    expect(captureCalls).toEqual([
+      { root, scope: layer2, target: { baseRefName: "layer-1", headRefOid } },
+    ]);
+    expect(githubCalls).toEqual([
+      { method: "pullRequest", number: 2 },
+      { method: "stack", number: 2 },
+    ]);
+    const saved = decodeSession(files.get(opened.session.id));
+    expect(saved.pullRequest).toEqual({
+      pullRequest: pullRequestOf(2),
+      stack: { verifiedAt: expect.any(String), ...(discovery.ok && discovery.membership) },
+      unavailable: null,
+    });
+  });
+
+  it("reuses the saved PR session as it is after its head, stack or checkout changes, without asking GitHub", async () => {
+    const first = await run(openScope(layer2));
+    const saved = JSON.stringify([...files]);
+    const calls = githubCalls.length;
+    headRefOid = "2".repeat(40);
+    gitPatch = patch.replace("+two", "+restacked");
+    discovery = { ok: false, reason: "github_failed" };
+    const again = await run(
+      Effect.gen(function* () {
+        const elsewhere = yield* openScope(layer2, otherRoot);
+        expect(yield* openScope(layer2, `${root}/sub`)).toEqual(elsewhere);
+        return elsewhere;
+      }),
+    );
+    expect(again).toEqual({ ...first, created: false });
+    expect(githubCalls).toHaveLength(calls);
+    expect(captureCalls).toHaveLength(1);
+    expect(JSON.stringify([...files])).toBe(saved);
+  });
+
+  it("keeps a PR apart from a range with an equal diff, and from other PRs and repositories", async () => {
+    const scopes: Scope[] = [
+      { kind: "range", range: "layer-1...layer-2" },
+      layer2,
+      { ...layer2, number: 3 },
+      { ...layer2, repository: "acme/gadgets" },
+    ];
+    const opened = await run(Effect.forEach(scopes, (scope) => openScope(scope)));
+    expect(new Set(opened.map(({ session }) => session.id)).size).toBe(4);
+    expect(new Set(opened.map(({ session }) => session.snapshotId)).size).toBe(4);
+    expect(files.get(opened[0]!.session.id)?.pullRequest).toBeUndefined();
+    expect((await run(openScope(scopes[1]))).session.id).toBe(opened[1]!.session.id);
+  });
+
+  it("never asks GitHub for uncommitted or range sessions", async () => {
+    await run(
+      Sessions.use((sessions) =>
+        Effect.gen(function* () {
+          for (const scope of [uncommitted, { kind: "range", range: "main...feature" } as const]) {
+            const { session } = yield* openScope(scope);
+            yield* sessions.check({ command: "check", session: session.id });
+            yield* sessions.refresh({ command: "refresh", session: session.id });
+          }
+        }),
+      ),
+    );
+    expect(captureCalls.map(({ scope }) => scope.kind)).toEqual([
+      "uncommitted",
+      "uncommitted",
+      "uncommitted",
+      "range",
+      "range",
+      "range",
+    ]);
+    expect(githubCalls).toEqual([]);
+  });
+
+  it("saves nothing when GitHub or the PR's Git objects are unavailable", async () => {
+    const saved = JSON.stringify([...files]);
+    pullRequestFailure = unavailable("gh_missing");
+    expect(await failure(openScope(layer2))).toBe(pullRequestFailure);
+    expect(captureCalls).toEqual([]);
+    pullRequestFailure = undefined;
+    pullRequestCaptureFailure = unavailable("objects_missing");
+    expect(await failure(openScope(layer2))).toBe(pullRequestCaptureFailure);
+    // Discovery is attempted only once the PR's own range resolved.
+    expect(githubCalls.map(({ method }) => method)).toEqual(["pullRequest", "pullRequest"]);
+    expect(commits).toEqual([]);
+    expect(JSON.stringify([...files])).toBe(saved);
+  });
+
+  it("opens a resolvable PR standalone when stack discovery is unavailable", async () => {
+    discovery = { ok: false, reason: "github_failed" };
+    const opened = await run(openScope(layer2));
+    expect(opened.created).toBe(true);
+    expect(decodeSession(files.get(opened.session.id)).pullRequest).toEqual({
+      pullRequest: pullRequestOf(2),
+      stack: null,
+      unavailable: { at: expect.any(String), reason: "github_failed" },
+    });
+  });
+
+  it("refreshes only the PR's range at its current head and keeps the stack context", async () => {
+    const { session } = await run(openScope(layer2));
+    const context = files.get(session.id)?.pullRequest;
+    headRefOid = "2".repeat(40);
+    gitPatch = patch.replace("+two", "+restacked");
+    discovery = { ok: false, reason: "github_failed" };
+    const refreshed = await run(
+      Sessions.use((s) => s.refresh({ command: "refresh", session: session.id })),
+    );
+    expect(refreshed.session.snapshotId).not.toBe(session.snapshotId);
+    expect(captureCalls.at(-1)).toEqual({
+      root,
+      scope: layer2,
+      target: { baseRefName: "layer-1", headRefOid },
+    });
+    expect(githubCalls.map(({ method }) => method)).toEqual([
+      "pullRequest",
+      "stack",
+      "pullRequest",
+    ]);
+    expect(decodeSession(files.get(session.id)).pullRequest).toEqual(context);
+
+    // A refresh that cannot read the PR changes nothing.
+    const saved = JSON.stringify([...files]);
+    pullRequestFailure = unavailable("gh_missing");
+    expect(
+      await failure(Sessions.use((s) => s.refresh({ command: "refresh", session: session.id }))),
+    ).toBe(pullRequestFailure);
+    expect(JSON.stringify([...files])).toBe(saved);
+  });
+
+  it("checks a PR against GitHub's current head and reports an unreadable PR as unavailable", async () => {
+    const { session } = await run(openScope(layer2));
+    const check = Sessions.use((s) => s.check({ command: "check", session: session.id }));
+    expect(await run(check)).toMatchObject({ state: "unchanged" });
+    gitPatch = patch.replace("+two", "+moved");
+    expect(await run(check)).toMatchObject({ state: "changed" });
+    pullRequestFailure = unavailable("gh_missing");
+    expect(await run(check)).toEqual({
+      sessionId: session.id,
+      revision: 0,
+      state: "unavailable",
+      message: pullRequestFailure.message,
+      checkedAt: expect.any(String),
+    });
+    expect(githubCalls.filter(({ method }) => method === "stack")).toHaveLength(1);
+  });
+});
+
+describe("Sessions PR stacks", () => {
+  const scopeOf = (number: number): PullRequestScope => ({
+    kind: "pr",
+    repository: "acme/widgets",
+    number,
+  });
+  const layers = (...numbers: number[]) =>
+    numbers.map((number, index) => ({ position: index + 1, pullRequest: pullRequestOf(number) }));
+  const stacked = (...numbers: number[]): StackDiscovery => ({
+    ok: true,
+    membership: {
+      membership: "stacked",
+      number: 7,
+      baseRefName: "main",
+      layers: layers(...numbers),
+    },
+  });
+  const statusOf = (session: string) =>
+    Sessions.use((s) => s.status({ command: "status", session }));
+  const recheck = (session: string) => Sessions.use((s) => s.stack({ command: "stack", session }));
+  const openLayer = (session: string, number: number) =>
+    Sessions.use((s) => s.layer({ command: "layer", session, number }));
+  /** Everything a recheck must leave as it was: snapshot, review state, receipts and timestamps. */
+  const reviewState = (session: Session) => ({ ...session, pullRequest: undefined });
+
+  it("reports the whole known stack with the selected PR and only its opened layers' sessions", async () => {
+    const { session: b } = await run(openScope(scopeOf(2)));
+    const status = await run(statusOf(b.id));
+    expect(status.pullRequest).toEqual({
+      ...files.get(b.id)!.pullRequest,
+      selected: 2,
+      sessions: [{ number: 2, sessionId: b.id, hunkCount: 2, viewedCount: 0 }],
+    });
+    expect(status.pullRequest?.stack).toMatchObject({ layers: layers(1, 2, 3) });
+    expect((await run(statusOf(persisted.id))).pullRequest).toBeUndefined();
+  });
+
+  it("rechecks metadata only: membership, order and PR state change while snapshot and review state do not", async () => {
+    const { session: b } = await run(openScope(scopeOf(2)));
+    const [first] = (await run(Sessions.use((s) => s.diff({ command: "diff", session: b.id }))))
+      .hunks;
+    await run(viewedNow(b.id, [first!.id], "viewed-1"));
+    const before = files.get(b.id)!;
+    const captures = captureCalls.length;
+    const commitsBefore = commits.length;
+    pullRequestEdit = { state: "merged", title: "Renamed layer" };
+    discovery = stacked(3, 2, 1);
+    const result = await run(recheck(b.id));
+    const after = files.get(b.id)!;
+    expect(reviewState(after)).toEqual(reviewState(before));
+    expect(after.pullRequest).toEqual({
+      pullRequest: { ...pullRequestOf(2), ...pullRequestEdit },
+      stack: {
+        verifiedAt: expect.any(String),
+        membership: "stacked",
+        number: 7,
+        baseRefName: "main",
+        layers: layers(3, 2, 1),
+      },
+      unavailable: null,
+    });
+    expect(result).toEqual({
+      sessionId: b.id,
+      pullRequest: (await run(statusOf(b.id))).pullRequest,
+    });
+    expect(result.pullRequest.sessions).toEqual([
+      { number: 2, sessionId: b.id, hunkCount: 2, viewedCount: 1 },
+    ]);
+    // No capture, no publication: one session save only.
+    expect(captureCalls).toHaveLength(captures);
+    expect(commits.slice(commitsBefore)).toEqual([`session ${b.id}`]);
+    expect(githubCalls.slice(-2)).toEqual([
+      { method: "pullRequest", number: 2 },
+      { method: "stack", number: 2 },
+    ]);
+  });
+
+  it("keeps the last verified stack when a recheck fails, recording unavailable rather than removal", async () => {
+    const { session: b } = await run(openScope(scopeOf(2)));
+    const verified = files.get(b.id)!.pullRequest!;
+    discovery = { ok: false, reason: "github_failed" };
+    const failed = await run(recheck(b.id));
+    expect(failed.pullRequest).toMatchObject({
+      pullRequest: verified.pullRequest,
+      stack: verified.stack,
+      unavailable: { at: expect.any(String), reason: "github_failed" },
+    });
+    // A PR GitHub cannot read keeps its last metadata too, and stack discovery is not attempted.
+    const calls = githubCalls.length;
+    pullRequestFailure = new SourceUnavailable({
+      message: "gh is not installed",
+      detail: { reason: "gh_missing" },
+    });
+    pullRequestEdit = { state: "closed" };
+    expect((await run(recheck(b.id))).pullRequest).toMatchObject({
+      pullRequest: verified.pullRequest,
+      stack: verified.stack,
+      unavailable: { reason: "gh_missing" },
+    });
+    expect(githubCalls.slice(calls)).toEqual([{ method: "pullRequest", number: 2 }]);
+    // The next success clears unavailable.
+    pullRequestFailure = undefined;
+    discovery = stacked(1, 2, 3);
+    expect((await run(recheck(b.id))).pullRequest).toMatchObject({
+      pullRequest: { state: "closed" },
+      unavailable: null,
+    });
+  });
+
+  it("keeps a layer removed by a verified recheck reachable as its saved session", async () => {
+    const { session: b } = await run(openScope(scopeOf(2)));
+    const { session: c } = await run(openLayer(b.id, 3));
+    discovery = stacked(1, 2);
+    const result = await run(recheck(b.id));
+    expect(result.pullRequest.stack).toMatchObject({ layers: layers(1, 2) });
+    expect(result.pullRequest.sessions.map(({ number }) => number)).toEqual([2]);
+    const { sessions } = await run(Sessions.use((s) => s.list));
+    expect(sessions.map(({ id }) => id)).toContain(c.id);
+    // Each session keeps its own last verification until it is rechecked itself.
+    expect((await run(statusOf(c.id))).pullRequest).toMatchObject({
+      selected: 3,
+      stack: { layers: layers(1, 2, 3) },
+    });
+    discovery = { ok: true, membership: { membership: "none" } };
+    expect((await run(recheck(c.id))).pullRequest).toMatchObject({
+      selected: 3,
+      stack: { membership: "none" },
+      sessions: [{ number: 3, sessionId: c.id }],
+    });
+    expect(
+      await run(Sessions.use((s) => s.open({ command: "open", session: c.id }))),
+    ).toMatchObject({ created: false, session: { id: c.id } });
+    // Removed from the known stack, it can no longer be opened as one of B's layers.
+    expect(await failure(openLayer(b.id, 3))).toMatchObject({ _tag: "validation_failed" });
+  });
+
+  it("does not resurrect a session deleted while its recheck read GitHub", async () => {
+    const { session: b } = await run(openScope(scopeOf(2)));
+    const outcome = await run(
+      Effect.gen(function* () {
+        const sessions = yield* Sessions;
+        const held = {
+          started: yield* Deferred.make<void>(),
+          release: yield* Deferred.make<void>(),
+        };
+        stackGate = held;
+        const fiber = yield* Effect.forkChild(sessions.stack({ command: "stack", session: b.id }));
+        yield* Deferred.await(held.started);
+        // Other sessions stay readable while GitHub answers.
+        yield* sessions.status({ command: "status", session: persisted.id });
+        yield* sessions.delete({ command: "delete", session: b.id, requestId: "gone" });
+        yield* Deferred.succeed(held.release, undefined);
+        return yield* Effect.flip(Fiber.join(fiber));
+      }),
+    );
+    expect(outcome).toMatchObject({ _tag: "no_session" });
+    expect(files.has(b.id)).toBe(false);
+  });
+
+  it("opens an unopened layer plainly from the selected session's checkout and resumes a saved one as it is", async () => {
+    const { session: b } = await run(openScope(scopeOf(2), `${root}/sub`));
+    const captures = captureCalls.length;
+    const opened = await run(openLayer(b.id, 3));
+    expect(opened).toMatchObject({ created: true, session: { repoRoot: root, scope: scopeOf(3) } });
+    expect(captureCalls.slice(captures)).toEqual([
+      { root, scope: scopeOf(3), target: { baseRefName: "layer-2", headRefOid } },
+    ]);
+    const c = files.get(opened.session.id)!;
+    expect(c.groups).toEqual([]);
+    expect(c.revision).toBe(0);
+    expect(c.pullRequest?.pullRequest).toEqual(pullRequestOf(3));
+
+    const saved = JSON.stringify([...files]);
+    const calls = githubCalls.length;
+    headRefOid = "2".repeat(40);
+    gitPatch = patch.replace("+two", "+restacked");
+    expect(await run(openLayer(b.id, 3))).toEqual({ ...opened, created: false });
+    // The selected PR is a layer too: it resumes itself.
+    expect((await run(openLayer(b.id, 2))).session.id).toBe(b.id);
+    expect(githubCalls).toHaveLength(calls);
+    expect(captureCalls).toHaveLength(captures + 1);
+    expect(JSON.stringify([...files])).toBe(saved);
+    expect((await run(statusOf(b.id))).pullRequest?.sessions.map(({ number }) => number)).toEqual([
+      2, 3,
+    ]);
+  });
+
+  it("announces a recheck and other layers' changes to a stack's open sessions at their revision, by context alone", async () => {
+    const { session: b } = await run(openScope(scopeOf(2)));
+    await run(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const s = yield* Sessions;
+          const { version, events } = yield* s.subscribe({ session: b.id });
+          expect(version).toMatchObject({ revision: 0, context: expect.any(String) });
+          const nothing = Queue.poll(events).pipe(Effect.map(Option.isNone));
+          // Each frame is B's whole version now, as a new subscriber would read it.
+          const announced = Effect.gen(function* () {
+            const change = yield* Queue.take(events);
+            const now = (yield* s.subscribe({ session: b.id })).version;
+            expect(change).toEqual({ kind: "changed", ...now });
+            expect(yield* nothing).toBe(true);
+            return now;
+          });
+          const contexts = [version.context];
+          const heard = (revision: number) =>
+            Effect.gen(function* () {
+              const now = yield* announced;
+              expect(now.revision).toBe(revision);
+              expect(now.context).not.toBe(contexts.at(-1));
+              contexts.push(now.context);
+            });
+
+          discovery = stacked(3, 2, 1);
+          yield* s.stack({ command: "stack", session: b.id });
+          yield* heard(0);
+          // Opening C, from B's stack or anywhere else, changes B's layer sessions.
+          const { session: c } = yield* s.layer({ command: "layer", session: b.id, number: 3 });
+          yield* heard(0);
+          const [first] = (yield* s.diff({ command: "diff", session: c.id })).hunks;
+          yield* viewedNow(c.id, [first!.id], "c-viewed");
+          yield* heard(0);
+          yield* s.delete({ command: "delete", session: c.id, requestId: "c-gone" });
+          yield* heard(0);
+          // Without C, B's context is the rechecked one again.
+          expect(contexts.at(-1)).toBe(contexts[1]);
+          // B's own Viewed moves its revision; its context, apart from its own counts, stays.
+          const [own] = (yield* s.diff({ command: "diff", session: b.id })).hunks;
+          yield* viewedNow(b.id, [own!.id], "b-viewed");
+          expect((yield* announced).context).toBe(contexts.at(-1));
+          // Sessions outside the stack's repository say nothing to it.
+          yield* viewedNow(persisted.id, ["h2"], "local");
+          expect(yield* nothing).toBe(true);
+        }),
+      ),
+    );
+  });
+
+  it("refuses layers outside the known stack and stack work on non-PR sessions", async () => {
+    discovery = { ok: false, reason: "gh_unauthenticated" };
+    const { session: unknown } = await run(openScope(scopeOf(5)));
+    discovery = stacked(1, 2, 3);
+    const { session: b } = await run(openScope(scopeOf(2)));
+    const saved = JSON.stringify([...files]);
+    const calls = githubCalls.length;
+    expect(await failure(openLayer(b.id, 4))).toMatchObject({
+      _tag: "validation_failed",
+      detail: { number: 4 },
+    });
+    // Unverified membership names no layers to open.
+    expect(await failure(openLayer(unknown.id, 1))).toMatchObject({ _tag: "validation_failed" });
+    const { session: local } = await run(openScope());
+    const afterLocal = JSON.stringify([...files]);
+    for (const id of [persisted.id, local.id]) {
+      expect(await failure(recheck(id))).toBeInstanceOf(BadArgs);
+      expect(await failure(openLayer(id, 1))).toBeInstanceOf(BadArgs);
+    }
+    expect(await failure(recheck("missing"))).toMatchObject({ _tag: "no_session" });
+    expect(githubCalls).toHaveLength(calls);
+    expect(JSON.stringify([...files])).toBe(afterLocal);
+    expect(afterLocal).not.toBe(saved);
   });
 });
 
@@ -1686,7 +2185,7 @@ describe("Sessions captured reads over real captures", () => {
         Sessions.use((s) => s.load).pipe(Effect.andThen(effect)),
         Sessions.layer.pipe(
           Layer.provide(Git.layer.pipe(Layer.provideMerge(gatedContent))),
-          Layer.provide(Layer.mergeAll(store, crypto)),
+          Layer.provide(Layer.mergeAll(store, crypto, github)),
           Layer.provide(Paths.layer),
           Layer.provide(NodeServices.layer),
           Layer.provide(

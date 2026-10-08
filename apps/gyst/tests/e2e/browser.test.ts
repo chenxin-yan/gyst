@@ -2,7 +2,7 @@
 // and a private key-authenticated SSH local forward. Hard states (a held or lost reply, a broken
 // daemon answer) are produced by Playwright routing in front of the real bridge.
 import { type ChildProcess, execFileSync, spawn, spawnSync } from "node:child_process";
-import { randomBytes } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import { accessSync, constants } from "node:fs";
 import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { createServer as createHttpServer, request as httpRequest } from "node:http";
@@ -19,6 +19,7 @@ import {
 } from "playwright-core";
 import { afterAll, beforeAll, describe, expect, it, onTestFinished } from "vite-plus/test";
 
+import { type FakeGh, type FakePullRequest, fakeGh, githubOrigin } from "../github.ts";
 import {
   commandLine,
   daemonPid,
@@ -70,6 +71,12 @@ let env: NodeJS.ProcessEnv;
 let browser: Browser | undefined;
 let context: BrowserContext;
 const owned: Owned[] = [];
+/**
+ * A checkout of github.com/acme/widgets whose PRs form native stack 7: A (#1, merged) <- B (#2, two
+ * files) <- C (#3). Its fake gh is first on the shared PATH, so the daemon inherits it; the local
+ * sessions above never call it. `stack()` records the verified stack again for every layer.
+ */
+let github: { checkout: string; fake: FakeGh; stack: () => Promise<void> };
 
 /** Spawns a process kept until afterAll, resolving once `ready` appears in its output. */
 async function start(name: string, file: string, args: string[], cwd: string, ready: string) {
@@ -97,9 +104,9 @@ async function stop(proc: Owned, signal: NodeJS.Signals) {
   return proc.exit;
 }
 
-/** One foreground `gyst` launch; stopped with SIGINT like Ctrl-C. */
-async function launch(...args: string[]): Promise<Launch> {
-  const proc = await start(`gyst ${args.join(" ")}`, installed.bin, args, repo, "Press Ctrl-C");
+/** One foreground `gyst` launch from `cwd`; stopped with SIGINT like Ctrl-C. */
+async function launchIn(cwd: string, ...args: string[]): Promise<Launch> {
+  const proc = await start(`gyst ${args.join(" ")}`, installed.bin, args, cwd, "Press Ctrl-C");
   const url = proc.out.split("\n").find((line) => line.startsWith("http://")) ?? "";
   const match = /^http:\/\/(g-[0-9a-f]{32}\.localhost):(\d+)(\/session\/[^#]+)#([\w-]{43})$/.exec(
     url,
@@ -118,6 +125,7 @@ async function launch(...args: string[]): Promise<Launch> {
     secret,
   };
 }
+const launch = (...args: string[]) => launchIn(repo, ...args);
 
 /** Opens a launch link; Playwright's failure message quotes the URL, so its secret is masked. */
 async function go(page: Page, url: string) {
@@ -287,6 +295,31 @@ const barOn = (page: Page, text: string) =>
     }
     return false;
   }, `the cursor bar on ${text}`);
+/** The number of the first src/long.ts line wholly below the sticky file header at the panel's top. */
+const topLine = async (page: Page) => {
+  const pane = page.getByRole("main");
+  const panel = (await pane.boundingBox())!;
+  const lines = await pane
+    .getByText(/^export const line\d+ = /)
+    .evaluateAll((copies) =>
+      copies.map((copy) => [
+        Number(/line(\d+)/.exec(copy.textContent ?? "")![1]),
+        copy.getBoundingClientRect().top,
+      ]),
+    );
+  const below = lines.filter(([, top]) => top! >= panel.y + 34 - 2).sort(([, a], [, b]) => a! - b!);
+  return below[0]?.[0];
+};
+/** Waits until `read` gives the same value twice, 200 ms apart, as once a scroll settled. */
+const steady = async <T>(read: () => Promise<T>) => {
+  let last = await read();
+  for (;;) {
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    const next = await read();
+    if (next === last) return next;
+    last = next;
+  }
+};
 /** A file header's fold toggle, whichever way it points. */
 const foldToggle = (page: Page, path: string) =>
   page
@@ -469,6 +502,24 @@ const referenceOps = [
     overview: "Two independent edits over [the constants](gyst:new/src/long.ts#L10-L12).",
   },
 ];
+/**
+ * Leaves the page's session for `other`'s page and comes back, client-side through the session
+ * list and history, as a switch between stack layers remounts the reader.
+ */
+async function toSessionAndBack(page: Page, other: string) {
+  const from = new URL(page.url()).pathname;
+  await settled(page);
+  await page.getByRole("link", { name: "All sessions" }).click();
+  await page.locator(`a[href="/session/${other}"]`).click();
+  await page.waitForURL((url) => url.pathname === `/session/${other}`);
+  await page.getByRole("main").getByRole("heading", { level: 2 }).first().waitFor();
+  await settled(page);
+  await page.goBack();
+  await page.getByRole("heading", { name: "Saved sessions" }).waitFor();
+  await page.goBack();
+  await page.waitForURL((url) => url.pathname === from);
+}
+
 /** The open reference peek, and its renderer row when it opened under a note. */
 const peekOf = (page: Page) => page.getByRole("main").locator("[data-peek]");
 const spacerOf = (page: Page) => page.getByRole("main").locator("[data-peek-spacer]");
@@ -561,6 +612,32 @@ function openssh(name: string): string {
   return file;
 }
 
+const pullRequestUrl = (number: number) => `https://github.com/acme/widgets/pull/${number}`;
+/** Deletes every PR session when the test ends, whichever layers it opened. */
+const deletePullRequestSessionsAfter = () =>
+  onTestFinished(async () => {
+    for (const { id, scope } of (await gyst("session", "list")).sessions)
+      if (scope.kind === "pr")
+        await gyst("session", "delete", "--session", id, "--request-id", randomUUID());
+  });
+/** The header's stack switcher: its trigger and, while open, its dialog. */
+const switcher = (page: Page) => ({
+  trigger: page.getByRole("banner").locator("button[aria-haspopup=dialog]"),
+  dialog: page.getByRole("dialog", { name: "Native PR stack" }),
+});
+/** Each switcher row as [aria-current, position, PR, state badge, Viewed or Not opened]. */
+const stackRowsOf = (page: Page) =>
+  switcher(page)
+    .dialog.getByRole("listitem")
+    .evaluateAll((items) =>
+      items.map((item) => [
+        item.getAttribute("aria-current"),
+        ...[...item.children].map((cell) => cell.textContent),
+      ]),
+    );
+const hasFocus = (locator: ReturnType<Page["locator"]>) =>
+  locator.evaluate((element) => element === document.activeElement);
+
 describe("installed gyst in a sandboxed browser", () => {
   let one: Launch;
   let two: Launch;
@@ -576,6 +653,43 @@ describe("installed gyst in a sandboxed browser", () => {
     await mkdir(join(root, "tmp"));
     env = isolatedEnv(home, { GYST_DATA_DIR: data });
     for (const name of ["SSH_AUTH_SOCK", "DISPLAY", "WAYLAND_DISPLAY"]) delete env[name];
+
+    const origin = await githubOrigin(join(root, "github"));
+    const fake = await fakeGh(root);
+    env = fake.env(env);
+    const layers: FakePullRequest[] = [];
+    for (const [title, state, files] of [
+      ["Add layer A", "MERGED", { "a.txt": "layer a\n" }],
+      [
+        "Add layer B",
+        "OPEN",
+        { "b.txt": "b one\nb two\nb three\n", "b2.txt": "b2 one\nb2 two\nb2 three\n" },
+      ],
+      ["Add layer C", "OPEN", { "c.txt": "layer c\n" }],
+    ] as const) {
+      const number = layers.length + 1;
+      const head = `layer-${"abc"[layers.length]}`;
+      const base = layers.at(-1)?.headRefName ?? "main";
+      const headRefOid = await origin.commit(head, files, { from: base });
+      origin.publish(head, number);
+      const layer = {
+        number,
+        title,
+        body: `${title}.`,
+        state,
+        baseRefName: base,
+        headRefName: head,
+        headRefOid,
+      };
+      layers.push(layer);
+      await fake.pullRequest(layer);
+    }
+    const stack = async () => {
+      for (const { number } of layers)
+        await fake.stack(number, { number: 7, baseRefName: "main", layers });
+    };
+    await stack();
+    github = { checkout: origin.checkout, fake, stack };
 
     git("init", "-q", "-b", "main");
     git("config", "user.email", "t@gyst.invalid");
@@ -1664,6 +1778,99 @@ describe("installed gyst in a sandboxed browser", () => {
     await says(page, "3 lines selected");
     await keys(page, "Escape");
     await statusLine(page).getByText("3 lines selected").waitFor({ state: "detached" });
+  }, 30_000);
+
+  it("resumes a session's reading place inside opened hidden lines and in Mouse mode after leaving it", async () => {
+    const page = await newPage();
+    await page.setViewportSize({ width: 1280, height: 800 });
+    await page.goto(`${one.origin}${one.path}`);
+    const pane = page.getByRole("main");
+    const mouse = page
+      .getByRole("radiogroup", { name: "Input mode" })
+      .getByRole("radio", { name: "Mouse" });
+    // Away to the session list and back, client-side, as a switch to another session would.
+    const leaveAndReturn = async () => {
+      await settled(page);
+      await page.getByRole("link", { name: "All sessions" }).click();
+      await page.getByRole("heading", { name: "Saved sessions" }).waitFor();
+      await page.goBack();
+      await pane.getByRole("heading", { name: "src/long.ts" }).waitFor();
+    };
+    const panel = async () => (await pane.boundingBox())!;
+
+    await page.getByRole("button", { name: "src/", exact: true }).click();
+    await pane.getByRole("heading", { name: "src/long.ts" }).waitFor();
+    await keys(page, "g", "g", "j");
+    await says(page, "long.ts · hidden lines");
+    await keys(page, "Enter");
+    await says(page, "long.ts:1 · new");
+    await keys(page, ...Array.from({ length: 40 }, () => "j"));
+    await says(page, "long.ts:41 · new");
+    await barOn(page, "export const line41 = 41;");
+    const vimTop = await steady(() => topLine(page));
+    expect(vimTop).toBeGreaterThan(1);
+
+    // The cursor stands inside the opened lines again, at the same place in the panel, and the
+    // selection under src/ is kept.
+    await leaveAndReturn();
+    expect(await fileHeadings(page)).toEqual(["src/long.ts"]);
+    await says(page, "long.ts:41 · new");
+    await barOn(page, "export const line41 = 41;");
+    await waitFor(async () => (await topLine(page)) === vimTop, `line ${vimTop} at the top again`);
+    const bar = (await cursorBar(page).boundingBox())!;
+    const box = await panel();
+    expect(bar.y >= box.y && bar.y + bar.height <= box.y + box.height).toBe(true);
+
+    // Mouse mode, scrolled by hand past the opened lines: the mode and the line at the top return.
+    await mouse.check();
+    await pane.hover();
+    await page.mouse.wheel(0, 2400);
+    const mouseTop = await steady(() => topLine(page));
+    expect(mouseTop).toBeGreaterThan(vimTop! + 40);
+    await leaveAndReturn();
+    expect(await mouse.isChecked()).toBe(true);
+    expect(await cursorBar(page).isVisible()).toBe(false);
+    await waitFor(
+      async () => (await topLine(page)) === mouseTop,
+      `line ${mouseTop} at the top again`,
+    );
+    await settled(page);
+  }, 30_000);
+
+  it("resumes a session last read at its overview at that offset, not at the code read before it", async () => {
+    const walk = await openWalk();
+    await publishWalk(walk);
+    const other = await freshSession();
+    const page = await newPage();
+    await page.setViewportSize({ width: 1280, height: 600 });
+    await page.goto(`${one.origin}/session/${walk.id}`);
+    const pane = page.getByRole("main");
+    const overview = pane.getByRole("region", { name: "Walkthrough overview" });
+    await overview.waitFor();
+    await pane.getByRole("heading", { name: "walk/a.ts" }).waitFor();
+    // Mouse mode: no cursor to fall back on, only what was at the panel's top.
+    await page
+      .getByRole("radiogroup", { name: "Input mode" })
+      .getByRole("radio", { name: "Mouse" })
+      .check();
+    await pane.hover();
+    // Down into the code, past the whole overview, then back up into the overview.
+    await page.mouse.wheel(0, 2000);
+    const inCode = (await steady(() => panelTop(page)))!;
+    expect(inCode).toBeGreaterThan((await overview.boundingBox())!.height);
+    await page.mouse.wheel(0, 60 - inCode);
+    const inOverview = (await steady(() => panelTop(page)))!;
+    expect(inOverview).toBeGreaterThan(0);
+    expect(inOverview).toBeLessThan(inCode / 2);
+
+    await toSessionAndBack(page, other);
+    await overview.waitFor();
+    await waitFor(
+      async () => Math.abs(((await panelTop(page)) ?? 0) - inOverview) < 2,
+      "the overview's offset again",
+    );
+    expect(Math.abs((await steady(() => panelTop(page)))! - inOverview)).toBeLessThan(2);
+    await settled(page);
   }, 30_000);
 
   it("runs commands from a keyboard-operable ⌘K menu and lists the implemented keys in ? help, ignoring review keys while typing", async () => {
@@ -2797,6 +3004,64 @@ describe("installed gyst in a sandboxed browser", () => {
       .getByRole("button", { name: "Parse the config, 0 of 3 hunks viewed", exact: true })
       .waitFor();
     expect(writes).toEqual([]);
+  }, 30_000);
+
+  it("returns to a session with its expanded reference at the same place, its open peek and its Back places, never touching Viewed", async () => {
+    const walk = await openWalk();
+    await publishWalk(walk);
+    await walk.publish(1, "refs", referenceOps);
+    const other = await freshSession();
+    const page = await newPage();
+    await page.setViewportSize({ width: 1280, height: 800 });
+    const writes = viewedOf(page);
+    await page.goto(`${one.origin}/session/${walk.id}`);
+    const pane = page.getByRole("main");
+    const side = page.getByRole("navigation", { name: "gyst" });
+    const identity = pane.getByRole("region", { name: "Captured file" });
+    const peekIsLong = () =>
+      waitFor(
+        async () =>
+          (await peekOf(page).getAttribute("aria-label")) === "Reference src/long.ts:L40–44 · new",
+        "the src/long.ts peek",
+      );
+    await side.getByRole("button", { name: /^Parse the config/ }).click();
+    await headingsAre(page, ["walk/b.ts", "walk/a.ts"]);
+    await pane.locator("[data-note=b-note]").getByRole("button", { name: "line 40" }).click();
+    await peekOf(page).getByRole("button", { name: "Expand" }).click();
+    await identity.getByText("src/long.ts", { exact: true }).waitFor();
+    await says(page, "long.ts:40 · new");
+    await keys(page, ...Array.from({ length: 30 }, () => "j"));
+    await says(page, "long.ts:70 · new");
+    await barOn(page, "export const line70 = 70;");
+    const top = await steady(() => topLine(page));
+    expect(top).toBeGreaterThan(1);
+
+    // The unchanged file is still expanded, its cursor and the line at the top where they were.
+    await toSessionAndBack(page, other);
+    await identity.getByText("src/long.ts", { exact: true }).waitFor();
+    await headingsAre(page, ["src/long.ts"]);
+    await says(page, "Captured file");
+    await says(page, "long.ts:70 · new");
+    await barOn(page, "export const line70 = 70;");
+    await waitFor(async () => (await topLine(page)) === top, `line ${top} at the top again`);
+
+    // Back still returns to the group and the peek Expand left.
+    await keys(page, "Backspace");
+    await headingsAre(page, ["walk/b.ts", "walk/a.ts"]);
+    await peekIsLong();
+    await says(page, "0/3 hunks viewed in 2 files");
+
+    // An open peek returns too, and Back has nowhere further to go.
+    await toSessionAndBack(page, other);
+    await headingsAre(page, ["walk/b.ts", "walk/a.ts"]);
+    await peekIsLong();
+    await keys(page, "Backspace");
+    await headingsAre(page, ["walk/b.ts", "walk/a.ts"]);
+    await side
+      .getByRole("button", { name: "Parse the config, 0 of 3 hunks viewed", exact: true })
+      .waitFor();
+    expect(writes).toEqual([]);
+    await settled(page);
   }, 30_000);
 
   it("opens an overview's reference in flow inside the overview card, Back returns there, and closing the peek focuses the reference again", async () => {
@@ -4261,4 +4526,348 @@ describe("installed gyst in a sandboxed browser", () => {
     expect(ownDaemon(daemon)).toBe(true);
     expect(await sessionIds()).toContain(id);
   }, 60_000);
+
+  it("opens a GitHub PR from the root launch and lists its native stack in a keyboard-operable header switcher", async () => {
+    deletePullRequestSessionsAfter();
+    const b = await launchIn(github.checkout, "--pr", pullRequestUrl(2));
+    const page = await newPage();
+    await go(page, b.url);
+    await page.getByRole("main").getByText("b two").waitFor();
+    await crumbIs(page, "checkout/acme/widgets#2");
+    expect(await fileHeadings(page)).toEqual(["b.txt", "b2.txt"]);
+    const { trigger, dialog } = switcher(page);
+    expect([await trigger.textContent(), await trigger.getAttribute("aria-expanded")]).toEqual([
+      "Stack 2/3",
+      "false",
+    ]);
+
+    await trigger.focus();
+    await page.keyboard.press("Enter");
+    await dialog.waitFor();
+    expect(await trigger.getAttribute("aria-expanded")).toBe("true");
+    // Layer order with text state badges; only the selected layer has a session, so the others say
+    // Not opened rather than showing counts.
+    expect(await stackRowsOf(page)).toEqual([
+      [null, "1", "#1 Add layer A", "merged", "Not openedOpen #1"],
+      ["page", "2", "#2 Add layer B", "open", "Viewed 0/2 hunks"],
+      [null, "3", "#3 Add layer C", "open", "Not openedOpen #3"],
+    ]);
+    expect(await hasFocus(dialog.getByRole("link", { name: "#2 Add layer B" }))).toBe(true);
+    expect(await dialog.getByRole("status").textContent()).toBe("Verified just now");
+    await page.keyboard.press("Escape");
+    await dialog.waitFor({ state: "detached" });
+    expect(await hasFocus(trigger)).toBe(true);
+    expect(await trigger.getAttribute("aria-expanded")).toBe("false");
+
+    const { sessions } = await gyst("session", "list");
+    expect(sessions.filter(({ scope }: any) => scope.kind === "pr")).toEqual([
+      expect.objectContaining({
+        id: b.id,
+        repoRoot: github.checkout,
+        scope: { kind: "pr", repository: "acme/widgets", number: 2 },
+      }),
+    ]);
+    // gh read only B and its stack: never A or C, nor for any local session opened before.
+    const asked = expect.arrayContaining(["api", "graphql", "number=2"]);
+    expect(await github.fake.calls()).toEqual([asked, asked]);
+    await settled(page);
+    expect(await stop(b.proc, "SIGINT")).toBe(130);
+  }, 30_000);
+
+  it("opens another layer from the switcher and returns, each session keeping its own Viewed and reading place", async () => {
+    deletePullRequestSessionsAfter();
+    const b = await launchIn(github.checkout, "--pr", pullRequestUrl(2));
+    const page = await newPage();
+    const refreshes: unknown[] = [];
+    page.on("request", (request) => {
+      if (operationOf(request)?.command === "refresh") refreshes.push(operationOf(request));
+    });
+    await page.setViewportSize({ width: 1280, height: 800 });
+    await go(page, b.url);
+    await page.getByRole("main").getByText("b two").waitFor();
+    const before = (await gyst("session", "status", "--session", b.id)).session;
+    await says(page, "b.txt · file");
+    await keys(page, "m");
+    await says(page, "1/2 hunks viewed in 2 files");
+    await says(page, "b2.txt · file");
+    await keys(page, "j", "j");
+    await says(page, "b2.txt:2 · new");
+
+    const { trigger, dialog } = switcher(page);
+    await trigger.focus();
+    await page.keyboard.press("Enter");
+    await dialog.waitFor();
+    // B's own row counts the Viewed write just made, before any status read again.
+    expect((await stackRowsOf(page))[1]).toEqual([
+      "page",
+      "2",
+      "#2 Add layer B",
+      "open",
+      "Viewed 1/2 hunks",
+    ]);
+    await page.keyboard.press("ArrowDown");
+    expect(await hasFocus(dialog.getByRole("button", { name: "Open #3" }))).toBe(true);
+    await page.keyboard.press("Enter");
+    await page.waitForURL((url) => url.pathname !== b.path);
+    const c = decodeURIComponent(new URL(page.url()).pathname.slice("/session/".length));
+    await page.getByRole("main").getByText("layer c").waitFor();
+    await crumbIs(page, "checkout/acme/widgets#3");
+    expect(await fileHeadings(page)).toEqual(["c.txt"]);
+    expect(await trigger.textContent()).toBe("Stack 3/3");
+
+    // C's switcher counts B's Viewed from B's own session.
+    await trigger.focus();
+    await page.keyboard.press("Enter");
+    await dialog.waitFor();
+    expect(await stackRowsOf(page)).toEqual([
+      [null, "1", "#1 Add layer A", "merged", "Not openedOpen #1"],
+      [null, "2", "#2 Add layer B", "open", "Viewed 1/2 hunks"],
+      ["page", "3", "#3 Add layer C", "open", "Viewed 0/1 hunk"],
+    ]);
+    await page.keyboard.press("ArrowUp");
+    expect(await hasFocus(dialog.getByRole("link", { name: "#2 Add layer B" }))).toBe(true);
+    await page.keyboard.press("Enter");
+    await page.waitForURL((url) => url.pathname === b.path);
+    await page.getByRole("main").getByText("b2 two").waitFor();
+
+    // B resumes as it was left: its Viewed, its cursor, the same snapshot.
+    await says(page, "b2.txt:2 · new");
+    await says(page, "1/2 hunks viewed in 2 files");
+    expect(await viewedBox(page, "b.txt").isChecked()).toBe(true);
+    expect(await viewedBox(page, "b2.txt").isChecked()).toBe(false);
+    expect((await gyst("session", "status", "--session", b.id)).session.snapshotId).toBe(
+      before.snapshotId,
+    );
+    expect(refreshes).toEqual([]);
+    const { sessions } = await gyst("session", "list");
+    expect(
+      sessions
+        .filter(({ scope }: any) => scope.kind === "pr")
+        .map(({ id, scope }: any) => [id, scope.number])
+        .sort(([, x]: number[], [, y]: number[]) => x! - y!),
+    ).toEqual([
+      [b.id, 2],
+      [c, 3],
+    ]);
+    await settled(page);
+    expect(await stop(b.proc, "SIGINT")).toBe(130);
+  }, 30_000);
+
+  it("rechecks the native stack from the switcher, metadata only, keeping the last verified layers when GitHub fails", async () => {
+    deletePullRequestSessionsAfter();
+    onTestFinished(() => github.stack());
+    const failure = {
+      exitCode: 1,
+      stdout: '{"message":"Server Error","status":"502"}',
+      stderr: "gh: Server Error (HTTP 502)\n",
+    };
+    await github.fake.fail("stack", 2, failure);
+    const b = await launchIn(github.checkout, "--pr", pullRequestUrl(2));
+    const page = await newPage();
+    const operations: any[] = [];
+    page.on("request", (request) => {
+      if (operationOf(request)) operations.push(operationOf(request));
+    });
+    await go(page, b.url);
+    await page.getByRole("main").getByText("b two").waitFor();
+    const { snapshotId } = (await gyst("session", "status", "--session", b.id)).session;
+    const { trigger, dialog } = switcher(page);
+    const verification = dialog.getByRole("status");
+    const recheck = dialog.getByRole("button", { name: "Recheck stack" });
+
+    // Discovery failed on open: membership is unknown, not standalone, and the PR still reads.
+    expect(await trigger.textContent()).toBe("Stack unknown");
+    await trigger.click();
+    await dialog.waitFor();
+    expect(await verification.textContent()).toBe(
+      "Stack membership unknown: the GitHub request failed, just now",
+    );
+    expect(await stackRowsOf(page)).toEqual([
+      ["page", "", "#2 Add layer B", "open", "Viewed 0/2 hunks"],
+    ]);
+
+    const layers = [
+      [null, "1", "#1 Add layer A", "merged", "Not openedOpen #1"],
+      ["page", "2", "#2 Add layer B", "open", "Viewed 0/2 hunks"],
+      [null, "3", "#3 Add layer C", "open", "Not openedOpen #3"],
+    ];
+    await github.stack();
+    await recheck.click();
+    await verification.getByText("Verified just now", { exact: true }).waitFor();
+    expect(await trigger.textContent()).toBe("Stack 2/3");
+    expect(await stackRowsOf(page)).toEqual(layers);
+
+    // A failed recheck is neither fresh nor a removal: the last verified layers stay, as of then.
+    await github.fake.fail("stack", 2, failure);
+    await recheck.click();
+    await verification
+      .getByText(
+        "Couldn't verify the stack (the GitHub request failed, just now); showing it as of just now",
+        { exact: true },
+      )
+      .waitFor();
+    expect(await trigger.textContent()).toBe("Stack 2/3");
+    expect(await stackRowsOf(page)).toEqual(layers);
+
+    expect(operations.filter(({ command }) => ["stack", "refresh"].includes(command))).toEqual([
+      { command: "stack", session: b.id },
+      { command: "stack", session: b.id },
+    ]);
+    // The rechecked context arrives by the live read alone; the page itself is never read again,
+    // so no older read of it can land after a newer context.
+    expect(operations.filter(({ command }) => command === "diff")).toHaveLength(1);
+    expect((await gyst("session", "status", "--session", b.id)).session.snapshotId).toBe(
+      snapshotId,
+    );
+
+    // On a narrow screen the dialog and its actions stay inside the panel that clips them.
+    await page.setViewportSize({ width: 320, height: 844 });
+    const panel = (await page.getByRole("main").boundingBox())!;
+    for (const box of [
+      dialog,
+      recheck,
+      dialog.getByRole("button", { name: "Open #1" }),
+      dialog.getByRole("button", { name: "Open #3" }),
+    ]) {
+      const { x, width } = (await box.boundingBox())!;
+      expect(x).toBeGreaterThanOrEqual(panel.x);
+      expect(x + width).toBeLessThanOrEqual(panel.x + panel.width);
+    }
+    await settled(page);
+    expect(await stop(b.proc, "SIGINT")).toBe(130);
+  }, 30_000);
+
+  it("reads the stack context live again after a page read that was older than it, even once a Viewed change settles first", async () => {
+    deletePullRequestSessionsAfter();
+    onTestFinished(() => github.stack());
+    const b = await launchIn(github.checkout, "--pr", pullRequestUrl(2));
+    const page = await newPage();
+    await page.setViewportSize({ width: 1280, height: 800 });
+    let armed = false;
+    let fetched = false;
+    const { promise: released, resolve: release } = Promise.withResolvers<void>();
+    await page.route(isOperationUrl, async (route) => {
+      if (!armed || route.request().postDataJSON()?.command !== "files") return route.fallback();
+      armed = false;
+      // The page read has its status, of the stack as verified; only its files are held.
+      const response = await route.fetch();
+      fetched = true;
+      await released;
+      await route.fulfill({ response });
+    });
+    await go(page, b.url);
+    await page.getByRole("main").getByText("b two").waitFor();
+    await says(page, "Live");
+    await settled(page);
+    const { trigger, dialog } = switcher(page);
+    const failed =
+      "Couldn't verify the stack (the GitHub request failed, just now); showing it as of just now";
+
+    try {
+      // Following the switcher's link to this same session reads the page again.
+      armed = true;
+      await trigger.click();
+      await dialog.locator("[aria-current] a").click();
+      await waitFor(() => fetched, "the page read's held files");
+      await github.fake.fail("stack", 2, {
+        exitCode: 1,
+        stdout: '{"message":"Server Error","status":"502"}',
+        stderr: "gh: Server Error (HTTP 502)\n",
+      });
+      await gyst("session", "check", "--session", b.id, "--stack");
+      await trigger.click();
+      await dialog.getByRole("status").getByText(failed, { exact: true }).waitFor();
+      await page.keyboard.press("Escape");
+      await viewedBox(page, "b.txt").click();
+      await waitFor(
+        async () =>
+          (await viewedBox(page, "b.txt").isChecked()) &&
+          (await gyst("session", "status", "--session", b.id)).viewedHunkIds.length > 0,
+        "the Viewed change, settled before the page read",
+      );
+    } finally {
+      release();
+    }
+    await settled(page);
+    await trigger.click();
+    await dialog.waitFor();
+    expect(await dialog.getByRole("status").textContent()).toBe(failed);
+    expect(await stop(b.proc, "SIGINT")).toBe(130);
+  }, 30_000);
+
+  it("updates another viewer's stack switcher live after a CLI recheck and a layer opened elsewhere, without a reload or moving its reader", async () => {
+    deletePullRequestSessionsAfter();
+    onTestFinished(() => github.stack());
+    const b = await launchIn(github.checkout, "--pr", pullRequestUrl(2));
+    const [opener, viewer] = [await newPage(), await newPage()];
+    for (const page of [opener, viewer]) await page.setViewportSize({ width: 1280, height: 800 });
+    // Every loader read of the viewer: a reload would read the session's diff again.
+    const reloads: unknown[] = [];
+    viewer.on("request", (request) => {
+      if (operationOf(request)?.command === "diff") reloads.push(operationOf(request));
+    });
+    await go(opener, b.url);
+    await viewer.goto(`${b.origin}${b.path}`);
+    for (const page of [opener, viewer]) {
+      await page.getByRole("main").getByText("b two").waitFor();
+      await says(page, "Live");
+    }
+    await says(viewer, "b.txt · file");
+    await keys(viewer, "j", "j");
+    await says(viewer, "b.txt:2 · new");
+    await settled(viewer);
+    const position = await positionOf(viewer);
+    const { revision } = await gyst("session", "status", "--session", b.id);
+    reloads.length = 0;
+
+    const { trigger, dialog } = switcher(viewer);
+    await trigger.click();
+    await dialog.waitFor();
+    const verification = dialog.getByRole("status");
+    expect(await verification.textContent()).toBe("Verified just now");
+    expect((await stackRowsOf(viewer))[2]).toEqual([
+      null,
+      "3",
+      "#3 Add layer C",
+      "open",
+      "Not openedOpen #3",
+    ]);
+
+    // The CLI's recheck fails at GitHub: the viewer says so, keeping the last verified layers.
+    await github.fake.fail("stack", 2, {
+      exitCode: 1,
+      stdout: '{"message":"Server Error","status":"502"}',
+      stderr: "gh: Server Error (HTTP 502)\n",
+    });
+    await gyst("session", "check", "--session", b.id, "--stack");
+    await verification
+      .getByText(
+        "Couldn't verify the stack (the GitHub request failed, just now); showing it as of just now",
+        { exact: true },
+      )
+      .waitFor();
+    expect(await trigger.textContent()).toBe("Stack 2/3");
+
+    // The other page opens C from its own switcher: the viewer's row for C counts its session.
+    const other = switcher(opener);
+    await other.trigger.click();
+    await other.dialog.getByRole("button", { name: "Open #3" }).click();
+    await opener.waitForURL((url) => url.pathname !== b.path);
+    await opener.getByRole("main").getByText("layer c").waitFor();
+    await waitFor(
+      async () =>
+        JSON.stringify((await stackRowsOf(viewer))[2]) ===
+        JSON.stringify([null, "3", "#3 Add layer C", "open", "Viewed 0/1 hunk"]),
+      "C's session in the viewer's switcher",
+    );
+    expect(await dialog.getByRole("link", { name: "#3 Add layer C" }).count()).toBe(1);
+
+    // Metadata only: the viewer read status, never its session again, and reads where it was.
+    await settled(viewer);
+    expect(reloads).toEqual([]);
+    expect(await positionOf(viewer)).toEqual(position);
+    expect((await gyst("session", "status", "--session", b.id)).revision).toBe(revision);
+    await settled(opener);
+    expect(await stop(b.proc, "SIGINT")).toBe(130);
+  }, 30_000);
 });

@@ -155,6 +155,17 @@ describe("gyst session CLI seam", () => {
     expect(range.scope).toEqual({ kind: "range", range: "HEAD~1..HEAD" });
     await writeFile(join(nested, "inside.txt"), "working tree is not the fixed range\n");
     expect((await check(range.id)).state).toBe("unchanged");
+    // A stack recheck belongs to PR sessions only and changes nothing here.
+    for (const id of [session.id, range.id]) {
+      const before = await readFile(join(data, `${id}.json`), "utf8");
+      expect(
+        failed(await gyst(box.root, ["session", "check", "--session", id, "--stack"])),
+      ).toMatchObject({
+        code: "bad_args",
+        message: "only a GitHub PR session has a native stack to recheck",
+      });
+      expect(await readFile(join(data, `${id}.json`), "utf8")).toBe(before);
+    }
     for (const id of [session.id, range.id])
       succeeded(await gyst(cwd, ["session", "delete", "--session", id, "--request-id", id]));
   }, 20_000);
@@ -186,9 +197,33 @@ describe("gyst session CLI seam", () => {
     });
     expect(await failure(["open", "HEAD..HEAD", "--session", opened.session.id])).toEqual({
       code: "bad_args",
-      message: "choose a Git range or --session, not both",
+      message: "choose one of a Git range, --pr or --session",
+    });
+    expect(await failure(["open", "HEAD..HEAD", "--pr", "2"])).toEqual({
+      code: "bad_args",
+      message: "choose one of a Git range, --pr or --session",
     });
     expect(await failure(["open", "--stdin"])).toMatchObject({ code: "bad_args" });
+    // A URL is never read as a Git range; --pr takes a PR number or a GitHub PR URL only.
+    expect(await failure(["open", "https://github.com/acme/widgets/pull/2"])).toEqual({
+      code: "bad_args",
+      message: "expected a Git range such as main...feature; pass a GitHub PR with --pr",
+      detail: "https://github.com/acme/widgets/pull/2",
+    });
+    for (const pr of [
+      "https://gitlab.com/acme/widgets/pull/2",
+      "http://github.com/acme/widgets/pull/2",
+      "https://github.com/acme/widgets/issues/2",
+      "0",
+      "#2",
+      "main...feature",
+    ])
+      expect(await failure(["open", "--pr", pr])).toEqual({
+        code: "bad_args",
+        message:
+          "expected a PR number or a GitHub PR URL such as https://github.com/owner/name/pull/123",
+        detail: pr,
+      });
     expect(await failure(["status"])).toEqual({
       code: "bad_args",
       message: 'Missing required flag "--session"',

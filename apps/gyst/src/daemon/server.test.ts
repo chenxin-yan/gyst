@@ -28,7 +28,7 @@ import { once } from "node:events";
 import { createConnection, createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { manifestOf, publishingContent } from "./capture-doubles.ts";
+import { manifestOf, noGitHub, publishingContent } from "./capture-doubles.ts";
 import { Git } from "./git.ts";
 import { Paths } from "./paths.ts";
 import { DaemonInfoSchema, daemonVersion } from "./protocol.ts";
@@ -74,6 +74,8 @@ const git = Layer.succeed(Git, {
         Effect.as(manifestOf(patch, scope)),
       );
     }),
+  capturePullRequest: () => Effect.die("no PR captures in this test"),
+  pullRequestRange: () => Effect.die("no PR ranges in this test"),
 });
 const store = Layer.succeed(SessionStore, {
   loadAll: Effect.sync(() => [...files.values()]),
@@ -99,7 +101,9 @@ const paths = Layer.sync(Paths, () => ({
 const serverLayerOver = (platform: Layer.Layer<Layer.Success<typeof NodeServices.layer>>) =>
   DaemonServer.layer.pipe(
     Layer.provide(
-      Sessions.layer.pipe(Layer.provide(Layer.mergeAll(git, store, crypto, publishingContent()))),
+      Sessions.layer.pipe(
+        Layer.provide(Layer.mergeAll(git, noGitHub, store, crypto, publishingContent())),
+      ),
     ),
     Layer.provide(paths),
     Layer.provide(platform),
