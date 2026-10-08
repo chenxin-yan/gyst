@@ -28,10 +28,11 @@ export type ReadingPlace = {
  * Each session's reading place for this page's lifetime, so switching between stack layers (or any
  * sessions) and back resumes where the reader was. Kept per session ID, so one session's place never
  * leaks into another. After a refresh the view and the input mode carry over, and everything in a
- * file whose hunks the refresh left exactly as they were. In another file the top position and the
- * cursor move with a hunk that survived exactly, whatever its line numbers; else only the file at the
- * top, and a cursor on its header, are kept. An expanded reference and Back belong to the snapshot
- * they were read in.
+ * file whose hunks the refresh left exactly as they were, its fold included. In another file the top
+ * position and the cursor move with a hunk that survived exactly, whatever its line numbers; else
+ * only the file at the top, and a cursor on its header, are kept, and the file is folded exactly when
+ * the new snapshot records it Generated. An expanded reference and Back belong to the snapshot they
+ * were read in.
  */
 const places = new Map<
   string,
@@ -59,6 +60,7 @@ export const recall = (
   sessionId: string,
   snapshotId: string,
   hunks: readonly Hunk[],
+  generated: ReadonlySet<string>,
 ): ReadingPlace | undefined => {
   const saved = places.get(sessionId);
   if (saved === undefined || saved.snapshotId === snapshotId) return saved?.place;
@@ -90,7 +92,7 @@ export const recall = (
       ? { file, side: undefined, line: undefined }
       : { file, side, line: moved };
   };
-  const { review, inputMode, cursor, opened, top } = saved.place;
+  const { review, inputMode, cursor, opened, folded, top } = saved.place;
   return {
     review,
     captured: undefined,
@@ -100,6 +102,10 @@ export const recall = (
     inputMode,
     cursor: cursor && cursorNow(cursor),
     opened: new Map([...opened].filter(([file]) => unchanged(file))),
+    folded: new Set([
+      ...[...folded].filter(unchanged),
+      ...[...generated].filter((file) => !unchanged(file)),
+    ]),
     top: top !== undefined && "position" in top ? { position: topNow(top.position) } : top,
   };
 };
