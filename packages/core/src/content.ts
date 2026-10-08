@@ -31,6 +31,7 @@ export const ContentSideSchema = Schema.Union([
   }),
 ]);
 export type ContentSide = typeof ContentSideSchema.Type;
+const leftOut = (side: ContentSide) => side.kind === "unavailable" && side.reason === "quota";
 
 /** The same captured content; two unavailable sides with one reason hold no bytes to compare. */
 export const sameSide = (old: ContentSide, current: ContentSide) =>
@@ -53,7 +54,8 @@ export const ManifestFileSchema = Schema.Struct({
   modeChange: Schema.optional(Schema.Struct({ old: FileModeSchema, new: FileModeSchema })),
   /**
    * This added file's bytes are exactly those of the named deleted file. Renames are recorded,
-   * never reviewed: both paths keep their captured sides and neither has hunks.
+   * never reviewed: both paths keep their captured sides and neither has hunks. A snapshot quota
+   * leaves out both sides' bytes together (`quota`) or neither, keeping the record.
    */
   renamedFrom: Schema.optional(LogicalPathSchema),
   /**
@@ -86,8 +88,8 @@ export const ManifestFileSchema = Schema.Struct({
   Schema.makeFilter(
     ({ old, new: current, renamedFrom }) =>
       renamedFrom === undefined ||
-      (old.kind === "absent" && current.kind === "text") ||
-      "a rename target is absent on its old side and text on its new side",
+      (old.kind === "absent" && (current.kind === "text" || leftOut(current))) ||
+      "a rename target is absent on its old side and text, or left out by the quota, on its new side",
   ),
 );
 export type ManifestFile = typeof ManifestFileSchema.Type;
@@ -170,14 +172,15 @@ export const SnapshotManifestSchema = Schema.Struct({
           const source = renamedFrom === undefined ? undefined : byPath.get(renamedFrom);
           return (
             renamedFrom === undefined ||
-            (source?.old.kind === "text" &&
-              source.new.kind === "absent" &&
-              current.kind === "text" &&
-              source.old.blob === current.blob)
+            (source?.new.kind === "absent" &&
+              ((source.old.kind === "text" &&
+                current.kind === "text" &&
+                source.old.blob === current.blob) ||
+                (leftOut(source.old) && leftOut(current))))
           );
         }) &&
         hunks.every((hunk) => !renamed.has(hunk.file))) ||
-      "a rename pairs one deleted file with an added file of the same bytes, and neither has hunks"
+      "a rename pairs one deleted file with an added file of the same bytes, both captured or both left out by the quota, and neither has hunks"
     );
   }),
 );
