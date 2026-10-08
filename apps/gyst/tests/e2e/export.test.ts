@@ -138,10 +138,18 @@ describe("walkthrough export", () => {
 
   /**
    * A page in a fresh offline profile with `file` open, which must make no request but its own
-   * navigation and show no error. Any other request, the daemon or the network, fails the test.
+   * navigation and show no error. Every other request, to the daemon or the network, is
+   * intercepted and refused, and fails the test.
    */
   async function offline(file: string) {
+    const href = pathToFileURL(file).href;
     const context = await browser.newContext({ offline: true });
+    const intercepted: string[] = [];
+    await context.route("**/*", (route) => {
+      if (route.request().url() === href) return route.continue();
+      intercepted.push(route.request().url());
+      return route.abort("blockedbyclient");
+    });
     const page = await context.newPage();
     page.setDefaultTimeout(15_000);
     const requests: string[] = [];
@@ -153,13 +161,14 @@ describe("walkthrough export", () => {
     });
     onTestFinished(async () => {
       await context.close();
-      expect({ requests, problems }).toEqual({
-        requests: [pathToFileURL(file).href],
+      expect({ requests, intercepted, problems }).toEqual({
+        requests: [href],
+        intercepted: [],
         problems: [],
       });
     });
     const started = performance.now();
-    await page.goto(pathToFileURL(file).href);
+    await page.goto(href);
     return { page, started };
   }
 
@@ -238,7 +247,14 @@ describe("walkthrough export", () => {
         id: "app-note",
         group: "first",
         anchor: { path: "src/app.ts", side: "new", startLine: 10, endLine: 10 },
-        markdown: `Uses ${helper}.`,
+        markdown: `Uses ${helper} and [the doubling](gyst:new/src/other.ts#L20-L20).`,
+      },
+      {
+        type: "note.create",
+        id: "other-note",
+        group: "second",
+        anchor: { path: "src/other.ts", side: "new", startLine: 20, endLine: 20 },
+        markdown: `Calls ${helper}.`,
       },
     ]);
 
@@ -403,19 +419,38 @@ describe("walkthrough export", () => {
     await keys(page, "z", "Shift+R");
     await pane.getByText("export const other19 = 19;").first().waitFor();
 
-    // A reference peeks, expands to the captured file and goes Back.
+    // A reference peeks and expands to its captured file, a reference there expands again, and
+    // Back retraces both, each time with the peek it left open.
     await side.getByRole("button", { name: /^Quote the app line/ }).click();
-    await pane.locator("[data-note=app-note]").getByRole("button", { name: "the helper" }).click();
+    await pane
+      .locator("[data-note=app-note]")
+      .getByRole("button", { name: "the doubling" })
+      .click();
     const peek = pane.locator("[data-peek]");
-    await peek.locator("[data-peek-preview]").getByText("return 'helped';").waitFor();
+    await peek.locator("[data-peek-preview]").getByText("export const other20 = 20 * 2;").waitFor();
     await peek.getByRole("button", { name: "Expand" }).click();
     const captured = pane.getByRole("region", { name: "Captured file" });
-    await captured.waitFor();
+    await captured.getByText("src/other.ts", { exact: true }).waitFor();
+    await expect.poll(() => headings(page)).toEqual(["src/other.ts"]);
+    await pane
+      .locator("[data-note=other-note]")
+      .getByRole("button", { name: "the helper" })
+      .click();
+    await peek.locator("[data-peek-preview]").getByText("return 'helped';").waitFor();
+    await peek.getByRole("button", { name: "Expand" }).click();
+    await captured.getByText("src/helper.ts", { exact: true }).waitFor();
     expect(await captured.textContent()).toMatch(/src\/helper\.ts · new side/);
     await expect.poll(() => headings(page)).toEqual(["src/helper.ts"]);
     await keys(page, "Backspace");
+    await expect.poll(() => headings(page)).toEqual(["src/other.ts"]);
+    await expect
+      .poll(() => peek.getAttribute("aria-label"))
+      .toBe("Reference src/helper.ts:L1–3 · new");
+    await keys(page, "Backspace");
     await expect.poll(() => headings(page)).toEqual(["src/app.ts"]);
-    await peek.waitFor();
+    await expect
+      .poll(() => peek.getAttribute("aria-label"))
+      .toBe("Reference src/other.ts:L20 · new");
     // Full-file expansion of a changed file's hidden lines.
     await keys(page, "Escape");
     await pane
@@ -493,6 +528,165 @@ describe("walkthrough export", () => {
       .getByText("Old side: an empty baseline; the repository had no commits")
       .waitFor();
   }, 120_000);
+
+  it("discloses an unavailable reference on both surfaces, and reads it, an earlier pin and hostile data safely offline", async () => {
+    const box = await headless();
+    const cwd = await repository(box.root, "repo");
+    await commit(
+      cwd,
+      { "a.ts": numbered("a", 20), "helper.ts": "export const h1 = 1;\nexport const h2 = 2;\n" },
+      "base",
+    );
+    await writeFile(
+      join(cwd, "a.ts"),
+      numbered("a", 20, (n) => (n === 10 ? "10 * 2" : undefined)),
+    );
+    await writeFile(join(cwd, "added.ts"), "export const added = 1;\n");
+    const { id, snapshotId: first } = await session(box, cwd);
+    await publish(box, cwd, id, "publish", [
+      { type: "walkthrough.update", overview: "Doubles a10 and adds a file." },
+      {
+        type: "group.create",
+        id: "g",
+        title: "Double a10",
+        overview: "Doubles a10.",
+        memberHunkIds: (await hunksOf(box, cwd, id)).map((hunk) => hunk.id),
+      },
+      {
+        type: "note.create",
+        id: "n",
+        group: "g",
+        anchor: { path: "a.ts", side: "new", startLine: 10, endLine: 10 },
+        markdown:
+          "Calls [the helper](gyst:new/helper.ts#L1-L2); see [the start](gyst:new/added.ts#L1-L1).",
+      },
+    ]);
+    // A refresh moves the walkthrough to a new snapshot; the note's references stay pinned to the
+    // first, so the export carries helper.ts from there.
+    await writeFile(join(cwd, "more.ts"), "export const more = 1;\n");
+    succeeded(
+      await box.gyst(cwd, [
+        "session",
+        "refresh",
+        "--session",
+        id,
+        "--snapshot",
+        first,
+        "--request-id",
+        "r1",
+      ]),
+    );
+    const { preparation } = json(await box.gyst(cwd, ["session", "status", "--session", id]));
+    await publish(box, cwd, id, "regroup", [
+      ...(preparation.overviewOutdated ? [{ type: "walkthrough.revalidate" }] : []),
+      {
+        type: "group.update",
+        id: "g",
+        memberHunkIds: (await hunksOf(box, cwd, id)).map((hunk) => hunk.id),
+      },
+    ]);
+    const current = json(await box.gyst(cwd, ["session", "status", "--session", id])).session
+      .snapshotId as string;
+    expect(current).not.toBe(first);
+
+    // Authoring refuses a reference to a side without text, unsafe links and diagram
+    // configuration, so they are written into the saved session as older or hand-edited data
+    // would carry them: the note's second reference now names added.ts's absent old side.
+    await stopDaemon(box.data);
+    const file = join(box.data, `${id}.json`);
+    const saved = JSON.parse(await readFile(file, "utf8"));
+    const note = saved.groups[0].notes[0];
+    note.markdown = note.markdown.replace("gyst:new/added.ts", "gyst:old/added.ts");
+    for (const reference of note.references)
+      if (reference.path === "added.ts") reference.side = "old";
+    saved.overview.markdown = [
+      saved.overview.markdown,
+      "[run](javascript:window.hostileRan=1) ![probe](https://example.com/probe.png) <script>window.hostileRan=2</script>",
+      '```mermaid\n%%{init: {"securityLevel": "loose", "theme": "forest"}}%%\nflowchart LR\n  start --> done\n```',
+      '```mermaid\nflowchart LR\n  a@{ img: "https://example.com/probe.png" } --> b\n```',
+    ].join("\n\n");
+    await writeFile(file, JSON.stringify(saved));
+    expect(note.references).toContainEqual({
+      snapshotId: first,
+      path: "added.ts",
+      side: "old",
+      startLine: 1,
+      endLine: 1,
+    });
+
+    // The terminal lists it with its reason, and the earlier snapshot's side beside the current.
+    const out = join(box.root, "walkthrough.html");
+    const shown = succeeded(
+      await atTerminal(box, cwd, ["session", "export", "--session", id, "--output", out], "yes\n"),
+    ).stdout;
+    for (const line of [
+      `  helper.ts (new, earlier snapshot ${first}): sha256 `,
+      "Unavailable references, shown in the file with their reason:",
+      `  added.ts:1-1 (old, snapshot ${first}): absent on the old side`,
+    ])
+      expect(shown).toContain(line);
+    const data = JSON.parse(embeddedOf(await readFile(out, "utf8")).text);
+    expect(data.walkthrough.pinned).toEqual([
+      { snapshotId: first, path: "added.ts", side: "old", content: { kind: "absent" } },
+      {
+        snapshotId: first,
+        path: "helper.ts",
+        side: "new",
+        content: { kind: "text", blob: expect.any(String), size: 42 },
+      },
+    ]);
+
+    // The viewer's dialog lists the same reference and reason.
+    const { port } = viewerLink(
+      succeeded(await run(installed.bin, ["--session", id], { cwd, env: box.env })).stdout,
+    );
+    const context = await browser.newContext();
+    onTestFinished(() => context.close());
+    const live = await context.newPage();
+    live.setDefaultTimeout(15_000);
+    await live.goto(`http://localhost:${port}/session/${id}`);
+    await live.getByRole("button", { name: "Export…" }).click();
+    const unavailable = live
+      .getByRole("dialog", { name: "Export the walkthrough" })
+      .getByRole("region", { name: "Unavailable references" });
+    expect(await unavailable.getByRole("listitem").allTextContents()).toEqual([
+      "added.ts:L1 · old · absent on the old side",
+    ]);
+    await context.close();
+
+    // Offline, with gyst stopped and the checkout gone.
+    await stopDaemon(box.data);
+    await rm(cwd, { recursive: true, force: true });
+    const { page } = await offline(out);
+    const pane = page.getByRole("main");
+    const overview = pane.getByRole("region", { name: "Walkthrough overview" });
+    await overview.getByText("Doubles a10 and adds a file.").waitFor();
+    // Unsafe links and markup stay text, the directive is dropped and the diagram drawn, and the
+    // diagram that would fetch an image fails visibly instead.
+    await overview.getByText("<script>window.hostileRan=2</script>").waitFor();
+    expect(await overview.getByRole("link", { name: "run" }).count()).toBe(0);
+    await overview.getByText("run", { exact: true }).waitFor();
+    expect(await overview.locator("img, script").count()).toBe(0);
+    await overview.getByRole("img", { name: "Diagram" }).locator("svg").waitFor();
+    await overview.getByText(/^Diagram failed:/).waitFor();
+    expect(await page.evaluate(() => "hostileRan" in window)).toBe(false);
+
+    await page
+      .getByRole("navigation", { name: "gyst" })
+      .getByRole("button", { name: /^Double a10/ })
+      .click();
+    const peek = pane.locator("[data-peek]");
+    await pane.locator("[data-note=n]").getByRole("button", { name: "the start" }).click();
+    await peek.getByText("Unavailable: absent on the old side.").waitFor();
+    await pane.locator("[data-note=n]").getByRole("button", { name: "the helper" }).click();
+    await peek.locator("[data-peek-preview]").getByText("export const h2 = 2;").waitFor();
+    await peek.getByRole("button", { name: "Expand" }).click();
+    const captured = pane.getByRole("region", { name: "Captured file" });
+    await captured.getByText("helper.ts", { exact: true }).waitFor();
+    expect(await captured.textContent()).toContain(`snapshot ${first.slice(0, 7)}`);
+    await keys(page, "Backspace");
+    await expect.poll(() => peek.getAttribute("aria-label")).toBe("Reference helper.ts:L1–2 · new");
+  }, 180_000);
 
   it("exports from the viewer only for the approved preview, refusing one the agent changed meanwhile and an unready walkthrough", async () => {
     const box = await headless();
