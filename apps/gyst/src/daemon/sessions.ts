@@ -349,7 +349,8 @@ export class Sessions extends Context.Service<
     /**
      * Removes the captured content no saved session retains (`retainedFiles`), once no operation
      * holds content. It runs before retrying a capture that ran out of space, and through
-     * `reclaimer` after loading, deleting, refreshing and a failed capture. A session file this
+     * `reclaimer` after loading, deleting, refreshing, a failed capture, a source check that
+     * found a change, and a change that releases a pin (a discarded draft). A session file this
      * version cannot read keeps every snapshot it names; a manifest that cannot be read reclaims
      * nothing.
      */
@@ -488,6 +489,18 @@ export class Sessions extends Context.Service<
       const requestReclaim = Effect.sync(() => {
         Queue.offerUnsafe(reclaims, undefined);
       });
+      /** Requests a reclaim when `after` keeps less captured content than `before` did. */
+      const reclaimReleased = (before: Session, after: Session) => {
+        const kept = retainedFiles(after);
+        const released = [...retainedFiles(before)].some(([snapshotId, paths]) => {
+          const now = kept.get(snapshotId);
+          return (
+            now === undefined ||
+            (now !== "all" && (paths === "all" || [...paths].some((path) => !now.has(path))))
+          );
+        });
+        return released ? requestReclaim : Effect.void;
+      };
       const storageFull = (error: { readonly _tag: string }) =>
         error._tag === "source_unavailable" &&
         (error as SourceUnavailable).detail.reason === "storage_full";
@@ -554,9 +567,10 @@ export class Sessions extends Context.Service<
         const snapshotId = yield* publish(manifest);
         return yield* underLock(
           Effect.gen(function* () {
-            // A `load` during the capture may have brought this scope's session in.
+            // A `load` during the capture may have brought this scope's session in, leaving what
+            // was just published to a reclaim.
             const loaded = saved();
-            if (loaded) return opened(loaded, false);
+            if (loaded) return yield* Effect.as(requestReclaim, opened(loaded, false));
             const now = DateTime.formatIso(yield* DateTime.now);
             const id = yield* uuidV4();
             const session: Session = {
@@ -697,6 +711,9 @@ export class Sessions extends Context.Service<
                         ? { state: "changed" as const }
                         : (uncaptured(manifest) ?? { state: "unchanged" as const }),
                     ),
+                    // What it stored of a snapshot no session names is left to a reclaim.
+                    Effect.tap(({ state }) => (state === "changed" ? requestReclaim : Effect.void)),
+                    Effect.tapError(() => requestReclaim),
                     Effect.catch((error) =>
                       Effect.succeed({ state: "unavailable" as const, message: error.message }),
                     ),
@@ -971,6 +988,7 @@ export class Sessions extends Context.Service<
               yield* store.save(outcome.session).pipe(Effect.orDie);
               sessions.set(session.id, outcome.session);
               announceChanged(outcome.session);
+              yield* reclaimReleased(session, outcome.session);
             }
             return outcome.status;
           }),
@@ -1032,6 +1050,7 @@ export class Sessions extends Context.Service<
         if (!after) return;
         yield* store.save(after).pipe(Effect.orDie);
         sessions.set(after.id, after);
+        yield* reclaimReleased(before, after);
         if (
           after.revision === before.revision &&
           conversationsOf(after) === conversationsOf(before)
@@ -1189,9 +1208,10 @@ export class Sessions extends Context.Service<
               if (outcome.result.replaced) {
                 announceChanged(outcome.session);
                 announceLayers(outcome.session);
-                yield* requestReclaim;
               }
             }
+            // The replaced snapshot, or one published but not adopted, is left to a reclaim.
+            if (snapshotId !== observed.snapshotId) yield* requestReclaim;
             return outcome.result;
           }),
         );
