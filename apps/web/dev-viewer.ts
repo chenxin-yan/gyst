@@ -80,7 +80,8 @@ export function devViewer(launch: DevLaunch): Plugin {
       );
       link = await openSession(launch);
       // An object, not Vite's string shorthand, which would set changeOrigin and rewrite the Host.
-      const daemon = { target: `http://127.0.0.1:${link.port}` };
+      // `ws` forwards the session subscription's WebSocket upgrade too.
+      const daemon = { target: `http://127.0.0.1:${link.port}`, ws: true };
       const proxy = Object.fromEntries(Object.values(webPaths).map((path) => [path, daemon]));
       return { server: { proxy } };
     },
