@@ -18,6 +18,19 @@ const identity = ({ content }: PinnedSide) =>
       ? "absent"
       : `not captured: ${content.reason}`;
 
+// eslint-disable-next-line no-control-regex -- exactly the controls to show escaped
+const terminalControls = /[\x00-\x1f\x7f-\x9f\u061c\u200e\u200f\u2028-\u202e\u2066-\u2069]/g;
+/**
+ * `text` with every character a terminal could act on (C0 and C1 controls, DEL, line separators
+ * and directional marks) written as a `\u` escape. A captured path may hold any of them, and one
+ * left raw could erase, overwrite or reorder the lines a person approves.
+ */
+const visible = (text: string) =>
+  text.replace(
+    terminalControls,
+    (character) => `\\u${character.charCodeAt(0).toString(16).padStart(4, "0")}`,
+  );
+
 /** What the export of `preview` writes to `path`, and the warning, as the terminal shows it. */
 export function disclosureOf(preview: ExportPreviewPayload, path: string): string {
   const lines = [
@@ -47,7 +60,7 @@ export function disclosureOf(preview: ExportPreviewPayload, path: string): strin
     "share the file; gyst does not scan or redact anything.",
     "",
   );
-  return lines.join("\n");
+  return lines.map(visible).join("\n");
 }
 
 /** Asks the person at this terminal; only an explicit `yes` approves. */
