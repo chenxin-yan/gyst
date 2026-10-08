@@ -173,8 +173,8 @@ reads the checkout.
 From a terminal, `gyst session export --session <id> [--output <file>]` shows the same preview
 on stderr and writes the file only once you type `yes`. It needs an interactive terminal, so an
 agent cannot export on your behalf through it. An existing file is never replaced, and a failed
-write leaves nothing behind. On success it prints the path, size, snapshot and export time as
-JSON.
+write leaves nothing behind, or says which file it could not take back. On success it prints the
+path, size, snapshot and export time as JSON.
 
 The file opens from disk in a browser, offline, without gyst, the daemon or the checkout. It is
 read-only: groups, files, notes, folds, layouts, full-file context, references with peek, expand
