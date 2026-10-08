@@ -2296,7 +2296,9 @@ function SessionReader(props: {
               onToggle={toggleAuthor}
             />
           ) : (
-            scope.kind === "range" && (
+            // A walkthrough export carries no commit messages.
+            scope.kind === "range" &&
+            !standalone && (
               <AuthorEntry
                 label="Commits"
                 count={rangeCommits.read?.total}
@@ -2504,7 +2506,7 @@ function SessionReader(props: {
           onWidth={setWidth}
           onOpened={() => setOpenedVersion((version) => version + 1)}
           onSymbol={
-            withoutNavigation
+            withoutNavigation || standalone
               ? undefined
               : (at) => {
                   // A file shown whole has one column, on the expanded reference's side.
