@@ -435,9 +435,12 @@ export class Navigation extends Context.Service<
           Effect.flatMap((current) => (current ? close(analysis) : Effect.void)),
         );
 
+      // A snapshot replaced meanwhile retires its analysis; holding content keeps what is being
+      // read from being reclaimed under it until then.
       const readText = (file: string, blob: string, size: number) =>
         content.readBlob(blob, { offset: 0, length: size }).pipe(
           Stream.runCollect,
+          (read) => content.hold(read),
           // `toString` keeps a BOM, which the engine counts as a code unit too.
           Effect.map((chunks) => Buffer.concat(chunks).toString("utf8")),
           Effect.mapError(
@@ -470,7 +473,7 @@ export class Navigation extends Context.Service<
             );
           const home = path.join(dir, "home");
           yield* fs.makeDirectory(home, { mode: 0o700 });
-          const inputs = yield* services(materializeSide(manifest, side, dir));
+          const inputs = yield* content.hold(services(materializeSide(manifest, side, dir)));
           // The engine reports real paths; fencing compares against the same spelling.
           const project = yield* fs.realPath(inputs.project);
           const engine = yield* services(
