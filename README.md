@@ -176,12 +176,14 @@ saved content whenever they are dropped.
 There is no built-in size limit. To bound what one snapshot keeps, set `GYST_SNAPSHOT_QUOTA` to
 a size with a unit, such as `500 MiB`, in the environment gyst's daemon starts from:
 
-- The changed files must fit whole, or the capture fails with `source_unavailable`
-  (`quota_exceeded`) and nothing is saved; a review is never published truncated.
-- Unchanged supporting files then fill the rest in path order. Each one left out reads as
-  unavailable with reason `quota`, in `files`, `code`, the viewer and navigation, and is never
-  replaced by the file in your checkout. A source check of uncommitted changes reports
-  `unavailable` while files are left out, since it cannot see whether they changed.
+- The files with reviewed text changes (and renames, which name their bytes) must fit whole, or
+  the capture fails with `source_unavailable` (`quota_exceeded`) and nothing is saved; a review
+  is never published truncated.
+- Every other file's text, unchanged supporting files and mode-only changes included, then fills
+  the rest in path order. Text left out is never stored, and reads as unavailable with reason
+  `quota`, in `files`, `code`, the viewer and navigation; it is never replaced by the file in
+  your checkout. A source check of uncommitted changes reports `unavailable` while files are left
+  out, since it cannot see whether they changed.
 
 The daemon reads `GYST_SNAPSHOT_QUOTA` when it starts. It stops by itself once no saved session
 remains; otherwise stop it with `SIGTERM` (its PID is in `daemon.pid` in the data directory)
