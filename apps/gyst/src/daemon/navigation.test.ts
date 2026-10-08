@@ -643,6 +643,9 @@ describe("Navigation over real captures and the workspace add-on", () => {
         })).snapshotId;
         expect(current).not.toBe(session.snapshotId);
         yield* navigation.retire(session.id, current);
+        // A late retirement for the replaced snapshot, as a replayed refresh reply asks, keeps the
+        // current one.
+        yield* navigation.retire(session.id, session.snapshotId);
         yield* Deferred.succeed(held.release, undefined);
         expect((yield* Fiber.join(inFlight)).outcome).toEqual({
           kind: "unavailable",

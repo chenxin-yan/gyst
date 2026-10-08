@@ -284,7 +284,8 @@ export class Navigation extends Context.Service<
     /**
      * Stops the session's analysis of every snapshot but `keep` (all of it once the session is
      * deleted) and keeps any preparation still racing for them from starting an engine. Resolves
-     * once their engines are stopped and their materializations removed.
+     * once their engines are stopped and their materializations removed. Does nothing when `keep`
+     * is no longer the session's current snapshot.
      */
     retire(sessionId: string, keep?: string): Effect.Effect<void>;
     /**
@@ -1068,7 +1069,18 @@ export class Navigation extends Context.Service<
 
       const retire = (sessionId: string, keep?: string) =>
         lock(
-          Effect.sync(() => {
+          Effect.gen(function* () {
+            // Checked under the lock a later refresh's own retirement waits for, so a late one for
+            // the snapshot that refresh replaced cannot stop the current snapshot's analysis.
+            if (keep !== undefined) {
+              const current = yield* sessions
+                .snapshot({ session: sessionId, snapshotId: keep })
+                .pipe(
+                  Effect.as(true),
+                  Effect.orElseSucceed(() => false),
+                );
+              if (!current) return [];
+            }
             allowed.set(sessionId, keep);
             const retired = (owner: { sessionId: string; snapshotId: string }) =>
               owner.sessionId === sessionId && owner.snapshotId !== keep;
