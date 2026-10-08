@@ -1,4 +1,4 @@
-import type { CapturedRange, CodePayload, ManifestFile } from "@gyst/core/wire";
+import { BadArgs, type CapturedRange, type CodePayload, type ManifestFile } from "@gyst/core/wire";
 import { describe, expect, it } from "vite-plus/test";
 import {
   type CodeRead,
@@ -97,10 +97,12 @@ describe("readRange", () => {
     ]);
   });
 
-  it("starts at the first line and stops where the file ends", async () => {
+  it("starts at the first line and reads on to the file's end when it ends within the context", async () => {
     const requests: Parameters<CodeRead>[0][] = [];
     const read: CodeRead = async (request) => {
       requests.push(request);
+      if (request.endLine !== undefined)
+        throw new BadArgs({ message: "endLine is past the last line of the captured content" });
       return page(1, "l1\nl2", null);
     };
     expect(await readRange({ ...target, startLine: 1, endLine: 2 }, read)).toEqual({
@@ -108,7 +110,20 @@ describe("readRange", () => {
       startLine: 1,
       lines: ["l1", "l2"],
     });
-    expect(requests).toEqual([expect.objectContaining({ startLine: 1, endLine: 5 })]);
+    const pinned = { command: "code", snapshotId, file: "src/long.ts", side: "new" };
+    expect(requests).toEqual([
+      { ...pinned, startLine: 1, endLine: 5 },
+      { ...pinned, startLine: 1 },
+    ]);
+  });
+
+  it("passes on any other failure", async () => {
+    const lost = new Error("lost");
+    await expect(
+      readRange(target, async () => {
+        throw lost;
+      }),
+    ).rejects.toBe(lost);
   });
 
   it("says why a side has no text", async () => {
