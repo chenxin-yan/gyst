@@ -4019,7 +4019,14 @@ describe("installed gyst in a sandboxed browser", () => {
       `math.tssrc/ · ${placeOf(4, at(newMath, 4, "first").character)}`,
     ]);
     await waitFor(() => hasFocus(usages), "the usages focused");
+    // While the next location's lines are read, the last ones stay, never marked as its own.
+    const reading = await holdNext(page, "code");
     await page.keyboard.press("j");
+    await reading.sent;
+    const preview = peek.locator("[data-peek-preview]");
+    expect(await preview.locator("[data-target], [data-symbol]").count()).toBe(0);
+    expect(await preview.getAttribute("aria-busy")).toBe("true");
+    reading.release();
     await waitFor(
       async () =>
         (await peek.locator("[data-peek-preview] [data-target]").allTextContents()).join() ===

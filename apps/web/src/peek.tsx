@@ -238,10 +238,12 @@ export function ReferencePeek(props: {
   );
 }
 
+/** A read's outcome, with the read it came from (`of`). */
 type Preview =
   | { kind: "loading" }
-  | { kind: "failed"; message: string }
-  | (RangeRead & { tokens?: ThemedToken[][] });
+  | (({ kind: "failed"; message: string } | (RangeRead & { tokens?: ThemedToken[][] })) & {
+      of: () => Promise<RangeRead>;
+    });
 
 /** The characters of `line` that `span` covers, in UTF-16 units, or undefined for none. */
 function spanOn(span: TextRange | undefined, line: number, length: number) {
@@ -284,7 +286,8 @@ function marked(pieces: readonly Piece[], mark: { from: number; to: number } | u
  * The target's captured lines with a few around them, numbered as in the file, the target's
  * highlighted, and colored by the diff renderer's shared Shiki highlighter once it is ready. A
  * `span` marks the exact characters of a symbol. While another target's lines are read, the last
- * ones stay, so stepping through results doesn't make the peek jump.
+ * ones stay, dimmed and unmarked, so stepping through results doesn't make the peek jump and never
+ * presents one target's lines as another's.
  */
 export function PeekPreview(props: {
   target: CapturedRange;
@@ -302,11 +305,15 @@ export function PeekPreview(props: {
         lines = await read();
       } catch (error) {
         if (current)
-          setPreview({ kind: "failed", message: error instanceof Error ? error.message : "" });
+          setPreview({
+            kind: "failed",
+            message: error instanceof Error ? error.message : "",
+            of: read,
+          });
         return;
       }
       if (!current) return;
-      setPreview(lines);
+      setPreview({ ...lines, of: read });
       if (lines.kind !== "text") return;
       const lang = getFiletypeFromFileName(target.path);
       if (lang === "text") return;
@@ -316,7 +323,7 @@ export function PeekPreview(props: {
           lang,
           theme: codeTheme,
         });
-        if (current) setPreview({ ...lines, tokens });
+        if (current) setPreview({ ...lines, tokens, of: read });
       } catch {
         // The plain lines stay.
       }
@@ -326,7 +333,8 @@ export function PeekPreview(props: {
     };
   }, [read, target.path]);
 
-  if (preview.kind === "loading")
+  const pending = preview.kind !== "loading" && preview.of !== read;
+  if (preview.kind === "loading" || (pending && preview.kind !== "text"))
     return (
       <p role="status" {...stylex.props(styles.unavailable)}>
         Reading the captured lines…
@@ -345,13 +353,17 @@ export function PeekPreview(props: {
       </p>
     );
   return (
-    <pre data-peek-preview {...stylex.props(styles.code)}>
+    <pre
+      data-peek-preview
+      aria-busy={pending || undefined}
+      {...stylex.props(styles.code, pending && styles.pending)}
+    >
       {preview.lines.map((text, index) => {
         const line = preview.startLine + index;
-        const inside = line >= target.startLine && line <= target.endLine;
+        const inside = !pending && line >= target.startLine && line <= target.endLine;
         const pieces = marked(
           preview.tokens?.[index] ?? [{ content: text }],
-          spanOn(span, line, text.length),
+          pending ? undefined : spanOn(span, line, text.length),
         );
         return (
           <div
@@ -433,6 +445,7 @@ const styles = stylex.create({
     fontSize: "12px",
     lineHeight: "18px",
   },
+  pending: { opacity: 0.5 },
   row: { display: "flex", minWidth: "max-content", paddingInlineEnd: "10px" },
   target: {
     backgroundColor: `color-mix(in srgb, ${theme["--accent"]} 12%, transparent)`,
