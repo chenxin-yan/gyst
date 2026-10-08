@@ -95,11 +95,17 @@ export type RangeCommits = {
 
 /**
  * A range session's captured commits, read page by page from its snapshot once `wanted`: the first
- * page when the reader first shows them, later ones on request. Kept for the reader's life: they
- * are the snapshot's own, and a refresh starts another reader.
+ * page when the reader first shows them, later ones on request. Kept for the reader's life, from
+ * those a return to the same snapshot `kept`: they are the snapshot's own, and a refresh starts
+ * another reader.
  */
-export function useRangeCommits(sessionId: string, snapshotId: string, wanted: boolean) {
-  const [read, setRead] = useState<RangeCommits["read"]>();
+export function useRangeCommits(
+  sessionId: string,
+  snapshotId: string,
+  wanted: boolean,
+  kept: RangeCommits["read"],
+) {
+  const [read, setRead] = useState(kept);
   const [loading, setLoading] = useState(false);
   const [failure, setFailure] = useState<unknown>();
   const mounted = useMounted();
