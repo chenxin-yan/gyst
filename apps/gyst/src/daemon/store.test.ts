@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it } from "vite-plus/test";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { type Session, statusOf } from "@gyst/core";
-import { ConfigProvider, Effect, FileSystem, Layer, PlatformError } from "effect";
+import { ConfigProvider, Deferred, Effect, Fiber, FileSystem, Layer, PlatformError } from "effect";
 import { chmod, mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
@@ -65,18 +65,25 @@ describe("SessionStore", () => {
     await rm(join(dataDir, "blocked.json"), { recursive: true });
   });
 
-  it("syncs a saved file before its rename and its directory after, and keeps the old one when a sync fails", async () => {
-    const calls: string[] = [];
-    let syncFails = false;
-    const observed = (real: FileSystem.FileSystem): FileSystem.FileSystem => ({
+  /**
+   * Records each sync and rename. `fails` names the sync that fails; `afterRename` runs once each
+   * rename has happened.
+   */
+  const observing =
+    (
+      calls: string[],
+      options: { fails?: "file" | "directory"; afterRename?: Effect.Effect<void> } = {},
+    ) =>
+    (real: FileSystem.FileSystem): FileSystem.FileSystem => ({
       ...real,
-      open: (path, options) =>
-        Effect.map(real.open(path, options), (handle) =>
+      open: (path, openOptions) =>
+        Effect.map(real.open(path, openOptions), (handle) =>
           Object.create(handle, {
             sync: {
               value: Effect.suspend(() => {
-                calls.push(path === dataDir ? "sync directory" : `sync ${basename(path)}`);
-                return syncFails
+                const synced = path === dataDir ? "directory" : "file";
+                calls.push(synced === "directory" ? "sync directory" : `sync ${basename(path)}`);
+                return options.fails === synced
                   ? Effect.fail(
                       PlatformError.systemError({
                         _tag: "Unknown",
@@ -92,27 +99,85 @@ describe("SessionStore", () => {
       rename: (from, to) =>
         Effect.suspend(() => {
           calls.push(`rename to ${basename(to)}`);
-          return real.rename(from, to);
+          return real.rename(from, to).pipe(Effect.andThen(options.afterRename ?? Effect.void));
         }),
     });
+  const leftovers = async () => (await readdir(dataDir)).filter((name) => !name.endsWith(".json"));
+  const revisionOnDisk = async (id: string) =>
+    JSON.parse(await readFile(join(dataDir, `${id}.json`), "utf8")).revision;
+
+  it("syncs a saved file before its rename and its directory after, and the directory on request", async () => {
+    const calls: string[] = [];
     await run(
       SessionStore.use((s) => s.save(session("synced"))),
-      observed,
+      observing(calls),
     );
     expect(calls).toEqual([
       expect.stringMatching(/^sync /),
       "rename to synced.json",
       "sync directory",
     ]);
-    syncFails = true;
-    const error = await run(
-      Effect.flip(SessionStore.use((s) => s.save({ ...session("synced"), revision: 1 }))),
-      observed,
+    calls.length = 0;
+    await run(
+      SessionStore.use((s) => s.syncSaved),
+      observing(calls),
     );
-    expect(error._tag).toBe("PlatformError");
-    expect(JSON.parse(await readFile(join(dataDir, "synced.json"), "utf8")).revision).toBe(0);
-    expect((await readdir(dataDir)).filter((name) => !name.endsWith(".json"))).toEqual([]);
+    expect(calls).toEqual(["sync directory"]);
     await rm(join(dataDir, "synced.json"));
+  });
+
+  it("keeps the old file when the new one cannot be synced, and reports a replacement it cannot make durable", async () => {
+    await run(SessionStore.use((s) => s.save(session("unsynced"))));
+    const saveRevision = (revision: number, fails: "file" | "directory") =>
+      run(
+        Effect.flip(SessionStore.use((s) => s.save({ ...session("unsynced"), revision }))),
+        observing([], { fails }),
+      );
+    expect((await saveRevision(1, "file"))._tag).toBe("PlatformError");
+    expect(await revisionOnDisk("unsynced")).toBe(0);
+    expect(await leftovers()).toEqual([]);
+    // Renamed before its directory sync failed: visible, but it may not survive a crash.
+    expect((await saveRevision(2, "directory"))._tag).toBe("PlatformError");
+    expect(await revisionOnDisk("unsynced")).toBe(2);
+    expect(await leftovers()).toEqual([]);
+    expect(
+      (
+        await run(
+          Effect.flip(SessionStore.use((s) => s.syncSaved)),
+          observing([], { fails: "directory" }),
+        )
+      )._tag,
+    ).toBe("PlatformError");
+    await rm(join(dataDir, "unsynced.json"));
+  });
+
+  it("syncs the directory of a renamed file even when interrupted after the rename", async () => {
+    const calls: string[] = [];
+    const renamed = Effect.runSync(Deferred.make<void>());
+    const release = Effect.runSync(Deferred.make<void>());
+    await run(
+      Effect.gen(function* () {
+        const saving = yield* Effect.forkChild(
+          SessionStore.use((s) => s.save(session("interrupted"))),
+        );
+        yield* Deferred.await(renamed);
+        const interrupting = yield* Effect.forkChild(Fiber.interrupt(saving));
+        yield* Deferred.succeed(release, undefined);
+        yield* Fiber.join(interrupting);
+      }),
+      observing(calls, {
+        afterRename: Deferred.succeed(renamed, undefined).pipe(
+          Effect.andThen(Deferred.await(release)),
+        ),
+      }),
+    );
+    expect(calls).toEqual([
+      expect.stringMatching(/^sync /),
+      "rename to interrupted.json",
+      "sync directory",
+    ]);
+    expect(await leftovers()).toEqual([]);
+    await rm(join(dataDir, "interrupted.json"));
   });
 
   it("skips undecodable session files but keeps the valid ones", async () => {
