@@ -1,7 +1,8 @@
-import { type Session, SessionSchema } from "@gyst/core";
+import { type Session, SessionSchema, type SourceUnavailable } from "@gyst/core";
 import { Array, Context, Effect, FileSystem, Layer, type PlatformError, Schema } from "effect";
 import { createHash } from "node:crypto";
 import { dirname } from "node:path";
+import { storageFullIn } from "./content.ts";
 import { Paths } from "./paths.ts";
 
 const decodeSessionFile = Schema.decodeUnknownEffect(Schema.fromJsonString(SessionSchema), {
@@ -15,6 +16,8 @@ const DeleteReceiptsFileSchema = Schema.fromJsonString(Schema.Array(DeleteReceip
 const decodeDeleteReceipts = Schema.decodeUnknownEffect(DeleteReceiptsFileSchema, {
   onExcessProperty: "error",
 });
+/** A failed `writeAtomically`; `storage_full` only while the old file is kept. */
+type WriteFailure = PlatformError.PlatformError | SourceUnavailable;
 /** Session id to the `PATH` of the latest CLI invocation that opened it. */
 export type LaunchPaths = Readonly<Record<string, string>>;
 const decodeLaunchPaths = Schema.decodeUnknownEffect(
@@ -28,20 +31,27 @@ const synced = (fs: FileSystem.FileSystem, file: string) =>
 // one. The scope removes the temp directory whether or not the file was renamed out of it, so a
 // failed write leaves nothing. Synced before the rename and its directory after: reclaiming content
 // trusts what is saved, so a crash must not bring back an older file naming reclaimed content.
-// A failure before the rename keeps the old file; one syncing the directory after it reports a
-// replacement that is already visible but may not survive a crash.
+// A failure before the rename keeps the old file, and running out of space there is `storage_full`,
+// safe to retry. One syncing the directory after it reports a replacement that is already visible
+// but may not survive a crash, so it is never `storage_full`.
 export const writeAtomically = Effect.fn("writeAtomically")(function* (
   path: string,
   content: string,
 ) {
   const fs = yield* FileSystem.FileSystem;
-  const temporary = yield* fs.makeTempFileScoped({ directory: dirname(path) });
-  yield* fs.chmod(temporary, 0o600);
-  yield* fs.writeFileString(temporary, content);
-  yield* synced(fs, temporary);
+  const directory = dirname(path);
+  const temporary = yield* Effect.gen(function* () {
+    const file = yield* fs.makeTempFileScoped({ directory });
+    yield* fs.chmod(file, 0o600);
+    yield* fs.writeFileString(file, content);
+    yield* synced(fs, file);
+    return file;
+  }).pipe(Effect.mapError(storageFullIn(directory)));
   // An interruption between the two would leave the replacement visible but not durable.
   yield* Effect.uninterruptible(
-    fs.rename(temporary, path).pipe(Effect.andThen(synced(fs, dirname(path)))),
+    fs
+      .rename(temporary, path)
+      .pipe(Effect.mapError(storageFullIn(directory)), Effect.andThen(synced(fs, directory))),
   );
 }, Effect.scoped);
 
@@ -75,7 +85,7 @@ export class SessionStore extends Context.Service<
       { readonly sessions: Array<Session>; readonly undecodable: Array<string> },
       PlatformError.PlatformError
     >;
-    save(session: Session): Effect.Effect<void, PlatformError.PlatformError>;
+    save(session: Session): Effect.Effect<void, WriteFailure>;
     remove(id: string): Effect.Effect<void, PlatformError.PlatformError>;
     /**
      * Makes every save, receipt and removal visible in the data directory durable, including one a
@@ -89,16 +99,14 @@ export class SessionStore extends Context.Service<
       PlatformError.PlatformError
     >;
     /** Replaces every receipt atomically, like a session save. */
-    saveDeleteReceipts(
-      receipts: ReadonlyArray<DeleteReceipt>,
-    ): Effect.Effect<void, PlatformError.PlatformError>;
+    saveDeleteReceipts(receipts: ReadonlyArray<DeleteReceipt>): Effect.Effect<void, WriteFailure>;
     /**
      * Empty when absent or unreadable: losing them costs only navigation, until the CLI opens the
      * session again.
      */
     readonly loadLaunchPaths: Effect.Effect<LaunchPaths>;
     /** Replaces every session's `PATH` atomically, like a session save. */
-    saveLaunchPaths(launchPaths: LaunchPaths): Effect.Effect<void, PlatformError.PlatformError>;
+    saveLaunchPaths(launchPaths: LaunchPaths): Effect.Effect<void, WriteFailure>;
   }
 >()("gyst/daemon/SessionStore") {
   static readonly layer = Layer.effect(
