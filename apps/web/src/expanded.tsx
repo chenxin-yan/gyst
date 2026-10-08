@@ -12,11 +12,11 @@ import { theme } from "./tokens.stylex.ts";
 /** A whole captured side being read, its text, or why the read failed. */
 export type WholeSide = "loading" | { text: string } | { failure: unknown };
 
-const sideKey = (target: CapturedRange) => `${target.side}\0${target.path}`;
+const sideKey = (target: CapturedRange) => `${target.snapshotId}\0${target.side}\0${target.path}`;
 
 /**
- * The whole captured sides read for expanded files without changes, by side and path. A side is
- * read once; a failed read is read again on the next `load`.
+ * The whole captured sides read for expanded files shown without a diff, by snapshot, side and
+ * path. A side is read once; a failed read is read again on the next `load`.
  */
 export function useWholeSides(read: CodeRead) {
   const [sides, setSides] = useState<ReadonlyMap<string, WholeSide>>(new Map());
