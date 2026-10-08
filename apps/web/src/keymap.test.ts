@@ -5,7 +5,7 @@ import {
   validateHotkey,
 } from "@tanstack/react-hotkeys";
 import { describe, expect, it } from "vite-plus/test";
-import { commands, commandsFor, keyLabels, typed } from "./keymap.ts";
+import { commands, commandsFor, completesSequence, keyLabels, typed } from "./keymap.ts";
 
 const bindings = commands.flatMap((command) => command.keys.map((keys) => ({ ...command, keys })));
 const singles = bindings.filter(({ keys }) => keys.length === 1).map(({ keys }) => keys[0]!);
@@ -29,17 +29,27 @@ describe("commands", () => {
         ).toBe(false);
   });
 
-  // Single keys still run while a sequence is pending, so a single key that is also any step of a
-  // sequence would run with it.
-  it("binds no single key that is also a step of a sequence", () => {
+  // Single keys still run while a sequence is pending, so a single key that is also a step of a
+  // sequence would run with it, unless it ends a two-key sequence just started: `R` refreshes, but
+  // `z` then `R` unfolds every file instead.
+  it("binds no single key that is also a step of a sequence, except one ending a sequence just begun", () => {
     for (const single of singles)
       for (const sequence of sequences)
-        for (const step of sequence)
-          expect(areHotkeysEqual(single, step), `${single} in ${sequence.join(" ")}`).toBe(false);
+        for (const [step, key] of sequence.entries())
+          expect(
+            areHotkeysEqual(single, key) && !(sequence.length === 2 && step === 1),
+            `${single} in ${sequence.join(" ")}`,
+          ).toBe(false);
+    expect(keysOf("refresh")).toEqual([["Shift+R"]]);
+    expect(completesSequence({ key: "R" }, { key: "z", at: 1000 }, 1500)).toBe(true);
+    expect(completesSequence({ key: "R" }, { key: "z", at: 1000 }, 2500)).toBe(false);
+    expect(completesSequence({ key: "R" }, { key: "j", at: 1000 }, 1500)).toBe(false);
+    expect(completesSequence({ key: "R" }, undefined, 1500)).toBe(false);
+    expect(completesSequence({ key: "m" }, { key: "z", at: 1000 }, 1500)).toBe(false);
   });
 
   it("has no keys of later tickets yet", () => {
-    for (const later of ["C", "R", "X", "N", "Shift+R"] satisfies Hotkey[])
+    for (const later of ["C", "R", "X", "N"] satisfies Hotkey[])
       expect(
         singles.some((single) => areHotkeysEqual(single, later)),
         later,

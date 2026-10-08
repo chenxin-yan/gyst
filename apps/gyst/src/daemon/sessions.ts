@@ -607,7 +607,7 @@ export class Sessions extends Context.Service<
         const session = yield* underLock(selected(request));
         if (!pinnedSnapshotIds(session).includes(request.snapshotId))
           return yield* new StaleRevision({
-            message: `snapshot ${request.snapshotId} is neither the current snapshot of session ${session.id} nor one its guidance pins; read the session again`,
+            message: `snapshot ${request.snapshotId} is not the current snapshot of session ${session.id}, nor one its guidance still pins; read the session again`,
             detail: { snapshotId: session.snapshotId },
           });
         const manifest = yield* manifestOf(request.snapshotId);
