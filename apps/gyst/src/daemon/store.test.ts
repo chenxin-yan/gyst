@@ -142,7 +142,9 @@ describe("SessionStore", () => {
     const loaded = await run(SessionStore.use((s) => s.loadAll));
     expect(loaded.map((loadedSession) => loadedSession.id)).toEqual(["a"]);
     // Reclaiming captured content still reads what it skipped.
-    expect((await run(SessionStore.use((s) => s.loadUndecodable))).toSorted()).toEqual(
+    const saved = await run(SessionStore.use((s) => s.loadSaved));
+    expect(saved.sessions).toEqual(loaded);
+    expect(saved.undecodable.toSorted()).toEqual(
       ["{not json", JSON.stringify({ id: "x" }), older, hunkNotes].toSorted(),
     );
     expect(await readFile(join(dataDir, "older.json"), "utf8")).toBe(older);
