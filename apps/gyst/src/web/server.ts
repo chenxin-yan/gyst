@@ -34,7 +34,6 @@ export const WebUiDir = Context.Reference<string>("gyst/web/WebUiDir", {
 
 /** The first port the viewer tries ("gyst" on a phone keypad); `GYST_PORT` moves the range. */
 const defaultViewerPort = 4978;
-/** How many consecutive ports the viewer tries, from the first. */
 const viewerPortCount = 10;
 /** Read when the daemon starts; an invalid value fails each open, which names the problem. */
 export const firstViewerPort = Config.Port("GYST_PORT").pipe(

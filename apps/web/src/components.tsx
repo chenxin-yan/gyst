@@ -322,7 +322,6 @@ const deletion = stylex.create({
 
 // ─── failures ────────────────────────────────────────────────────────────
 
-/** Explains a failed request. */
 export function FailureNotice({ error }: { error: unknown }) {
   return (
     <p role="alert" {...stylex.props(notice.box)}>
