@@ -545,12 +545,13 @@ function SessionReader(props: {
   const progress = useViewedProgress(session.id, snapshotId, props.status, live);
   const status = progress.status;
   // The change author's explanation above the diff: a PR's description or a range's commits.
-  const [authorShown, setAuthorShown] = useState(false);
+  const [authorShown, setAuthorShown] = useState(recalled?.author.shown ?? false);
   const authorId = useId();
   const rangeCommits = useRangeCommits(
     session.id,
     snapshotId,
     authorShown && session.scope.kind === "range",
+    recalled?.author.commits,
   );
   const mounted = useMounted();
   // Captured-code navigation: the reference expanded in the main panel, the open peek, the places
@@ -827,6 +828,7 @@ function SessionReader(props: {
     opened,
     folds,
     expandedFolded,
+    author: { shown: authorShown, commits: rangeCommits.read },
     top: recalled?.top,
   });
   readingPlace.current = {
@@ -840,6 +842,7 @@ function SessionReader(props: {
     cursor,
     folds,
     expandedFolded,
+    author: { shown: authorShown, commits: rangeCommits.read },
   };
   useEffect(() => remember(session.id, snapshotId, hunks, readingPlace.current));
   const returning = useRef(recalled !== undefined);
