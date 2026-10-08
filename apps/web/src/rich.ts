@@ -17,7 +17,7 @@ export type RichLink =
 /** react-markdown's `urlTransform`: every other URL becomes empty, so it renders inert. */
 export const safeUrl = (url: string) => (url.startsWith("gyst:") || isWebUrl(url) ? url : "");
 
-const sameRange = (a: CodeRange, b: CodeRange) =>
+export const sameRange = (a: CodeRange, b: CodeRange) =>
   a.path === b.path && a.side === b.side && a.startLine === b.startLine && a.endLine === b.endLine;
 
 /**
