@@ -11,8 +11,11 @@ Each release matches one gyst release exactly. Install the one matching your `gy
 npm install -g @gyst/navigation-typescript@<gyst version>
 ```
 
-gyst looks for `gyst-navigation-typescript` on the `PATH` of the `gyst` command that launched the
-viewer, so install it with the same npm whose global bin directory is on that `PATH`.
+gyst looks for `gyst-navigation-typescript` on the `PATH` of the `gyst` or `gyst session open`
+command that last opened the session, so install it with the same npm whose global bin directory
+is on that `PATH`. After an install into a directory already on that `PATH`, Check again in the
+viewer finds it; after changing `PATH` or the npm prefix, run `gyst` again from the new
+environment.
 
 ## The executable
 

@@ -62,13 +62,15 @@ with, so an agent started in one of these directories keeps the source `gyst` af
 and one started elsewhere keeps the released one. Check with `command -v gyst`. Each checkout has
 its own `.dev/data`, so its sessions are separate from another checkout's.
 
-- **The viewer:** bare `gyst`, a range or `--session` starts the Vite dev server
-  ([`apps/web/dev.ts`](apps/web/dev.ts)) with a source launcher behind it, and prints one URL,
-  `  gyst  http://g-<hex>.localhost:3000/session/<id>#<secret>`. Open it; viewer edits apply with
-  Fast Refresh. `pnpm dev` does the same for this checkout's own uncommitted changes.
+- **The viewer:** bare `gyst`, a range or `--session` opens the session with the source CLI, then
+  starts the Vite dev server ([`apps/web/dev.ts`](apps/web/dev.ts)) in front of the dev daemon and
+  prints one link on Vite's port, `  gyst  http://localhost:3000/session/<id>`. Open it; viewer
+  edits apply with Fast Refresh. `pnpm dev` does the same for this checkout's own uncommitted
+  changes.
 - **Everything else** (`gyst session ...`, `gyst skills ...`, `--help`) runs the source CLI
   directly. An agent that resolves `gyst` to the source CLI publishes through it, so you can watch
-  its groups arrive in the dev viewer.
+  its groups arrive in the dev viewer. The links it prints name the dev daemon's own port, which
+  serves only a placeholder page in development: open the session with `gyst --session <id>`.
 - **Skills:** `gyst skills` links agents to the built skills in `apps/gyst/.crust/root/skills/`,
   which only `pnpm build` creates; the build also regenerates `gyst-cli` from the command
   definitions. Run `pnpm build` once and after each skill or command change, then
@@ -76,24 +78,24 @@ its own `.dev/data`, so its sessions are separate from another checkout's.
   dev links out of your global agent directories, and later builds update them in place.
 - **Where state lives:** sessions and the daemon use `.dev/data` (`GYST_DATA_DIR`), never your own
   gyst data. `rm -rf .dev` starts over.
+- **Ports:** the dev daemon serves on 4978, or the next free port up to 4987 when another gyst
+  (your installed one, say) holds it; `GYST_PORT` moves the range. Vite prefers 3000 and takes the
+  next free port otherwise; the printed link names the one it got.
 - **After changing `apps/gyst` or `packages/core`:** press `r` in the dev server. Vite reruns the
-  plugin, which replaces the daemon and the launcher with ones from the current source and prints
-  a new URL. The old URL then fails sign-in, since every launch has its own hostname and
-  credentials. The CLI needs nothing: each command runs the current source, and the daemon a
-  changed CLI talks to is replaced on the next `r`.
-- **Signing in again:** a launch URL signs in only within 10 minutes of its launch. Press `r` for a
-  new one. A tab that is already signed in keeps working.
-- **Stopping:** Ctrl-C stops Vite and the launcher. The daemon outlives them, as it does in
-  production; the next launch replaces it.
+  plugin, which replaces the daemon with one from the current source, opens the session again and
+  prints the link. Open tabs reconnect to the new daemon. The CLI needs nothing: each command runs
+  the current source, and the daemon a changed CLI talks to is replaced on the next `r`.
+- **Stopping:** Ctrl-C stops Vite. The daemon outlives it, as it does in production; the next run
+  replaces it.
 
-How the viewer is wired: the dev-only plugin in [`apps/web/dev-launcher.ts`](apps/web/dev-launcher.ts)
-runs `node apps/gyst/src/index.ts` (Node runs the TypeScript directly) and proxies the bridge
-paths (`/bootstrap`, `/api/operation`) to it with their `Host` and `Origin` unchanged. The browser
-opens the launch's `g-<hex>.localhost` hostname on Vite's port, as it would behind an SSH forward,
-so sign-in, the cookie and the host and origin checks run as in production. Vite's own
-`http://localhost:3000/` links are not printed, because the launcher refuses them with 403. The
-source launcher needs an `index.html` where the package keeps the built viewer, so the plugin
-writes a placeholder to the git-ignored `apps/gyst/src/dist/web-ui/`.
+How the viewer is wired: the dev-only plugin in [`apps/web/dev-viewer.ts`](apps/web/dev-viewer.ts)
+runs `node apps/gyst/src/index.ts` (Node runs the TypeScript directly) once with your arguments,
+reads the link it prints and proxies the API paths (`/api/operation`, `/api/events`) to the
+daemon's port in it, with their `Host` and `Origin` unchanged. The browser talks to Vite on
+`localhost`, as it would through an SSH forward on another local port, so the daemon's host and
+origin checks run as in production. The source daemon serves the packaged viewer from beside its
+entry, so the plugin writes a placeholder pointing here to the git-ignored
+`apps/gyst/src/dist/web-ui/`.
 
 This is for trying changes by hand. It does not replace `pnpm test`, which tests the packed npm
 install.
@@ -128,7 +130,7 @@ bootstrapped with `@tanstack/cli create --router-only --blank` (file-based TanSt
 SSR). Routes live in `apps/web/src/routes/`; the router plugin regenerates the committed
 `src/routeTree.gen.ts` on `dev` and `build`. It imports browser-safe contracts only from
 `@gyst/core/wire` and the shared HTTP paths from `@gyst/core/web`. `@gyst/cli` ships only the
-built `dist/`, so the published package does not depend on React or the router. The launcher
+built `dist/`, so the published package does not depend on React or the router. The daemon
 serves the installed `dist/web-ui/`.
 
 Viewer styles use [StyleX](https://stylexjs.com/docs/learn/): each component calls
@@ -151,8 +153,10 @@ alone. Our file headers are slotted light DOM, styled with StyleX like any compo
 or style inside its shadow roots, and use only its public API.
 
 `pnpm test` includes browser tests (`apps/gyst/tests/e2e/browser.test.ts`) that drive the
-installed package, its real launches, daemon and a private key-authenticated SSH local forward on
-127.0.0.1 from a sandboxed Chromium. They need git, OpenSSH (`sshd`, `ssh` and `ssh-keygen` on
+installed package, its one-shot commands, the daemon that serves their links and a private
+key-authenticated SSH local forward on 127.0.0.1 from a sandboxed Chromium. Every test daemon
+starts its viewer at a free port through `GYST_PORT`, never at 4978, so the tests can run beside
+your own gyst. They need git, OpenSSH (`sshd`, `ssh` and `ssh-keygen` on
 `PATH`, or `sshd` in `/usr/sbin`) and a Chrome or Chromium: `CHROMIUM_PATH` if set, else the first
 of `google-chrome`, `google-chrome-stable`, `chromium` and `chromium-browser` on `PATH`, else
 Google Chrome's standard install location. Their scratch directory lives under `$HOME`, since
@@ -163,7 +167,10 @@ its sandbox needs the system's permission: Ubuntu 23.10 and later allow it only 
 installed path. CI uses the Google Chrome, git and OpenSSH preinstalled on GitHub's
 `ubuntu-latest` image, so the workflow installs nothing.
 
-To try the viewer over SSH, see the README's [Over SSH](README.md#over-ssh) section.
+To try the viewer over SSH, see the README's [Over SSH](README.md#over-ssh) section: one forward,
+`ssh -N -o ExitOnForwardFailure=yes -L 127.0.0.1:4978:127.0.0.1:4978 user@remote`, serves every
+session. The viewer has no login and assumes a single-user machine; keep it that way when you
+change its HTTP surface.
 
 ## Releases
 

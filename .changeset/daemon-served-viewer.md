@@ -1,0 +1,5 @@
+---
+"@gyst/cli": minor
+---
+
+The background daemon serves the browser viewer, and every command is one-shot. `gyst`, `gyst <range>`, `gyst --pr <number | URL>` and `gyst --session <id>` open (or create) the session, print its link, `http://localhost:4978/session/<id>`, open it in a local browser when there is one, and exit; the link keeps working for as long as the daemon runs. `gyst session open` takes the same selection and adds the same `link` to its JSON reply (replacing `launch`), never opening a browser. The daemon listens on `127.0.0.1:4978`, tries each next port up to 4987 when one is taken and keeps the port it bound; every link names it, `GYST_PORT` moves the range, and with every port taken opening fails with an error naming it. There is no login: the viewer accepts only loopback host names on any port, requires a matching `Origin` on every change and refuses forwarding headers, and gyst assumes a single-user machine. Over SSH, one forward serves every session: `ssh -N -o ExitOnForwardFailure=yes -L 127.0.0.1:4978:127.0.0.1:4978 user@remote`. The navigation add-on is found on the `PATH` of the command that last opened the session.
