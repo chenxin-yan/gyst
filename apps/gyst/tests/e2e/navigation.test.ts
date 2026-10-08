@@ -32,6 +32,19 @@ import {
   succeeded,
   waitFor,
 } from "./installed-gyst.ts";
+import {
+  at,
+  crlf,
+  gitProject,
+  mathFiles,
+  newMath,
+  newUse,
+  oldMath,
+  oldUse,
+  packageJson,
+  span,
+  writeFiles,
+} from "./navigation-project.ts";
 
 const navigation = inject("installedNavigation");
 const navigationBin = dirname(navigation.bin);
@@ -93,66 +106,16 @@ const git = (box: Sandbox, cwd: string, ...args: string[]) =>
     stdio: ["ignore", "pipe", "pipe"],
   });
 
-const write = async (cwd: string, files: Record<string, string>) => {
-  for (const [path, content] of Object.entries(files)) {
-    await mkdir(dirname(join(cwd, path)), { recursive: true });
-    await writeFile(join(cwd, path), content);
-  }
-};
-
 /** A repository with `committed` as its only commit and `edited` left uncommitted. */
-async function project(
+const project = (
   box: Sandbox,
   name: string,
   committed: Record<string, string>,
   edited: Record<string, string>,
-) {
-  const cwd = join(box.root, name);
-  await mkdir(cwd);
-  git(box, cwd, "init", "-q");
-  git(box, cwd, "config", "user.email", "test@gyst.invalid");
-  git(box, cwd, "config", "user.name", "Gyst Test");
-  await write(cwd, committed);
-  git(box, cwd, "add", ".");
-  git(box, cwd, "commit", "-qm", "initial");
-  await write(cwd, edited);
-  return cwd;
-}
-
-const oldMath =
-  "export function add(first: number, second: number) {\n  return first + second;\n}\n";
-const newMath = `// Arithmetic helpers.\nexport const zero = 0;\n${oldMath}`;
-const oldUse = 'import { add as plus } from "./math.js";\nexport const three = plus(1, 2);\n';
-const newUse =
-  'import { add as plus, zero } from "./math.js";\n' +
-  "export const three = plus(1, 2) + zero;\n" +
-  "export const four = plus(three, 1);\n";
-const crlf = 'export const 𐐀name = "𐐀";\r\nexport const twice = 𐐀name + 𐐀name;\r\n';
-const packageJson =
-  '{ "name": "fixture", "type": "module", "dependencies": { "left-pad": "1.3.0" } }\n';
+) => gitProject(box.env, join(box.root, name), committed, edited);
 /** The TS fixture: `add` moves down two lines in the new side, and `plus` aliases it. */
 const math = (box: Sandbox, name: string) =>
-  project(
-    box,
-    name,
-    {
-      "package.json": packageJson,
-      "README.md": "# fixture\n",
-      "src/math.ts": oldMath,
-      "src/use.ts": oldUse,
-    },
-    { "src/math.ts": newMath, "src/use.ts": newUse, "src/crlf.ts": crlf },
-  );
-
-/** The range of the `nth` `word` on a 1-based LF-delimited line. */
-const span = (text: string, line: number, word: string, nth = 0) => {
-  const lineText = text.split("\n")[line - 1]!;
-  let character = -1;
-  for (let index = 0; index <= nth; index++) character = lineText.indexOf(word, character + 1);
-  if (character === -1) throw new Error(`no ${word} on line ${line}`);
-  return { start: { line, character }, end: { line, character: character + word.length } };
-};
-const at = (text: string, line: number, word: string, nth = 0) => span(text, line, word, nth).start;
+  project(box, name, mathFiles.committed, mathFiles.edited);
 
 const ok = (reply: any) => {
   if (reply.ok !== true) throw new Error(`expected ok: ${JSON.stringify(reply)}`);
@@ -525,7 +488,7 @@ describe("TS/JS navigation through the installed add-on", () => {
         "src/secret.ts": reach,
       },
     );
-    await write(box.data, { "secret/hidden.ts": `export const secret = "${secret}";\n` });
+    await writeFiles(box.data, { "secret/hidden.ts": `export const secret = "${secret}";\n` });
     const viewer = await launchViewer([], { cwd, env: launchEnv(box.env, navigationBin) });
     const { ids, status, definition, references } = await queries(viewer);
 
@@ -543,7 +506,9 @@ describe("TS/JS navigation through the installed add-on", () => {
     }
     expect(engines(navigation.prefix)).toHaveLength(1);
 
-    await write(cwd, { "src/use.ts": newUse.replace(", zero", "").replace("(1, 2)", "(2, 2)") });
+    await writeFiles(cwd, {
+      "src/use.ts": newUse.replace(", zero", "").replace("(1, 2)", "(2, 2)"),
+    });
     const refreshed = json(
       await box.gyst(cwd, [
         "session",
@@ -586,7 +551,7 @@ describe("TS/JS navigation through the installed add-on", () => {
       { "src/math.ts": newMath, "src/use.ts": newUse },
     );
     git(box, cwd, "commit", "-qam", "move add");
-    await write(cwd, { "src/use.ts": `${newUse}export const five = plus(four, 1);\n` });
+    await writeFiles(cwd, { "src/use.ts": `${newUse}export const five = plus(four, 1);\n` });
     const viewer = await launchViewer([], { cwd, env: launchEnv(box.env, navigationBin) });
     // Each session finds the add-on on the PATH it was last opened with, which a restarted daemon
     // keeps: the commands that restart it below open nothing and have no add-on on their PATH.

@@ -1,14 +1,15 @@
 // The installed gyst in a real sandboxed Chromium: real one-shot commands, the daemon that serves
 // their links, and a private key-authenticated SSH local forward. Hard states (a held or lost
 // reply, a broken daemon answer) are produced by Playwright routing in front of the real daemon.
+import { navigationInstallCommand } from "@gyst/core";
 import { type ChildProcess, execFileSync, spawn, spawnSync } from "node:child_process";
 import { randomBytes, randomUUID } from "node:crypto";
-import { accessSync, constants } from "node:fs";
+import { accessSync, constants, readFileSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { createServer as createHttpServer, request as httpRequest } from "node:http";
 import type { AddressInfo } from "node:net";
 import { homedir, userInfo } from "node:os";
-import { delimiter, join } from "node:path";
+import { delimiter, dirname, join } from "node:path";
 import {
   type Browser,
   type BrowserContext,
@@ -18,7 +19,7 @@ import {
   type Request as PageRequest,
   type Route,
 } from "playwright-core";
-import { afterAll, beforeAll, describe, expect, it, onTestFinished } from "vite-plus/test";
+import { afterAll, beforeAll, describe, expect, inject, it, onTestFinished } from "vite-plus/test";
 
 import { type FakeGh, type FakePullRequest, fakeGh, githubOrigin } from "../github.ts";
 import { freePort } from "../http.ts";
@@ -31,12 +32,15 @@ import {
   isolatedEnv,
   json,
   killDaemon,
+  launchEnv,
+  npm,
   run,
   stopDaemon,
   succeeded,
   viewerLink,
   waitFor,
 } from "./installed-gyst.ts";
+import { at, gitProject, mathFiles, newMath, newUse, oldUse } from "./navigation-project.ts";
 
 type Owned = { name: string; child: ChildProcess; out: string; exit?: number | string };
 /** The link a one-shot `gyst` printed, and its parts. */
@@ -52,6 +56,12 @@ const longTs = (edited: boolean) =>
         : `export const line${n} = ${n};\n`,
     )
     .join("");
+const navigation = inject("installedNavigation");
+/** This gyst's packed navigation add-on, installed globally; its bin directory. */
+const navigationBin = dirname(navigation.bin);
+const navigationInstall = navigationInstallCommand(
+  JSON.parse(readFileSync(join(installed.packageDir, "package.json"), "utf8")).version,
+);
 const isOperationUrl = (url: URL) => url.pathname === "/api/operation";
 const isEventsUrl = (url: URL) => url.pathname === "/api/events";
 /** Chromium's console line for a session subscription no daemon was listening to accept. */
@@ -643,6 +653,54 @@ const stackRowsOf = (page: Page) =>
     );
 const hasFocus = (locator: ReturnType<Page["locator"]>) =>
   locator.evaluate((element) => element === document.activeElement);
+
+/**
+ * A fresh session of the TS fixture (`mathFiles`) in its own repository, opened by `gyst` with
+ * `dirs` first on its PATH, where the session finds the navigation add-on; deleted after the test.
+ */
+async function navigationSession(name: string, ...dirs: string[]) {
+  const cwd = await gitProject(env, join(root, name), mathFiles.committed, mathFiles.edited);
+  const opened = succeeded(
+    await run(installed.bin, [], { cwd, env: launchEnv(env, ...dirs), timeout: 60_000 }),
+  );
+  const { link, id } = viewerLink(opened.stdout);
+  onTestFinished(() => gyst("session", "delete", "--session", id, "--request-id", randomUUID()));
+  const { snapshotId } = await gyst("session", "diff", "--session", id);
+  return { id, url: link, snapshot: (snapshotId as string).slice(0, 7) };
+}
+/** The navigation operations the page sends, in order. */
+const navigationOf = (page: Page) => {
+  const sent: any[] = [];
+  page.on("request", (request) => {
+    const operation = operationOf(request);
+    if (["navigation", "identifiers", "definition", "references"].includes(operation?.command))
+      sent.push(operation);
+  });
+  return sent;
+};
+/**
+ * Holds the page's next operation of `command` before it reaches gyst, until released; `sent`
+ * resolves once it was asked.
+ */
+async function holdNext(page: Page, command: string) {
+  const sent = Promise.withResolvers<void>();
+  const gate = Promise.withResolvers<void>();
+  let held = false;
+  await page.route(isOperationUrl, async (route) => {
+    if (held || route.request().postDataJSON()?.command !== command) return route.fallback();
+    held = true;
+    sent.resolve();
+    await gate.promise;
+    await route.fallback();
+  });
+  return { sent: sent.promise, release: () => gate.resolve() };
+}
+/** A peek's selector rows, each its title and place. */
+const optionsOf = (list: ReturnType<Page["locator"]>) => list.getByRole("option").allTextContents();
+/** The characters a peek's preview marks: the symbol or location selected. */
+const markedOf = (page: Page) =>
+  peekOf(page).locator("[data-peek-preview] [data-symbol]").allTextContents();
+const placeOf = (line: number, character: number) => `line ${line}, column ${character + 1}`;
 
 describe("installed gyst in a sandboxed browser", () => {
   let one: Launch;
@@ -3833,6 +3891,18 @@ describe("installed gyst in a sandboxed browser", () => {
     );
     await headingsAre(page, ["src/long.ts"]);
     await pane.getByText("export const line10 = 10;", { exact: true }).waitFor();
+    // Earlier code is read, never analysed: gd says so without asking gyst.
+    const asked = navigationOf(page);
+    await says(page, "long.ts:10 · new");
+    await keys(page, "g", "d");
+    await peekOf(page)
+      .getByText(
+        "Unavailable: semantic queries cover only the session's current snapshot, and this code is from an earlier one.",
+      )
+      .waitFor();
+    await keys(page, "Escape");
+    await peekOf(page).waitFor({ state: "detached" });
+    expect(asked).toEqual([]);
     await keys(page, "Backspace");
     await headingsAre(page, ["walk/a.ts", "walk/b.ts", "walk/c.ts", "walk/d.ts"]);
     await settled(page);
@@ -3842,6 +3912,267 @@ describe("installed gyst in a sandboxed browser", () => {
     for (const read of longReads)
       expect(read).toEqual(expect.objectContaining({ snapshotId, side: "new" }));
   }, 30_000);
+
+  it("follows a line's symbols to definitions and usages with gd, gr and a right-click on both sides, through Expand and nested Back, asking nothing until asked and never touching Viewed", async () => {
+    const session = await navigationSession("navigate", navigationBin);
+    const page = await newPage();
+    await page.setViewportSize({ width: 1400, height: 1200 });
+    const writes = viewedOf(page);
+    const asked = navigationOf(page);
+    await page.goto(session.url);
+    const pane = page.getByRole("main");
+    const files = ["src/crlf.ts", "src/math.ts", "src/use.ts"];
+    await headingsAre(page, files);
+    await page.getByRole("radio", { name: "Split", exact: true }).check();
+    await settled(page);
+    // Opening the diff analyses nothing.
+    expect(asked).toEqual([]);
+
+    // gd on use.ts's new line 2, held before it reaches gyst: Preparing, and review goes on.
+    await pane.getByText("export const three = plus(1, 2) + zero;", { exact: true }).click();
+    await says(page, "use.ts:2 · new");
+    const first = await holdNext(page, "identifiers");
+    await keys(page, "g", "d");
+    const peek = peekOf(page);
+    await peek.getByText("Preparing navigation…", { exact: true }).waitFor();
+    await first.sent;
+    await keys(page, "j");
+    await says(page, "use.ts:3 · new");
+    await keys(page, "k");
+    await says(page, "use.ts:2 · new");
+    first.release();
+
+    // Every identifier on the line, in a vertical selector beside a live preview.
+    const symbols = peek.getByRole("listbox", { name: "Symbols" });
+    await symbols.waitFor({ timeout: 60_000 });
+    expect(await optionsOf(symbols)).toEqual(
+      ["three", "plus", "zero"].map(
+        (word) => `Definition of ${word}${placeOf(2, at(newUse, 2, word).character)}`,
+      ),
+    );
+    expect(await peek.getAttribute("aria-label")).toBe(
+      `src/use.ts:2 · new side · snapshot ${session.snapshot}`,
+    );
+    await waitFor(() => hasFocus(symbols), "the symbols focused");
+    await waitFor(async () => (await markedOf(page)).join("") === "three", "three previewed");
+    await page.keyboard.press("j");
+    await waitFor(async () => (await markedOf(page)).join("") === "plus", "plus previewed");
+    // The peek spans the diff over the row it reserves under line 2, which line 3 follows.
+    const spacer = spacerOf(page);
+    await waitFor(async () => {
+      const [over, row, next] = await Promise.all([
+        peek.boundingBox(),
+        spacer.boundingBox(),
+        // The peek's preview shows the line too, above the diff's own copy.
+        pane.getByText("export const four = plus(three, 1);", { exact: true }).last().boundingBox(),
+      ]);
+      return (
+        over !== null &&
+        row !== null &&
+        next !== null &&
+        Math.abs(over.y - row.y) <= 1 &&
+        Math.abs(over.height - row.height) <= 1 &&
+        next.y >= row.y + row.height - 1
+      );
+    }, "the peek over its row under line 2");
+
+    // Enter asks: the alias's definition, labelled with its symbol, side and snapshot, and the
+    // project inputs it may lack.
+    await page.keyboard.press("Enter");
+    const definitions = peek.getByRole("listbox", { name: "Definitions" });
+    await definitions.waitFor({ timeout: 30_000 });
+    expect(await peek.getAttribute("aria-label")).toBe(
+      `Definition of plus · new side · snapshot ${session.snapshot}`,
+    );
+    expect(await optionsOf(definitions)).toEqual([
+      `src/math.ts${placeOf(3, at(newMath, 3, "add").character)}`,
+    ]);
+    await waitFor(async () => (await markedOf(page)).join("") === "add", "add previewed");
+    expect(
+      await peek.getByRole("note", { name: "Potentially incomplete" }).textContent(),
+    ).toContain("package.json declares packages, and installed packages are never captured");
+    await waitFor(() => hasFocus(definitions), "the definitions focused");
+
+    // Enter expands the location; gr there offers add's declaration parameters too.
+    await page.keyboard.press("Enter");
+    const identity = pane.getByRole("region", { name: "Captured file" });
+    await identity.waitFor();
+    expect(await identity.textContent()).toMatch(
+      /Captured · src\/math\.ts · new side · snapshot [0-9a-f]{7}/,
+    );
+    await headingsAre(page, ["src/math.ts"]);
+    await says(page, "math.ts:3 · new");
+    await keys(page, "g", "r");
+    await symbols.waitFor();
+    expect(await optionsOf(symbols)).toEqual(
+      ["add", "first", "second"].map(
+        (word) => `Usages of ${word}${placeOf(3, at(newMath, 3, word).character)}`,
+      ),
+    );
+    await waitFor(() => hasFocus(symbols), "the nested symbols focused");
+    await page.keyboard.press("j");
+    await page.keyboard.press("Enter");
+    const usages = peek.getByRole("listbox", { name: "Usages" });
+    await usages.waitFor();
+    expect(await optionsOf(usages)).toEqual([
+      `src/math.ts${placeOf(3, at(newMath, 3, "first").character)}`,
+      `src/math.ts${placeOf(4, at(newMath, 4, "first").character)}`,
+    ]);
+    await waitFor(() => hasFocus(usages), "the usages focused");
+    await page.keyboard.press("j");
+    await waitFor(
+      async () =>
+        (await peek.locator("[data-peek-preview] [data-target]").allTextContents()).join() ===
+        "4  return first + second;",
+      "line 4 previewed",
+    );
+
+    // Back returns to use.ts, its cursor and its definition peek, focused again.
+    await keys(page, "Backspace");
+    await headingsAre(page, files);
+    await says(page, "use.ts:2 · new");
+    await definitions.waitFor();
+    await waitFor(() => hasFocus(definitions), "the definitions focused again");
+
+    // A late answer to an ask left behind never lands.
+    await page.keyboard.press("Escape");
+    await peek.waitFor({ state: "detached" });
+    const late = await holdNext(page, "definition");
+    await keys(page, "g", "d");
+    await symbols.waitFor();
+    await waitFor(() => hasFocus(symbols), "the symbols focused");
+    await page.keyboard.press("Enter");
+    await late.sent;
+    await keys(page, "Escape");
+    await peek.waitFor({ state: "detached" });
+    await keys(page, "g", "r");
+    await symbols.waitFor();
+    await waitFor(() => hasFocus(symbols), "the symbols focused");
+    await page.keyboard.press("Enter");
+    await usages.waitFor();
+    late.release();
+    await settled(page);
+    expect(await peek.getAttribute("aria-label")).toBe(
+      `Usages of three · new side · snapshot ${session.snapshot}`,
+    );
+
+    // The old side asks the old side's text.
+    await keys(page, "Escape");
+    await peek.waitFor({ state: "detached" });
+    await keys(page, "h");
+    await says(page, "use.ts:2 · old");
+    await keys(page, "g", "r");
+    await symbols.waitFor({ timeout: 60_000 });
+    expect(await optionsOf(symbols)).toEqual(
+      ["three", "plus"].map(
+        (word) => `Usages of ${word}${placeOf(2, at(oldUse, 2, word).character)}`,
+      ),
+    );
+    await waitFor(() => hasFocus(symbols), "the old symbols focused");
+    await page.keyboard.press("j");
+    await page.keyboard.press("Enter");
+    await usages.waitFor();
+    expect(await peek.getAttribute("aria-label")).toBe(
+      `Usages of plus · old side · snapshot ${session.snapshot}`,
+    );
+    expect(await optionsOf(usages)).toEqual([
+      `src/use.ts${placeOf(1, at(oldUse, 1, "plus").character)}`,
+      `src/use.ts${placeOf(2, at(oldUse, 2, "plus").character)}`,
+    ]);
+
+    // A right-click on a symbol offers both of its queries, without the browser's menu.
+    await keys(page, "Escape");
+    await peek.waitFor({ state: "detached" });
+    await pane
+      .getByText("export const four = plus(three, 1);", { exact: true })
+      .getByText("plus", { exact: true })
+      .click({ button: "right" });
+    await says(page, "use.ts:3 · new");
+    await symbols.waitFor();
+    expect(await optionsOf(symbols)).toEqual(
+      ["Definition", "Usages"].map(
+        (query) => `${query} of plus${placeOf(3, at(newUse, 3, "plus").character)}`,
+      ),
+    );
+    await waitFor(() => hasFocus(symbols), "the right-clicked symbol's queries focused");
+    await page.keyboard.press("Enter");
+    await definitions.waitFor();
+    expect(await optionsOf(definitions)).toEqual([
+      `src/math.ts${placeOf(3, at(newMath, 3, "add").character)}`,
+    ]);
+    await page.keyboard.press("Escape");
+    await peek.waitFor({ state: "detached" });
+    await says(page, "0/3 hunks viewed in 3 files");
+    expect(writes).toEqual([]);
+    await settled(page);
+  }, 180_000);
+
+  it("offers the exact install command, Check again and Continue without navigation, and finds an npm install into the launch PATH with the same daemon", async () => {
+    const prefix = join(root, "navigation-prefix");
+    await mkdir(join(prefix, "bin"), { recursive: true });
+    const session = await navigationSession("install-navigation", join(prefix, "bin"));
+    const daemon = await daemonPid(data);
+    const page = await newPage();
+    await page.setViewportSize({ width: 1400, height: 1200 });
+    const writes = viewedOf(page);
+    const asked = navigationOf(page);
+    await page.goto(session.url);
+    const pane = page.getByRole("main");
+    await headingsAre(page, ["src/crlf.ts", "src/math.ts", "src/use.ts"]);
+    await pane.getByText("export const three = plus(1, 2) + zero;", { exact: true }).click();
+    await says(page, "use.ts:2 · new");
+    await keys(page, "g", "d");
+    const peek = peekOf(page);
+    const addon = peek.getByRole("group", { name: "Navigation add-on" });
+    await addon.waitFor({ timeout: 30_000 });
+    expect(await addon.locator("[data-install]").textContent()).toBe(navigationInstall);
+    expect(await addon.getByRole("status").textContent()).toBe(
+      "TS/JS navigation needs its optional add-on, which isn't on the PATH gyst was last opened from.",
+    );
+    const checkAgain = addon.getByRole("button", { name: "Check again" });
+    await waitFor(() => hasFocus(checkAgain), "Check again focused");
+    await checkAgain.click();
+    await addon.getByText("Checked again: no change yet.", { exact: false }).waitFor();
+
+    // Continue without navigation: the peek closes, and a right-click shows the browser's menu.
+    await addon.getByRole("button", { name: "Continue without navigation" }).click();
+    await peek.waitFor({ state: "detached" });
+    await statusLine(page)
+      .getByText("Continuing without navigation; gd and gr still ask when pressed.")
+      .waitFor();
+    const before = asked.length;
+    await pane
+      .getByText("export const four = plus(three, 1);", { exact: true })
+      .getByText("plus", { exact: true })
+      .click({ button: "right" });
+    await settled(page);
+    expect(await peek.count()).toBe(0);
+    expect(asked).toHaveLength(before);
+    await page.keyboard.press("Escape");
+
+    // gd asks again; an install into the launch PATH's existing directory is found by Check again.
+    await keys(page, "g", "d");
+    await addon.waitFor();
+    await npm(root, "install", "--global", "--prefix", prefix, navigation.tarball);
+    await addon.getByRole("button", { name: "Check again" }).click();
+    const symbols = peek.getByRole("listbox", { name: "Symbols" });
+    await symbols.waitFor({ timeout: 60_000 });
+    await waitFor(() => hasFocus(symbols), "the symbols focused");
+    await page.keyboard.press("j");
+    await page.keyboard.press("Enter");
+    const definitions = peek.getByRole("listbox", { name: "Definitions" });
+    await definitions.waitFor({ timeout: 30_000 });
+    expect(await optionsOf(definitions)).toEqual([
+      `src/math.ts${placeOf(3, at(newMath, 3, "add").character)}`,
+    ]);
+    const rechecks = asked.filter(
+      (operation) => operation.command === "navigation" && operation.recheck,
+    );
+    expect(rechecks).toHaveLength(2);
+    expect(await daemonPid(data)).toBe(daemon);
+    expect(writes).toEqual([]);
+    await settled(page);
+  }, 300_000);
 
   it("refreshes on R, keeping surviving work in place and changed guidance Outdated beside its earlier code", async () => {
     git("branch", "-f", "peek", "walk");
