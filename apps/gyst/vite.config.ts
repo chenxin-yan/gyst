@@ -20,11 +20,16 @@ export default defineConfig({
           output: ["README.md", "LICENSE"],
         },
       },
-      // crust.include only takes directories inside this package, so the viewer build is copied in.
+      // crust.include only takes directories inside this package, so the viewer build and its
+      // standalone walkthrough reader are copied in.
       "web-ui": {
-        command: "rm -rf dist/web-ui && mkdir -p dist && cp -R ../web/dist dist/web-ui",
+        command:
+          "rm -rf dist/web-ui dist/export && mkdir -p dist && cp -R ../web/dist dist/web-ui && cp -R ../web/dist-export dist/export",
         dependsOn: ["@gyst/web#build:task"],
-        cache: { input: ["../web/dist/**"], output: ["dist/web-ui/**"] },
+        cache: {
+          input: ["../web/dist/**", "../web/dist-export/**"],
+          output: ["dist/web-ui/**", "dist/export/**"],
+        },
       },
       "build:task": {
         command: "crust build",
@@ -36,6 +41,7 @@ export default defineConfig({
             "src/**",
             "tsconfig.json",
             "dist/web-ui/**",
+            "dist/export/**",
             ...coreInputs,
             "!.crust/**",
           ],

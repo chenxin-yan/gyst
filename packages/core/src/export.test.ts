@@ -5,6 +5,7 @@ import {
   disclosedSides,
   exportPlanOf,
   exportSnapshotIds,
+  provenanceLines,
   readinessProblems,
   type Walkthrough,
   WalkthroughExportSchema,
@@ -289,5 +290,66 @@ describe("WalkthroughExportSchema", () => {
       decode({ ...stamp, walkthrough: { ...walkthrough, threads: [] }, contents }),
     ).toThrow();
     expect(() => decode({ ...stamp, walkthrough, contents, repoRoot: "/x" })).toThrow();
+  });
+});
+
+describe("provenanceLines", () => {
+  const [base, head, mergeBase] = ["a", "b", "c"].map((c) => c.repeat(40)) as [
+    string,
+    string,
+    string,
+  ];
+  it("states each scope's resolved identities, and never a commit for captured working-tree bytes", () => {
+    expect(
+      provenanceLines(
+        { kind: "range", range: "main..topic" },
+        {
+          kind: "range",
+          base,
+          head,
+          mergeBase: null,
+        },
+      ),
+    ).toEqual(["Scope: Git range main..topic", `Old side: ${base}`, `New side: ${head}`]);
+    expect(
+      provenanceLines(
+        { kind: "range", range: "main...topic" },
+        {
+          kind: "range",
+          base,
+          head,
+          mergeBase,
+        },
+      ),
+    ).toEqual([
+      "Scope: Git range main...topic",
+      `Old side: merge base ${mergeBase} of ${base}`,
+      `New side: ${head}`,
+    ]);
+    expect(
+      provenanceLines(
+        { kind: "pr", repository: "acme/widgets", number: 7 },
+        {
+          kind: "pr",
+          base,
+          head,
+          mergeBase,
+        },
+      ),
+    ).toEqual([
+      "Scope: GitHub PR acme/widgets#7",
+      `Old side: merge base ${mergeBase} of base ${base}`,
+      `New side: head ${head}`,
+    ]);
+    expect(provenanceLines({ kind: "uncommitted" }, { kind: "uncommitted", head })).toEqual([
+      "Scope: uncommitted changes, untracked files included",
+      `Old side: HEAD ${head}`,
+      "New side: the working tree as captured, which no commit identifies",
+    ]);
+    expect(provenanceLines({ kind: "uncommitted" }, { kind: "uncommitted", head: null })).toEqual([
+      "Scope: uncommitted changes, untracked files included",
+      "Old side: an empty baseline; the repository had no commits",
+      "New side: the working tree as captured, which no commit identifies",
+    ]);
   });
 });
