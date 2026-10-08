@@ -29,6 +29,7 @@ import {
   Stream,
 } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
+import { createHash } from "node:crypto";
 import { dirname, join } from "node:path";
 import { CapturedContent } from "./content.ts";
 import * as Worktree from "./worktree.ts";
@@ -184,6 +185,19 @@ const eligibleText = <E>(bytes: Stream.Stream<Uint8Array, E>) => {
   );
 };
 
+/** The blob id and size `putBlob` would give these eligible bytes, without storing them. */
+const measured = (bytes: Stream.Stream<Uint8Array, BadArgs>) =>
+  Effect.suspend(() => {
+    const hash = createHash("sha256");
+    let size = 0;
+    return Stream.runForEach(eligibleText(bytes), (chunk) =>
+      Effect.sync(() => {
+        hash.update(chunk);
+        size += chunk.byteLength;
+      }),
+    ).pipe(Effect.map(() => ({ blob: hash.digest("hex"), size })));
+  });
+
 /**
  * The optional per-snapshot quota of captured text, each distinct blob counted once. There is no
  * default. Read when the daemon starts, from its environment; an invalid value fails each capture,
@@ -199,20 +213,16 @@ const snapshotQuota = Config.option(Config.ByteSize("GYST_SNAPSHOT_QUOTA")).pipe
   ),
 );
 
-/** A file whose sides are the same captured text, with no mode change or rename: supporting. */
-const unchanged = ({ old, new: current, modeChange, renamedFrom }: ManifestFile) =>
-  modeChange === undefined &&
-  renamedFrom === undefined &&
-  old.kind === "text" &&
-  current.kind === "text" &&
-  old.blob === current.blob;
-
 /**
- * `files` within a snapshot quota of `limit` bytes, each distinct blob counted once. Every changed
- * file is required whole, else the capture fails; unchanged supporting files are then kept in path
- * order while they fit, and each one that does not is marked `quota` on both sides.
+ * `files` within a snapshot quota of `limit` bytes, each distinct blob counted once. The `reviewed`
+ * files are required whole, else the capture fails; every other file's text is then kept in path
+ * order while it fits, and each of its text sides that does not is marked `quota`.
  */
-const withinQuota = (files: ReadonlyArray<ManifestFile>, limit: number) => {
+const withinQuota = (
+  files: ReadonlyArray<ManifestFile>,
+  reviewed: ReadonlySet<string>,
+  limit: number,
+) => {
   const counted = new Set<string>();
   let used = 0;
   /** The bytes of the file's blobs not counted yet. */
@@ -228,21 +238,22 @@ const withinQuota = (files: ReadonlyArray<ManifestFile>, limit: number) => {
       used += size;
     }
   };
-  for (const file of files) if (!unchanged(file)) count(costOf(file));
+  for (const file of files) if (reviewed.has(file.path)) count(costOf(file));
   if (used > limit)
     return Effect.fail(
       new SourceUnavailable({
-        message: `the changed files need ${used} bytes of captured text, more than GYST_SNAPSHOT_QUOTA (${limit} bytes) allows; raise or unset it and start gyst again, or review a smaller scope`,
+        message: `the reviewed files need ${used} bytes of captured text, more than GYST_SNAPSHOT_QUOTA (${limit} bytes) allows; raise or unset it and start gyst again, or review a smaller scope`,
         detail: { reason: "quota_exceeded" },
       }),
     );
   const omitted: ContentSide = { kind: "unavailable", reason: "quota" };
+  const left = (side: ContentSide) => (side.kind === "text" ? omitted : side);
   return Effect.succeed(
     files.map((file): ManifestFile => {
-      if (!unchanged(file)) return file;
+      if (reviewed.has(file.path)) return file;
       const cost = costOf(file);
       if (used + [...cost.values()].reduce((sum, size) => sum + size, 0) > limit)
-        return { ...file, old: omitted, new: omitted };
+        return { ...file, old: left(file.old), new: left(file.new) };
       count(cost);
       return file;
     }),
@@ -269,8 +280,8 @@ export class Git extends Context.Service<
      * The whole recorded scope as an unpublished manifest: endpoints resolved once, every eligible
      * old/new project file's exact bytes committed to `CapturedContent`, and text hunks diffed from
      * those committed bytes. Refuses (retryably) when the working tree changes during capture.
-     * Under `GYST_SNAPSHOT_QUOTA` (see `withinQuota`) the changed files must fit or it fails, and
-     * supporting files left out are recorded as `quota`; their bytes are reclaimed later.
+     * Under `GYST_SNAPSHOT_QUOTA` (see `withinQuota`) the reviewed files must fit or it fails, and
+     * other text left out is recorded as `quota`, its bytes never stored.
      * `onProgress` hears real counts (see `CaptureProgressSchema`): each phase's first and last,
      * and at most one every 100 ms between.
      */
@@ -596,9 +607,21 @@ export class Git extends Context.Service<
         return { paths, submodules, skipped };
       });
 
-      /** `read.bytes` counts the text bytes each capture read into content. */
-      const stored = (bytes: Stream.Stream<Uint8Array, BadArgs>, read: { bytes: number }) =>
-        content.putBlob(eligibleText(bytes)).pipe(
+      /**
+       * `read.bytes` counts the text bytes each capture read. With `unstored` the bytes are only
+       * measured, and kept there by blob to be read again and stored once a quota admits them.
+       */
+      const stored = (
+        bytes: Stream.Stream<Uint8Array, BadArgs>,
+        read: { bytes: number },
+        unstored?: Map<string, Stream.Stream<Uint8Array, BadArgs>>,
+      ) =>
+        (unstored === undefined
+          ? content.putBlob(eligibleText(bytes))
+          : measured(bytes).pipe(
+              Effect.tap(({ blob }) => Effect.sync(() => void unstored.set(blob, bytes))),
+            )
+        ).pipe(
           Effect.map(({ blob, size }): ContentSide => {
             read.bytes += size;
             return { kind: "text", blob, size };
@@ -647,7 +670,12 @@ export class Git extends Context.Service<
           ),
         );
 
-      const treeSide = (root: string, objects: Map<string, ContentSide>, read: { bytes: number }) =>
+      const treeSide = (
+        root: string,
+        objects: Map<string, ContentSide>,
+        read: { bytes: number },
+        unstored: Map<string, Stream.Stream<Uint8Array, BadArgs>> | undefined,
+      ) =>
         Effect.fn("Git.treeSide")(function* (entry: TreeEntry | undefined) {
           if (entry === undefined) return { side: { kind: "absent" } } satisfies CapturedSide;
           if (entry.mode === "160000")
@@ -656,7 +684,7 @@ export class Git extends Context.Service<
             return { side: { kind: "unavailable", reason: "symlink" } } satisfies CapturedSide;
           let side = objects.get(entry.oid);
           if (side === undefined) {
-            side = yield* stored(objectBytes(root, entry.oid), read);
+            side = yield* stored(objectBytes(root, entry.oid), read, unstored);
             objects.set(entry.oid, side);
           }
           return {
@@ -827,9 +855,14 @@ export class Git extends Context.Service<
         onProgress: (progress: CaptureProgress) => Effect.Effect<void>,
         given: Generated,
       ) {
+        const limit = yield* Effect.fromResult(quota);
+        // Under a quota each side is only measured until the quota admits it, so text it leaves
+        // out never occupies the content store.
+        const unstored =
+          limit._tag === "Some" ? new Map<string, Stream.Stream<Uint8Array, BadArgs>>() : undefined;
         const objects = new Map<string, ContentSide>();
         const read = { bytes: 0 };
-        const fromTree = treeSide(root, objects, read);
+        const fromTree = treeSide(root, objects, read, unstored);
         let reported = Number.NEGATIVE_INFINITY;
         const report = Effect.fnUntraced(function* (
           phase: CaptureProgress["phase"],
@@ -942,7 +975,7 @@ export class Git extends Context.Service<
             const current: CapturedSide =
               entry.kind === "file"
                 ? {
-                    side: yield* stored(Worktree.read(root, path, entry), read),
+                    side: yield* stored(Worktree.read(root, path, entry), read, unstored),
                     mode: entry.executable ? "100755" : "100644",
                   }
                 : entry.kind === "symlink"
@@ -1030,9 +1063,21 @@ export class Git extends Context.Service<
           if (textual && !same && !renamed.has(path))
             diffed.push({ path, old: old.side, new: current.side });
         }
-        const limit = yield* Effect.fromResult(quota);
+        // A rename is not reviewed, but its record names its bytes, so it is required too.
+        const reviewed = new Set([...diffed.map(({ path }) => path), ...renamed]);
         const captured =
-          limit._tag === "Some" ? yield* withinQuota(files, Number(limit.value)) : files;
+          limit._tag === "Some" ? yield* withinQuota(files, reviewed, Number(limit.value)) : files;
+        if (unstored)
+          for (const file of captured)
+            for (const side of [file.old, file.new]) {
+              if (side.kind !== "text" || !unstored.has(side.blob)) continue;
+              const bytes = unstored.get(side.blob)!;
+              unstored.delete(side.blob);
+              // Read again: a working-tree file edited since it was measured fails the capture.
+              const again = yield* stored(bytes, { bytes: 0 });
+              if (again.kind !== "text" || again.blob !== side.blob)
+                return yield* Worktree.changedDuringCapture(file.path);
+            }
         const hunks = [];
         yield* report("diff", 0, diffed.length);
         for (const [index, { path, old, new: current }] of diffed.entries()) {

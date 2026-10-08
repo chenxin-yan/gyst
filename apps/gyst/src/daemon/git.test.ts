@@ -892,7 +892,7 @@ describe("Git.capture", () => {
     expect(range.progress.at(-1)).toMatchObject({ phase: "diff", done: 1, total: 1 });
   });
 
-  it("keeps changed files whole under a snapshot quota and leaves out supporting files beyond it in path order", async () => {
+  it("keeps reviewed files whole under a snapshot quota and leaves out other text beyond it in path order, never storing it", async () => {
     const cwd = await repo("quota");
     const write = (path: string, bytes: number, fill = path[0]!) =>
       writeFile(join(cwd, path), fill.repeat(bytes));
@@ -900,35 +900,41 @@ describe("Git.capture", () => {
     await write("b-large.txt", 60);
     await write("c-small.txt", 10);
     await write("d-small.txt", 10);
+    await write("e-mode.txt", 10);
+    await write("f-moved.txt", 5);
     await write("same-as-a.txt", 10, "a");
     git(cwd, "add", ".");
     git(cwd, "commit", "-qm", "supporting");
-    // Changed: tracked.txt (4 bytes before, 5 after) and an added 30-byte file.
+    // Reviewed: tracked.txt (4 bytes before, 5 after) and an added 30-byte file. A mode change
+    // is not reviewed; a rename is not either, but its record names its 5 bytes.
     await writeFile(join(cwd, "tracked.txt"), "two!\n");
     await write("new.txt", 30);
-    const quota = (size: string) =>
+    await chmod(join(cwd, "e-mode.txt"), 0o755);
+    await rm(join(cwd, "f-moved.txt"));
+    await write("g-moved.txt", 5, "f");
+    const quota = (size: string, wrap?: (real: ContentService) => ContentService) =>
       run(
         Effect.gen(function* () {
           const manifest = yield* Git.use((g) => g.capture(cwd, { kind: "uncommitted" }));
           yield* CapturedContent.use((c) => c.putManifest(manifest));
           return manifest;
         }),
-        undefined,
+        wrap,
         undefined,
         { GYST_SNAPSHOT_QUOTA: size },
       );
-    // 39 bytes changed, so 11 are left: a-small fits, then neither b-large nor the small files
+    // 44 bytes are required, so 11 are left: a-small fits, then neither b-large nor the files
     // after it, while same-as-a costs nothing more, its bytes already counted.
-    const manifest = await quota("50 B");
+    const manifest = await quota("55 B");
     const omitted = { kind: "unavailable", reason: "quota" };
-    const sides = Object.fromEntries(
-      manifest.files.map(({ path, old, new: current }) => [path, [old.kind, current]]),
-    );
-    expect(Object.keys(sides)).toEqual([
+    expect(manifest.files.map(({ path }) => path)).toEqual([
       "a-small.txt",
       "b-large.txt",
       "c-small.txt",
       "d-small.txt",
+      "e-mode.txt",
+      "f-moved.txt",
+      "g-moved.txt",
       "new.txt",
       "same-as-a.txt",
       "tracked.txt",
@@ -937,16 +943,50 @@ describe("Git.capture", () => {
     expect(fileOf(manifest, "same-as-a.txt")?.new.kind).toBe("text");
     for (const path of ["b-large.txt", "c-small.txt", "d-small.txt"])
       expect(fileOf(manifest, path)).toEqual({ path, old: omitted, new: omitted });
+    expect(fileOf(manifest, "e-mode.txt")).toEqual({
+      path: "e-mode.txt",
+      old: omitted,
+      new: omitted,
+      modeChange: { old: "100644", new: "100755" },
+    });
+    expect(fileOf(manifest, "g-moved.txt")).toMatchObject({
+      new: { kind: "text" },
+      renamedFrom: "f-moved.txt",
+    });
     expect(hunkFiles(manifest)).toEqual(["new.txt", "tracked.txt"]);
     expect(await bytesOf(fileOf(manifest, "tracked.txt")?.new)).toEqual(Buffer.from("two!\n"));
+    // What the quota left out never reached the content store.
+    expect(await blobs()).not.toContain(sha256("b".repeat(60)));
+    expect(await blobs()).not.toContain(sha256("e".repeat(10)));
+
+    // A working-tree file edited after it was measured, before it is stored, fails the capture.
+    let edited = false;
+    const editing = await run(
+      Effect.flip(Git.use((g) => g.capture(cwd, { kind: "uncommitted" }))),
+      (real) => ({
+        ...real,
+        putBlob: (bytes) =>
+          Effect.promise(async () => {
+            if (!edited) await write("new.txt", 31);
+            edited = true;
+          }).pipe(Effect.andThen(real.putBlob(bytes))),
+      }),
+      undefined,
+      { GYST_SNAPSHOT_QUOTA: "55 B" },
+    );
+    expect(editing).toMatchObject({ _tag: "bad_args", detail: { path: "new.txt" } });
+    await write("new.txt", 30);
+
     // Without a quota every file is captured.
-    expect((await capture(cwd)).files.every(({ new: side }) => side.kind === "text")).toBe(true);
+    expect((await capture(cwd)).files.every(({ new: side }) => side.kind !== "unavailable")).toBe(
+      true,
+    );
 
     const refused = await run(
       Effect.flip(Git.use((g) => g.capture(cwd, { kind: "uncommitted" }))),
       undefined,
       undefined,
-      { GYST_SNAPSHOT_QUOTA: "38 B" },
+      { GYST_SNAPSHOT_QUOTA: "43 B" },
     );
     expect(refused).toMatchObject({
       _tag: "source_unavailable",

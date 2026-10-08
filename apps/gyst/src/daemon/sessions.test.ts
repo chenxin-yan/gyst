@@ -3798,6 +3798,10 @@ describe("Sessions captured reads over real captures", () => {
           });
           const omitted = { kind: "unavailable", reason: "quota" };
           expect(listed.files).toContainEqual({ path: "big.ts", old: omitted, new: omitted });
+          // Left out before it was stored: it needed no space at all.
+          expect(yield* Effect.promise(() => onDisk("blobs"))).not.toContain(
+            sha256("x".repeat(1000)),
+          );
           expect(
             yield* code({
               session: session.id,
