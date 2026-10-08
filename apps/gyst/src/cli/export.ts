@@ -3,6 +3,7 @@
 import {
   BadArgs,
   type ExportPreviewPayload,
+  notCaptured,
   type PinnedSide,
   provenanceLines,
   SourceUnavailable,
@@ -16,7 +17,7 @@ const identity = ({ content }: PinnedSide) =>
     ? `sha256 ${content.blob} (${content.size} bytes)`
     : content.kind === "absent"
       ? "absent"
-      : `not captured: ${content.reason}`;
+      : `not captured: ${notCaptured[content.reason]}`;
 
 // eslint-disable-next-line no-control-regex -- exactly the controls to show escaped
 const terminalControls = /[\x00-\x1f\x7f-\x9f\u061c\u200e\u200f\u2028-\u202e\u2066-\u2069]/g;

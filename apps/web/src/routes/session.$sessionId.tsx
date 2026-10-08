@@ -3,6 +3,7 @@ import {
   type Draft,
   type FilesPayload,
   type Hunk,
+  notCaptured,
   pullRequestUrlOf,
   type SessionSummary,
   type StatusPayload,
@@ -83,7 +84,6 @@ import {
 import {
   type CodeRead,
   linesOf,
-  notCaptured,
   type RangeRead,
   readRange,
   referenceAvailability,
