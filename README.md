@@ -171,7 +171,8 @@ Gyst reclaims, in the background, only captured content that nothing needs any m
 It never removes content a read, capture or another session still uses, nor what a saved
 session file this version cannot read names. That is separate from the viewer's and
 navigation's caches (loaded code, navigation's working copies), which are rebuilt from the
-saved content whenever they are dropped.
+saved content whenever they are dropped; a capture short of space drops navigation's copies that
+no query is using.
 
 There is no built-in size limit. To bound what one snapshot keeps, set `GYST_SNAPSHOT_QUOTA` to
 a size with a unit, such as `500 MiB`, in the environment gyst's daemon starts from:
@@ -194,8 +195,9 @@ When a capture fails:
 
 - `quota_exceeded`: raise or unset `GYST_SNAPSHOT_QUOTA` and restart the daemon, or review a
   smaller scope.
-- `storage_full`: the data directory's disk is full. Gyst has already reclaimed what nothing needs
-  and tried once more; free space there, or delete sessions you no longer need, then retry.
+- `storage_full`: the data directory's disk is full. Gyst has already dropped unused navigation
+  copies, reclaimed what nothing needs and tried once more; free space there, or delete sessions
+  you no longer need, then retry.
 
 A failed capture, refresh or cleanup leaves every saved session as it was.
 
