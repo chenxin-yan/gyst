@@ -14,7 +14,7 @@ import type { CapturedRange } from "./guidance.ts";
 import { setViewed } from "./human-action.ts";
 import { type Session, SessionSchema } from "./session.ts";
 import { statusOf } from "./status.ts";
-import type { Thread, ThreadCode } from "./thread.ts";
+import { type Thread, type ThreadCode, ThreadsPayloadSchema } from "./thread.ts";
 
 const LATER = "2026-02-02T00:00:00.000Z";
 const SNAPSHOT = "snapshot";
@@ -659,6 +659,27 @@ describe("pickUp", () => {
     expect(
       pick(picked.session!, "pending", "p2").result.threads.flatMap(({ unread }) => unread),
     ).toEqual([replied.message, started.message]);
+  });
+
+  it("leaves out a thread whose every message arrived since it was asked for", () => {
+    const invoked = two();
+    const second = invoked.threads[1]!;
+    // While its code was read: the second thread's only message was replaced by a later one.
+    const replied = post(invoked, { kind: "thread", thread: second.id }, "B, instead?");
+    const now = done(replied.session, "x", {
+      command: "retract",
+      message: second.messages[0]!.id,
+      seen: { markdown: "B?", kind: "change" },
+    }).session!;
+    const picked = Result.getOrThrow(
+      pickUp(now, threadsRequest("open", "o"), code(now), LATER, invoked),
+    );
+    expect(picked.result.threads.map(({ id }) => id)).toEqual([invoked.threads[0]!.id]);
+    expect(Schema.decodeUnknownSync(ThreadsPayloadSchema)(picked.result)).toEqual(picked.result);
+    expect(Schema.decodeUnknownSync(SessionSchema)(picked.session)).toEqual(picked.session);
+    expect(
+      pick(picked.session!, "pending", "p").result.threads.flatMap(({ unread }) => unread),
+    ).toEqual([replied.message]);
   });
 
   it("skips resolved threads until reopened, and recovers open work after a crash", () => {

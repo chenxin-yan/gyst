@@ -135,8 +135,11 @@ export function pickUp(
     });
     // Its Pending messages of then were all deleted since: nothing is left to pick up.
     if (request.mode === "pending" && unread.length === 0) continue;
+    const history = messages.filter((message) => !later(message));
+    // Every message it held then was deleted since, so all it has arrived since and waits.
+    if (history.length === 0) continue;
     thread.messages = messages;
-    const returned = { ...thread, messages: messages.filter((message) => !later(message)) };
+    const returned = { ...thread, messages: history };
     const earlier = new Map(
       threadAnchorsOf(returned)
         .slice(1)
