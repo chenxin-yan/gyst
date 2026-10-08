@@ -584,10 +584,38 @@ export function ThreadCard(props: {
 }
 
 /**
+ * The line the human pastes into their agent's harness to have Pending messages answered: the
+ * workflow and this exact session, nothing else. Gyst never starts or wakes the agent itself.
+ */
+function RespondInstruction(props: { sessionId: string }) {
+  const instruction = `/gyst-respond ${props.sessionId}`;
+  const text = useRef<HTMLElement>(null);
+  const [copied, setCopied] = useState(false);
+  // Where the clipboard is unavailable or refused, select the line for the human to copy.
+  const select = () => {
+    if (text.current) window.getSelection()?.selectAllChildren(text.current);
+  };
+  const copy = () => {
+    if (!navigator.clipboard) return select();
+    navigator.clipboard.writeText(instruction).then(() => setCopied(true), select);
+  };
+  return (
+    <div data-respond {...stylex.props(styles.row)}>
+      <span {...stylex.props(styles.meta)}>Ask your agent:</span>
+      <code ref={text} {...stylex.props(styles.instruction)}>
+        {instruction}
+      </code>
+      <PillButton onClick={copy}>{copied ? "Copied" : "Copy"}</PillButton>
+    </div>
+  );
+}
+
+/**
  * C: every conversation, open ones first and resolved ones after, where resolved threads are
  * reopened and threads whose code is no longer shown are read; and the drafts not being written.
  */
 export function CommentsList(props: {
+  sessionId: string;
   threads: readonly ThreadEntry[];
   drafts: readonly Draft[];
   snapshotId: string;
@@ -608,6 +636,7 @@ export function CommentsList(props: {
             Close
           </button>
         </div>
+        <RespondInstruction sessionId={props.sessionId} />
         {threads.length === 0 && props.drafts.length === 0 && (
           <p {...stylex.props(styles.meta)}>No comments yet. Press c on code to start one.</p>
         )}
@@ -743,6 +772,7 @@ const styles = stylex.create({
   list: { display: "grid", gap: "8px", padding: "20px 22px" },
   listHead: { display: "flex", alignItems: "center", justifyContent: "space-between" },
   title: { fontSize: "14px", fontWeight: 500 },
+  instruction: { fontFamily: theme["--mono"], fontSize: "12px", userSelect: "all" },
   subtitle: { marginTop: "6px", fontSize: "13px", fontWeight: 500, color: theme.muted },
   close: {
     height: "28px",

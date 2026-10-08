@@ -43,8 +43,9 @@ npm install -g @gyst/cli
    /gyst-respond <session-id>
    ```
 
-   The agent answers what is Pending at that moment, fixes only what you marked Change
-   request, and stops; comments you send later wait for the next `/gyst-respond`.
+   The viewer's Comments list (`C`) has this line, with the session id, ready to copy. The
+   agent answers what is Pending at that moment, fixes only what you marked Change request,
+   and stops; comments you send later wait for the next `/gyst-respond`.
 
 This version ships the headless session CLI, background daemon, agent skills and a
 browser viewer, served by the daemon, that shows each saved session's captured diff. The terminal review viewer
