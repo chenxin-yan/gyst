@@ -44,7 +44,6 @@ import {
   oldUse,
   packageJson,
   span,
-  writeFiles,
 } from "./navigation-project.ts";
 
 const navigation = inject("installedNavigation");
@@ -489,7 +488,7 @@ describe("TS/JS navigation through the installed add-on", () => {
         "src/secret.ts": reach,
       },
     );
-    await writeFiles(box.data, { "secret/hidden.ts": `export const secret = "${secret}";\n` });
+    await write(box.data, { "secret/hidden.ts": `export const secret = "${secret}";\n` });
     const viewer = await launchViewer([], { cwd, env: launchEnv(box.env, navigationBin) });
     const { ids, status, definition, references } = await queries(viewer);
 
@@ -507,7 +506,7 @@ describe("TS/JS navigation through the installed add-on", () => {
     }
     expect(engines(navigation.prefix)).toHaveLength(1);
 
-    await writeFiles(cwd, {
+    await write(cwd, {
       "src/use.ts": newUse.replace(", zero", "").replace("(1, 2)", "(2, 2)"),
     });
     const refreshed = json(
@@ -552,7 +551,7 @@ describe("TS/JS navigation through the installed add-on", () => {
       { "src/math.ts": newMath, "src/use.ts": newUse },
     );
     git(box, cwd, "commit", "-qam", "move add");
-    await writeFiles(cwd, { "src/use.ts": `${newUse}export const five = plus(four, 1);\n` });
+    await write(cwd, { "src/use.ts": `${newUse}export const five = plus(four, 1);\n` });
     const viewer = await launchViewer([], { cwd, env: launchEnv(box.env, navigationBin) });
     // Each session finds the add-on on the PATH it was last opened with, which a restarted daemon
     // keeps: the commands that restart it below open nothing and have no add-on on their PATH.
