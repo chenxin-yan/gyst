@@ -77,6 +77,14 @@ let pullRequestEdit: Partial<PullRequest>;
 let pullRequestCaptureFailure: SourceUnavailable | undefined;
 let saveFails: boolean;
 let removeFails: boolean;
+/**
+ * What survives a machine crash: the session files and receipts as of the last directory sync,
+ * which every completed save performs. A removal alone is not synced.
+ */
+let durable: { files: Map<string, Session>; deleteReceipts: ReadonlyArray<DeleteReceipt> };
+/** When set, the next save or receipt write lands but the daemon stops before syncing it. */
+let stopBeforeDirectorySync: boolean;
+let syncFails: boolean;
 /** Session files this version cannot read, as `SessionStore.loadSaved` returns them. */
 let undecodable: string[];
 let nextId: number;
@@ -202,6 +210,21 @@ const writeFailure = PlatformError.systemError({
   method: "writeFile",
 });
 
+const directorySynced = Effect.sync(() => {
+  durable = { files: new Map(files), deleteReceipts };
+});
+/** A rename's directory sync, or a daemon stopped just before it. */
+const synced = Effect.suspend(() => {
+  if (!stopBeforeDirectorySync) return directorySynced;
+  stopBeforeDirectorySync = false;
+  return Effect.die("stopped before syncing the directory");
+});
+/** Restarts the machine: only what was durable survives. */
+const crash = () => {
+  files = new Map(durable.files);
+  deleteReceipts = durable.deleteReceipts;
+};
+
 const store = Layer.succeed(SessionStore, {
   loadAll: Effect.sync(() => [...files.values()]),
   loadSaved: Effect.sync(() => ({ sessions: [...files.values()], undecodable })),
@@ -211,7 +234,7 @@ const store = Layer.succeed(SessionStore, {
       const write = Effect.sync(() => {
         commits.push(`session ${session.id}`);
         files.set(session.id, session);
-      });
+      }).pipe(Effect.andThen(synced));
       const held = saveGate;
       saveGate = undefined;
       return held
@@ -227,13 +250,14 @@ const store = Layer.succeed(SessionStore, {
       : Effect.sync(() => {
           files.delete(id);
         }),
+  syncSaved: Effect.suspend(() => (syncFails ? Effect.fail(writeFailure) : directorySynced)),
   loadDeleteReceipts: Effect.sync(() => deleteReceipts),
   saveDeleteReceipts: (receipts) =>
     saveFails
       ? Effect.fail(writeFailure)
       : Effect.sync(() => {
           deleteReceipts = receipts;
-        }),
+        }).pipe(Effect.andThen(synced)),
   loadLaunchPaths: Effect.succeed({}),
   saveLaunchPaths: () => Effect.void,
 });
@@ -362,6 +386,9 @@ beforeEach(() => {
   files = new Map([[persisted.id, persisted]]);
   undecodable = [];
   deleteReceipts = [];
+  durable = { files: new Map(files), deleteReceipts };
+  stopBeforeDirectorySync = false;
+  syncFails = false;
   captureCalls = [];
   githubCalls = [];
   headRefOid = "1".repeat(40);
@@ -2661,6 +2688,7 @@ describe("Sessions captured reads over real captures", () => {
   // Sessions here are real captures; the shared fixture names no captured snapshot.
   beforeEach(() => {
     files.delete(persisted.id);
+    durable.files.delete(persisted.id);
     outOfSpace = 0;
   });
   /** Real Git capture into real captured content under a private data dir. */
@@ -3790,6 +3818,77 @@ describe("Sessions captured reads over real captures", () => {
       expect(await onDisk("blobs")).toContain(sha256("f second\n"));
       expect(await onDisk("snapshots")).toContain(`${second.snapshotId}.json`);
       await runReal(remove(first.id, "delete-apart").pipe(Effect.andThen(reclaim)));
+    });
+
+    it("makes a stopped daemon's last save durable before reclaiming what it replaced, or reclaims nothing", async () => {
+      const cwd = await repo("stopped", { "s.ts": "s\n" });
+      await writeFile(join(cwd, "s.ts"), "s first\n");
+      const { session } = await runReal(
+        Sessions.use((s) => s.open({ command: "open", cwd, scope: uncommitted })),
+      );
+      const first = files.get(session.id)!;
+      await writeFile(join(cwd, "s.ts"), "s second\n");
+      // The refresh's save is renamed into place, then its daemon stops before syncing it.
+      stopBeforeDirectorySync = true;
+      expect(Exit.isFailure(await runReal(Effect.exit(refreshNow(session.id))))).toBe(true);
+      const second = files.get(session.id)!;
+      expect(second.snapshotId).not.toBe(first.snapshotId);
+      expect(durable.files.get(session.id)).toEqual(first);
+      // A successor that cannot make it durable reclaims nothing.
+      syncFails = true;
+      expect(await runReal(Effect.flip(reclaim))).toMatchObject({ _tag: "PlatformError" });
+      expect(await onDisk("snapshots")).toContain(`${first.snapshotId}.json`);
+      syncFails = false;
+      await runReal(reclaim);
+      expect(await onDisk("snapshots")).not.toContain(`${first.snapshotId}.json`);
+      // The machine crashes: the session the reclaim respected survives, and so does its content.
+      crash();
+      expect(files.get(session.id)).toEqual(second);
+      expect(
+        await runReal(
+          code({ session: session.id, snapshotId: second.snapshotId, file: "s.ts", side: "new" }),
+        ),
+      ).toMatchObject({ content: { text: "s second\n" } });
+      await runReal(remove(session.id, "delete-stopped").pipe(Effect.andThen(reclaim)));
+    });
+
+    it("finishes a stopped daemon's deletion only once its receipt is durable", async () => {
+      const cwd = await repo("stopped-delete", { "d.ts": "d\n" });
+      await writeFile(join(cwd, "d.ts"), "d deleted\n");
+      const { session } = await runReal(
+        Sessions.use((s) => s.open({ command: "open", cwd, scope: uncommitted })),
+      );
+      const receipt = { requestId: "stopped-delete", sessionId: session.id };
+      // The receipt is renamed into place, then its daemon stops before syncing it.
+      stopBeforeDirectorySync = true;
+      expect(
+        Exit.isFailure(await runReal(Effect.exit(remove(session.id, receipt.requestId)))),
+      ).toBe(true);
+      expect(deleteReceipts).toContainEqual(receipt);
+      expect(durable.deleteReceipts).not.toContainEqual(receipt);
+      // A successor that cannot make it durable serves the deletion, but removes nothing.
+      syncFails = true;
+      await runReal(
+        Effect.gen(function* () {
+          expect((yield* Sessions.use((s) => s.list)).sessions.map(({ id }) => id)).not.toContain(
+            session.id,
+          );
+          expect(yield* Effect.flip(reclaim)).toMatchObject({ _tag: "PlatformError" });
+        }),
+      );
+      expect(files.has(session.id)).toBe(true);
+      expect(await onDisk("blobs")).toContain(sha256("d deleted\n"));
+      syncFails = false;
+      await runReal(reclaim);
+      expect(files.has(session.id)).toBe(false);
+      expect(await onDisk("blobs")).not.toContain(sha256("d deleted\n"));
+      // The machine crashes: the removal and its receipt survive together, so a retry is answered.
+      crash();
+      expect(files.has(session.id)).toBe(false);
+      expect(await runReal(remove(session.id, receipt.requestId))).toEqual({
+        deleted: true,
+        sessionId: session.id,
+      });
     });
 
     it("keeps whole a snapshot another session pins part of when a file it cannot read names it", async () => {

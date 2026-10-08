@@ -106,6 +106,7 @@ const store = Layer.succeed(SessionStore, {
   loadSaved: Effect.succeed({ sessions: [], undecodable: [] }),
   save: (session) => Effect.sync(() => void files.set(session.id, session)),
   remove: (id) => Effect.sync(() => void files.delete(id)),
+  syncSaved: Effect.void,
   loadDeleteReceipts: Effect.succeed([]),
   saveDeleteReceipts: () => Effect.void,
   loadLaunchPaths: Effect.sync(() => launchPaths),

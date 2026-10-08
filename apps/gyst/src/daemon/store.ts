@@ -21,23 +21,28 @@ const decodeLaunchPaths = Schema.decodeUnknownEffect(
   Schema.fromJsonString(Schema.Record(Schema.String, Schema.String)),
 );
 
+const synced = (fs: FileSystem.FileSystem, file: string) =>
+  Effect.scoped(Effect.flatMap(fs.open(file, { flag: "r" }), (handle) => handle.sync));
+
 // Temp + rename: a reader never sees a half-written file, and a writer killed midway leaves the old
 // one. The scope removes the temp directory whether or not the file was renamed out of it, so a
 // failed write leaves nothing. Synced before the rename and its directory after: reclaiming content
 // trusts what is saved, so a crash must not bring back an older file naming reclaimed content.
+// A failure before the rename keeps the old file; one syncing the directory after it reports a
+// replacement that is already visible but may not survive a crash.
 export const writeAtomically = Effect.fn("writeAtomically")(function* (
   path: string,
   content: string,
 ) {
   const fs = yield* FileSystem.FileSystem;
-  const synced = (file: string) =>
-    Effect.scoped(Effect.flatMap(fs.open(file, { flag: "r" }), (handle) => handle.sync));
   const temporary = yield* fs.makeTempFileScoped({ directory: dirname(path) });
   yield* fs.chmod(temporary, 0o600);
   yield* fs.writeFileString(temporary, content);
-  yield* synced(temporary);
-  yield* fs.rename(temporary, path);
-  yield* synced(dirname(path));
+  yield* synced(fs, temporary);
+  // An interruption between the two would leave the replacement visible but not durable.
+  yield* Effect.uninterruptible(
+    fs.rename(temporary, path).pipe(Effect.andThen(synced(fs, dirname(path)))),
+  );
 }, Effect.scoped);
 
 // Compare the exact persisted bytes again after the old daemon stops admitting commands.
@@ -72,6 +77,12 @@ export class SessionStore extends Context.Service<
     >;
     save(session: Session): Effect.Effect<void, PlatformError.PlatformError>;
     remove(id: string): Effect.Effect<void, PlatformError.PlatformError>;
+    /**
+     * Makes every save, receipt and removal visible in the data directory durable, including one a
+     * stopped daemon renamed into place but never synced. Run before acting on what is saved by
+     * releasing anything it no longer names.
+     */
+    readonly syncSaved: Effect.Effect<void, PlatformError.PlatformError>;
     /** Empty until the first deletion; an unreadable receipt file is a defect, never an empty list. */
     readonly loadDeleteReceipts: Effect.Effect<
       ReadonlyArray<DeleteReceipt>,
@@ -134,6 +145,7 @@ export class SessionStore extends Context.Service<
       const remove = Effect.fn("SessionStore.remove")((id: string) =>
         fs.remove(paths.sessionFile(id), { force: true }),
       );
+      const syncSaved = synced(fs, paths.dataDir).pipe(Effect.withSpan("SessionStore.syncSaved"));
 
       const loadDeleteReceipts = Effect.gen(function* () {
         if (!(yield* fs.exists(paths.deleteReceiptsPath))) return [];
@@ -158,6 +170,7 @@ export class SessionStore extends Context.Service<
         loadSaved,
         save,
         remove,
+        syncSaved,
         loadDeleteReceipts,
         saveDeleteReceipts,
         loadLaunchPaths,
