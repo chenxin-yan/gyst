@@ -31,12 +31,10 @@ type ReadFailure = BadArgs | InternalError | PlatformError.PlatformError;
 /** A write may also run out of space (`storage_full`). */
 type Failure = ReadFailure | SourceUnavailable;
 
-/** What `reclaim` keeps: manifests by snapshot id and blobs by id. */
 export interface Retained {
   readonly snapshots: ReadonlySet<string>;
   readonly blobs: ReadonlySet<string>;
 }
-/** How many committed objects one `reclaim` removed. */
 export interface Reclaimed {
   readonly snapshots: number;
   readonly blobs: number;
