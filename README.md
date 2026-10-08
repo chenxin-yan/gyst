@@ -166,7 +166,7 @@ Gyst reclaims, in the background, only captured content that nothing needs any m
   was begun on until you send or discard it, even after the browser closes or the daemon
   restarts;
 - a deleted session's content, unless another session captured the same files;
-- whatever a failed or interrupted capture left behind.
+- whatever a failed or interrupted capture, or a source check that found a change, left behind.
 
 It never removes content a read, capture or another session still uses, nor what a saved
 session file this version cannot read names. That is separate from the viewer's and
