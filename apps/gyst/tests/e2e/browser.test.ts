@@ -765,13 +765,18 @@ describe("installed gyst in a sandboxed browser", () => {
     await writeFile(join(repo, "walk", "d.ts"), "export const d1 = 1;\n");
     git("add", ".");
     git("commit", "-qm", "walk next");
-    // walk-fix changes walk/b.ts line 5 again on top of walk, so a walk~1...peek session refreshed
-    // from walk to walk-fix loses b.ts's hunk and keeps a.ts's and c.ts's.
+    // walk-fix changes walk/b.ts line 5 again on top of walk and adds a line atop walk/a.ts, so a
+    // walk~1...peek session refreshed from walk to walk-fix loses b.ts's hunk, keeps c.ts's, and
+    // keeps a.ts's a line lower beside a new one.
     git("switch", "-q", "walk");
     git("switch", "-qc", "walk-fix");
     await writeFile(
       join(repo, "walk", "b.ts"),
       (await readFile(join(repo, "walk", "b.ts"), "utf8")).replace("b5 = 5 * 2", "b5 = 5 * 3"),
+    );
+    await writeFile(
+      join(repo, "walk", "a.ts"),
+      `// fixed\n${await readFile(join(repo, "walk", "a.ts"), "utf8")}`,
     );
     git("add", ".");
     git("commit", "-qm", "walk fix");
@@ -3328,9 +3333,10 @@ describe("installed gyst in a sandboxed browser", () => {
     await keys(page, "z", "Shift+R");
     await settled(page);
     expect(refreshes).toEqual([]);
-    // The reader is deep in a.ts, which the refresh leaves exactly as it was.
+    // The reader is deep in a.ts, whose hunks the refresh only moves a line down.
     await keys(page, "]", "n", "]", "n");
     await says(page, "a.ts:20 · new");
+    await barOn(page, "export const a20 = 20 * 2;");
 
     git("branch", "-f", "peek", "walk-fix");
     await keys(page, "Shift+R");
@@ -3350,9 +3356,10 @@ describe("installed gyst in a sandboxed browser", () => {
       },
       refreshes[0],
     ]);
-    // The reader stays in the same group, which lost b.ts's change, at the same line of a.ts.
+    // The reader stays in the same group, which lost b.ts's change, on the same code of a.ts.
     await headingsAre(page, ["walk/a.ts"]);
-    await says(page, "a.ts:20 · new");
+    await says(page, "a.ts:21 · new");
+    await barOn(page, "export const a20 = 20 * 2;");
     expect((await gyst("session", "status", "--session", walk.id)).revision).toBe(
       committed.revision,
     );
