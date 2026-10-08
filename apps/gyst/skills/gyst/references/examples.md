@@ -98,7 +98,7 @@ Two Questions from one pickup. The first would puzzle every reader, so the note 
 
 ## Repairing after a Change request was fixed and refreshed
 
-The human marked a message Change request: rename `expired` to `credential_expired`. In an uncommitted-changes session the fix is in the recorded scope, so it was made, refreshed, and the guidance repaired on the new snapshot. The renamed line changed the guard's hunk, so it came back ungrouped and the note on it Outdated; the test's hunk was unchanged and kept its place.
+The human marked a message Change request: rename `expired` to `credential_expired`. In an uncommitted-changes session the fix is in the recorded scope, so it was made, refreshed, and the guidance repaired on the new snapshot. The renamed line changed the guard's hunk, so it came back ungrouped, and the note on it, the group overview and the walkthrough overview are Outdated; the test's hunk was unchanged and kept its place. The group overview quotes the old name, so it is rewritten; the note and the walkthrough overview never mention it, so after rechecking them they keep their wording.
 
 ```json
 {
@@ -109,7 +109,8 @@ The human marked a message Change request: rename `expired` to `credential_expir
     {
       "type": "group.update",
       "id": "reject-expired",
-      "memberHunkIds": ["hunk-id-auth-guard-after-refresh", "hunk-id-auth-test"]
+      "memberHunkIds": ["hunk-id-auth-guard-after-refresh", "hunk-id-auth-test"],
+      "overview": "The guard sits at the top of [`authenticate`](gyst:new/src/auth.ts#L12-L24), before any database access, so an expired credential costs no lookup. The test then pins the boundary case.\n\nFor example, with the clock at 12:00, a token expiring at 11:59 or 12:00 is now refused with `credential_expired`; one expiring at 12:01 still loads the account."
     },
     {
       "type": "note.update",
@@ -117,7 +118,7 @@ The human marked a message Change request: rename `expired` to `credential_expir
       "anchor": { "path": "src/auth.ts", "side": "new", "startLine": 14, "endLine": 16 }
     },
     { "type": "note.revalidate", "id": "expiry-guard" },
-    { "type": "group.revalidate", "id": "reject-expired" },
+    { "type": "walkthrough.revalidate" },
     {
       "type": "thread.reply",
       "thread": "thread-id-on-the-error-name",
