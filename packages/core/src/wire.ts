@@ -597,12 +597,16 @@ export const BrowserRequestSchema = Schema.Union([
     message: Schema.String,
     seen: SeenMessageSchema,
   }),
-  /** Resolves (or, with `resolved: false`, reopens) a thread. */
+  /**
+   * Resolves (or, with `resolved: false`, reopens) a thread. `seen` is the thread's `version` as
+   * the human last read it, and must still be it, so a resolution never hides a message unseen.
+   */
   Schema.Struct({
     command: Schema.Literal("resolve"),
     ...exact,
     requestId: Schema.String,
     thread: Schema.String,
+    seen: Schema.String,
     resolved: Schema.Boolean,
   }),
   /** Releases a draft's pin without sending it. */

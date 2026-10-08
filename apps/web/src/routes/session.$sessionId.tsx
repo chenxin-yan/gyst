@@ -1762,12 +1762,18 @@ function SessionReader(props: {
     if (note) return replyTo({ note: note.note.id });
     setNotice("Put the cursor on a note or a thread to reply.");
   };
-  /** Resolves an open thread or reopens a resolved one; only the human does either. */
+  /**
+   * Resolves an open thread or reopens a resolved one, as it reads now; only the human does
+   * either.
+   */
   const setResolved = async (threadId: string, resolved: boolean) => {
+    const seen = conversationOf(threadId)?.version;
+    if (seen === undefined) return;
     try {
       await conversations.act({
         command: "resolve",
         thread: threadId,
+        seen,
         resolved,
       });
       if (!mounted.current) return;

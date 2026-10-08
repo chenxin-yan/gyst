@@ -478,7 +478,14 @@ describe("DaemonServer", () => {
             message: "m",
             seen: { markdown: "m", kind: "question" },
           },
-          { command: "resolve", session: "x", requestId: "r", thread: "t", resolved: true },
+          {
+            command: "resolve",
+            session: "x",
+            requestId: "r",
+            thread: "t",
+            seen: "v",
+            resolved: true,
+          },
           { command: "discard", session: "x", requestId: "r", draft: "d" },
           { command: "navigation", session: "x", snapshotId: "0".repeat(64) },
           {

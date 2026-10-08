@@ -1710,11 +1710,15 @@ describe("Sessions conversations", () => {
           yield* viewedNow(session.id, [hunk!.id], "v1");
           const viewed = yield* Queue.take(events);
           expect(viewed).toMatchObject({ kind: "changed", conversations: version.conversations });
+          const read = yield* Sessions.use((s) =>
+            s.conversations({ command: "conversations", session: session.id }),
+          );
           yield* act({
             command: "resolve",
             session: session.id,
             requestId: "r1",
             thread: sent.thread!,
+            seen: read.threads[0]!.version,
             resolved: true,
           });
           const resolved = yield* Queue.take(events);

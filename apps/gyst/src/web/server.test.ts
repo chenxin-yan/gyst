@@ -363,7 +363,14 @@ describe("browserApp operations", () => {
         markdown: "Why?",
         kind: "change",
       },
-      { command: "resolve", session: "s1", requestId: "r4", thread: "t1", resolved: true },
+      {
+        command: "resolve",
+        session: "s1",
+        requestId: "r4",
+        thread: "t1",
+        seen: "v1",
+        resolved: true,
+      },
     ];
     for (const request of requests) {
       const response = await operation(request);

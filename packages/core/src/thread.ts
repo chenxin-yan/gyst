@@ -98,7 +98,8 @@ export const ConversationsPayloadSchema = Schema.Struct({
   revision: Schema.Number,
   /** The `conversations` identity a subscription announces for these threads. */
   version: Schema.String,
-  threads: Schema.Array(ThreadSchema),
+  /** Each thread with its `version`, which a resolution or reopening names as what was read. */
+  threads: Schema.Array(Schema.Struct({ ...ThreadSchema.fields, version: Schema.String })),
   drafts: Schema.Array(DraftSchema),
 });
 export type ConversationsPayload = typeof ConversationsPayloadSchema.Type;
