@@ -1,0 +1,5 @@
+interface:
+  display_name: "Gyst Respond"
+  short_description: "Answer one set of pending gyst review comments"
+policy:
+  allow_implicit_invocation: false

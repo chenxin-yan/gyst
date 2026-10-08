@@ -1,5 +1,0 @@
-interface:
-  display_name: "Gyst Ask"
-  short_description: "Answer a question about a group or hunk"
-policy:
-  allow_implicit_invocation: false

@@ -1,0 +1,5 @@
+---
+"@gyst/cli": minor
+---
+
+Ship two agent workflows. `/gyst` opens or reuses a session headlessly, plans full coverage, publishes complete groups progressively, sends you the session's link once the first groups are published, and also revisits, refreshes or regroups an existing session. `/gyst-respond <session-id>`, which you invoke, retrieves the Pending messages once under one retry-safe request id, answers them, fixes only messages marked Change request (refreshing and repairing guidance when the fix is part of the recorded scope, and otherwise reporting the local edit without committing, pushing or refreshing), reports unfinished threads and stops. Both read one bundled authoring reference with example batches. The generated `gyst-cli` reference and `--help` now document every error code, the `session apply` envelope and its ops, and how to retry `apply`, `threads`, `refresh` and `delete`. `/gyst-ask` and `/gyst-refresh` are removed; `gyst skills` does not remove their old links, so delete `gyst-ask` and `gyst-refresh` from your agents' skill directories by hand.
