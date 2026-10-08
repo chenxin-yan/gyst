@@ -26,7 +26,7 @@ import {
   Stream,
 } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
-import { dirname } from "node:path";
+import { dirname, join } from "node:path";
 import { CapturedContent } from "./content.ts";
 import * as Worktree from "./worktree.ts";
 
@@ -646,14 +646,15 @@ export class Git extends Context.Service<
       );
 
       /**
-       * The paths Git's attributes mark generated or vendored, read from `source`'s tree, or from
-       * the working tree (falling back to the index, as Git does) without one. Paths are literal,
-       * never pathspecs. Reading attributes runs no configured program.
+       * The paths Git's attributes mark generated or vendored, read from `source`'s tree (in the
+       * object directory `extra` names, if any). Paths are literal, never pathspecs. Reading
+       * attributes runs no configured program.
        */
       const generatedIn = Effect.fn("Git.generatedIn")(function* (
         root: string,
-        source: string | null,
+        source: string,
         paths: readonly string[],
+        extra?: Record<string, string>,
       ) {
         const chunks: string[][] = [];
         let bytes = Number.POSITIVE_INFINITY;
@@ -667,14 +668,11 @@ export class Git extends Context.Service<
         }
         const marked = new Set<string>();
         for (const chunk of chunks) {
-          const result = yield* run(root, [
-            "check-attr",
-            "-z",
-            ...(source === null ? [] : ["--source", source]),
-            ...generatedAttributes,
-            "--",
-            ...chunk,
-          ]);
+          const result = yield* run(
+            root,
+            ["check-attr", "-z", "--source", source, ...generatedAttributes, "--", ...chunk],
+            extra,
+          );
           if (result.exitCode !== 0)
             return yield* new BadArgs({ message: result.stderr.trim() || "git check-attr failed" });
           // One `path NUL attribute NUL info NUL` record per path and attribute. A leading U+FEFF
@@ -695,6 +693,57 @@ export class Git extends Context.Service<
         }
         return marked;
       });
+
+      /**
+       * A tree of exactly these captured `.gitattributes` files, written to a private object
+       * directory, never the repository's: uncommitted attributes then come from the captured
+       * bytes, not an index copy of one deleted only from the working tree or a configured
+       * `attr.tree`.
+       */
+      const attributesTree = Effect.fn("Git.attributesTree")(
+        function* (root: string, files: ReadonlyArray<{ path: string; blob: string }>) {
+          const objects = yield* fs.makeTempDirectoryScoped();
+          const extra = { GIT_OBJECT_DIRECTORY: objects, GIT_INDEX_FILE: join(objects, "index") };
+          // Writing the index would run the post-index-change hook, a project program, and a
+          // split index would put its shared part in the repository.
+          const privateIndex = ["-c", "core.hooksPath=/dev/null", "-c", "core.splitIndex=false"];
+          const failed = (result: { stderr: string }, step: string) =>
+            new BadArgs({ message: result.stderr.trim() || `git ${step} failed` });
+          if (files.length > 0) {
+            const copies: string[] = [];
+            for (const { blob } of files) copies.push(yield* content.materialize(blob));
+            const hashed = yield* run(
+              root,
+              ["hash-object", "-w", "--no-filters", "--", ...copies],
+              extra,
+            );
+            if (hashed.exitCode !== 0) return yield* failed(hashed, "hash-object");
+            const oids = text(hashed.stdout).trim().split("\n");
+            const indexed = yield* run(
+              root,
+              [
+                ...privateIndex,
+                "update-index",
+                "--add",
+                ...files.flatMap(({ path }, at) => ["--cacheinfo", `100644,${oids[at]},${path}`]),
+              ],
+              extra,
+            );
+            if (indexed.exitCode !== 0) return yield* failed(indexed, "update-index");
+          }
+          const written = yield* run(root, [...privateIndex, "write-tree"], extra);
+          if (written.exitCode !== 0) return yield* failed(written, "write-tree");
+          return { tree: text(written.stdout).trim(), extra };
+        },
+        Effect.catchTag("PlatformError", (error) =>
+          Effect.fail(
+            new InternalError({
+              message: "could not stage captured attributes",
+              detail: error.message,
+            }),
+          ),
+        ),
+      );
 
       // A range and a PR share the commit-pair capture; only uncommitted work reads the checkout.
       const snapshot = Effect.fn("Git.snapshot")(function* (
@@ -720,24 +769,46 @@ export class Git extends Context.Service<
         });
         const sides: Array<{ path: string; old: CapturedSide; new: CapturedSide }> = [];
         /**
-         * A changed file's attributes come from its new side, or its old side once deleted; the
-         * working tree's when `newSource` is null.
+         * A changed file's attributes come from its new side, or its old side once deleted. An
+         * uncommitted new side (`newCommit` null) reads the captured `.gitattributes` files.
          */
         const generatedOf = Effect.fnUntraced(function* (
-          oldSource: string | null,
-          newSource: string | null,
+          oldCommit: string | null,
+          newCommit: string | null,
         ) {
           const changes = sides.filter(({ old, new: current }) => changed(old, current));
           if (given) return new Set(changes.flatMap(({ path }) => (given.has(path) ? [path] : [])));
           const deleted = changes.filter(({ new: current }) => current.side.kind === "absent");
           const present = changes.filter(({ new: current }) => current.side.kind !== "absent");
           const paths = (list: typeof changes) => list.map(({ path }) => path);
-          return new Set([
-            // Absent on both sides is never recorded, so a deletion always has an old commit.
-            ...(deleted.length > 0 ? yield* generatedIn(root, oldSource, paths(deleted)) : []),
-            ...(yield* generatedIn(root, newSource, paths(present))),
-          ]);
-        });
+          const marked = new Set<string>();
+          // Absent on both sides is never recorded, so a deletion always has an old commit.
+          if (deleted.length > 0)
+            for (const path of yield* generatedIn(root, oldCommit!, paths(deleted)))
+              marked.add(path);
+          if (present.length > 0) {
+            const newSide =
+              newCommit === null
+                ? yield* attributesTree(
+                    root,
+                    sides.flatMap(({ path, new: { side } }) =>
+                      (path === ".gitattributes" || path.endsWith("/.gitattributes")) &&
+                      side.kind === "text"
+                        ? [{ path, blob: side.blob }]
+                        : [],
+                    ),
+                  )
+                : { tree: newCommit, extra: undefined };
+            for (const path of yield* generatedIn(
+              root,
+              newSide.tree,
+              paths(present),
+              newSide.extra,
+            ))
+              marked.add(path);
+          }
+          return marked;
+        }, Effect.scoped);
         let generated: ReadonlySet<string>;
         let provenance: Provenance;
         if (commits) {
@@ -807,7 +878,6 @@ export class Git extends Context.Service<
               sides.push({ path, old, new: current });
           }
           if (paths.length > 0) yield* report("capture", paths.length, paths.length);
-          // Before the recheck, so it also covers the `.gitattributes` files Git read for this.
           generated = yield* generatedOf(baseline, null);
           // Best-effort: the inputs this capture saw are still there, unchanged. Not an atomic
           // filesystem snapshot; an edit that restores identical metadata can go unnoticed.
