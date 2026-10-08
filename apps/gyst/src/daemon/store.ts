@@ -1,6 +1,7 @@
 import { type Session, SessionSchema } from "@gyst/core";
 import { Array, Context, Effect, FileSystem, Layer, type PlatformError, Schema } from "effect";
 import { createHash } from "node:crypto";
+import { dirname } from "node:path";
 import { Paths } from "./paths.ts";
 
 const decodeSessionFile = Schema.decodeUnknownEffect(Schema.fromJsonString(SessionSchema), {
@@ -19,6 +20,20 @@ export type LaunchPaths = Readonly<Record<string, string>>;
 const decodeLaunchPaths = Schema.decodeUnknownEffect(
   Schema.fromJsonString(Schema.Record(Schema.String, Schema.String)),
 );
+
+// Temp + rename: a reader never sees a half-written file, and a writer killed midway leaves the old
+// one. The scope removes the temp directory whether or not the file was renamed out of it, so a
+// failed write leaves nothing.
+export const writeAtomically = Effect.fn("writeAtomically")(function* (
+  path: string,
+  content: string,
+) {
+  const fs = yield* FileSystem.FileSystem;
+  const temporary = yield* fs.makeTempFileScoped({ directory: dirname(path) });
+  yield* fs.chmod(temporary, 0o600);
+  yield* fs.writeFileString(temporary, content);
+  yield* fs.rename(temporary, path);
+}, Effect.scoped);
 
 // Compare the exact persisted bytes again after the old daemon stops admitting commands.
 export const inspectSavedSessions = Effect.gen(function* () {
@@ -81,19 +96,10 @@ export class SessionStore extends Context.Service<
         return Array.getSomes(sessions);
       }).pipe(Effect.withSpan("SessionStore.loadAll"));
 
-      // Temp + rename: a reader never sees a half-written session. The scope removes the temp
-      // directory whether or not the file was renamed out of it, so a failed write leaves nothing.
-      const writeAtomically = Effect.fn("SessionStore.writeAtomically")(function* (
-        path: string,
-        content: string,
-      ) {
-        const temporary = yield* fs.makeTempFileScoped({ directory: paths.dataDir });
-        yield* fs.chmod(temporary, 0o600);
-        yield* fs.writeFileString(temporary, content);
-        yield* fs.rename(temporary, path);
-      }, Effect.scoped);
+      const write = (path: string, content: string) =>
+        writeAtomically(path, content).pipe(Effect.provideService(FileSystem.FileSystem, fs));
       const save = (session: Session) =>
-        writeAtomically(paths.sessionFile(session.id), `${JSON.stringify(session)}\n`);
+        write(paths.sessionFile(session.id), `${JSON.stringify(session)}\n`);
 
       const remove = Effect.fn("SessionStore.remove")((id: string) =>
         fs.remove(paths.sessionFile(id), { force: true }),
@@ -107,7 +113,7 @@ export class SessionStore extends Context.Service<
 
       // ponytail: rewrites every receipt per deletion; an append-only log if deletions number thousands.
       const saveDeleteReceipts = (receipts: ReadonlyArray<DeleteReceipt>) =>
-        writeAtomically(paths.deleteReceiptsPath, `${JSON.stringify(receipts)}\n`);
+        write(paths.deleteReceiptsPath, `${JSON.stringify(receipts)}\n`);
 
       const loadLaunchPaths = fs.readFileString(paths.launchPathsPath).pipe(
         Effect.flatMap(decodeLaunchPaths),
@@ -115,7 +121,7 @@ export class SessionStore extends Context.Service<
         Effect.withSpan("SessionStore.loadLaunchPaths"),
       );
       const saveLaunchPaths = (launchPaths: LaunchPaths) =>
-        writeAtomically(paths.launchPathsPath, `${JSON.stringify(launchPaths)}\n`);
+        write(paths.launchPathsPath, `${JSON.stringify(launchPaths)}\n`);
 
       return SessionStore.of({
         loadAll,
