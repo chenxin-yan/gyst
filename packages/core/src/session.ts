@@ -12,6 +12,13 @@ import {
   noteFields,
 } from "./guidance.ts";
 import { TitleSchema } from "./metadata.ts";
+import {
+  ConversationResultSchema,
+  DraftSchema,
+  ThreadCountsSchema,
+  ThreadSchema,
+  ThreadsPayloadSchema,
+} from "./thread.ts";
 
 export const HunkSchema = Schema.Struct({
   id: Schema.String,
@@ -93,6 +100,8 @@ const statusPayloadFields = <Text extends Schema.Top>(text: Text) => ({
   ),
   preparation: PreparationSchema,
   viewedHunkIds: Schema.Array(Schema.String),
+  /** Counts only: status never carries a message body, so it reads nothing. */
+  threads: ThreadCountsSchema,
   /**
    * `viewed` is derived: every changed hunk of the file is Viewed. `generated` is present only when
    * the snapshot records the file as Generated.
@@ -158,6 +167,20 @@ const RefreshReceiptSchema = Schema.Struct({
 });
 export type RefreshReceipt = typeof RefreshReceiptSchema.Type;
 
+const ConversationReceiptSchema = Schema.Struct({
+  requestId: Schema.String,
+  digest: Schema.String,
+  result: ConversationResultSchema,
+});
+export type ConversationReceipt = typeof ConversationReceiptSchema.Type;
+/** The exact bundle a retrieval returned, which every retry of its request id gets again. */
+const PickupReceiptSchema = Schema.Struct({
+  requestId: Schema.String,
+  digest: Schema.String,
+  result: ThreadsPayloadSchema,
+});
+export type PickupReceipt = typeof PickupReceiptSchema.Type;
+
 export const SessionSchema = Schema.Struct({
   ...sessionSummaryFields,
   revision: Schema.Number,
@@ -174,6 +197,12 @@ export const SessionSchema = Schema.Struct({
   applyReceipts: Schema.Array(ApplyReceiptSchema),
   viewedReceipts: Schema.Array(ViewedReceiptSchema),
   refreshReceipts: Schema.Array(RefreshReceiptSchema),
+  /** Code threads and note threads, in the order they were started. */
+  threads: Schema.Array(ThreadSchema),
+  /** Composition context the browser has pinned and not yet sent or discarded. */
+  drafts: Schema.Array(DraftSchema),
+  conversationReceipts: Schema.Array(ConversationReceiptSchema),
+  pickupReceipts: Schema.Array(PickupReceiptSchema),
   /** A PR session's GitHub context, apart from its snapshot: refresh re-reads only the range. */
   pullRequest: Schema.optional(PullRequestContextSchema),
 }).check(
@@ -189,6 +218,10 @@ export const SessionSchema = Schema.Struct({
         session.viewedHunkIds.every((id) => hunkIds.has(id))) ||
       "viewed hunks must be distinct current hunks"
     );
+  }),
+  Schema.makeFilter((session) => {
+    const notes = session.threads.flatMap(({ note }) => (note && !note.removed ? [note.id] : []));
+    return new Set(notes).size === notes.length || "a note has at most one thread";
   }),
   Schema.makeFilter(
     (session) =>
