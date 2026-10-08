@@ -21,7 +21,9 @@ import {
   Exit,
   Fiber,
   Layer,
+  Option,
   PlatformError,
+  Queue,
   Stream,
 } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
@@ -1422,6 +1424,213 @@ describe("Sessions.delete", () => {
     );
     expect(results[0]).toEqual(results[1]);
     expect(deleteReceipts).toEqual([{ requestId: "twice", sessionId: persisted.id }]);
+  });
+});
+
+describe("Sessions.subscribe", () => {
+  const subscribe = (session = persisted.id) => Sessions.use((s) => s.subscribe({ session }));
+  const versionNow = (session = persisted.id) => {
+    const saved = files.get(session)!;
+    return { sessionId: saved.id, snapshotId: saved.snapshotId, revision: saved.revision };
+  };
+  const apply = (revision: number, idempotencyKey: string) =>
+    Sessions.use((s) =>
+      s.apply({
+        command: "apply",
+        session: persisted.id,
+        batch: JSON.stringify({
+          revision,
+          idempotencyKey,
+          ops: [{ type: "group.update", id: "g2", title: idempotencyKey }],
+        }),
+      }),
+    );
+  const refresh = Sessions.use((s) => s.refresh({ command: "refresh", session: persisted.id }));
+  const remove = (requestId: string) =>
+    Sessions.use((s) => s.delete({ command: "delete", session: persisted.id, requestId }));
+
+  it("returns the version current at registration, and no_session for an unknown id", async () => {
+    await run(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const { version, events } = yield* subscribe();
+          expect(version).toEqual({
+            sessionId: persisted.id,
+            snapshotId: persisted.snapshotId,
+            revision: persisted.revision,
+          });
+          expect(yield* Queue.poll(events)).toEqual(Option.none());
+          expect((yield* Effect.flip(subscribe("nope")))._tag).toBe("no_session");
+        }),
+      ),
+    );
+  });
+
+  it("announces each committed viewed, apply, refresh and delete once, after it is saved", async () => {
+    await run(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const { events } = yield* subscribe();
+          const nothing = Queue.poll(events).pipe(Effect.map(Option.isNone));
+          yield* viewedNow(persisted.id, ["h2"], "read-h2");
+          expect(yield* Queue.take(events)).toEqual({ kind: "changed", ...versionNow() });
+          expect(yield* nothing).toBe(true);
+          yield* apply(versionNow().revision, "retitle");
+          expect(yield* Queue.take(events)).toEqual({ kind: "changed", ...versionNow() });
+          expect(yield* nothing).toBe(true);
+          const refreshed = yield* refresh;
+          const after = yield* Queue.take(events);
+          expect(after).toEqual({ kind: "changed", ...versionNow() });
+          expect(after).toMatchObject({
+            snapshotId: refreshed.session.snapshotId,
+            revision: refreshed.revision,
+          });
+          expect(refreshed.session.snapshotId).not.toBe(persisted.snapshotId);
+          expect(yield* nothing).toBe(true);
+          yield* remove("gone");
+          expect(files.has(persisted.id)).toBe(false);
+          expect(yield* Queue.take(events)).toEqual({ kind: "deleted", sessionId: persisted.id });
+          expect(yield* nothing).toBe(true);
+        }),
+      ),
+    );
+  });
+
+  it("announces nothing for a Viewed, apply or delete answered from its receipt", async () => {
+    await run(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const s = yield* Sessions;
+          const { request } = yield* viewedNow(persisted.id, ["h2"], "once");
+          yield* apply(persisted.revision + 1, "once");
+          const { events } = yield* subscribe();
+          const saved = JSON.stringify([...files]);
+          yield* s.viewed(request);
+          yield* apply(persisted.revision + 1, "once");
+          expect(JSON.stringify([...files])).toBe(saved);
+          expect(yield* Queue.poll(events)).toEqual(Option.none());
+          yield* remove("gone");
+          expect((yield* Queue.take(events)).kind).toBe("deleted");
+          yield* remove("gone");
+          expect(yield* Queue.poll(events)).toEqual(Option.none());
+        }),
+      ),
+    );
+  });
+
+  it("announces nothing while a save is pending, and the saved version once it commits", async () => {
+    await run(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const { events } = yield* subscribe();
+          const held = yield* holdNextSave;
+          const writing = yield* Effect.forkChild(viewedNow(persisted.id, ["h2"], "held"));
+          yield* Deferred.await(held.started);
+          yield* Effect.sleep("20 millis");
+          expect(yield* Queue.poll(events)).toEqual(Option.none());
+          expect(files.get(persisted.id)).toBe(persisted);
+          yield* Deferred.succeed(held.release, undefined);
+          const { result } = yield* Fiber.join(writing);
+          const change = yield* Queue.take(events);
+          expect(change).toEqual({ kind: "changed", ...versionNow() });
+          expect(change).toMatchObject({ revision: result.revision });
+        }),
+      ),
+    );
+  });
+
+  it("announces nothing when saving fails, leaving the state as it was", async () => {
+    await run(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const { events } = yield* subscribe();
+          saveFails = true;
+          const mutations: ReadonlyArray<Effect.Effect<unknown, unknown, Sessions>> = [
+            viewedNow(persisted.id, ["h2"], "fails"),
+            apply(persisted.revision, "fails"),
+            refresh,
+            remove("fails"),
+          ];
+          for (const mutation of mutations)
+            expect(Exit.isFailure(yield* Effect.exit(mutation))).toBe(true);
+          expect(yield* Queue.poll(events)).toEqual(Option.none());
+          expect(files.get(persisted.id)).toBe(persisted);
+          expect(deleteReceipts).toEqual([]);
+        }),
+      ),
+    );
+  });
+
+  it("keeps only the newest undelivered change", async () => {
+    await run(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const { events } = yield* subscribe();
+          yield* viewedNow(persisted.id, ["h2"], "first");
+          yield* viewedNow(persisted.id, ["h3"], "second");
+          yield* viewedNow(persisted.id, ["h2"], "third", false);
+          expect(yield* Queue.take(events)).toEqual({
+            kind: "changed",
+            ...versionNow(),
+            revision: persisted.revision + 3,
+          });
+          expect(yield* Queue.poll(events)).toEqual(Option.none());
+        }),
+      ),
+    );
+  });
+
+  it("never misses a mutation racing the registration: ready or a change carries it", async () => {
+    const outcomes = { inReady: 0, announced: 0 };
+    await run(
+      Effect.gen(function* () {
+        for (let attempt = 0; attempt < 20; attempt++)
+          yield* Effect.scoped(
+            Effect.gen(function* () {
+              // Staggered starts land the registration before, between and after the write's steps.
+              const late = Effect.forEach(
+                Array.from({ length: attempt % 4 }),
+                () => Effect.yieldNow,
+              );
+              const [{ version, events }, { result }] = yield* Effect.all(
+                [
+                  late.pipe(Effect.andThen(subscribe())),
+                  viewedNow(persisted.id, ["h2"], `race-${attempt}`, attempt % 2 === 0),
+                ],
+                { concurrency: "unbounded" },
+              );
+              const change = Option.getOrUndefined(yield* Queue.poll(events));
+              if (change) {
+                expect(change).toEqual({ kind: "changed", ...versionNow() });
+                outcomes.announced++;
+              } else outcomes.inReady++;
+              expect(change?.kind === "changed" ? change.revision : version.revision).toBe(
+                result.revision,
+              );
+            }),
+          );
+      }),
+    );
+    expect(outcomes.inReady).toBeGreaterThan(0);
+    expect(outcomes.announced).toBeGreaterThan(0);
+  });
+
+  it("unregisters a subscriber when its scope closes, leaving the others", async () => {
+    await run(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const kept = yield* subscribe();
+          const closed = yield* Effect.scoped(subscribe());
+          yield* viewedNow(persisted.id, ["h2"], "after-close");
+          expect(yield* Queue.take(kept.events)).toEqual({ kind: "changed", ...versionNow() });
+          // Shut down rather than merely quiet: a closed subscriber's take ends at once.
+          const ended = yield* Effect.exit(
+            Queue.take(closed.events).pipe(Effect.timeout("1 second")),
+          );
+          expect(Exit.hasInterrupts(ended)).toBe(true);
+        }),
+      ),
+    );
   });
 });
 

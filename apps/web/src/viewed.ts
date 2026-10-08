@@ -1,6 +1,7 @@
 // Viewed progress in the reader: one set of Viewed hunk ids that every view reads, and the human's
 // writes to it. No React or DOM here, so derivation and retry rules are unit tested on their own.
 import type { ViewedPayload } from "@gyst/core/wire";
+import { isUncertain } from "./api.ts";
 
 /** Whether a file section reads as Viewed: every hunk in it is. An empty section never is. */
 export const sectionViewed = (hunkIds: readonly string[], viewed: ReadonlySet<string>) =>
@@ -94,6 +95,17 @@ export function intentFor(
   return { ...change, requestId: mint(), revision: state.revision, attempts: 1 };
 }
 
+/**
+ * The resend of a write whose reply was lost, so it may already be applied: the same request id,
+ * hunks, Viewed state and revision, which the daemon answers from its receipt if it was. Undefined
+ * while busy, and for a write that failed for certain.
+ */
+export function replayOf(state: ViewedState): ViewedIntent | undefined {
+  const { intent } = state;
+  if (state.busy || intent?.failure === undefined || !isUncertain(intent.failure)) return undefined;
+  return { ...intent, attempts: intent.attempts + 1, failure: undefined };
+}
+
 const isTagged = (error: unknown, ...tags: string[]) =>
   typeof error === "object" &&
   error !== null &&
@@ -142,11 +154,16 @@ export function viewedReducer(state: ViewedState, event: ViewedEvent): ViewedSta
       // A refresh replaced the snapshot: these hunks are gone, and only a reload reads the new ones.
       if (event.status.snapshotId !== state.snapshotId)
         return { ...state, busy: undefined, notice: { file: noticeFile(state), kind: "reload" } };
-      // A successful read recovers from a reload notice; a conflict stays said.
+      // A late reply read before progress already shown; it never moves the reader back.
+      if (event.status.revision < state.revision)
+        return state.busy ? { ...state, busy: undefined } : state;
+      // A successful read recovers from a reload notice; a conflict stays said. Progress read
+      // elsewhere says nothing of a failed write, so it keeps its Retry until resent.
       return {
         snapshotId: state.snapshotId,
         viewed: new Set(event.status.viewedHunkIds),
         revision: event.status.revision,
+        ...(state.intent?.failure !== undefined && { intent: state.intent }),
         ...(state.notice?.kind === "conflict" && { notice: state.notice }),
       };
     }

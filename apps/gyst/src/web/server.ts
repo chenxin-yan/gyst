@@ -5,8 +5,11 @@ import {
   type DaemonError,
   InternalError,
   ReplySchema,
+  SubscribeRequestSchema,
+  type SubscriptionEvent,
+  SubscriptionEventSchema,
 } from "@gyst/core";
-import { ByteSize, Clock, Effect, Schema } from "effect";
+import { ByteSize, Clock, Effect, Schema, Stream } from "effect";
 import * as HttpIncomingMessage from "effect/http/HttpIncomingMessage";
 import { HttpServerRequest } from "effect/http/HttpServerRequest";
 import * as HttpServerResponse from "effect/http/HttpServerResponse";
@@ -82,6 +85,11 @@ const decodeOperation = Schema.decodeUnknownEffect(Schema.fromJsonString(Browser
   onExcessProperty: "error",
 });
 const encodeReply = Schema.encodeSync(ReplySchema);
+const decodeSubscribe = Schema.decodeUnknownEffect(Schema.fromJsonString(SubscribeRequestSchema), {
+  onExcessProperty: "error",
+});
+const encodeEvent = Schema.encodeSync(SubscriptionEventSchema);
+const eventFrame = (event: SubscriptionEvent) => `data: ${JSON.stringify(encodeEvent(event))}\n\n`;
 
 const securityHeaders = {
   "cache-control": "no-store",
@@ -126,11 +134,43 @@ const operation = Effect.gen(function* () {
 });
 
 /**
+ * One session's daemon subscription as SSE frames, forwarded unchanged until the daemon ends it.
+ * A refusal or broken daemon stream becomes one final `failed` frame, since the status is already
+ * sent. The bridge keeps no state: the client closing interrupts this and closes the daemon
+ * subscription, and the browser resubscribes on any end.
+ */
+const events = Effect.gen(function* () {
+  const request = yield* HttpServerRequest;
+  const text = yield* request.text.pipe(
+    Effect.provideService(HttpIncomingMessage.MaxBodySize, maxOperationBytes),
+    Effect.option,
+  );
+  if (text._tag === "None")
+    return reply(400, { ok: false, error: new BadArgs({ message: "unreadable request body" }) });
+  const input = yield* decodeSubscribe(text.value).pipe(Effect.option);
+  if (input._tag === "None")
+    return reply(400, {
+      ok: false,
+      error: new BadArgs({ message: "expected one session subscription as JSON" }),
+    });
+  const client = yield* DaemonClient;
+  return HttpServerResponse.stream(
+    client.subscribe(input.value).pipe(
+      Stream.catch((error) => Stream.succeed({ kind: "failed", error } as const)),
+      Stream.map(eventFrame),
+      Stream.encodeText,
+    ),
+    { contentType: "text/event-stream", headers: securityHeaders },
+  );
+});
+
+/**
  * One launch's HTTP surface. Every request needs this launch's exact `Host`; POSTs also need a
  * matching `Origin`. The bootstrap exchanges the fragment secret for the host-only auth cookie,
- * and operations are strict `BrowserRequest`s forwarded unchanged to the daemon, whose `Reply` is
- * returned as is. Everything else is the packaged SPA: exact files, then the shell for client
- * routes, while `/api`, `/bootstrap` and `/assets` misses stay real errors.
+ * operations are strict `BrowserRequest`s forwarded unchanged to the daemon, whose `Reply` is
+ * returned as is, and events stream one session's daemon subscription under the same checks.
+ * Everything else is the packaged SPA: exact files, then the shell for client routes, while
+ * `/api`, `/bootstrap` and `/assets` misses stay real errors.
  */
 export const browserApp = (launch: Launch, assets: WebAssets) =>
   Effect.gen(function* () {
@@ -159,7 +199,7 @@ export const browserApp = (launch: Launch, assets: WebAssets) =>
     if (decoded.split("/").some((segment) => segment === "." || segment === ".."))
       return status(400);
 
-    if (path === webPaths.bootstrap || path === webPaths.operation) {
+    if (path === webPaths.bootstrap || path === webPaths.operation || path === webPaths.events) {
       if (request.method !== "POST") return status(405, { allow: "POST" });
       if (!isSameOrigin(host, single("origin"))) return status(403);
       if (path === webPaths.bootstrap)
@@ -168,7 +208,7 @@ export const browserApp = (launch: Launch, assets: WebAssets) =>
           : status(401);
       // Authenticate before reading the body.
       if (!hasAuthCookie(launch, request.headers.cookie)) return status(401);
-      return yield* operation;
+      return yield* path === webPaths.events ? events : operation;
     }
     if (under(decoded, "/api") || under(decoded, "/bootstrap")) return status(404);
     if (request.method !== "GET" && request.method !== "HEAD")

@@ -1,4 +1,4 @@
-import { CaptureProgressSchema, RequestSchema } from "@gyst/core";
+import { CaptureProgressSchema, RequestSchema, SubscribeRequestSchema } from "@gyst/core";
 import { Schema } from "effect";
 import { valid } from "semver";
 import packageJson from "../../package.json" with { type: "json" };
@@ -25,6 +25,12 @@ export const DaemonMessageSchema = Schema.Union([
     version: VersionSchema,
     instanceId: Schema.String,
     request: RequestSchema,
+  }),
+  /** The connection then carries `SubscriptionEvent` lines until the daemon ends it. */
+  Schema.Struct({
+    version: VersionSchema,
+    instanceId: Schema.String,
+    subscribe: SubscribeRequestSchema,
   }),
 ]);
 /**

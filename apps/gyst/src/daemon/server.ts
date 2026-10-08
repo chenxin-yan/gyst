@@ -8,6 +8,8 @@ import {
   type Reply,
   ReplySchema,
   type Request,
+  type SubscriptionEvent,
+  SubscriptionEventSchema,
 } from "@gyst/core";
 import {
   Context,
@@ -18,7 +20,9 @@ import {
   Latch,
   Option,
   type PlatformError,
+  Queue,
   Ref,
+  Result,
   Schedule,
   Schema,
 } from "effect";
@@ -36,6 +40,8 @@ const decodeRequest = Schema.decodeUnknownEffect(Schema.fromJsonString(DaemonMes
 });
 const encodeReply = Schema.encodeSync(Schema.fromJsonString(ReplySchema));
 const encodeProgress = Schema.encodeSync(Schema.fromJsonString(ProgressLineSchema));
+const encodeEvent = Schema.encodeSync(Schema.fromJsonString(SubscriptionEventSchema));
+type DaemonMessage = typeof DaemonMessageSchema.Type;
 
 const isAlreadyExists = (error: PlatformError.PlatformError | Socket.SocketError) =>
   error._tag === "PlatformError" && error.reason._tag === "AlreadyExists";
@@ -167,13 +173,68 @@ export class DaemonServer extends Context.Service<
       const restart = yield* Latch.make(false);
       const instanceId = crypto.randomUUID();
       let draining = false;
+      const identityChanged = () =>
+        new DaemonUnreachable({
+          message:
+            "daemon identity changed or upgrade is in progress; no review command was executed",
+        });
+
+      /**
+       * Streams one session's committed changes: `ready`, then each change, until `deleted`, the
+       * client hanging up, or the daemon exiting. A frame the client does not take within a second
+       * overflows the subscription: the connection is dropped rather than left silently stale, so
+       * the subscriber knows to resynchronize.
+       */
+      const serveSubscription = Effect.fn("DaemonServer.subscription")(function* (
+        message: Extract<DaemonMessage, { readonly subscribe: unknown }>,
+        pull: Effect.Effect<unknown, Socket.SocketError>,
+        writer: Socket.Writer,
+      ) {
+        const send = (event: SubscriptionEvent) =>
+          writer.write(`${encodeEvent(event)}\n`).pipe(Effect.timeout("1 second"));
+        const forward = Effect.gen(function* () {
+          if (draining || message.version !== daemonVersion || message.instanceId !== instanceId)
+            return yield* send({ kind: "failed", error: identityChanged() });
+          const subscribed = yield* Effect.result(sessions.subscribe(message.subscribe));
+          if (Result.isFailure(subscribed))
+            return yield* send({ kind: "failed", error: subscribed.failure });
+          const { version, events } = subscribed.success;
+          yield* send({ kind: "ready", daemon: instanceId, ...version });
+          while (true) {
+            const change = yield* Queue.take(events);
+            yield* send(change);
+            if (change.kind === "deleted") return;
+          }
+        });
+        // A hang-up ends the subscription now, not at the next change.
+        yield* Effect.raceFirst(forward, Effect.forever(pull)).pipe(
+          // Destroy rather than end: a stalled reader would hold a graceful close open forever.
+          Effect.catchTag("TimeoutError", () => writer.write(new Socket.CloseEvent())),
+        );
+      });
+
       const handleConnection = Effect.fnUntraced(
         function* (socket: Socket.Socket) {
+          // A subscription gives its count back once classified, so it never holds off a restart
+          // or idle exit; the daemon exiting closes it instead.
+          let counted = false;
+          const uncount = Effect.suspend(() => {
+            if (!counted) return Effect.void;
+            counted = false;
+            return Ref.update(active, (n) => n - 1);
+          });
           yield* Effect.acquireRelease(
-            Ref.update(active, (n) => n + 1),
-            () => Ref.update(active, (n) => n - 1),
+            Ref.update(active, (n) => n + 1).pipe(
+              Effect.andThen(
+                Effect.sync(() => {
+                  counted = true;
+                }),
+              ),
+            ),
+            () => uncount,
           );
-          const line = yield* readLine(yield* Socket.readerBytes(socket));
+          const pull = yield* Socket.readerBytes(socket);
+          const line = yield* readLine(pull);
           const writer = yield* socket.writer;
           const writeLine = (text: string) => writer.write(`${text}\n`);
           // Interim progress lines precede the reply, and never hold a capture up: after a client
@@ -192,7 +253,7 @@ export class DaemonServer extends Context.Service<
                 )
               : Effect.void;
           let restartAfterReply = false;
-          const reply: Reply = yield* decodeRequest(line).pipe(
+          const decoded = yield* decodeRequest(line).pipe(
             Effect.mapError(
               (error) =>
                 new BadArgs({
@@ -200,59 +261,54 @@ export class DaemonServer extends Context.Service<
                   detail: error.message,
                 }),
             ),
-            Effect.flatMap(
-              Effect.fnUntraced(function* (message) {
-                if ("command" in message && message.command === "daemon.info")
-                  return { version: daemonVersion, instanceId };
-                if ("command" in message) {
-                  if (
-                    message.instanceId !== instanceId ||
-                    compare(message.version, daemonVersion) <= 0
-                  )
-                    return { restarting: false };
-                  // Admission and draining change together; no request can slip between them.
-                  const admitted = yield* Ref.modify(active, (count) => {
-                    const ready = count === 1 && !draining;
-                    if (ready) draining = true;
-                    return [ready, count];
-                  });
-                  if (!admitted) return { restarting: false };
-                  const saved = yield* inspectSavedSessions.pipe(
-                    Effect.provideService(Paths, paths),
-                    Effect.provideService(FileSystem.FileSystem, fs),
-                    Effect.mapError(
-                      () =>
-                        new DaemonUnreachable({
-                          message: "could not verify saved reviews; daemon restart refused",
-                        }),
-                    ),
-                    Effect.onError(() =>
-                      Effect.sync(() => {
-                        draining = false;
-                      }),
-                    ),
-                  );
-                  if (saved.fingerprint !== message.fingerprint) {
-                    draining = false;
-                    return { restarting: false };
-                  }
-                  restartAfterReply = true;
-                  return { restarting: true };
-                }
-                if (
-                  draining ||
-                  message.version !== daemonVersion ||
-                  message.instanceId !== instanceId
-                )
-                  return yield* Effect.fail(
+            Effect.result,
+          );
+          if (Result.isFailure(decoded))
+            return yield* writeLine(encodeReply({ ok: false, error: decoded.failure }));
+          const message = decoded.success;
+          if ("subscribe" in message) {
+            yield* uncount;
+            return yield* serveSubscription(message, pull, writer);
+          }
+          const reply: Reply = yield* Effect.gen(function* () {
+            if ("command" in message && message.command === "daemon.info")
+              return { version: daemonVersion, instanceId };
+            if ("command" in message) {
+              if (message.instanceId !== instanceId || compare(message.version, daemonVersion) <= 0)
+                return { restarting: false };
+              // Admission and draining change together; no request can slip between them.
+              const admitted = yield* Ref.modify(active, (count) => {
+                const ready = count === 1 && !draining;
+                if (ready) draining = true;
+                return [ready, count];
+              });
+              if (!admitted) return { restarting: false };
+              const saved = yield* inspectSavedSessions.pipe(
+                Effect.provideService(Paths, paths),
+                Effect.provideService(FileSystem.FileSystem, fs),
+                Effect.mapError(
+                  () =>
                     new DaemonUnreachable({
-                      message:
-                        "daemon identity changed or upgrade is in progress; no review command was executed",
+                      message: "could not verify saved reviews; daemon restart refused",
                     }),
-                  );
-                return yield* dispatch(message.request, onProgress);
-              }),
-            ),
+                ),
+                Effect.onError(() =>
+                  Effect.sync(() => {
+                    draining = false;
+                  }),
+                ),
+              );
+              if (saved.fingerprint !== message.fingerprint) {
+                draining = false;
+                return { restarting: false };
+              }
+              restartAfterReply = true;
+              return { restarting: true };
+            }
+            if (draining || message.version !== daemonVersion || message.instanceId !== instanceId)
+              return yield* Effect.fail(identityChanged());
+            return yield* dispatch(message.request, onProgress);
+          }).pipe(
             Effect.map((value) => ({ ok: true as const, value })),
             Effect.catchIf(Schema.is(DaemonError), (error) =>
               Effect.succeed({ ok: false as const, error }),

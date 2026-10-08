@@ -150,6 +150,9 @@ describe("daemon wire envelopes", () => {
       "DeletePayloadSchema",
       "ViewedPayloadSchema",
       "ReplySchema",
+      "SessionVersionSchema",
+      "SubscribeRequestSchema",
+      "SubscriptionEventSchema",
       "ScopeSchema",
       "SessionSummarySchema",
       "HunkSchema",
@@ -226,6 +229,35 @@ describe("daemon wire envelopes", () => {
       "src/wire.ts",
     ]);
     expect([...external]).toEqual(["effect"]);
+  });
+
+  it("frames subscriptions as versioned invalidations, not state or history", () => {
+    const decodeEvent = Schema.decodeUnknownSync(publicWire.SubscriptionEventSchema, strict);
+    const version = { sessionId: "s1", snapshotId: snapshotId, revision: 4 };
+    for (const event of [
+      { kind: "ready", daemon: "instance", ...version },
+      { kind: "changed", ...version },
+      { kind: "deleted", sessionId: "s1" },
+    ])
+      expect(decodeEvent(event)).toEqual(event);
+    const failed = decodeEvent({ kind: "failed", error: { code: "no_session", message: "gone" } });
+    expect(failed.kind === "failed" && failed.error).toBeInstanceOf(NoSession);
+    for (const invalid of [
+      { kind: "ready", ...version },
+      { kind: "changed", ...version, viewedHunkIds: [] },
+      { kind: "changed", sessionId: "s1" },
+      { kind: "progress", ...version },
+    ])
+      expect(() => decodeEvent(invalid)).toThrow();
+    expect(() =>
+      Schema.decodeUnknownSync(
+        publicWire.SubscribeRequestSchema,
+        strict,
+      )({
+        session: "s1",
+        cwd: "/repo",
+      }),
+    ).toThrow();
   });
 
   it("accepts both reply variants", () => {

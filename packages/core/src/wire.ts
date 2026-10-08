@@ -232,6 +232,38 @@ export const RequestSchema = Schema.Union([
 ]);
 export type Request = typeof RequestSchema.Type;
 
+/** What a subscriber compares with what it shows; `revision` only grows within a session. */
+export const SessionVersionSchema = Schema.Struct({
+  sessionId: Schema.String,
+  snapshotId: Schema.String,
+  revision: Schema.Number,
+});
+export type SessionVersion = typeof SessionVersionSchema.Type;
+
+/** A subscription names one exact saved session, like every other browser operation. */
+export const SubscribeRequestSchema = Schema.Struct(exact);
+export type SubscribeRequest = typeof SubscribeRequestSchema.Type;
+
+/**
+ * One frame of a session subscription: committed-state invalidations, never history, so a
+ * subscriber rereads state rather than replaying frames. `ready` comes first; its version is read
+ * atomically with registration, so every later commit arrives as `changed`. `daemon` is the
+ * announcing daemon's instance id, its generation. `deleted` is terminal. `failed` means the
+ * subscription could not start or the daemon's stream broke. Any end other than `deleted` means
+ * resynchronize.
+ */
+export const SubscriptionEventSchema = Schema.Union([
+  Schema.Struct({
+    kind: Schema.Literal("ready"),
+    daemon: Schema.String,
+    ...SessionVersionSchema.fields,
+  }),
+  Schema.Struct({ kind: Schema.Literal("changed"), ...SessionVersionSchema.fields }),
+  Schema.Struct({ kind: Schema.Literal("deleted"), sessionId: Schema.String }),
+  Schema.Struct({ kind: Schema.Literal("failed"), error: ErrorPayloadSchema }),
+]);
+export type SubscriptionEvent = typeof SubscriptionEventSchema.Type;
+
 export const ReplySchema = Schema.Union([
   Schema.Struct({ ok: Schema.Literal(true), value: Schema.Unknown }),
   Schema.Struct({ ok: Schema.Literal(false), error: ErrorPayloadSchema }),

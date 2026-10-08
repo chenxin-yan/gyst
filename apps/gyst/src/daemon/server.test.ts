@@ -1,7 +1,15 @@
-import { afterAll, beforeAll, describe, expect, it } from "vite-plus/test";
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vite-plus/test";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as NodeSocket from "@effect/platform-node/NodeSocket";
-import { BadArgs, type Reply, ReplySchema, type Request, type Session } from "@gyst/core";
+import {
+  BadArgs,
+  type Reply,
+  ReplySchema,
+  type Request,
+  type Session,
+  type SubscriptionEvent,
+  SubscriptionEventSchema,
+} from "@gyst/core";
 import {
   Crypto,
   Deferred,
@@ -12,10 +20,12 @@ import {
   PlatformError,
   Schedule,
   Schema,
+  Stream,
 } from "effect";
 import * as Socket from "effect/socket/Socket";
 import { mkdtemp, readdir, rm } from "node:fs/promises";
-import { createServer } from "node:net";
+import { once } from "node:events";
+import { createConnection, createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { manifestOf, publishingContent } from "./capture-doubles.ts";
@@ -449,4 +459,295 @@ describe("DaemonServer", () => {
     expect(exit._tag).toBe("Failure");
     expect((await readdir(dataDir)).filter((name) => name.startsWith("daemon.sock"))).toEqual([]);
   });
+});
+
+const decodeEvent = Schema.decodeUnknownSync(Schema.fromJsonString(SubscriptionEventSchema), {
+  onExcessProperty: "error",
+});
+type Info = typeof DaemonInfoSchema.Type;
+/** Starts the daemon and returns its fiber and identity once it answers. */
+const started = Effect.gen(function* () {
+  const server = yield* DaemonServer;
+  const running = yield* Effect.forkChild(server.run);
+  const hello = yield* exchange({ command: "daemon.info" }).pipe(
+    Effect.retry({ schedule: Schedule.spaced("10 millis"), times: 100 }),
+  );
+  if (!hello.ok) throw new Error("handshake failed");
+  return { running, info: Schema.decodeUnknownSync(DaemonInfoSchema)(hello.value) };
+});
+/** A raw subscription over the socket; each pull is the next decoded frame. */
+const subscribeRaw = Effect.fn("subscribeRaw")(function* (message: unknown) {
+  const socket = yield* NodeSocket.makeNet({ path: socketPath });
+  const next = lineReader(yield* Socket.readerBytes(socket));
+  yield* writeLine(socket, JSON.stringify(message));
+  return Effect.map(next, decodeEvent);
+});
+const subscribe = (info: Info, session: string) =>
+  subscribeRaw({ ...info, subscribe: { session } });
+/** The daemon ended the connection: the next read sees a clean close. */
+const ended = (next: Effect.Effect<SubscriptionEvent, Socket.SocketError>) =>
+  next.pipe(
+    Effect.flip,
+    Effect.map((error) => error.reason._tag),
+    Effect.timeout("2 seconds"),
+  );
+const versionOf = (id: string) => {
+  const session = files.get(id)!;
+  return { sessionId: id, snapshotId: session.snapshotId, revision: session.revision };
+};
+/** Toggles Viewed on the session's first hunk against its saved revision. */
+const toggle = (info: Info, id: string, n: number) => {
+  const session = files.get(id)!;
+  return exchange({
+    ...info,
+    request: {
+      command: "viewed",
+      session: id,
+      snapshotId: session.snapshotId,
+      revision: session.revision,
+      requestId: `${id}-${n}`,
+      hunkIds: [session.hunks[0]!.id],
+      viewed: n % 2 === 0,
+    },
+  });
+};
+
+describe("DaemonServer subscriptions", () => {
+  // Each test's daemon loads `files`; earlier tests leave sessions there.
+  beforeEach(() => files.clear());
+
+  it("streams ready, each committed change, then deleted and EOF", async () => {
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        const { running, info } = yield* started;
+        const id = openedId(yield* open("/subscribed"));
+        const next = yield* subscribe(info, id);
+        expect(yield* next).toEqual({ kind: "ready", daemon: info.instanceId, ...versionOf(id) });
+        expect(ok(yield* toggle(info, id, 0))).toBe(true);
+        expect(yield* next).toEqual({ kind: "changed", ...versionOf(id) });
+        expect(ok(yield* toggle(info, id, 1))).toBe(true);
+        expect(yield* next).toEqual({ kind: "changed", ...versionOf(id) });
+        expect(ok(yield* remove(id))).toBe(true);
+        expect(yield* next).toEqual({ kind: "deleted", sessionId: id });
+        expect(yield* ended(next)).toBe("SocketCloseError");
+        // Nothing else holds the daemon: the final delete still lets it exit idle.
+        yield* Fiber.join(running).pipe(Effect.timeout("2 seconds"));
+      }).pipe(Effect.scoped, Effect.provide(serverLayer)),
+    );
+  }, 10_000);
+
+  it("refuses an unknown session or a stale identity with one failed frame", async () => {
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        const { running, info } = yield* started;
+        const id = openedId(yield* open("/refused"));
+        const before = files.get(id);
+        const unknown = yield* subscribe(info, "missing");
+        expect(yield* unknown).toMatchObject({ kind: "failed", error: { _tag: "no_session" } });
+        expect(yield* ended(unknown)).toBe("SocketCloseError");
+        for (const stale of [
+          { ...info, instanceId: "another-daemon" },
+          { ...info, version: "0.0.0" },
+        ]) {
+          const next = yield* subscribeRaw({ ...stale, subscribe: { session: id } });
+          expect(yield* next).toMatchObject({
+            kind: "failed",
+            error: { _tag: "daemon_unreachable", message: expect.stringContaining("identity") },
+          });
+          expect(yield* ended(next)).toBe("SocketCloseError");
+        }
+        // An excess field is a bad request, answered like any other, not a subscription.
+        const reply = yield* exchange({ ...info, subscribe: { session: id, extra: true } });
+        expect(reply.ok ? reply : reply.error).toMatchObject({ _tag: "bad_args" });
+        expect(files.get(id)).toBe(before);
+        yield* Fiber.interrupt(running);
+      }).pipe(Effect.scoped, Effect.provide(serverLayer)),
+    );
+  }, 10_000);
+
+  it("never misses a mutation that races the subscription", async () => {
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        const { running, info } = yield* started;
+        const id = openedId(yield* open("/race"));
+        const seen = { inReady: 0, asChange: 0 };
+        for (let n = 0; n < 20; n++) {
+          yield* Effect.scoped(
+            Effect.gen(function* () {
+              const [next, mutated] = yield* Effect.all(
+                [
+                  Effect.sleep(`${n % 4} millis`).pipe(Effect.andThen(subscribe(info, id))),
+                  toggle(info, id, n),
+                ],
+                { concurrency: "unbounded" },
+              );
+              expect(ok(mutated)).toBe(true);
+              const final = versionOf(id).revision;
+              const ready = yield* next;
+              if (ready.kind !== "ready") throw new Error(`expected ready, got ${ready.kind}`);
+              if (ready.revision === final) return void seen.inReady++;
+              expect(yield* next.pipe(Effect.timeout("2 seconds"))).toEqual({
+                kind: "changed",
+                ...versionOf(id),
+              });
+              seen.asChange++;
+            }),
+          );
+        }
+        expect(seen.inReady + seen.asChange).toBe(20);
+        yield* Fiber.interrupt(running);
+      }).pipe(Effect.provide(serverLayer)),
+    );
+  }, 20_000);
+
+  it("drops a subscriber that stops reading, which resubscribes at the final revision", async () => {
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        const { running, info } = yield* started;
+        const id = openedId(yield* open("/overflow"));
+        // Never read: the daemon's writes back up until one takes longer than a second.
+        const stalled = createConnection(socketPath);
+        stalled.on("error", () => {});
+        yield* Effect.promise(() => once(stalled, "connect"));
+        stalled.write(`${JSON.stringify({ ...info, subscribe: { session: id } })}\n`);
+        const deadline = Date.now() + 15_000;
+        let n = 0;
+        while (!stalled.destroyed && Date.now() < deadline) {
+          expect(ok(yield* toggle(info, id, n++))).toBe(true);
+          // The daemon reads and ignores these; once it has dropped the connection, writing fails.
+          if (n % 50 === 0) stalled.write(" ");
+        }
+        expect(stalled.destroyed).toBe(true);
+        const next = yield* subscribe(info, id);
+        expect(yield* next).toEqual({ kind: "ready", daemon: info.instanceId, ...versionOf(id) });
+        expect(versionOf(id).revision).toBe(n);
+        yield* Fiber.interrupt(running);
+      }).pipe(Effect.scoped, Effect.provide(serverLayer)),
+    );
+  }, 30_000);
+
+  it("admits a newer daemon's restart with a subscription open, which then ends", async () => {
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        const first = yield* Effect.gen(function* () {
+          const { running, info } = yield* started;
+          const id = openedId(yield* open("/restart"));
+          expect(ok(yield* toggle(info, id, 0))).toBe(true);
+          const next = yield* subscribe(info, id);
+          expect(yield* next).toMatchObject({ kind: "ready", revision: versionOf(id).revision });
+          const saved = yield* inspectSavedSessions;
+          expect(
+            yield* exchange({
+              command: "daemon.restart",
+              version: "999.0.0",
+              instanceId: info.instanceId,
+              fingerprint: saved.fingerprint,
+            }),
+          ).toEqual({ ok: true, value: { restarting: true } });
+          expect(yield* ended(next)).toBe("SocketCloseError");
+          yield* Fiber.join(running).pipe(Effect.timeout("2 seconds"));
+          return { info, id };
+        }).pipe(Effect.scoped, Effect.provide(serverLayer));
+        // The next daemon is a new generation over the same committed state.
+        yield* Effect.gen(function* () {
+          const { running, info } = yield* started;
+          expect(info.instanceId).not.toBe(first.info.instanceId);
+          const next = yield* subscribe(info, first.id);
+          expect(yield* next).toEqual({
+            kind: "ready",
+            daemon: info.instanceId,
+            ...versionOf(first.id),
+          });
+          expect(versionOf(first.id).revision).toBe(1);
+          yield* Fiber.interrupt(running);
+        }).pipe(Effect.scoped, Effect.provide(serverLayer));
+      }).pipe(Effect.provide(paths), Effect.provide(NodeServices.layer)),
+    );
+  }, 10_000);
+});
+
+describe("DaemonClient.subscribe over the daemon socket", () => {
+  beforeEach(() => files.clear());
+  const clientLayer = DaemonClient.layer.pipe(
+    Layer.provide(paths),
+    Layer.provide(NodeServices.layer),
+  );
+
+  it("yields ready then changes, fails for an unknown session, and closes when the consumer stops", async () => {
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        const { running, info } = yield* started;
+        const client = yield* DaemonClient;
+        const id = openedId(yield* open("/client"));
+        expect(
+          yield* client.subscribe({ session: "missing" }).pipe(Stream.runCollect, Effect.flip),
+        ).toMatchObject({ _tag: "no_session" });
+
+        const heard: SubscriptionEvent[] = [];
+        const consumer = yield* Effect.forkChild(
+          Stream.runForEach(client.subscribe({ session: id }), (event) =>
+            Effect.sync(() => void heard.push(event)),
+          ),
+        );
+        const heardCount = (count: number) =>
+          Effect.sync(() => heard.length).pipe(
+            Effect.repeat({ until: (n) => n >= count, schedule: Schedule.spaced("5 millis") }),
+            Effect.timeout("2 seconds"),
+          );
+        yield* heardCount(1);
+        expect(ok(yield* toggle(info, id, 0))).toBe(true);
+        yield* heardCount(2);
+        expect(heard).toEqual([
+          { kind: "ready", daemon: info.instanceId, ...versionOf(id), revision: 0 },
+          { kind: "changed", ...versionOf(id) },
+        ]);
+        yield* Fiber.interrupt(consumer);
+        expect(ok(yield* toggle(info, id, 1))).toBe(true);
+        const again = yield* client
+          .subscribe({ session: id })
+          .pipe(Stream.take(1), Stream.runCollect);
+        expect(again).toEqual([{ kind: "ready", daemon: info.instanceId, ...versionOf(id) }]);
+        yield* Fiber.interrupt(running);
+      }).pipe(Effect.provide(Layer.merge(serverLayer, clientLayer))),
+    );
+  }, 10_000);
+
+  it("ends when the daemon exits, and resubscribing reaches the next daemon at the same revision", async () => {
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        const client = yield* DaemonClient;
+        const first = yield* Effect.gen(function* () {
+          const { running, info } = yield* started;
+          const id = openedId(yield* open("/client-restart"));
+          expect(ok(yield* toggle(info, id, 0))).toBe(true);
+          const heard: SubscriptionEvent[] = [];
+          const consumer = yield* Effect.forkChild(
+            Stream.runForEach(client.subscribe({ session: id }), (event) =>
+              Effect.sync(() => void heard.push(event)),
+            ),
+          );
+          yield* Effect.sync(() => heard.length).pipe(
+            Effect.repeat({ until: (n) => n >= 1, schedule: Schedule.spaced("5 millis") }),
+            Effect.timeout("2 seconds"),
+          );
+          yield* Fiber.interrupt(running);
+          // A daemon exit is a clean end of the stream, not a failure.
+          yield* Fiber.join(consumer).pipe(Effect.timeout("2 seconds"));
+          expect(heard).toEqual([{ kind: "ready", daemon: info.instanceId, ...versionOf(id) }]);
+          return { info, id };
+        }).pipe(Effect.provide(serverLayer));
+        yield* Effect.gen(function* () {
+          const { running, info } = yield* started;
+          expect(info.instanceId).not.toBe(first.info.instanceId);
+          const again = yield* client
+            .subscribe({ session: first.id })
+            .pipe(Stream.take(1), Stream.runCollect);
+          expect(again).toEqual([
+            { kind: "ready", daemon: info.instanceId, ...versionOf(first.id), revision: 1 },
+          ]);
+          yield* Fiber.interrupt(running);
+        }).pipe(Effect.provide(serverLayer));
+      }).pipe(Effect.provide(clientLayer)),
+    );
+  }, 10_000);
 });

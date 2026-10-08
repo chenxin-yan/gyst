@@ -54,6 +54,7 @@ const longTs = (edited: boolean) =>
     )
     .join("");
 const isOperationUrl = (url: URL) => url.pathname === "/api/operation";
+const isEventsUrl = (url: URL) => url.pathname === "/api/events";
 const operationOf = (request: PageRequest) =>
   request.method() === "POST" && isOperationUrl(new URL(request.url()))
     ? request.postDataJSON()
@@ -138,10 +139,15 @@ const ownDaemon = (pid: number) =>
   commandLine(pid).includes(installed.prefix) &&
   commandLine(pid).endsWith(" daemon run");
 
+/** Each test page's operations on the wire, which `settled` waits out. */
+const operationsInFlight = new WeakMap<Page, Set<PageRequest>>();
+
 /**
  * A page closed after its test, which must see exactly the listed HTTP error responses
  * (`<path> <status>`) and problems: failed requests, page errors and console errors. Chromium's
- * "Failed to load resource" lines only repeat those responses and failures.
+ * "Failed to load resource" lines only repeat those responses and failures. A session page's
+ * event stream fails by design whenever it is left, closed or its launcher stops, so only its
+ * responses count.
  */
 async function newPage(
   from: BrowserContext = context,
@@ -155,7 +161,17 @@ async function newPage(
     if (response.status() >= 400)
       seen.responses.push(`${path(response.url())} ${response.status()}`);
   });
-  page.on("requestfailed", (request) => seen.problems.push(`requestfailed ${path(request.url())}`));
+  page.on("requestfailed", (request) => {
+    if (!isEventsUrl(new URL(request.url())))
+      seen.problems.push(`requestfailed ${path(request.url())}`);
+  });
+  const operations = new Set<PageRequest>();
+  operationsInFlight.set(page, operations);
+  page.on("request", (request) => {
+    if (isOperationUrl(new URL(request.url()))) operations.add(request);
+  });
+  page.on("requestfinished", (request) => operations.delete(request));
+  page.on("requestfailed", (request) => operations.delete(request));
   page.on("pageerror", (error) => seen.problems.push(`pageerror ${error.message}`));
   page.on("console", (message) => {
     if (message.type() === "error" && !message.text().startsWith("Failed to load resource:"))
@@ -167,6 +183,49 @@ async function newPage(
     expect(snapshot).toEqual({ responses: [], problems: [], ...expected });
   });
   return page;
+}
+
+/**
+ * Waits until no operation of the page has been on the wire for 500 ms. A session page's event
+ * stream stays open, so the network itself never goes idle.
+ */
+async function settled(page: Page) {
+  const operations = operationsInFlight.get(page)!;
+  let quiet = performance.now();
+  await waitFor(() => {
+    if (operations.size > 0) quiet = performance.now();
+    return performance.now() - quiet >= 500;
+  }, "the page's operations to settle");
+}
+
+/** Leaves the page's session streams unanswered, so it never hears of changes made elsewhere. */
+const holdEvents = (page: Page) => page.route(isEventsUrl, () => {});
+
+/**
+ * Holds the page's first `count` status reads once `armed`: each is sent to the real bridge, and
+ * its answer waits until released.
+ */
+async function heldStatusReads(page: Page, count: number, armed: () => boolean) {
+  const gates = Array.from({ length: count }, () => Promise.withResolvers<void>());
+  const fetched = new Set<number>();
+  let reads = 0;
+  await page.route(isOperationUrl, async (route) => {
+    if (!armed() || route.request().postDataJSON()?.command !== "status") return route.fallback();
+    const n = reads++;
+    if (n >= count) return route.fallback();
+    const response = await route.fetch();
+    fetched.add(n);
+    await gates[n]!.promise;
+    await route.fulfill({ response });
+  });
+  return {
+    reads: () => reads,
+    fetched: (n: number, what: string) => waitFor(() => fetched.has(n), what),
+    release: (n: number) => gates[n]!.resolve(),
+    releaseAll: () => {
+      for (const gate of gates) gate.resolve();
+    },
+  };
 }
 
 /** Sends the page's next delete to the real bridge, then drops its reply like a cut connection. */
@@ -240,6 +299,56 @@ const viewedOf = (page: Page) => {
   });
   return writes;
 };
+/** The revisions the page's answered status reads returned, in order. */
+const statusReadsOf = (page: Page) => {
+  const revisions: number[] = [];
+  page.on("response", async (response) => {
+    if (operationOf(response.request())?.command !== "status") return;
+    const reply = await response.json().catch(() => undefined);
+    if (reply?.ok) revisions.push(reply.value.revision);
+  });
+  return revisions;
+};
+/** Where the reader is: its status line without the progress count, and its panel's scroll. */
+const positionOf = async (page: Page) => ({
+  status: (await statusLine(page).innerText()).replace(/\d+\/\d+ hunks? viewed/, ""),
+  scrollTop: await page.getByRole("main").evaluate((main) => {
+    const scroller = [main, ...main.querySelectorAll("*")].find(
+      (element) =>
+        getComputedStyle(element).overflowY === "auto" &&
+        element.scrollHeight > element.clientHeight,
+    );
+    return scroller?.scrollTop;
+  }),
+});
+
+/** A fresh saved session of `range`, deleted after the test: later tests count saved sessions. */
+async function freshSession(range = "main...live") {
+  const id = await openRange(range);
+  onTestFinished(() =>
+    gyst("session", "delete", "--session", id, "--request-id", randomBytes(16).toString("hex")),
+  );
+  return id;
+}
+/** A foreground launch of a saved session, stopped like Ctrl-C after the test. */
+async function launchFor(id: string) {
+  const launched = await launch("--session", id);
+  onTestFinished(async () => {
+    await stop(launched.proc, "SIGINT");
+  });
+  return launched;
+}
+/** A CLI apply of no ops: a change committed elsewhere that only raises the revision. */
+async function applyFromCli(id: string): Promise<number> {
+  const { revision } = await gyst("session", "status", "--session", id);
+  const batch = { revision, idempotencyKey: randomBytes(16).toString("hex"), ops: [] };
+  const applied = await run(installed.bin, ["session", "apply", "--session", id], {
+    cwd: repo,
+    env,
+    stdin: JSON.stringify(batch),
+  });
+  return json(applied).revision;
+}
 
 /**
  * A raw request to a launch's listener with explicit headers, as a hostile client could send;
@@ -255,6 +364,11 @@ const raw = (
       { host: "127.0.0.1", port, method, path, headers, setHost: false },
       (response) => {
         response.once("error", reject);
+        // An accepted event stream stays open: its status is all there is to read.
+        if (response.headers["content-type"]?.startsWith("text/event-stream")) {
+          resolve(response.statusCode);
+          return request.destroy();
+        }
         response.once("end", () => resolve(response.statusCode));
         response.resume();
       },
@@ -374,6 +488,18 @@ describe("installed gyst in a sandboxed browser", () => {
       git("add", ".");
       git("commit", "-qm", edited ? "large" : "large base");
     }
+    // main...live edits README.md, app.ts and src/long.ts once each: three hunks in three files,
+    // a fresh saved session for each live-review test.
+    git("switch", "-q", "main");
+    git("switch", "-qc", "live");
+    await writeFile(join(repo, "app.ts"), "const a = 1;\nconst b = 'live-edit';\ncontext();\n");
+    await writeFile(
+      join(repo, "README.md"),
+      `${await readFile(join(repo, "README.md"), "utf8")}A live line\n`,
+    );
+    await writeFile(join(repo, "src", "long.ts"), longTs(true));
+    git("add", ".");
+    git("commit", "-qm", "live");
     git("switch", "-q", "main");
     git("switch", "-qc", "feature");
     await writeFile(join(repo, "feature.ts"), "export const feature = 'range-only';\n");
@@ -403,7 +529,8 @@ describe("installed gyst in a sandboxed browser", () => {
       ...(chromiumPath ? { executablePath: chromiumPath } : { channel: "chrome" }),
       chromiumSandbox: true,
       headless: true,
-      timeout: 20_000,
+      // A cold Chrome on a shared CI runner can take longer than 20 s to start.
+      timeout: 60_000,
       // Proxy bypass selects direct transport; .localhost resolves natively (no hosts/resolver maps).
       proxy: { server: "http://127.0.0.1:9", bypass: ".localhost,127.0.0.1" },
       env: { ...env, TMPDIR: join(root, "tmp") },
@@ -1058,8 +1185,10 @@ describe("installed gyst in a sandboxed browser", () => {
     await says(page, "1/3 hunks viewed in 4 files");
   }, 30_000);
 
-  it("conflicts a stale Viewed write from another page without overwriting, and retries a lost reply with the same request id", async () => {
+  it("conflicts a stale Viewed write from another page without overwriting, and replays a lost reply with the same request id", async () => {
     const [first, second] = [await newPage(), await newPage()];
+    // The second page stays deliberately stale: it never hears of the first page's write.
+    await holdEvents(second);
     for (const page of [first, second]) {
       await page.setViewportSize({ width: 1280, height: 800 });
       await page.goto(`${one.origin}${one.path}`);
@@ -1097,26 +1226,27 @@ describe("installed gyst in a sandboxed browser", () => {
       await route.abort();
     });
     await third.goto(`${one.origin}${one.path}`);
-    // The lost reply leaves the box as the daemon last said, with the failure beside it.
-    await viewedBox(third, "src/long.ts").click();
-    const failure = third
-      .getByRole("main")
-      .getByRole("alert")
-      .filter({ hasText: "Couldn't save Viewed" });
-    await failure.waitFor();
-    // The daemon applied it; only the reply was lost.
-    expect((await gyst("session", "status", "--session", one.id)).viewedHunkIds).toHaveLength(2);
+    await viewedBox(third, "src/long.ts").waitFor();
+    await settled(third);
     commands.length = 0;
-    await failure.getByRole("button", { name: "Retry" }).click();
+    // The daemon applies it and only the reply is lost. The page's stream announces the change,
+    // so the page resends the same request, which its receipt answers, without a click.
+    await viewedBox(third, "src/long.ts").click();
     await says(third, "2/3 hunks viewed in 4 files");
+    // A replayed answer may replay history, so status is read again before any new write.
+    await waitFor(
+      async () => commands.join() === "viewed,viewed,status",
+      "the replay and the status read after it",
+    );
     expect(writes).toHaveLength(2);
     expect(writes[1]).toEqual(writes[0]);
-    // A retried answer may replay history, so status is read again before any new write.
-    await waitFor(async () => commands.join() === "viewed,status", "status read after the retry");
     expect(await viewedBox(third, "src/long.ts").isChecked()).toBe(false);
+    expect((await gyst("session", "status", "--session", one.id)).viewedHunkIds).toHaveLength(2);
 
     // A reread that fails blocks every write until a reload of the same snapshot reads progress.
     const fourth = await newPage(context, { responses: ["/api/operation 503"] });
+    // Stale like the second page, so its write conflicts and its reread is the one refused.
+    await holdEvents(fourth);
     await fourth.setViewportSize({ width: 1280, height: 800 });
     const blocked = viewedOf(fourth);
     await fourth.goto(`${one.origin}${one.path}`);
@@ -1463,11 +1593,13 @@ describe("installed gyst in a sandboxed browser", () => {
     const refreshed = await snapshotOf();
     expect(refreshed).not.toBe(captured);
     release();
-    await page.getByRole("alert").getByText("is not the current snapshot").waitFor();
-    expect(await page.getByRole("button", { name: "Retry loading files" }).count()).toBe(0);
-    await page.getByRole("button", { name: "Reload session" }).click();
-    // The last unchanged file arrives with the later page; the changed one was listed from the start.
     const tree = page.getByRole("navigation", { name: "gyst" });
+    await tree.getByRole("alert").getByText("is not the current snapshot").waitFor();
+    // The session's stream announced the refresh too.
+    await statusLine(page).getByRole("alert").getByText("This session was refreshed.").waitFor();
+    expect(await page.getByRole("button", { name: "Retry loading files" }).count()).toBe(0);
+    await tree.getByRole("button", { name: "Reload session" }).click();
+    // The last unchanged file arrives with the later page; the changed one was listed from the start.
     await tree.getByRole("button", { name: "Expand bulk" }).click();
     await tree.getByRole("button", { name: "bulk/399.txt", exact: true }).waitFor();
     await tree.getByRole("button", { name: "paged.ts (added)" }).waitFor();
@@ -1569,7 +1701,7 @@ describe("installed gyst in a sandboxed browser", () => {
       .getByRole("button", { name: "paged.ts (added)" })
       .waitFor();
     release.resolve();
-    await page.waitForLoadState("networkidle");
+    await settled(page);
     await new Promise((resolve) => setTimeout(resolve, 300));
     expect(await page.getByRole("alert").count()).toBe(0);
     expect(await page.getByRole("main").getByRole("status").count()).toBe(0);
@@ -1691,6 +1823,7 @@ describe("installed gyst in a sandboxed browser", () => {
     const host = `${one.hostname}:${one.port}`;
     const origin = `http://${host}`;
     const op = JSON.stringify({ command: "list" });
+    const subscription = JSON.stringify({ session: one.id });
     const good = { host, origin, cookie: `gyst_auth=${cookie!.value}` };
     const post = (path: string, headers: Record<string, string>, body?: string) => ({
       method: "POST",
@@ -1742,6 +1875,36 @@ describe("installed gyst in a sandboxed browser", () => {
       ],
       "excess field": [
         post("/api/operation", good, JSON.stringify({ command: "list", x: 1 })),
+        400,
+      ],
+      // The session stream answers to the same rules as an operation.
+      "authorized events": [post("/api/events", good, subscription), 200],
+      "GET events": [{ path: "/api/events", headers: good }, 405],
+      "events no origin": [post("/api/events", { host, cookie: good.cookie }, subscription), 403],
+      "events cross origin": [
+        post("/api/events", { ...good, origin: "http://evil.localhost" }, subscription),
+        403,
+      ],
+      "events other launch host": [
+        post("/api/events", { ...good, host: `${two.hostname}:${one.port}` }, subscription),
+        403,
+      ],
+      "events forwarded": [
+        post("/api/events", { ...good, forwarded: "host=evil" }, subscription),
+        403,
+      ],
+      "events x-forwarded-host": [
+        post("/api/events", { ...good, "x-forwarded-host": "evil" }, subscription),
+        403,
+      ],
+      "events no cookie": [post("/api/events", { host, origin }, subscription), 401],
+      "events cross-launch cookie": [
+        post("/api/events", { ...good, cookie: `gyst_auth=${cookie2!.value}` }, subscription),
+        401,
+      ],
+      "events malformed body": [post("/api/events", good, "{"), 400],
+      "events excess field": [
+        post("/api/events", good, JSON.stringify({ session: one.id, x: 1 })),
         400,
       ],
     } as const;
@@ -2035,8 +2198,732 @@ describe("installed gyst in a sandboxed browser", () => {
     expect(new URL(page.url()).port).toBe(String(forward));
     expect(sshd.log()).toContain("Accepted publickey");
     expect(client.log()).toContain("is known and matches the ED25519 host key");
+    // The session's event stream runs over the same forward.
+    await says(page, "Live");
     // Eager captured-file reads settle first, so stopping the launcher doesn't fail one mid-flight.
-    await page.waitForLoadState("networkidle");
+    await settled(page);
     expect(await stop(four.proc, "SIGINT")).toBe(130);
   }, 30_000);
+
+  // Live review: each test opens a fresh main...live session on launches of its own.
+  const idsIn = async (id: string, file: string) =>
+    (await gyst("session", "diff", "--session", id)).hunks
+      .filter((hunk: { file: string }) => hunk.file === file)
+      .map((hunk: { id: string }) => hunk.id);
+  // A set: the daemon's order of Viewed hunk ids is not part of these tests.
+  const viewedIn = async (id: string) =>
+    new Set((await gyst("session", "status", "--session", id)).viewedHunkIds);
+  /** From the first file: to src/long.ts's change, down past the first screen, three lines selected. */
+  const readingKeys = [
+    "]",
+    "c",
+    "]",
+    "c",
+    "]",
+    "c",
+    ...Array.from({ length: 12 }, () => "j"),
+    "Shift+V",
+    "j",
+    "j",
+  ];
+  const pause = (page: Page, ms: number) =>
+    page.evaluate((wait) => new Promise((resolve) => setTimeout(resolve, wait)), ms);
+  /**
+   * The page is connected again but still shows `progress` from before: it says so, and a click
+   * on `file`'s Viewed box sends and queues nothing.
+   */
+  const synchronizingWithout = async (
+    page: Page,
+    writes: unknown[],
+    file: string,
+    progress: string,
+  ) => {
+    await says(page, "Synchronizing…");
+    await says(page, "Reading what changed meanwhile. Viewed changes are paused.");
+    await says(page, progress);
+    const sent = writes.length;
+    await viewedBox(page, file).click();
+    await pause(page, 300);
+    expect(writes).toHaveLength(sent);
+    expect(await viewedBox(page, file).isChecked()).toBe(false);
+  };
+
+  it("shares committed Viewed progress live between two viewers and the CLI, leaving the other viewer's cursor, selection and scroll", async () => {
+    const id = await freshSession();
+    const launched = await launchFor(id);
+    const [a, b] = [await newPage(), await newPage()];
+    const reads = statusReadsOf(b);
+    const writes = viewedOf(b);
+    for (const page of [a, b]) await page.setViewportSize({ width: 1280, height: 800 });
+    await go(a, launched.url);
+    await b.goto(`${launched.origin}${launched.path}`);
+    for (const page of [a, b]) {
+      await says(page, "Live");
+      await says(page, "0/3 hunks viewed in 3 files");
+    }
+    // B reads into src/long.ts's change with three lines selected.
+    await keys(b, ...readingKeys);
+    await says(b, "3 lines selected");
+    await settled(b);
+    const position = await positionOf(b);
+    expect(position.scrollTop).toBeGreaterThan(0);
+
+    await viewedBox(a, "README.md").check();
+    await says(a, "1/3 hunks viewed in 3 files");
+    await says(b, "1/3 hunks viewed in 3 files");
+    expect(await viewedBox(b, "README.md").isChecked()).toBe(true);
+    const readme = await idsIn(id, "README.md");
+    expect(await viewedIn(id)).toEqual(new Set(readme));
+    await settled(b);
+    expect(await positionOf(b)).toEqual(position);
+
+    // A CLI apply is read again too, so B's next write names the CLI's revision and applies.
+    const revision = await applyFromCli(id);
+    await waitFor(() => reads.includes(revision), "B to read the CLI's revision");
+    await settled(b);
+    expect(await positionOf(b)).toEqual(position);
+    expect(writes).toEqual([]);
+    await viewedBox(b, "app.ts").check();
+    await says(b, "2/3 hunks viewed in 3 files");
+    await says(a, "2/3 hunks viewed in 3 files");
+    const app = await idsIn(id, "app.ts");
+    expect(writes).toEqual([expect.objectContaining({ revision, hunkIds: app, viewed: true })]);
+    expect(await b.getByText("Not saved", { exact: false }).count()).toBe(0);
+    expect(await viewedIn(id)).toEqual(new Set([...readme, ...app]));
+  }, 60_000);
+
+  it("brings a viewer whose first subscription was held up to a change made before it subscribed", async () => {
+    const id = await freshSession();
+    const launched = await launchFor(id);
+    const [a, b] = [await newPage(), await newPage()];
+    for (const page of [a, b]) await page.setViewportSize({ width: 1280, height: 800 });
+    let held = false;
+    const { promise: released, resolve: release } = Promise.withResolvers<void>();
+    await b.route(isEventsUrl, async (route) => {
+      if (held) return route.continue();
+      held = true;
+      await released;
+      await route.continue();
+    });
+    await go(a, launched.url);
+    await says(a, "Live");
+    try {
+      // B has read status, but its subscription has not reached the daemon yet.
+      await b.goto(`${launched.origin}${launched.path}`);
+      await says(b, "0/3 hunks viewed in 3 files");
+      await waitFor(() => held, "B's first subscription to be held");
+      await says(b, "Connecting…");
+      await viewedBox(a, "README.md").check();
+      await says(a, "1/3 hunks viewed in 3 files");
+      expect(await viewedIn(id)).toEqual(new Set(await idsIn(id, "README.md")));
+      await says(b, "0/3 hunks viewed in 3 files");
+    } finally {
+      release();
+    }
+    // The subscription's ready names the newer revision, so B reads status again.
+    await says(b, "Live");
+    await says(b, "1/3 hunks viewed in 3 files");
+    expect(await viewedBox(b, "README.md").isChecked()).toBe(true);
+  }, 60_000);
+
+  it("coalesces changes announced while a viewer's status read is held into one more read of the final state", async () => {
+    const id = await freshSession();
+    const launched = await launchFor(id);
+    const [a, b] = [await newPage(), await newPage()];
+    for (const page of [a, b]) await page.setViewportSize({ width: 1280, height: 800 });
+    const reads: unknown[] = [];
+    let armed = false;
+    let fetched = false;
+    const { promise: released, resolve: release } = Promise.withResolvers<void>();
+    await b.route(isOperationUrl, async (route) => {
+      if (!armed || route.request().postDataJSON()?.command !== "status") return route.continue();
+      reads.push(route.request().postDataJSON());
+      if (reads.length > 1) return route.continue();
+      // Read at once, answered later: the reply is the state after the first change only.
+      const response = await route.fetch();
+      fetched = true;
+      await released;
+      await route.fulfill({ response });
+    });
+    await go(a, launched.url);
+    await b.goto(`${launched.origin}${launched.path}`);
+    for (const page of [a, b]) {
+      await says(page, "Live");
+      await settled(page);
+    }
+    armed = true;
+    try {
+      await viewedBox(a, "README.md").check();
+      await says(a, "1/3 hunks viewed in 3 files");
+      await waitFor(() => fetched, "B's status read of the first change");
+      await viewedBox(a, "app.ts").check();
+      await says(a, "2/3 hunks viewed in 3 files");
+      await viewedBox(a, "src/long.ts").check();
+      await says(a, "3/3 hunks viewed in 3 files");
+      // B hears of both later changes while its one read is still out.
+      await pause(b, 500);
+      expect(reads).toHaveLength(1);
+      await says(b, "0/3 hunks viewed in 3 files");
+    } finally {
+      release();
+    }
+    await says(b, "3/3 hunks viewed in 3 files");
+    await settled(b);
+    expect(reads).toHaveLength(2);
+    for (const path of ["README.md", "app.ts", "src/long.ts"])
+      expect(await viewedBox(b, path).isChecked()).toBe(true);
+  }, 60_000);
+
+  it("leaves the session switched to untouched by the held replies, streams and later changes of the one left", async () => {
+    const x = await freshSession();
+    const y = await freshSession("main..live");
+    const launched = await launchFor(x);
+    const [page, other] = [await newPage(), await newPage()];
+    for (const each of [page, other]) await each.setViewportSize({ width: 1280, height: 800 });
+    const pathOf = (id: string) => `/session/${encodeURIComponent(id)}`;
+    const at = (id: string) =>
+      waitFor(() => new URL(page.url()).pathname === pathOf(id), `the page at ${id}`);
+    let readsOfY = 0;
+    page.on("request", (request) => {
+      const operation = operationOf(request);
+      if (operation?.command === "status" && operation.session === y) readsOfY++;
+    });
+    await go(page, launched.url);
+    await crumbIs(page, "demo/main...live");
+    await says(page, "Live");
+    await page.getByRole("banner").getByRole("link", { name: "All sessions" }).click();
+    await page.locator(`a[href="${pathOf(y)}"]`).click();
+    await crumbIs(page, "demo/main..live");
+    await says(page, "Live");
+    await settled(page);
+
+    // From here X's streams wait until the test ends the switching; its reads wait once X has
+    // been shown again, so the last switches leave X's loads unanswered.
+    const held: string[] = [];
+    let holdReads = false;
+    const { promise: released, resolve: release } = Promise.withResolvers<void>();
+    await page.route(
+      (url) => isOperationUrl(url) || isEventsUrl(url),
+      async (route) => {
+        const request = route.request();
+        const events = isEventsUrl(new URL(request.url()));
+        if (request.postDataJSON()?.session !== x || (!events && !holdReads))
+          return route.continue();
+        held.push(events ? "events" : request.postDataJSON().command);
+        await released;
+        // A stream its reader left is already aborted.
+        await route.continue().catch(() => {});
+      },
+    );
+    try {
+      await page.evaluate(() => history.go(-2));
+      await crumbIs(page, "demo/main...live");
+      await says(page, "Connecting…");
+      await page.evaluate(() => history.go(2));
+      await at(y);
+      holdReads = true;
+      await page.evaluate(() => history.go(-2));
+      await at(x);
+      await page.evaluate(() => history.go(2));
+      await at(y);
+      await page.evaluate(() => history.go(-2));
+      await at(x);
+      await page.evaluate(() => history.go(2));
+      await at(y);
+      await crumbIs(page, "demo/main..live");
+      await says(page, "Live");
+      // X's replies are still held, so the page's operations can't settle yet.
+      await pause(page, 300);
+      expect(held).toContain("events");
+      expect(held).toContain("status");
+      readsOfY = 0;
+    } finally {
+      release();
+    }
+    await other.goto(`${launched.origin}${pathOf(x)}`);
+    await says(other, "Live");
+    await viewedBox(other, "README.md").check();
+    await says(other, "1/3 hunks viewed in 3 files");
+    await applyFromCli(x);
+    await settled(page);
+    for (let i = 0; i < 5; i++) {
+      await pause(page, 200);
+      expect(new URL(page.url()).pathname).toBe(pathOf(y));
+      expect(await page.locator("h1").textContent()).toBe("demo/main..live");
+      await says(page, "0/3 hunks viewed in 3 files");
+      await says(page, "Live");
+      expect(await viewedBox(page, "README.md").isChecked()).toBe(false);
+    }
+    expect(readsOfY).toBe(0);
+    expect(await viewedIn(y)).toEqual(new Set());
+  }, 60_000);
+
+  it("shows Reconnecting… and refuses Viewed changes while the daemon restarts, then resubscribes to the same session, progress and position", async () => {
+    const id = await freshSession();
+    const launched = await launchFor(id);
+    const page = await newPage();
+    await page.setViewportSize({ width: 1280, height: 800 });
+    const writes = viewedOf(page);
+    const reads = statusReadsOf(page);
+    await go(page, launched.url);
+    await says(page, "Live");
+    await viewedBox(page, "README.md").check();
+    await says(page, "1/3 hunks viewed in 3 files");
+    await keys(page, ...readingKeys);
+    await says(page, "3 lines selected");
+    await settled(page);
+    const position = await positionOf(page);
+    expect(position.scrollTop).toBeGreaterThan(0);
+
+    // The page's next subscription waits for the test, so the outage stays in view.
+    let resubscribed = false;
+    const { promise: released, resolve: release } = Promise.withResolvers<void>();
+    await page.route(isEventsUrl, async (route) => {
+      resubscribed = true;
+      await released;
+      await route.continue().catch(() => {});
+    });
+    const daemon = await killDaemon(data, "SIGTERM");
+    try {
+      await says(page, "Reconnecting…");
+      await says(page, "Can't reach gyst; retrying. Viewed changes are paused.");
+      await waitFor(() => resubscribed, "the page to subscribe again");
+      // m marks the cursor's file, src/long.ts; nothing is sent or queued.
+      await keys(page, "m");
+      await pause(page, 300);
+      expect(writes).toHaveLength(1);
+      expect(await viewedBox(page, "src/long.ts").isChecked()).toBe(false);
+      expect(isAlive(daemon)).toBe(false);
+    } finally {
+      release();
+    }
+    // The resubscription starts a new daemon; the session is reread, never recreated.
+    await says(page, "Live");
+    const replacement = await daemonPid(data);
+    expect(replacement).not.toBe(daemon);
+    expect(ownDaemon(replacement)).toBe(true);
+    expect(new URL(page.url()).pathname).toBe(launched.path);
+    await says(page, "1/3 hunks viewed in 3 files");
+    expect(await viewedIn(id)).toEqual(new Set(await idsIn(id, "README.md")));
+    await settled(page);
+    expect(await positionOf(page)).toEqual(position);
+    expect(writes).toHaveLength(1);
+    expect(await sessionIds()).toContain(id);
+
+    const revision = await applyFromCli(id);
+    await waitFor(() => reads.includes(revision), "the CLI's change to reach the page");
+    await settled(page);
+    expect(await positionOf(page)).toEqual(position);
+  }, 60_000);
+
+  it("synchronizes the connection a daemon restart brought, Viewed changes paused, while a read for the connection it ended is still held", async () => {
+    const id = await freshSession();
+    const launched = await launchFor(id);
+    const [a, b] = [await newPage(), await newPage()];
+    for (const page of [a, b]) await page.setViewportSize({ width: 1280, height: 800 });
+    const writes = viewedOf(b);
+    let armed = false;
+    // B's first two status reads: one of A's change, then the new connection's.
+    const held = await heldStatusReads(b, 2, () => armed);
+    await go(a, launched.url);
+    await b.goto(`${launched.origin}${launched.path}`);
+    for (const page of [a, b]) {
+      await says(page, "Live");
+      await settled(page);
+    }
+    armed = true;
+    try {
+      await viewedBox(a, "README.md").check();
+      await says(a, "1/3 hunks viewed in 3 files");
+      await held.fetched(0, "B's status read of the change");
+      const daemon = await killDaemon(data, "SIGTERM");
+      // B's resubscription is a new connection, which reads status of its own.
+      await held.fetched(1, "the new connection's status read");
+      expect(await daemonPid(data)).not.toBe(daemon);
+      await synchronizingWithout(b, writes, "app.ts", "0/3 hunks viewed in 3 files");
+      held.release(1);
+      await says(b, "Live");
+      await says(b, "1/3 hunks viewed in 3 files");
+      expect(await viewedBox(b, "README.md").isChecked()).toBe(true);
+      // The given-up connection's answer changes nothing.
+      held.release(0);
+      await settled(b);
+      await says(b, "1/3 hunks viewed in 3 files");
+      expect(held.reads()).toBe(2);
+    } finally {
+      held.releaseAll();
+    }
+    await viewedBox(a, "app.ts").check();
+    await says(b, "2/3 hunks viewed in 3 files");
+    expect(held.reads()).toBe(3);
+    expect(writes).toEqual([]);
+  }, 60_000);
+
+  it("rereads for the connection a daemon restart brought while the read after a lost write's resend is held, Viewed changes paused until it lands", async () => {
+    const id = await freshSession();
+    const launched = await launchFor(id);
+    const page = await newPage(context, { problems: ["requestfailed /api/operation"] });
+    await page.setViewportSize({ width: 1280, height: 800 });
+    const writes = viewedOf(page);
+    let lost = false;
+    await page.route(isOperationUrl, async (route) => {
+      if (lost || route.request().postDataJSON()?.command !== "viewed") return route.fallback();
+      lost = true;
+      // The daemon applies it; only its reply is cut off.
+      await route.fetch();
+      await route.abort();
+    });
+    // The resend's receipt asks for a status read before any new write; it and the new
+    // connection's read are held.
+    const held = await heldStatusReads(page, 2, () => lost);
+    // Once the daemon is stopped, the page's resubscription waits for the CLI's apply, so the new
+    // connection's ready names it rather than announcing it after its read.
+    let restarted = false;
+    const { promise: applied, resolve: commit } = Promise.withResolvers<void>();
+    await page.route(isEventsUrl, async (route) => {
+      if (restarted) await applied;
+      await route.continue().catch(() => {});
+    });
+    await go(page, launched.url);
+    await says(page, "Live");
+    await settled(page);
+    const before = (await gyst("session", "status", "--session", id)).revision;
+    try {
+      await viewedBox(page, "README.md").click();
+      await held.fetched(0, "the status read after the resend");
+      expect(writes).toHaveLength(2);
+      expect(writes[1]).toEqual(writes[0]);
+      restarted = true;
+      const daemon = await killDaemon(data, "SIGTERM");
+      // Committed while the page reconnects; the new connection's ready names it.
+      const revision = await applyFromCli(id);
+      expect(revision).toBe(before + 2);
+      commit();
+      await held.fetched(1, "the new connection's status read");
+      expect(await daemonPid(data)).not.toBe(daemon);
+      await synchronizingWithout(page, writes, "app.ts", "0/3 hunks viewed in 3 files");
+      held.release(1);
+      await says(page, "Live");
+      await says(page, "1/3 hunks viewed in 3 files");
+      held.release(0);
+      await settled(page);
+      await says(page, "1/3 hunks viewed in 3 files");
+      expect(held.reads()).toBe(2);
+
+      // A new change is a fresh intent against the revision the new connection read.
+      await viewedBox(page, "app.ts").check();
+      await says(page, "2/3 hunks viewed in 3 files");
+      expect(writes).toHaveLength(3);
+      expect(writes[2]).toMatchObject({ revision, hunkIds: await idsIn(id, "app.ts") });
+      expect(writes[2].requestId).not.toBe(writes[0].requestId);
+      expect((await gyst("session", "status", "--session", id)).revision).toBe(revision + 1);
+    } finally {
+      commit();
+      held.releaseAll();
+    }
+  }, 60_000);
+
+  it("resends a Viewed write still unanswered when a daemon restart brings a new connection, and its late reply settles nothing", async () => {
+    const id = await freshSession();
+    const launched = await launchFor(id);
+    const page = await newPage();
+    await page.setViewportSize({ width: 1280, height: 800 });
+    const writes = viewedOf(page);
+    // The first write and the third (a later change) commit, but their replies wait for the test.
+    const gates = new Map([
+      [0, Promise.withResolvers<void>()],
+      [2, Promise.withResolvers<void>()],
+    ]);
+    const fetched = new Set<number>();
+    const answered = new Set<number>();
+    let sent = 0;
+    await page.route(isOperationUrl, async (route) => {
+      if (route.request().postDataJSON()?.command !== "viewed") return route.fallback();
+      const n = sent++;
+      const gate = gates.get(n);
+      if (gate === undefined) return route.fallback();
+      const response = await route.fetch();
+      fetched.add(n);
+      await gate.promise;
+      await route.fulfill({ response });
+      answered.add(n);
+    });
+    await go(page, launched.url);
+    await says(page, "Live");
+    await settled(page);
+    const before = (await gyst("session", "status", "--session", id)).revision;
+    const readme = await idsIn(id, "README.md");
+    try {
+      await viewedBox(page, "README.md").click();
+      await waitFor(() => fetched.has(0), "the first write to commit");
+      const daemon = await killDaemon(data, "SIGTERM");
+      // The new connection resends it with its request id rather than wait for its reply.
+      await waitFor(() => writes.length === 2, "the resend over the new connection");
+      expect(await daemonPid(data)).not.toBe(daemon);
+      expect(writes[1]).toEqual(writes[0]);
+      await says(page, "Live");
+      await says(page, "1/3 hunks viewed in 3 files");
+      expect(await viewedBox(page, "README.md").isChecked()).toBe(true);
+      // The receipt answered the resend: the revision rose once.
+      expect(await gyst("session", "status", "--session", id)).toMatchObject({
+        revision: before + 1,
+        viewedHunkIds: readme,
+      });
+
+      // The first reply lands while a newer write is on the wire, and doesn't answer for it.
+      await viewedBox(page, "app.ts").click();
+      await waitFor(() => fetched.has(2), "the newer write to commit");
+      gates.get(0)!.resolve();
+      await waitFor(() => answered.has(0), "the first write's late reply");
+      await pause(page, 300);
+      expect(await page.getByRole("main").getByText("Saving…", { exact: true }).count()).toBe(1);
+      await says(page, "1/3 hunks viewed in 3 files");
+      gates.get(2)!.resolve();
+      await says(page, "2/3 hunks viewed in 3 files");
+      await settled(page);
+      expect(await viewedBox(page, "app.ts").isChecked()).toBe(true);
+      expect(writes).toHaveLength(3);
+      expect(writes[2]).toMatchObject({ revision: before + 1, hunkIds: await idsIn(id, "app.ts") });
+      expect(writes[2].requestId).not.toBe(writes[0].requestId);
+      expect((await gyst("session", "status", "--session", id)).revision).toBe(before + 2);
+    } finally {
+      for (const gate of gates.values()) gate.resolve();
+    }
+  }, 60_000);
+
+  it("resends a Viewed write whose reply was lost while a status read sent before it was held, rather than let that read drop it", async () => {
+    const id = await freshSession();
+    const launched = await launchFor(id);
+    const page = await newPage(context, { problems: ["requestfailed /api/operation"] });
+    await page.setViewportSize({ width: 1280, height: 800 });
+    const writes = viewedOf(page);
+    let lost = false;
+    await page.route(isOperationUrl, async (route) => {
+      if (lost || route.request().postDataJSON()?.command !== "viewed") return route.fallback();
+      lost = true;
+      await route.abort();
+    });
+    let armed = false;
+    const held = await heldStatusReads(page, 1, () => armed);
+    await go(page, launched.url);
+    await says(page, "Live");
+    await settled(page);
+    armed = true;
+    try {
+      // The page's read of a change made elsewhere is held; meanwhile a write's reply is lost.
+      const revision = await applyFromCli(id);
+      await held.fetched(0, "the page's read of the CLI's change");
+      await viewedBox(page, "README.md").click();
+      await page.getByRole("main").getByText("Couldn't save Viewed", { exact: false }).waitFor();
+      await pause(page, 300);
+      expect(writes).toHaveLength(1);
+      held.release(0);
+      // That read says nothing of the write, which is resent with its request id. It was based on
+      // the revision before the CLI's change, so the daemon refuses it and progress is read again.
+      await waitFor(() => writes.length === 2, "the resend after the held read");
+      expect(writes[1]).toEqual(writes[0]);
+      expect(writes[0].revision).toBe(revision - 1);
+      await page
+        .getByRole("main")
+        .getByText("Not saved: progress changed elsewhere and was read again.")
+        .waitFor();
+      await settled(page);
+      await says(page, "0/3 hunks viewed in 3 files");
+      expect(await viewedBox(page, "README.md").isChecked()).toBe(false);
+      expect(await gyst("session", "status", "--session", id)).toMatchObject({
+        revision,
+        viewedHunkIds: [],
+      });
+    } finally {
+      held.releaseAll();
+    }
+  }, 60_000);
+
+  it("keeps a Viewed write and its Retry when its resend is lost too and a change announced meanwhile is read", async () => {
+    const id = await freshSession();
+    const launched = await launchFor(id);
+    const page = await newPage(context, {
+      problems: ["requestfailed /api/operation", "requestfailed /api/operation"],
+    });
+    await page.setViewportSize({ width: 1280, height: 800 });
+    const writes = viewedOf(page);
+    const { promise: cut, resolve: cutOff } = Promise.withResolvers<void>();
+    let lost = 0;
+    await page.route(isOperationUrl, async (route) => {
+      if (lost >= 2 || route.request().postDataJSON()?.command !== "viewed")
+        return route.fallback();
+      // Neither send reaches the daemon: the first is held until the CLI's change is announced.
+      if (lost++ === 0) await cut;
+      await route.abort();
+    });
+    await go(page, launched.url);
+    await says(page, "Live");
+    await settled(page);
+    await viewedBox(page, "README.md").click();
+    await waitFor(() => writes.length === 1, "the held write");
+    const revision = await applyFromCli(id);
+    await pause(page, 500);
+    cutOff();
+    // The resend is lost as well; the read of the CLI's change then says nothing of the write.
+    await waitFor(() => writes.length === 2, "the resend");
+    expect(writes[1]).toEqual(writes[0]);
+    const retry = page.getByRole("main").getByRole("button", { name: "Retry", exact: true });
+    await retry.waitFor();
+    await settled(page);
+    expect(await retry.count()).toBe(1);
+    expect(await viewedBox(page, "README.md").isChecked()).toBe(false);
+    expect(await gyst("session", "status", "--session", id)).toMatchObject({
+      revision,
+      viewedHunkIds: [],
+    });
+
+    // Retry sends the same request, which the daemon answers definitively.
+    await retry.click();
+    await waitFor(() => writes.length === 3, "the retry");
+    expect(writes[2]).toEqual(writes[0]);
+    await page
+      .getByRole("main")
+      .getByText("Not saved: progress changed elsewhere and was read again.")
+      .waitFor();
+    await settled(page);
+    expect(await retry.count()).toBe(0);
+  }, 60_000);
+
+  it("resends a Viewed write whose reply was lost once, with the same request id and payload, then reads status", async () => {
+    const id = await freshSession();
+    const launched = await launchFor(id);
+    const page = await newPage(context, { problems: ["requestfailed /api/operation"] });
+    await page.setViewportSize({ width: 1280, height: 800 });
+    const writes = viewedOf(page);
+    const commands: string[] = [];
+    page.on("request", (request) => {
+      const operation = operationOf(request);
+      if (operation) commands.push(operation.command);
+    });
+    let lost = false;
+    await page.route(isOperationUrl, async (route) => {
+      if (lost || route.request().postDataJSON()?.command !== "viewed") return route.continue();
+      lost = true;
+      // The daemon applies it; only its reply is cut off.
+      await route.fetch();
+      await route.abort();
+    });
+    await go(page, launched.url);
+    await says(page, "Live");
+    await settled(page);
+    const before = (await gyst("session", "status", "--session", id)).revision;
+    commands.length = 0;
+    await viewedBox(page, "README.md").click();
+    await says(page, "1/3 hunks viewed in 3 files");
+    await waitFor(
+      async () => commands.join() === "viewed,viewed,status",
+      "the replay and the status read after it",
+    );
+    await settled(page);
+    expect(commands.join()).toBe("viewed,viewed,status");
+    expect(writes[1]).toEqual(writes[0]);
+    const readme = await idsIn(id, "README.md");
+    expect(writes[0]).toMatchObject({ revision: before, hunkIds: readme, viewed: true });
+    // The receipt answered the resend: the revision rose once.
+    expect(await gyst("session", "status", "--session", id)).toMatchObject({
+      revision: before + 1,
+      viewedHunkIds: readme,
+    });
+
+    // A different change is a new intent with an id of its own.
+    await viewedBox(page, "app.ts").check();
+    await says(page, "2/3 hunks viewed in 3 files");
+    expect(writes).toHaveLength(3);
+    expect(writes[2]).toMatchObject({
+      revision: before + 1,
+      hunkIds: await idsIn(id, "app.ts"),
+      viewed: true,
+    });
+    expect(writes[2].requestId).not.toBe(writes[0].requestId);
+    expect((await gyst("session", "status", "--session", id)).revision).toBe(before + 2);
+  }, 60_000);
+
+  it("queues nothing while reconnecting, and makes the next click after recovery a fresh intent against the reread revision", async () => {
+    const id = await freshSession();
+    const launched = await launchFor(id);
+    // The outage refuses the one status read the announced change asks for.
+    const page = await newPage(context, { responses: ["/api/operation 503"] });
+    await page.setViewportSize({ width: 1280, height: 800 });
+    const writes = viewedOf(page);
+    const reads = statusReadsOf(page);
+    let outage = false;
+    await page.route(isEventsUrl, (route) => (outage ? route.abort() : route.continue()));
+    await page.route(isOperationUrl, (route) =>
+      outage && route.request().postDataJSON()?.command === "status"
+        ? route.fulfill({ status: 503, body: "" })
+        : route.continue(),
+    );
+    await go(page, launched.url);
+    await says(page, "Live");
+    await settled(page);
+    outage = true;
+    // A change made elsewhere is announced, its read is refused and the reader can't reconnect.
+    const revision = await applyFromCli(id);
+    await says(page, "Reconnecting…");
+    await viewedBox(page, "README.md").click();
+    await keys(page, "m");
+    await pause(page, 300);
+    expect(writes).toEqual([]);
+    expect(await viewedBox(page, "README.md").isChecked()).toBe(false);
+
+    outage = false;
+    await says(page, "Live");
+    await waitFor(() => reads.includes(revision), "the reread after recovery");
+    await settled(page);
+    expect(writes).toEqual([]);
+    await viewedBox(page, "README.md").check();
+    await says(page, "1/3 hunks viewed in 3 files");
+    const readme = await idsIn(id, "README.md");
+    expect(writes).toEqual([
+      expect.objectContaining({
+        revision,
+        hunkIds: readme,
+        viewed: true,
+        requestId: expect.any(String),
+      }),
+    ]);
+    expect(await gyst("session", "status", "--session", id)).toMatchObject({
+      revision: revision + 1,
+      viewedHunkIds: readme,
+    });
+  }, 60_000);
+
+  it("stops only its own launch on SIGINT: that page reconnects while another launch's page stays live, keeping the daemon and the session", async () => {
+    const id = await freshSession();
+    const first = await launchFor(id);
+    const second = await launchFor(id);
+    expect(second.hostname).not.toBe(first.hostname);
+    const [left, kept] = [await newPage(), await newPage()];
+    for (const page of [left, kept]) await page.setViewportSize({ width: 1280, height: 800 });
+    const reads = statusReadsOf(kept);
+    await go(left, first.url);
+    await go(kept, second.url);
+    for (const page of [left, kept]) {
+      await says(page, "Live");
+      await settled(page);
+    }
+    const daemon = await daemonPid(data);
+    expect(await stop(first.proc, "SIGINT")).toBe(130);
+    await says(left, "Reconnecting…");
+    await says(kept, "Live");
+
+    const revision = await applyFromCli(id);
+    await waitFor(() => reads.includes(revision), "the CLI's change to reach the other page");
+    await settled(kept);
+    await viewedBox(kept, "README.md").check();
+    await says(kept, "1/3 hunks viewed in 3 files");
+    expect(await gyst("session", "status", "--session", id)).toMatchObject({
+      revision: revision + 1,
+      viewedHunkIds: await idsIn(id, "README.md"),
+    });
+    await says(left, "Reconnecting…");
+    expect(await daemonPid(data)).toBe(daemon);
+    expect(ownDaemon(daemon)).toBe(true);
+    expect(await sessionIds()).toContain(id);
+  }, 60_000);
 });

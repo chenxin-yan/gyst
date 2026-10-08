@@ -83,7 +83,8 @@ export function devLauncher(launch: DevLaunch): Plugin {
       started = await startLauncher(launch);
       // An object, not Vite's string shorthand, which would set changeOrigin and rewrite the Host.
       const bridge = { target: `http://127.0.0.1:${started.url.port}` };
-      return { server: { proxy: { [webPaths.bootstrap]: bridge, [webPaths.operation]: bridge } } };
+      const proxy = Object.fromEntries(Object.values(webPaths).map((path) => [path, bridge]));
+      return { server: { proxy } };
     },
     configureServer(server) {
       const { launcher, url } = started;

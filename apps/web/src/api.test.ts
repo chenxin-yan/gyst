@@ -7,7 +7,15 @@ import {
   ValidationFailed,
 } from "@gyst/core/wire";
 import { afterEach, describe, expect, it, vi } from "vite-plus/test";
-import { bootstrap, isExpectedFailure, newRequestId, operation, TransportError } from "./api.ts";
+import {
+  bootstrap,
+  events,
+  isExpectedFailure,
+  isUncertain,
+  newRequestId,
+  operation,
+  TransportError,
+} from "./api.ts";
 
 // Explicitly mocked transport: these tests pin the viewer's HTTP handling, not the launcher.
 const respond = (status: number, body?: unknown) => {
@@ -146,6 +154,117 @@ describe("operation", () => {
   });
 });
 
+describe("events", () => {
+  const ready = { kind: "ready", daemon: "d1", sessionId: "s-1", snapshotId: "abc", revision: 2 };
+  const changed = { kind: "changed", sessionId: "s-1", snapshotId: "abc", revision: 3 };
+  const frame = (event: unknown) => `data: ${JSON.stringify(event)}\n\n`;
+  // A stream answering with these chunks as they are split on the wire, then ending unless held
+  // open; `seen.cancelled` says whether the reader let go of it.
+  const stream = (
+    chunks: string[],
+    contentType = "text/event-stream; charset=utf-8",
+    held = false,
+  ) => {
+    const seen = { cancelled: false };
+    const encoder = new TextEncoder();
+    const fetch = vi.fn(async (_path: string, _init: RequestInit) => {
+      const body = new ReadableStream<Uint8Array>({
+        start(controller) {
+          for (const chunk of chunks) controller.enqueue(encoder.encode(chunk));
+          if (!held) controller.close();
+        },
+        cancel() {
+          seen.cancelled = true;
+        },
+      });
+      return new Response(body, { status: 200, headers: { "content-type": contentType } });
+    });
+    vi.stubGlobal("fetch", fetch);
+    return Object.assign(fetch, { seen });
+  };
+  const all = async (signal = new AbortController().signal) => {
+    const seen: unknown[] = [];
+    for await (const event of events("s-1", signal)) seen.push(event);
+    return seen;
+  };
+
+  it("posts the session with the operation's credentials and the caller's signal", async () => {
+    const fetch = stream([frame(ready)]);
+    const signal = new AbortController().signal;
+    expect(await all(signal)).toEqual([ready]);
+    const [path, init] = fetch.mock.calls[0]!;
+    expect(path).toBe("/api/events");
+    expect(JSON.parse(String(init.body))).toEqual({ session: "s-1" });
+    expect(init).toMatchObject({ method: "POST", credentials: "same-origin", cache: "no-store" });
+    expect(init.signal).toBe(signal);
+  });
+
+  it("reads frames split across chunks and several in one chunk, and ends with the stream", async () => {
+    const text = frame(ready) + frame(changed) + frame({ kind: "deleted", sessionId: "s-1" });
+    stream([text.slice(0, 7), text.slice(7, 40), text.slice(40, -1), text.slice(-1)]);
+    expect(await all()).toEqual([ready, changed, { kind: "deleted", sessionId: "s-1" }]);
+    stream([frame(ready) + frame(changed)]);
+    expect(await all()).toEqual([ready, changed]);
+  });
+
+  it("drops an event the stream ended before finishing, and skips frames without data", async () => {
+    stream([": comment\n\n", frame(ready), 'data: {"kind":']);
+    expect(await all()).toEqual([ready]);
+  });
+
+  it("decodes a failed frame's error as its DaemonError", async () => {
+    stream([frame({ kind: "failed", error: { code: "no_session", message: "gone" } })]);
+    const [event] = (await all()) as [{ kind: string; error: unknown }];
+    expect(event.kind).toBe("failed");
+    expect(event.error).toBeInstanceOf(NoSession);
+  });
+
+  it.each([
+    ["an excess field", { ...ready, extra: 1 }],
+    ["an unknown kind", { kind: "other" }],
+    ["a missing field", { kind: "changed", sessionId: "s-1", revision: 3 }],
+  ])("refuses %s as unreadable", async (_name, event) => {
+    stream([frame(ready), frame(event)]);
+    const seen: unknown[] = [];
+    const error = await reason(
+      (async () => {
+        for await (const next of events("s-1", new AbortController().signal)) seen.push(next);
+      })(),
+    );
+    expect(seen).toEqual([ready]);
+    expect(error).toMatchObject({ reason: "unexpected" });
+  });
+
+  it("refuses a reply that is not an event stream", async () => {
+    stream([JSON.stringify({ ok: true, value: {} })], "application/json");
+    expect(await reason(all())).toMatchObject({ reason: "unexpected" });
+  });
+
+  it.each([
+    [401, "unauthorized"],
+    [403, "forbidden"],
+    [503, "unavailable"],
+    [400, "unexpected"],
+    [405, "unexpected"],
+  ])("maps HTTP %i to %s", async (status, expected) => {
+    respond(status);
+    const error = await reason(all());
+    expect(error).toBeInstanceOf(TransportError);
+    expect(error).toMatchObject({ reason: expected });
+  });
+
+  it("reports an unreachable launcher, and lets go of the stream when the reader stops", async () => {
+    vi.stubGlobal("fetch", () => Promise.reject(new TypeError("Failed to fetch")));
+    expect(await reason(all())).toMatchObject({ reason: "unavailable" });
+    const fetch = stream([frame(ready), frame(changed)], undefined, true);
+    for await (const event of events("s-1", new AbortController().signal)) {
+      expect(event).toEqual(ready);
+      break;
+    }
+    await vi.waitFor(() => expect(fetch.seen.cancelled).toBe(true));
+  });
+});
+
 it("mints distinct 128-bit request ids", () => {
   const [a, b] = [newRequestId(), newRequestId()];
   expect(a).toMatch(/^[0-9a-f]{32}$/);
@@ -173,5 +292,23 @@ describe("isExpectedFailure", () => {
     "thrown string",
   ])("keeps a diagnostic for %s", (error) => {
     expect(isExpectedFailure(error)).toBe(false);
+  });
+});
+
+describe("isUncertain", () => {
+  it.each([
+    [new TransportError("unavailable", "m"), true],
+    [new TransportError("unexpected", "m"), true],
+    [new DaemonUnreachable({ message: "m" }), true],
+    [new TransportError("unauthorized", "m"), false],
+    [new TransportError("forbidden", "m"), false],
+    [new StaleRevision({ message: "m" }), false],
+    [new ValidationFailed({ message: "m" }), false],
+    [new NoSession({ message: "m" }), false],
+    [new BadArgs({ message: "m" }), false],
+    [new InternalError({ message: "m" }), false],
+    [new TypeError("render failed"), false],
+  ])("says whether %s may have been applied: %s", (error, expected) => {
+    expect(isUncertain(error)).toBe(expected);
   });
 });

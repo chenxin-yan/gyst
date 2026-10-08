@@ -1,6 +1,7 @@
 // For the bridge unit tests: a raw HTTP/1.1 client (full control of Host, duplicates and request
 // targets) and a throwaway packaged-SPA fixture.
 import { mkdir, mkdtemp, realpath, symlink, writeFile } from "node:fs/promises";
+import { request as httpRequest } from "node:http";
 import { connect } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -63,6 +64,72 @@ export function send(
     });
     // Not `end`: a half-closed client counts as gone, and the server abandons its response.
     socket.write(`${lines.join("\r\n")}\r\n\r\n${requestBody}`);
+  });
+}
+
+export type RawStream = Omit<RawResponse, "body"> & {
+  /** Each SSE event's `data` payload in arrival order, ending when the response ends or breaks. */
+  frames(): AsyncGenerator<string, void>;
+  /** Hangs up, as a closed tab or a stopped browser would. */
+  close(): void;
+};
+
+/**
+ * A streaming POST that resolves on the response head. Until `frames` is read nothing is taken off
+ * the socket, so a reader that stops reading backs the server up as a stalled browser would.
+ */
+export function openStream(
+  port: number,
+  request: {
+    readonly target: string;
+    readonly headers: ReadonlyArray<readonly [string, string]>;
+    readonly body: string;
+  },
+): Promise<RawStream> {
+  return new Promise((resolve, reject) => {
+    const outgoing = httpRequest(
+      {
+        host: "127.0.0.1",
+        port,
+        method: "POST",
+        path: request.target,
+        agent: false,
+        headers: [
+          ...request.headers.flat(),
+          "content-length",
+          String(Buffer.byteLength(request.body)),
+        ],
+      },
+      (response) => {
+        // A cut connection fails the response; `frames` reports it as the end, read or not.
+        response.on("error", () => {});
+        const { rawHeaders } = response;
+        const headers = rawHeaders.flatMap((name, index) =>
+          index % 2 === 0 ? [[name.toLowerCase(), rawHeaders[index + 1]!] as const] : [],
+        );
+        resolve({
+          status: response.statusCode!,
+          headers,
+          header: (name) => headers.find(([header]) => header === name)?.[1],
+          async *frames() {
+            let text = "";
+            try {
+              for await (const chunk of response.setEncoding("utf8")) {
+                text += chunk;
+                for (let split = text.indexOf("\n\n"); split >= 0; split = text.indexOf("\n\n")) {
+                  for (const line of text.slice(0, split).split("\n"))
+                    if (line.startsWith("data: ")) yield line.slice("data: ".length);
+                  text = text.slice(split + 2);
+                }
+              }
+            } catch {}
+          },
+          close: () => outgoing.destroy(),
+        });
+      },
+    );
+    outgoing.on("error", reject);
+    outgoing.end(request.body);
   });
 }
 
