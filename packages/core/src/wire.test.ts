@@ -183,6 +183,25 @@ describe("daemon wire envelopes", () => {
       expect(() => decodeBrowserRequest(invalid)).toThrow();
   });
 
+  it("previews and generates an export on both surfaces, generation only for a named approval", () => {
+    for (const valid of [
+      { command: "preview", session: "s1" },
+      { command: "export", session: "s1", approval: "a".repeat(64) },
+    ]) {
+      expect(decodeRequest(valid)).toEqual(valid);
+      expect(decodeBrowserRequest(valid)).toEqual(valid);
+    }
+    for (const invalid of [
+      { command: "export", session: "s1" },
+      { command: "export", session: "s1", approval: "a".repeat(64), output: "/tmp/x.html" },
+      { command: "export", session: "s1", approval: "a".repeat(64), force: true },
+      { command: "preview", session: "s1", group: "g1" },
+    ]) {
+      expect(() => decodeRequest(invalid)).toThrow();
+      expect(() => decodeBrowserRequest(invalid)).toThrow();
+    }
+  });
+
   it("keeps checkout, Git, executable, authority and agent operations out of browser requests", () => {
     for (const valid of [
       { command: "list" },
@@ -434,12 +453,14 @@ describe("daemon wire envelopes", () => {
     expect([...seen].map((href) => href.slice(packageDir.href.length)).sort()).toEqual([
       "src/content.ts",
       "src/errors.ts",
+      "src/export.ts",
       "src/github.ts",
       "src/guidance.ts",
       "src/mapping.ts",
       "src/metadata.ts",
       "src/navigation.ts",
       "src/session.ts",
+      "src/status.ts",
       "src/thread.ts",
       "src/wire.ts",
     ]);

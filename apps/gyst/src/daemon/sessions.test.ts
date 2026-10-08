@@ -3422,6 +3422,246 @@ describe("Sessions captured reads over real captures", () => {
     );
   });
 
+  describe("exporting a walkthrough", () => {
+    const sha256 = (text: string) => createHash("sha256").update(text).digest("hex");
+    const textSide = (text: string) => ({
+      kind: "text",
+      blob: sha256(text),
+      size: Buffer.byteLength(text),
+    });
+    const numbered = (prefix: string, count: number) =>
+      Array.from({ length: count }, (_, index) => `${prefix}${index + 1}\n`).join("");
+    const preview = (session: string) =>
+      Sessions.use((s) => s.preview({ command: "preview", session }));
+    const exported = (session: string, approval: string | null) =>
+      Sessions.use((s) => s.exported({ command: "export", session, approval: approval ?? "" }));
+    /** One batch of `ops` against the session as it is now. */
+    const applyNow = (session: string, key: string, ops: readonly object[]) =>
+      Sessions.use((s) =>
+        Effect.gen(function* () {
+          const status = yield* s.status({ command: "status", session });
+          return yield* s.apply({
+            command: "apply",
+            session,
+            batch: JSON.stringify({
+              revision: status.revision,
+              snapshotId: status.session.snapshotId,
+              idempotencyKey: key,
+              ops,
+            }),
+          });
+        }),
+      );
+    /** One group over every current hunk, its note on a.ts line 10 naming helper.ts lines 2-3. */
+    const publish = (session: string, key: string) =>
+      Sessions.use((s) =>
+        Effect.gen(function* () {
+          const { hunks } = yield* s.diff({ command: "diff", session });
+          const link = "[the helper](gyst:new/helper.ts#L2-L3)";
+          return yield* applyNow(session, key, [
+            { type: "walkthrough.update", overview: "One change." },
+            {
+              type: "group.create",
+              id: "g",
+              title: "Change",
+              overview: `Uses ${link}.`,
+              memberHunkIds: hunks.map(({ id }) => id),
+            },
+            {
+              type: "note.create",
+              id: "n",
+              group: "g",
+              anchor: { path: "a.ts", side: "new", startLine: 10, endLine: 10 },
+              markdown: `Calls ${link}.`,
+            },
+          ]);
+        }),
+      );
+
+    it("previews and generates exactly the changed and referenced files, without the checkout, for that state only", async () => {
+      const edited = numbered("a", 20).replace("a10\n", "</script><!--\n");
+      const cwd = await repo("export", {
+        "a.ts": numbered("a", 20),
+        "helper.ts": numbered("h", 4),
+        "unrelated.ts": "export const secret = 'not shared';\n",
+      });
+      await writeFile(join(cwd, "a.ts"), edited);
+      await writeFile(join(cwd, "untracked.ts"), "export const fresh = 1;\n");
+      await runReal(
+        Effect.gen(function* () {
+          const sessions = yield* Sessions;
+          const { session } = yield* sessions.open({ command: "open", cwd, scope: uncommitted });
+          yield* publish(session.id, "publish");
+          const shown = yield* preview(session.id);
+          const { snapshotId } = session;
+          expect(shown).toMatchObject({
+            sessionId: session.id,
+            snapshotId,
+            preparation: { state: "complete" },
+            scope: uncommitted,
+            provenance: { kind: "uncommitted", head: git(cwd, "rev-parse", "HEAD").trim() },
+            unavailable: [],
+          });
+          expect(shown.included).toEqual([
+            { snapshotId, path: "a.ts", side: "old", content: textSide(numbered("a", 20)) },
+            { snapshotId, path: "a.ts", side: "new", content: textSide(edited) },
+            { snapshotId, path: "helper.ts", side: "old", content: textSide(numbered("h", 4)) },
+            { snapshotId, path: "helper.ts", side: "new", content: textSide(numbered("h", 4)) },
+            { snapshotId, path: "untracked.ts", side: "old", content: { kind: "absent" } },
+            {
+              snapshotId,
+              path: "untracked.ts",
+              side: "new",
+              content: textSide("export const fresh = 1;\n"),
+            },
+          ]);
+
+          // Reading progress is not part of what is shared, so it never invalidates an approval.
+          const [first] = (yield* sessions.diff({ command: "diff", session: session.id })).hunks;
+          yield* viewedNow(session.id, [first!.id], "read");
+          yield* Effect.promise(() => rm(cwd, { recursive: true, force: true }));
+          const approved = yield* exported(session.id, shown.approval);
+          expect(approved.approval).toBe(shown.approval);
+          expect(approved.contents).toEqual({
+            [sha256(numbered("a", 20))]: numbered("a", 20),
+            [sha256(edited)]: edited,
+            [sha256(numbered("h", 4))]: numbered("h", 4),
+            [sha256("export const fresh = 1;\n")]: "export const fresh = 1;\n",
+          });
+          expect(JSON.stringify(approved)).not.toContain("not shared");
+          expect(JSON.stringify(approved.walkthrough)).not.toContain(cwd);
+
+          // Guidance edited after the preview: its approval no longer names the session's state.
+          yield* applyNow(session.id, "reword", [
+            { type: "walkthrough.update", overview: "One change, reworded." },
+          ]);
+          expect(yield* Effect.flip(exported(session.id, shown.approval))).toMatchObject({
+            _tag: "stale_revision",
+          });
+          const again = yield* preview(session.id);
+          expect(again.approval).not.toBe(shown.approval);
+          expect((yield* exported(session.id, again.approval)).walkthrough.overview.markdown).toBe(
+            "One change, reworded.",
+          );
+        }),
+      );
+    });
+
+    it("refuses a walkthrough that is not ready, and an approval a refresh replaced, keeping older pins", async () => {
+      const cwd = await repo("export-refusals", {
+        "a.ts": numbered("a", 20),
+        "helper.ts": numbered("h", 4),
+      });
+      await writeFile(join(cwd, "a.ts"), numbered("a", 20).replace("a10\n", "changed\n"));
+      await runReal(
+        Effect.gen(function* () {
+          const sessions = yield* Sessions;
+          const { session } = yield* sessions.open({ command: "open", cwd, scope: uncommitted });
+          expect(yield* preview(session.id)).toMatchObject({
+            approval: null,
+            preparation: { state: "plain" },
+            included: [],
+          });
+          expect(yield* Effect.flip(exported(session.id, "0".repeat(64)))).toMatchObject({
+            _tag: "validation_failed",
+            message: "the walkthrough is not ready to export: the session has no walkthrough",
+          });
+
+          yield* publish(session.id, "publish");
+          const shown = yield* preview(session.id);
+          // A new file joins the change: once the agent groups it the walkthrough is ready on the
+          // new snapshot, its guidance still pinned where it was written, but it is not the state
+          // the human approved.
+          yield* Effect.promise(() =>
+            writeFile(join(cwd, "added.ts"), "export const added = 1;\n"),
+          );
+          const refreshed = yield* refreshNow(session.id);
+          expect(refreshed.replaced).toBe(true);
+          // Exporting never revalidates or groups: guidance waits for the agent.
+          const ungrouped = yield* preview(session.id);
+          expect(ungrouped.approval).toBeNull();
+          const { hunks } = yield* sessions.diff({ command: "diff", session: session.id });
+          yield* applyNow(session.id, "group", [
+            ...(ungrouped.preparation.overviewOutdated ? [{ type: "walkthrough.revalidate" }] : []),
+            { type: "group.update", id: "g", memberHunkIds: hunks.map(({ id }) => id) },
+          ]);
+          expect(yield* Effect.flip(exported(session.id, shown.approval))).toMatchObject({
+            _tag: "stale_revision",
+          });
+          const moved = yield* preview(session.id);
+          expect(moved.snapshotId).toBe(refreshed.snapshotId);
+          expect(moved.approval).not.toBe(shown.approval);
+          // The note's reference stays pinned where it was written: that side alone is included.
+          const earlier = moved.included.filter(
+            ({ snapshotId }) => snapshotId !== moved.snapshotId,
+          );
+          expect(earlier).toEqual([
+            {
+              snapshotId: session.snapshotId,
+              path: "helper.ts",
+              side: "new",
+              content: textSide(numbered("h", 4)),
+            },
+          ]);
+          const { walkthrough } = yield* exported(session.id, moved.approval);
+          expect(walkthrough.groups[0]?.notes[0]?.references).toEqual([
+            {
+              snapshotId: session.snapshotId,
+              path: "helper.ts",
+              side: "new",
+              startLine: 2,
+              endLine: 3,
+            },
+          ]);
+
+          // Another change outside the walkthrough leaves a hunk in no group.
+          yield* Effect.promise(() => writeFile(join(cwd, "helper.ts"), "h1\nH2\nh3\nh4\n"));
+          yield* refreshNow(session.id);
+          expect((yield* preview(session.id)).approval).toBeNull();
+          expect(yield* Effect.flip(exported(session.id, moved.approval))).toMatchObject({
+            _tag: "validation_failed",
+          });
+        }),
+      );
+    });
+
+    it("holds every included side from preparing to generating, so a reclaim meanwhile removes none of it", async () => {
+      const edited = numbered("a", 20).replace("a10\n", "held\n");
+      const cwd = await repo("export-held", {
+        "a.ts": numbered("a", 20),
+        "helper.ts": numbered("h", 4),
+      });
+      await writeFile(join(cwd, "a.ts"), edited);
+      await runReal(
+        Effect.gen(function* () {
+          const sessions = yield* Sessions;
+          const { session } = yield* sessions.open({ command: "open", cwd, scope: uncommitted });
+          yield* publish(session.id, "publish");
+          const { approval } = yield* preview(session.id);
+          const held = {
+            started: yield* Deferred.make<void>(),
+            release: yield* Deferred.make<void>(),
+          };
+          readGate = held;
+          const generating = yield* Effect.forkChild(exported(session.id, approval));
+          yield* Deferred.await(held.started);
+          readGate = undefined;
+          yield* sessions.delete({ command: "delete", session: session.id, requestId: "gone" });
+          let reclaimed = false;
+          const reclaiming = yield* Effect.forkChild(
+            sessions.reclaim.pipe(Effect.tap(() => Effect.sync(() => (reclaimed = true)))),
+          );
+          yield* Effect.sleep("50 millis");
+          expect(reclaimed).toBe(false);
+          yield* Deferred.succeed(held.release, undefined);
+          expect(Object.values((yield* Fiber.join(generating)).contents)).toContain(edited);
+          yield* Fiber.join(reclaiming);
+          expect(yield* Effect.flip(preview(session.id))).toMatchObject({ _tag: "no_session" });
+        }),
+      );
+    });
+  });
+
   describe("reclaiming storage", () => {
     const onDisk = (kind: "blobs" | "snapshots" | "staging") =>
       readdir(join(dir, "data", "content", kind));

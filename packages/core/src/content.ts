@@ -195,6 +195,9 @@ const sortKeys = (_key: string, value: unknown) =>
     ? Object.fromEntries(Object.entries(value).sort(([a], [b]) => (a < b ? -1 : 1)))
     : value;
 
+/** JSON with every object's keys sorted, so equal values always have one text. */
+export const canonicalJson = (value: unknown): string => JSON.stringify(value, sortKeys);
+
 /** The exact stored bytes of a manifest: sorted-key JSON of its encoded form. */
 export const canonicalManifestJson = (manifest: SnapshotManifest): string =>
-  JSON.stringify(Schema.encodeSync(SnapshotManifestSchema)(manifest), sortKeys);
+  canonicalJson(Schema.encodeSync(SnapshotManifestSchema)(manifest));

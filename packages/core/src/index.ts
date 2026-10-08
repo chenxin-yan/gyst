@@ -39,6 +39,7 @@ export {
   BlobIdSchema,
   type ByteRange,
   ByteRangeSchema,
+  canonicalJson,
   canonicalManifestJson,
   type Commit,
   CommitSchema,
@@ -56,7 +57,27 @@ export {
   SnapshotIdSchema,
   SnapshotManifestSchema,
 } from "./content.ts";
-export { snapshotIdOf } from "./hash.ts";
+export {
+  disclosedSides,
+  type ExportPayload,
+  ExportPayloadSchema,
+  type ExportPlan,
+  exportPlanOf,
+  type ExportPreviewPayload,
+  ExportPreviewPayloadSchema,
+  exportSnapshotIds,
+  noTextReason,
+  type PinnedSide,
+  PinnedSideSchema,
+  readinessProblems,
+  type UnavailableTarget,
+  UnavailableTargetSchema,
+  type Walkthrough,
+  type WalkthroughExport,
+  WalkthroughExportSchema,
+  WalkthroughSchema,
+} from "./export.ts";
+export { approvalOf, snapshotIdOf } from "./hash.ts";
 export {
   BadArgs,
   DaemonError,

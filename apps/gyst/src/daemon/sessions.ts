@@ -63,8 +63,15 @@ import {
   threadVersionOf,
   type ThreadsPayload,
   anchorKey,
+  approvalOf,
+  disclosedSides,
+  type ExportPreviewPayload,
+  exportPlanOf,
+  exportSnapshotIds,
+  readinessProblems,
   ValidationFailed,
   type ViewedPayload,
+  type Walkthrough,
 } from "@gyst/core";
 import {
   Context,
@@ -269,6 +276,28 @@ export class Sessions extends Context.Service<
         readonly manifest: SnapshotManifest;
       },
       NoSession | StaleRevision | InternalError
+    >;
+    /**
+     * What exporting the walkthrough would share (`exportPlanOf`) and the approval naming exactly
+     * that state, read from captured manifests while holding content. It changes nothing.
+     */
+    preview(
+      request: Input<"preview">,
+    ): Effect.Effect<ExportPreviewPayload, NoSession | InternalError>;
+    /**
+     * The approved walkthrough with the exact captured text of every text side it includes, read
+     * while holding content, with no Git or checkout involved. The session as it is now must be
+     * ready (else `validation_failed`) and be exactly the approved state (else `stale_revision`,
+     * whatever changed since the preview). Each text is checked against its content identity.
+     */
+    exported(request: Input<"export">): Effect.Effect<
+      {
+        readonly sessionId: string;
+        readonly approval: string;
+        readonly walkthrough: Walkthrough;
+        readonly contents: Readonly<Record<string, string>>;
+      },
+      NoSession | StaleRevision | ValidationFailed | InternalError
     >;
     /** One schema-validated `request.batch`: all ops or none, replays answered by receipt. */
     apply(
@@ -917,6 +946,74 @@ export class Sessions extends Context.Service<
         } satisfies CodePayload;
       }, holding);
 
+      /** The session's export plan as it is now, from its own and its pinned snapshots' manifests. */
+      const exportPlan = Effect.fn("Sessions.exportPlan")(function* (request: {
+        readonly session: string;
+      }) {
+        const session = yield* underLock(selected(request));
+        const manifests = new Map<string, SnapshotManifest>();
+        for (const snapshotId of exportSnapshotIds(session))
+          manifests.set(snapshotId, yield* manifestOf(snapshotId));
+        return { session, plan: exportPlanOf(session, manifests) };
+      });
+
+      const preview = Effect.fn("Sessions.preview")(function* (request: Input<"preview">) {
+        const { session, plan } = yield* exportPlan(request);
+        return {
+          sessionId: session.id,
+          snapshotId: session.snapshotId,
+          revision: session.revision,
+          preparation: plan.preparation,
+          approval: plan.walkthrough === undefined ? null : approvalOf(plan.walkthrough),
+          scope: session.scope,
+          provenance: (yield* manifestOf(session.snapshotId)).provenance,
+          included: plan.walkthrough === undefined ? [] : disclosedSides(plan.walkthrough),
+          unavailable: plan.unavailable,
+        } satisfies ExportPreviewPayload;
+      }, holding);
+
+      /** A text side's exact bytes as text, refused unless they are still its content identity. */
+      const capturedText = (blob: string, size: number) =>
+        Effect.gen(function* () {
+          const bytes = Buffer.concat(yield* Stream.runCollect(blobOf(blob, size)));
+          if (createHash("sha256").update(bytes).digest("hex") !== blob)
+            return yield* new InternalError({
+              message: "the snapshot's captured content does not match its identity",
+              detail: blob,
+            });
+          return yield* Effect.try({
+            // `ignoreBOM` keeps a leading U+FEFF: it is captured content, not decoding metadata.
+            try: () => new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes),
+            catch: () =>
+              new InternalError({
+                message: "captured content is not valid UTF-8 text",
+                detail: blob,
+              }),
+          });
+        });
+
+      const exported = Effect.fn("Sessions.exported")(function* (request: Input<"export">) {
+        const { session, plan } = yield* exportPlan(request);
+        const { walkthrough } = plan;
+        if (walkthrough === undefined)
+          return yield* new ValidationFailed({
+            message: `the walkthrough is not ready to export: ${readinessProblems(plan.preparation).join("; ")}`,
+            detail: { preparation: plan.preparation },
+          });
+        const approval = approvalOf(walkthrough);
+        if (approval !== request.approval)
+          return yield* new StaleRevision({
+            message:
+              "the walkthrough or its captured content changed since this export was previewed; preview it again and approve what it shows",
+            detail: { snapshotId: session.snapshotId, revision: session.revision },
+          });
+        const contents: Record<string, string> = {};
+        for (const { content: side } of disclosedSides(walkthrough))
+          if (side.kind === "text" && !(side.blob in contents))
+            contents[side.blob] = yield* capturedText(side.blob, side.size);
+        return { sessionId: session.id, approval, walkthrough, contents };
+      }, holding);
+
       const load = Effect.gen(function* () {
         // A daemon stopped between renaming a file into place and syncing its directory leaves it
         // visible but not durable. Until it is, a removal it commits would outlive it in a crash.
@@ -1325,6 +1422,8 @@ export class Sessions extends Context.Service<
         commits,
         code,
         snapshot,
+        preview,
+        exported,
         apply,
         viewed,
         conversations,
