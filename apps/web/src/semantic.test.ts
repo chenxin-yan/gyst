@@ -402,7 +402,7 @@ describe("SemanticPeekView", () => {
     );
     expect(html).toContain("No usages found in the captured files.");
     expect(html).toContain(
-      "Potentially incomplete: finding none doesn't mean there are none. Known missing inputs:",
+      "Potentially incomplete: finding none doesn't mean there are none.1 known missing input",
     );
     expect(html).toContain(
       "package.json declares packages, and installed packages are never captured",
@@ -411,5 +411,23 @@ describe("SemanticPeekView", () => {
       "2 more lie outside the captured files, in packages gyst never captures, and aren't shown.",
     );
     expect(html).not.toContain("Expand");
+  });
+
+  it("lists a few known missing inputs at once and more on request", () => {
+    const gaps = (count: number) =>
+      view({
+        kind: "locations",
+        choice: { query: "references", symbol: plus },
+        locations: [{ file: "src/use.ts", range: plus.range }],
+        outside: 0,
+        gaps: Array.from({ length: count }, (_, n) => ({
+          kind: "dependencies" as const,
+          file: `packages/p${n}/package.json`,
+        })),
+        selected: 0,
+      });
+    expect(gaps(3)).toContain('<details open=""><summary>3 known missing inputs</summary>');
+    expect(gaps(4)).toContain("<details><summary>4 known missing inputs</summary>");
+    expect(text(gaps(4))).toContain("packages/p3/package.json declares packages");
   });
 });
