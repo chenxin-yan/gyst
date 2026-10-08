@@ -2,8 +2,6 @@
 // SKILL.md files instruct an agent, with the human acting through the daemon's viewer. These check
 // the operations each step relies on, not the prose an agent would write.
 import { changedLinesOf } from "@gyst/core";
-import { mkdir, writeFile } from "node:fs/promises";
-import { dirname, join } from "node:path";
 import { describe, expect, it } from "vite-plus/test";
 
 import { privateRefs, refState, stackedRepository } from "../github.ts";
@@ -16,16 +14,10 @@ import {
   type Sandbox,
   sandbox,
   succeeded,
+  write,
 } from "./installed-gyst.ts";
 
 type Hunk = { id: string; file: string; patch: string };
-
-const write = async (cwd: string, files: Record<string, string>) => {
-  for (const [path, text] of Object.entries(files)) {
-    await mkdir(dirname(join(cwd, path)), { recursive: true });
-    await writeFile(join(cwd, path), text);
-  }
-};
 
 /**
  * A checkout whose uncommitted changes add an expiry guard to `src/auth.ts` and inject the clock in
