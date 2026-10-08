@@ -5,7 +5,7 @@ import { BadArgs, StaleRevision, ValidationFailed } from "./errors.ts";
 import type { CapturedRange, CodeRange } from "./guidance.ts";
 import { hash } from "./hash.ts";
 import { inspectMarkdown } from "./markdown.ts";
-import { pinnedSnapshotIds } from "./refresh.ts";
+import { keepsFile } from "./refresh.ts";
 import type { Session } from "./session.ts";
 import type {
   ConversationResult,
@@ -357,10 +357,10 @@ function act(
       const { target } = request;
       if (target.kind === "comment") {
         const { anchor } = target;
-        if (!pinnedSnapshotIds(session).includes(anchor.snapshotId))
+        if (!keepsFile(session, anchor.snapshotId, anchor.path))
           return Result.fail(
             new StaleRevision({
-              message: `snapshot ${anchor.snapshotId} is not the current snapshot of session ${session.id}, nor one it still pins; read the session again`,
+              message: `snapshot ${anchor.snapshotId} is not the current snapshot of session ${session.id}, nor one it still keeps ${anchor.path} of; read the session again`,
               detail: { snapshotId: session.snapshotId, revision: session.revision },
             }),
           );

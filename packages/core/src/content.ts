@@ -20,10 +20,13 @@ export const ContentSideSchema = Schema.Union([
   Schema.Struct({ kind: Schema.Literal("text"), blob: BlobIdSchema, size: Schema.Natural }),
   /** The file does not exist on this side (added or deleted). */
   Schema.Struct({ kind: Schema.Literal("absent") }),
-  /** The path exists but its content is not reviewable text; never captured or reviewed. */
+  /**
+   * The path exists but its content is not captured: not reviewable text, or (`quota`) an unchanged
+   * supporting file the configured snapshot quota left out. Never substituted with live content.
+   */
   Schema.Struct({
     kind: Schema.Literal("unavailable"),
-    reason: Schema.Literals(["binary", "unsupported-encoding", "symlink", "submodule"]),
+    reason: Schema.Literals(["binary", "unsupported-encoding", "symlink", "submodule", "quota"]),
   }),
 ]);
 export type ContentSide = typeof ContentSideSchema.Type;
