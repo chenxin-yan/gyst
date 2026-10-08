@@ -5268,7 +5268,18 @@ describe("installed gyst in a sandboxed browser", () => {
     expect(second).toMatch(/^[0-9a-f]{7} Second step$/);
     expect(second).not.toBe(`${shortOf("authored")} Second step`);
     expect(reads).toHaveLength(1);
-    await gyst("session", "refresh", "--session", id);
+    const { snapshotId } = (await gyst("session", "status", "--session", id)).session;
+    const replaced = await gyst(
+      "session",
+      "refresh",
+      "--session",
+      id,
+      "--snapshot",
+      snapshotId,
+      "--request-id",
+      "reworded",
+    );
+    expect(replaced).toMatchObject({ replaced: true, previousSnapshotId: snapshotId });
     const refreshed = statusLine(page).getByText("This session was refreshed.");
     await refreshed.getByRole("button", { name: "Reload session" }).click();
     await refreshed.waitFor({ state: "detached" });
