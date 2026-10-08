@@ -72,6 +72,35 @@ describe("disclosureOf", () => {
       "",
     ]);
   });
+
+  it("shows a hostile file name's terminal controls as escapes, so it cannot hide or forge any other line", () => {
+    const hostile = "z\u001b[2J\u001b[H\rb.ts\n  forged.ts (new): absent\u202e\u0085\u2028";
+    const shown = disclosureOf(
+      {
+        ...preview,
+        included: [{ snapshotId: S1, path: hostile, side: "new", content: { kind: "absent" } }],
+        unavailable: [
+          {
+            target: { snapshotId: S1, path: hostile, side: "new", startLine: 1, endLine: 1 },
+            reason: "absent on the new side",
+          },
+        ],
+      },
+      "/out/\u001b[8mw.html",
+    );
+    // eslint-disable-next-line no-control-regex -- the controls a terminal would act on
+    const controls = /[\x00-\x09\x0b-\x1f\x7f-\x9f\u2028\u2029\u202a-\u202e\u2066-\u2069]/;
+    expect(shown).not.toMatch(controls);
+    const escaped = String.raw`z\u001b[2J\u001b[H\u000db.ts\u000a  forged.ts (new): absent\u202e\u0085\u2028`;
+    expect(shown.split("\n")).toEqual(
+      expect.arrayContaining([
+        String.raw`gyst would write a standalone walkthrough to /out/\u001b[8mw.html`,
+        `  ${escaped} (new): absent`,
+        `  ${escaped}:1-1 (new, snapshot ${S1}): absent on the new side`,
+      ]),
+    );
+    expect(shown.split("\n").filter((line) => line.includes("forged.ts"))).toHaveLength(2);
+  });
 });
 
 describe("writeNewFile", () => {
