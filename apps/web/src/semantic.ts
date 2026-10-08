@@ -11,7 +11,6 @@ import type {
   NavigationResultPayload,
   NavigationSideState,
   NavigationUnavailable,
-  TextRange,
 } from "@gyst/core/wire";
 import { notCaptured } from "./captured.ts";
 
@@ -28,7 +27,10 @@ export type LineOrigin = {
 };
 
 /** An identifier in captured text, as the engine names it. */
-export type SemanticSymbol = { text: string; range: TextRange };
+export type SemanticSymbol = Extract<
+  IdentifiersPayload["outcome"],
+  { kind: "identifiers" }
+>["identifiers"][number];
 
 /** One thing to ask of one symbol: its definition or its usages. */
 export type Choice = { query: Query; symbol: SemanticSymbol };
