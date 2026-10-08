@@ -3373,6 +3373,9 @@ describe("installed gyst in a sandboxed browser", () => {
     await keys(page, "z", "Shift+R");
     await settled(page);
     expect(refreshes).toEqual([]);
+    // The reader is deep in a.ts, which the refresh leaves exactly as it was.
+    await keys(page, "]", "n", "]", "n");
+    await says(page, "a.ts:20 · new");
 
     git("branch", "-f", "peek", "walk-fix");
     await keys(page, "Shift+R");
@@ -3392,8 +3395,9 @@ describe("installed gyst in a sandboxed browser", () => {
       },
       refreshes[0],
     ]);
-    // The reader starts again on the new snapshot in the same group, which lost b.ts's change.
+    // The reader stays in the same group, which lost b.ts's change, at the same line of a.ts.
     await headingsAre(page, ["walk/a.ts"]);
+    await says(page, "a.ts:20 · new");
     expect((await gyst("session", "status", "--session", walk.id)).revision).toBe(
       committed.revision,
     );
