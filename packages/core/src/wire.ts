@@ -659,6 +659,11 @@ export const SessionVersionSchema = Schema.Struct({
   snapshotId: Schema.String,
   revision: Schema.Number,
   /**
+   * An opaque identity of the session's threads and messages: it differs whenever one does, so a
+   * reader rereads its conversations only then, not for every Viewed or guidance change.
+   */
+  conversations: Schema.String,
+  /**
    * A PR session's stack context as its status reports it: an opaque identity of its PR and stack
    * metadata and its other layers' sessions, which change without the revision. Differs whenever
    * that context does; absent for any other session.

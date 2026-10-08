@@ -119,12 +119,17 @@ export type SessionChange = Extract<SubscriptionEvent, { readonly kind: "changed
  * A session's version among `sessions`. A PR session's `context` covers what its status reports
  * apart from its own review state, which its revision already versions.
  */
+/** An identity of a session's threads and messages, announced so viewers reread only on change. */
+const conversationsOf = (session: Session) =>
+  createHash("sha256").update(JSON.stringify(session.threads)).digest("hex");
+
 const versionOf = (session: Session, sessions: Iterable<Session>): SessionVersion => {
   const status = pullRequestStatusOf(session, sessions);
   const version = {
     sessionId: session.id,
     snapshotId: session.snapshotId,
     revision: session.revision,
+    conversations: conversationsOf(session),
   };
   if (!status) return version;
   const others = status.sessions.filter(({ sessionId }) => sessionId !== session.id);
@@ -873,6 +878,7 @@ export class Sessions extends Context.Service<
           sessionId: session.id,
           snapshotId: session.snapshotId,
           revision: session.revision,
+          version: conversationsOf(session),
           threads: session.threads,
           drafts: session.drafts,
         } satisfies ConversationsPayload;

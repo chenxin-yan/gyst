@@ -33,20 +33,24 @@ type HumanAction = Extract<
   BrowserRequest,
   { command: "draft" | "send" | "edit" | "retract" | "resolve" | "discard" }
 >;
-/** A human action as the reader asks for it: the session is the reader's own. */
+/**
+ * A human action as the reader asks for it: the session is the reader's own, and the request id
+ * the intent's (see `useConversations`).
+ */
 export type Act = (
   request: HumanAction extends infer Request
     ? Request extends HumanAction
-      ? Omit<Request, "session">
+      ? Omit<Request, "session" | "requestId">
       : never
     : never,
 ) => Promise<ConversationResult>;
 
 /**
- * The session's threads and draft pins, read again whenever the live link announces a newer
- * revision and after each action of this reader. A late read never replaces a newer one.
+ * The session's threads and draft pins, read again whenever the live link announces other
+ * conversations and after each action of this reader. A late read never replaces a newer one. An
+ * action whose reply was lost keeps its request id, so doing the same again is its retry.
  */
-export function useConversations(sessionId: string, announced: number | undefined) {
+export function useConversations(sessionId: string, announced: string | undefined) {
   const [read, setRead] = useState<ConversationsPayload>();
   const latest = useRef<ConversationsPayload>(undefined);
   const known = useRef(announced);
@@ -54,13 +58,13 @@ export function useConversations(sessionId: string, announced: number | undefine
   const mounted = useMounted();
   // One read at a time, each skipped once a read already shows what was announced, so the first
   // announcement after the mount's read costs nothing. An action's own read always runs: a draft
-  // pin changes no revision.
+  // pin changes no conversation.
   const queue = useRef(Promise.resolve());
   const load = useCallback(
     (always: boolean) =>
       (queue.current = queue.current.then(async () => {
-        const shown = latest.current?.revision;
-        if (!always && shown !== undefined && (known.current ?? -1) <= shown) return;
+        if (!always && latest.current !== undefined && known.current === latest.current.version)
+          return;
         try {
           const answer = await operation({ command: "conversations", session: sessionId });
           if (!mounted.current || (latest.current && answer.revision < latest.current.revision))
@@ -75,11 +79,21 @@ export function useConversations(sessionId: string, announced: number | undefine
     [sessionId, mounted],
   );
   useEffect(() => void load(false), [load, announced]);
+  const uncertain = useRef(new Map<string, string>());
   const act = useCallback<Act>(
     async (request) => {
-      const result = await operation({ ...request, session: sessionId });
-      await load(true);
-      return result;
+      const intent = JSON.stringify(request);
+      const requestId = uncertain.current.get(intent) ?? newRequestId();
+      uncertain.current.set(intent, requestId);
+      try {
+        const result = await operation({ ...request, requestId, session: sessionId });
+        uncertain.current.delete(intent);
+        await load(true);
+        return result;
+      } catch (error) {
+        if (!isUncertain(error)) uncertain.current.delete(intent);
+        throw error;
+      }
     },
     [sessionId, load],
   );
@@ -177,32 +191,24 @@ export function Composer(props: {
   const [text, setText] = useState(() => draftText(sessionId, draft.id));
   const [busy, setBusy] = useState(false);
   const [failure, setFailure] = useState<string>();
-  const sending = useRef<{ requestId: string; text: DraftText }>(undefined);
   const mounted = useMounted();
   const write = (next: DraftText) => {
     setText(next);
     keepDraftText(sessionId, draft.id, next);
   };
   const send = async () => {
-    const same =
-      sending.current?.text.markdown === text.markdown && sending.current.text.kind === text.kind;
-    const intent = same ? sending.current! : { requestId: newRequestId(), text };
-    sending.current = intent;
     setBusy(true);
     setFailure(undefined);
     try {
       await props.act({
         command: "send",
-        requestId: intent.requestId,
         draft: draft.id,
-        markdown: intent.text.markdown,
-        kind: intent.text.kind,
+        markdown: text.markdown,
+        kind: text.kind,
       });
       forgetDraftText(sessionId, draft.id);
-      sending.current = undefined;
       if (mounted.current) props.onClose();
     } catch (error) {
-      if (!isUncertain(error)) sending.current = undefined;
       if (!isExpectedFailure(error)) console.error(error);
       if (mounted.current) setFailure(failureText(error));
     } finally {
@@ -212,7 +218,7 @@ export function Composer(props: {
   const discard = async () => {
     setBusy(true);
     try {
-      await props.act({ command: "discard", requestId: newRequestId(), draft: draft.id });
+      await props.act({ command: "discard", draft: draft.id });
       forgetDraftText(sessionId, draft.id);
       if (mounted.current) props.onClose();
     } catch (error) {
@@ -325,7 +331,6 @@ function MessageItem(props: {
             void run(
               {
                 command: "edit",
-                requestId: newRequestId(),
                 message: message.id,
                 ...(markdown !== undefined && { markdown }),
                 ...(kind !== undefined && { kind }),
@@ -353,9 +358,7 @@ function MessageItem(props: {
           </PillButton>
           <PillButton
             disabled={busy}
-            onClick={() =>
-              void run({ command: "retract", requestId: newRequestId(), message: message.id })
-            }
+            onClick={() => void run({ command: "retract", message: message.id })}
           >
             Delete
           </PillButton>
