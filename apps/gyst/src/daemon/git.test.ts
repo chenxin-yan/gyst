@@ -978,6 +978,26 @@ describe("Git.capture Generated files", () => {
     expect(await readdir(join(cwd, ".git"))).toEqual(before);
   });
 
+  it("reads uncommitted attributes from more captured attributes files than one command line holds", async () => {
+    const cwd = await repo("generated-many-attributes");
+    // About 2.7 MB of paths, past Linux's 2 MiB default argument limit.
+    const deep = join(...Array.from({ length: 15 }, (_, at) => `${at}`.padEnd(250, "d")));
+    const dirs = Array.from({ length: 700 }, (_, at) => join(deep, `${at}`));
+    for (const [at, dir] of dirs.entries()) {
+      await mkdir(join(cwd, dir), { recursive: true });
+      // Every other file marks its own x.js, so an attributes file read for another path shows.
+      await writeFile(
+        join(cwd, dir, ".gitattributes"),
+        `${at % 2 ? "y" : "x"}.js linguist-generated\n`,
+      );
+      await writeFile(join(cwd, dir, "x.js"), "x\n");
+    }
+
+    expect(generatedOf(await capture(cwd))).toEqual(
+      dirs.flatMap((dir, at) => (at % 2 ? [] : [join(dir, "x.js")])).sort(),
+    );
+  }, 60_000);
+
   it("reads a range's attributes from its commits, while uncommitted work reads the checkout's", async () => {
     const cwd = await repo("generated-range");
     await writeFile(join(cwd, ".gitattributes"), "gone.js linguist-vendored\n");
