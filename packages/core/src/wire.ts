@@ -72,6 +72,7 @@ export {
   OutdatedReasonSchema,
   parseReferenceHref,
 } from "./guidance.ts";
+export { counterpartLine } from "./mapping.ts";
 export {
   type AddonDiscovery,
   AddonDiscoverySchema,

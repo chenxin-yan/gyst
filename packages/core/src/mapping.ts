@@ -101,6 +101,24 @@ function locate(hunks: readonly ParsedHunk[], side: CodeSide, line: number): Loc
   return { other: line + delta };
 }
 
+/**
+ * `line` of one side of `hunk` as the same line of `counterpart`, its exact counterpart (the same
+ * body, under a header that may differ); undefined when `hunk` holds no such line.
+ */
+export function counterpartLine(
+  hunk: Hunk,
+  counterpart: Hunk,
+  side: CodeSide,
+  line: number,
+): number | undefined {
+  const parsed = parse(hunk);
+  const starts = startsOf(counterpart);
+  if (!parsed || !starts) return undefined;
+  const offset = line - parsed.starts[side];
+  const lines = parsed.rows.filter((row) => row[side] !== undefined).length;
+  return offset >= 0 && offset < lines ? starts[side] + offset : undefined;
+}
+
 const sameContent = (a: ContentSide, b: ContentSide) =>
   a.kind === "text"
     ? b.kind === "text" && a.blob === b.blob

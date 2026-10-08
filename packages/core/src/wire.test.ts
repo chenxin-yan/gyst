@@ -330,6 +330,7 @@ describe("daemon wire envelopes", () => {
       "src/errors.ts",
       "src/github.ts",
       "src/guidance.ts",
+      "src/mapping.ts",
       "src/metadata.ts",
       "src/navigation.ts",
       "src/session.ts",
