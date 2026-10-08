@@ -247,6 +247,13 @@ export const git = (box: Sandbox, cwd: string, ...args: string[]) =>
     stdio: ["ignore", "pipe", "pipe"],
   });
 
+export const write = async (cwd: string, files: Record<string, string>) => {
+  for (const [path, content] of Object.entries(files)) {
+    await mkdir(dirname(join(cwd, path)), { recursive: true });
+    await writeFile(join(cwd, path), content);
+  }
+};
+
 /** A repository in the sandbox whose one commit holds `tracked.txt`. */
 export async function repo(box: Sandbox, name: string): Promise<string> {
   const cwd = join(box.root, name);
