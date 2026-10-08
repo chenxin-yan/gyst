@@ -38,10 +38,11 @@ import {
   Stream,
 } from "effect";
 import { ChildProcessSpawner } from "effect/process";
-import { fileURLToPath, pathToFileURL } from "node:url";
+import { fileURLToPath } from "node:url";
 import { handshakeAddon } from "./addon-handshake.ts";
 import { CapturedContent } from "./content.ts";
 import {
+  documentUri,
   type Engine,
   type EngineFailure,
   fromLspPosition,
@@ -782,7 +783,7 @@ export class Navigation extends Context.Service<
 
       /** Opens a captured file in the engine once, with its exact captured text. */
       const opened = (analysis: Analysis, prepared: Prepared, file: string, text: string) => {
-        const uri = pathToFileURL(path.join(prepared.project, ...file.split("/"))).href;
+        const uri = documentUri(path.join(prepared.project, ...file.split("/")));
         return Semaphore.withPermit(analysis.openLock)(
           Effect.suspend(() =>
             analysis.opened.has(file)

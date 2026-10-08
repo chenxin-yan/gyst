@@ -2,7 +2,6 @@ import type { TextPoint } from "@gyst/core";
 import { Cause, Data, Deferred, Effect, Queue, Schema, type Scope, Stream } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import { extname } from "node:path";
-import { pathToFileURL } from "node:url";
 
 /** The TypeScript engine failed to start, answer or stay up, or broke the protocol. */
 export class EngineFailure extends Data.TaggedError("EngineFailure")<{
@@ -282,7 +281,7 @@ export const startLanguageServer = Effect.fnUntraced(function* (
     ),
   );
 
-  const root = pathToFileURL(project).href;
+  const root = documentUri(project);
   const initialized = yield* request("initialize", {
     processId: process.pid,
     rootUri: root,
@@ -351,6 +350,22 @@ const languageIds: Readonly<Record<string, string>> = {
   ".cjs": "javascript",
   ".jsx": "javascriptreact",
 };
+
+/**
+ * An absolute POSIX path as the engine's own file URI: every byte but the unreserved characters
+ * percent-encoded. The engine keys documents by that spelling and answers document highlights only
+ * for one opened under it; `pathToFileURL` leaves `$`, `(`, `@` and the like as they are.
+ */
+export const documentUri = (path: string) =>
+  `file://${path
+    .split("/")
+    .map((segment) =>
+      encodeURIComponent(segment).replace(
+        /[!'()*]/g,
+        (character) => `%${character.charCodeAt(0).toString(16).toUpperCase()}`,
+      ),
+    )
+    .join("/")}`;
 
 /** The LSP language of a TS/JS source path, or undefined for anything navigation does not query. */
 export const lspLanguageId = (path: string): string | undefined => {
