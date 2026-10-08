@@ -1,0 +1,105 @@
+// `gyst session export`'s human side: the disclosure a person reads at the terminal, their
+// approval, and writing the file whole or not at all.
+import {
+  BadArgs,
+  type ExportPreviewPayload,
+  type PinnedSide,
+  provenanceLines,
+  SourceUnavailable,
+} from "@gyst/core";
+import { Effect, FileSystem, type PlatformError } from "effect";
+import { createInterface } from "node:readline/promises";
+import { dirname } from "node:path";
+
+const identity = ({ content }: PinnedSide) =>
+  content.kind === "text"
+    ? `sha256 ${content.blob} (${content.size} bytes)`
+    : content.kind === "absent"
+      ? "absent"
+      : `not captured: ${content.reason}`;
+
+/** What the export of `preview` writes to `path`, and the warning, as the terminal shows it. */
+export function disclosureOf(preview: ExportPreviewPayload, path: string): string {
+  const lines = [
+    `gyst would write a standalone walkthrough to ${path}`,
+    ...provenanceLines(preview.scope, preview.provenance).map((line) => `  ${line}`),
+    `  Snapshot: ${preview.snapshotId}`,
+    "",
+    `Included in full (${preview.included.length} file sides):`,
+    ...preview.included.map(
+      (side) =>
+        `  ${side.path} (${side.side}${side.snapshotId === preview.snapshotId ? "" : `, earlier snapshot ${side.snapshotId}`}): ${identity(side)}`,
+    ),
+  ];
+  if (preview.unavailable.length > 0)
+    lines.push(
+      "",
+      "Unavailable references, shown in the file with their reason:",
+      ...preview.unavailable.map(
+        ({ target, reason }) =>
+          `  ${target.path}:${target.startLine}-${target.endLine} (${target.side}, snapshot ${target.snapshotId}): ${reason}`,
+      ),
+    );
+  lines.push(
+    "",
+    "WARNING: the file contains every file above in full and all of the walkthrough's guidance.",
+    "Full files and guidance may disclose secrets or confidential content. Check them before you",
+    "share the file; gyst does not scan or redact anything.",
+    "",
+  );
+  return lines.join("\n");
+}
+
+/** Asks the person at this terminal; only an explicit `yes` approves. */
+export const approvedAtTerminal = (question: string) =>
+  Effect.acquireUseRelease(
+    Effect.sync(() => createInterface({ input: process.stdin, output: process.stderr })),
+    (terminal) =>
+      Effect.promise(() =>
+        terminal.question(question).then(
+          (answer) => answer.trim().toLowerCase() === "yes",
+          () => false,
+        ),
+      ),
+    (terminal) => Effect.sync(() => terminal.close()),
+  );
+
+const codeOf = (error: PlatformError.PlatformError) => {
+  const cause = error.reason.cause;
+  return typeof cause === "object" && cause !== null && "code" in cause ? cause.code : undefined;
+};
+
+/**
+ * Writes `text` to `path`, which must not exist yet: synced in a temporary file beside it, then
+ * hard-linked into place, so the path never holds part of the file and an existing file, even one
+ * created meanwhile, is never replaced. A failure leaves no file at `path`.
+ */
+export const writeNewFile = (path: string, text: string) =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const temporary = yield* fs.makeTempFileScoped({ directory: dirname(path) });
+    yield* fs.writeFileString(temporary, text);
+    yield* Effect.scoped(Effect.flatMap(fs.open(temporary, { flag: "r" }), (file) => file.sync));
+    yield* fs.link(temporary, path);
+    yield* Effect.scoped(
+      Effect.flatMap(fs.open(dirname(path), { flag: "r" }), (directory) => directory.sync),
+    );
+  }).pipe(
+    Effect.scoped,
+    Effect.mapError((error) =>
+      error.reason._tag === "AlreadyExists"
+        ? new BadArgs({
+            message: `${path} already exists; choose another --output. Nothing was written.`,
+          })
+        : codeOf(error) === "ENOSPC" || codeOf(error) === "EDQUOT"
+          ? new SourceUnavailable({
+              message: `no space left to write ${path}. Nothing was written.`,
+              detail: { reason: "storage_full" },
+            })
+          : new BadArgs({
+              message: `could not write ${path}. Nothing was written.`,
+              detail: error.message,
+            }),
+    ),
+    Effect.withSpan("writeNewFile"),
+  );
