@@ -45,8 +45,8 @@ export type PeekOverlay = { spacer: HTMLDivElement | null; extent: () => Extent 
 /**
  * An open peek. With an `overlay` it is the full-width element over that spacer, spanning the
  * rendered diff item; without one it reads in flow. Once placed it focuses its selector
- * (`data-peek-focus`), else Expand, else Close: always, only while nothing else outside it holds
- * focus (`free`, for an answer that arrives later), or never.
+ * (`data-peek-focus`), else Expand, else Close: always, unless the reader is typing or in a dialog
+ * (`free`, for an answer that arrives later), or never.
  */
 export function InlinePeek(props: {
   label: string;
@@ -85,8 +85,9 @@ export function InlinePeek(props: {
     if (
       focusing === "free" &&
       active !== null &&
-      active !== document.body &&
-      !element.contains(active)
+      !element.contains(active) &&
+      (active.closest("dialog") !== null ||
+        active.matches("input, textarea, select, [contenteditable]:not([contenteditable='false'])"))
     )
       return;
     const control =
