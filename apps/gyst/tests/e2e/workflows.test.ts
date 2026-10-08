@@ -100,7 +100,6 @@ async function humanOf(box: Sandbox, cwd: string, args: string[]) {
         hunkIds,
         viewed: true,
       }),
-    conversations: () => act({ command: "conversations" }),
   };
 }
 
@@ -328,14 +327,15 @@ describe("review workflows through the installed CLI", () => {
       answered.stdout,
     );
     expect(json(answered).groups[1].overview.markdown).toContain("fixed clock");
-    const replies = (conversations: any, thread: string) =>
-      conversations.threads
-        .find(({ id }: { id: string }) => id === thread)
-        .messages.filter(({ author }: { author: string }) => author === "agent");
-    expect(replies(await human.conversations(), asked.thread)).toHaveLength(1);
 
     // The run is cut off before answering the note reply: --open recovers the read work.
     const recovered = json(await agent.threads("open", "recover-1"));
+    // The resent batch posted its reply once.
+    expect(
+      recovered.threads
+        .find(({ id }: { id: string }) => id === asked.thread)
+        .messages.filter(({ author }: { author: string }) => author === "agent"),
+    ).toHaveLength(1);
     const unanswered = recovered.threads.filter(
       ({ messages }: { messages: { author: string }[] }) => messages.at(-1)!.author === "human",
     );
