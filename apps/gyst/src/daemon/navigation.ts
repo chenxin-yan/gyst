@@ -1125,6 +1125,23 @@ export class Navigation extends Context.Service<
       const drained: Effect.Effect<void> = Effect.suspend(() =>
         slots === 0 ? Effect.void : Effect.andThen(Deferred.await(changed), drained),
       );
+      // A capture short of space may drop what a crashed daemon left and every engine no query
+      // holds: each is rebuilt from captured content on its next use.
+      yield* sessions.disposable(
+        ready.pipe(
+          Effect.ignore,
+          Effect.andThen(
+            lock(
+              Effect.sync(() => {
+                const idle = [...analyses.values()].filter(({ active }) => active === 0);
+                for (const analysis of idle) analyses.delete(analysis.key);
+                return idle;
+              }),
+            ),
+          ),
+          Effect.flatMap(closeAll),
+        ),
+      );
       yield* Effect.addFinalizer(() =>
         lock(
           Effect.sync(() => {

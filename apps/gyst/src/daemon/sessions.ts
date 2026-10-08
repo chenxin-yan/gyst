@@ -363,6 +363,11 @@ export class Sessions extends Context.Service<
      * started finishes first. Only the daemon that owns the store runs it.
      */
     readonly reclaimer: Effect.Effect<never>;
+    /**
+     * Registers, for the scope's life, what a capture short of space drops before it reclaims and
+     * tries once more: disposable copies of captured content that nothing is using.
+     */
+    disposable(drop: Effect.Effect<void>): Effect.Effect<void, never, EffectScope.Scope>;
     /** Resolves once a delete has removed the last session; a later open arms it again. */
     readonly idle: Effect.Effect<void>;
     /** Waits for in-flight mutations, so an open racing the idle check is counted. */
@@ -504,18 +509,26 @@ export class Sessions extends Context.Service<
       const storageFull = (error: { readonly _tag: string }) =>
         error._tag === "source_unavailable" &&
         (error as SourceUnavailable).detail.reason === "storage_full";
+      const disposables = new Set<Effect.Effect<void>>();
+      const disposable = (drop: Effect.Effect<void>) =>
+        Effect.acquireRelease(
+          Effect.sync(() => void disposables.add(drop)),
+          () => Effect.sync(() => void disposables.delete(drop)),
+        );
       /**
        * Runs one capture to publication holding content, so nothing it stages or publishes is
        * reclaimed before a session names it. What a failed capture committed is reclaimed later;
-       * out of space, it reclaims at once and tries once more before refusing.
+       * out of space, it drops disposable copies and reclaims at once, then tries once more before
+       * refusing.
        */
       const capturing = <A, E extends { readonly _tag: string }, R>(
         attempt: Effect.Effect<A, E, R>,
       ) => {
         const once = content.hold(attempt).pipe(Effect.onError(() => requestReclaim));
-        return once.pipe(
-          Effect.catchIf(storageFull, () => reclaim.pipe(Effect.ignore, Effect.andThen(once))),
-        );
+        const recover = Effect.suspend(() =>
+          Effect.forEach([...disposables], (drop) => drop, { discard: true }),
+        ).pipe(Effect.andThen(reclaim), Effect.ignore);
+        return once.pipe(Effect.catchIf(storageFull, () => recover.pipe(Effect.andThen(once))));
       };
       const capturingSource = <A, E extends { readonly _tag: string }, R>(
         attempt: Effect.Effect<A, E, R>,
@@ -1306,6 +1319,7 @@ export class Sessions extends Context.Service<
         load,
         reclaim,
         reclaimer,
+        disposable,
         idle: idle.await,
         isEmpty: Semaphore.withPermit(
           lock,
