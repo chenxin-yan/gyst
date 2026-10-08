@@ -148,6 +148,12 @@ export function sideChanged(
   return before && after ? !sameContent(before[side], after[side]) : before !== after;
 }
 
+/** Whether `path` is a rename's source or target: its sides differ, but no hunk says how. */
+const renamed = ({ files }: SnapshotLines, path: string) =>
+  files.some((file) =>
+    file.path === path ? file.renamedFrom !== undefined : file.renamedFrom === path,
+  );
+
 /**
  * Maps single lines of one side of `path` from `from` to `to` (see `mapRange`), or undefined when
  * either snapshot lacks that side as text.
@@ -163,7 +169,8 @@ function lineMapper(
     return undefined;
   if (sameContent(before[side], after[side])) return (line) => line;
   const other = otherSide(side);
-  const sameOther = sameContent(before[other], after[other]);
+  const sameOther =
+    sameContent(before[other], after[other]) && !renamed(from, path) && !renamed(to, path);
   const fromHunks = from.hunks.filter((hunk) => hunk.file === path);
   const toHunks = to.hunks.filter((hunk) => hunk.file === path);
   const matches = matchHunks(fromHunks, toHunks);
@@ -311,7 +318,8 @@ export function contextChanged(
  * changed line, with the other side's identical bytes, only where `to` holds the same text with
  * nothing else changed between them and an unchanged line on one side of it. Unless the changed
  * lines around it are the same in both, no other of them may hold that text in either.
- * No similarity, rename or cross-file matching: anything else is undefined.
+ * No similarity, rename or cross-file matching, and no reading of a rename's undiffed sides through
+ * the other: anything else is undefined.
  */
 export function mapRange(
   from: SnapshotLines,
