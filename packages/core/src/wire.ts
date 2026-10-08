@@ -72,6 +72,7 @@ export {
   type ExportPreviewPayload,
   ExportPreviewPayloadSchema,
   noTextReason,
+  notCaptured,
   provenanceLines,
   type PinnedSide,
   readinessProblems,

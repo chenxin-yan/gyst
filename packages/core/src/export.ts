@@ -94,16 +94,20 @@ export const WalkthroughExportSchema = Schema.Struct({
 );
 export type WalkthroughExport = typeof WalkthroughExportSchema.Type;
 
-/** Why a side or a guidance target has no captured text to show. */
-export const noTextReason = (
-  side: CodeSide,
-  content: Exclude<ContentSide, { kind: "text" }> | undefined,
-) =>
-  content === undefined
-    ? "not in its snapshot"
-    : content.kind === "absent"
-      ? `absent on the ${side} side`
-      : `${side} side not captured: ${content.reason}`;
+/** Why a side has no captured text, short enough for a file header bar. */
+export const notCaptured = {
+  binary: "binary",
+  "unsupported-encoding": "not UTF-8 text",
+  symlink: "symbolic link",
+  submodule: "submodule",
+  quota: "left out by the snapshot quota",
+} satisfies Record<Extract<ContentSide, { kind: "unavailable" }>["reason"], string>;
+
+/** Why one side of a captured file holds no text, as the export preview and every reader say it. */
+export const noTextReason = (side: CodeSide, content: Exclude<ContentSide, { kind: "text" }>) =>
+  content.kind === "absent"
+    ? `absent on the ${side} side`
+    : `${side} side not captured: ${notCaptured[content.reason]}`;
 
 /** A guidance target an export discloses without text, and why. */
 export const UnavailableTargetSchema = Schema.Struct({
@@ -259,7 +263,7 @@ export function exportPlanOf(
     if (content?.kind !== "text")
       unavailable.set(JSON.stringify(target), {
         target,
-        reason: noTextReason(target.side, content),
+        reason: content === undefined ? "not in its snapshot" : noTextReason(target.side, content),
       });
   }
   const order = (a: PinnedSide, b: PinnedSide) =>

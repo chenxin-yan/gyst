@@ -2,6 +2,7 @@
 // shows exactly what the file would disclose and generates it only for that approved state.
 import {
   type ExportPreviewPayload,
+  notCaptured,
   type PinnedSide,
   provenanceLines,
   readinessProblems,
@@ -11,6 +12,7 @@ import { useEffect, useState } from "react";
 import { isExpectedFailure, operation } from "./api.ts";
 import { Dialog } from "./commands.tsx";
 import { FailureNotice, PillButton, ScopeLabel, Title, useMounted } from "./components.tsx";
+import { referenceLabel } from "./rich.ts";
 import { embeddedExport } from "./standalone.ts";
 import { theme } from "./tokens.stylex.ts";
 
@@ -23,10 +25,7 @@ const sideIdentity = ({ content }: PinnedSide) =>
     ? `sha256 ${content.blob.slice(0, 12)} · ${content.size} bytes`
     : content.kind === "absent"
       ? "absent"
-      : `not captured: ${content.reason}`;
-
-const rangeLabel = (target: ExportPreviewPayload["unavailable"][number]["target"]) =>
-  `${target.path}:${target.startLine}${target.endLine === target.startLine ? "" : `-${target.endLine}`} (${target.side})`;
+      : `not captured: ${notCaptured[content.reason]}`;
 
 /** Hands `html` to the browser as a download named `name`; the browser decides where it lands. */
 function download(html: string, name: string) {
@@ -165,7 +164,7 @@ export function ExportDialog(props: { sessionId: string; onClose: () => void }) 
                 <ul {...stylex.props(styles.manifest)}>
                   {preview.unavailable.map(({ target, reason }) => (
                     <li key={JSON.stringify(target)}>
-                      <code>{rangeLabel(target)}</code>{" "}
+                      <code>{referenceLabel(target)}</code>{" "}
                       <span {...stylex.props(styles.muted)}>· {reason}</span>
                     </li>
                   ))}
