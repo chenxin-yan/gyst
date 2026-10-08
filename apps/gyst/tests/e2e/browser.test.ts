@@ -3672,7 +3672,12 @@ describe("installed gyst in a sandboxed browser", () => {
 
     // Every hunk Viewed, from the snapshot view.
     await side.getByRole("button", { name: "All changes", exact: true }).click();
-    for (const path of ["walk/a.ts", "walk/b.ts", "walk/c.ts"]) await viewedBox(page, path).check();
+    // A box refuses a click while another file's write is unanswered, so each waits for the last.
+    await viewedBox(page, "walk/a.ts").check();
+    await says(page, "3/5 hunks viewed in 3 files");
+    await viewedBox(page, "walk/b.ts").check();
+    await says(page, "4/5 hunks viewed in 3 files");
+    await viewedBox(page, "walk/c.ts").check();
     await says(page, "5/5 hunks viewed in 3 files");
     // span moves from a.ts 10–20 to b.ts 4–6: a.ts's two core hunks and b.ts's are unviewed.
     const moved = await walk.publish(4, "move", [
