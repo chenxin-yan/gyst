@@ -134,6 +134,22 @@ type FileMode = "100644" | "100755";
 type TreeEntry = { readonly mode: string; readonly oid: string };
 type CapturedSide = { readonly side: ContentSide; readonly mode?: FileMode };
 
+const sameSide = (old: ContentSide, current: ContentSide) =>
+  old.kind === current.kind &&
+  (old.kind !== "text" || (current.kind === "text" && old.blob === current.blob)) &&
+  (old.kind !== "unavailable" || (current.kind === "unavailable" && old.reason === current.reason));
+/** Changed content or mode; two unavailable sides with one reason carry no evidence of a change. */
+const changed = (old: CapturedSide, current: CapturedSide) =>
+  !sameSide(old.side, current.side) ||
+  (old.mode !== undefined && current.mode !== undefined && old.mode !== current.mode);
+
+/** The attributes GitHub Linguist reads as a generated or vendored file. */
+const generatedAttributes = ["linguist-generated", "linguist-vendored"];
+// As Linguist reads them: set, or any value but `false`. `unset` (`-attr`) and `unspecified` are not.
+const marks = (info: string) => info !== "unspecified" && info !== "unset" && info !== "false";
+/** Paths per `git check-attr`, by argv bytes, well under the platform's argument limit. */
+const checkAttrBytes = 64 * 1024;
+
 /** Why bytes that were read are not eligible text; the staged copy is discarded, never committed. */
 class Ineligible extends Data.TaggedError("Ineligible")<{
   readonly reason: "binary" | "unsupported-encoding";
@@ -162,6 +178,11 @@ export type LocalScope = Exclude<Scope, { readonly kind: "pr" }>;
 /** What GitHub reports a PR's range must be captured at. */
 export type PullRequestTarget = { readonly baseRefName: string; readonly headRefOid: string };
 type CommitProvenance = Exclude<Provenance, { readonly kind: "uncommitted" }>;
+/**
+ * Which changed files a capture marks Generated. By default Git's attributes for the captured
+ * sides decide; a set names them instead, so a source check never asks Git's attributes again.
+ */
+export type Generated = ReadonlySet<string> | undefined;
 
 export class Git extends Context.Service<
   Git,
@@ -179,6 +200,7 @@ export class Git extends Context.Service<
       root: string,
       scope: LocalScope,
       onProgress?: (progress: CaptureProgress) => Effect.Effect<void>,
+      generated?: Generated,
     ): Effect.Effect<SnapshotManifest, BadArgs | InternalError>;
     /**
      * A PR scope captured like a range over `pullRequestRange`'s commits: the PR's own merge base
@@ -189,6 +211,7 @@ export class Git extends Context.Service<
       scope: PullRequestScope,
       target: PullRequestTarget,
       onProgress?: (progress: CaptureProgress) => Effect.Effect<void>,
+      generated?: Generated,
     ): Effect.Effect<SnapshotManifest, SourceUnavailable | BadArgs | InternalError>;
     /**
      * A PR's own range in a matching checkout: merge-base(base branch, PR head)..PR head, the head
@@ -622,12 +645,64 @@ export class Git extends Context.Service<
         ),
       );
 
+      /**
+       * The paths Git's attributes mark generated or vendored, read from `source`'s tree, or from
+       * the working tree (falling back to the index, as Git does) without one. Paths are literal,
+       * never pathspecs. Reading attributes runs no configured program.
+       */
+      const generatedIn = Effect.fn("Git.generatedIn")(function* (
+        root: string,
+        source: string | null,
+        paths: readonly string[],
+      ) {
+        const chunks: string[][] = [];
+        let bytes = Number.POSITIVE_INFINITY;
+        for (const path of paths) {
+          if (bytes >= checkAttrBytes) {
+            chunks.push([]);
+            bytes = 0;
+          }
+          chunks.at(-1)!.push(path);
+          bytes += Buffer.byteLength(path) + 1;
+        }
+        const marked = new Set<string>();
+        for (const chunk of chunks) {
+          const result = yield* run(root, [
+            "check-attr",
+            "-z",
+            ...(source === null ? [] : ["--source", source]),
+            ...generatedAttributes,
+            "--",
+            ...chunk,
+          ]);
+          if (result.exitCode !== 0)
+            return yield* new BadArgs({ message: result.stderr.trim() || "git check-attr failed" });
+          // One `path NUL attribute NUL info NUL` record per path and attribute. A leading U+FEFF
+          // belongs to the first path.
+          const fields = new TextDecoder("utf-8", { ignoreBOM: true })
+            .decode(result.stdout)
+            .split("\0");
+          const requested = new Set(chunk);
+          for (let at = 0; at + 2 < fields.length; at += 3) {
+            const path = fields[at]!;
+            if (!requested.has(path))
+              return yield* new InternalError({
+                message: "git check-attr reported a path it was not asked about",
+                detail: { path },
+              });
+            if (marks(fields[at + 2]!)) marked.add(path);
+          }
+        }
+        return marked;
+      });
+
       // A range and a PR share the commit-pair capture; only uncommitted work reads the checkout.
       const snapshot = Effect.fn("Git.snapshot")(function* (
         root: string,
         scope: Scope,
         commits: CommitProvenance | undefined,
         onProgress: (progress: CaptureProgress) => Effect.Effect<void>,
+        given: Generated,
       ) {
         const objects = new Map<string, ContentSide>();
         const read = { bytes: 0 };
@@ -644,6 +719,26 @@ export class Git extends Context.Service<
           yield* onProgress({ phase, done, total, bytes: read.bytes });
         });
         const sides: Array<{ path: string; old: CapturedSide; new: CapturedSide }> = [];
+        /**
+         * A changed file's attributes come from its new side, or its old side once deleted; the
+         * working tree's when `newSource` is null.
+         */
+        const generatedOf = Effect.fnUntraced(function* (
+          oldSource: string | null,
+          newSource: string | null,
+        ) {
+          const changes = sides.filter(({ old, new: current }) => changed(old, current));
+          if (given) return new Set(changes.flatMap(({ path }) => (given.has(path) ? [path] : [])));
+          const deleted = changes.filter(({ new: current }) => current.side.kind === "absent");
+          const present = changes.filter(({ new: current }) => current.side.kind !== "absent");
+          const paths = (list: typeof changes) => list.map(({ path }) => path);
+          return new Set([
+            // Absent on both sides is never recorded, so a deletion always has an old commit.
+            ...(deleted.length > 0 ? yield* generatedIn(root, oldSource, paths(deleted)) : []),
+            ...(yield* generatedIn(root, newSource, paths(present))),
+          ]);
+        });
+        let generated: ReadonlySet<string>;
         let provenance: Provenance;
         if (commits) {
           provenance = commits;
@@ -659,6 +754,7 @@ export class Git extends Context.Service<
             });
             yield* report("capture", sides.length, paths.length);
           }
+          generated = yield* generatedOf(provenance.mergeBase ?? provenance.base, provenance.head);
         } else {
           const baseline = yield* head(root);
           provenance = { kind: "uncommitted", head: baseline };
@@ -711,6 +807,8 @@ export class Git extends Context.Service<
               sides.push({ path, old, new: current });
           }
           if (paths.length > 0) yield* report("capture", paths.length, paths.length);
+          // Before the recheck, so it also covers the `.gitattributes` files Git read for this.
+          generated = yield* generatedOf(baseline, null);
           // Best-effort: the inputs this capture saw are still there, unchanged. Not an atomic
           // filesystem snapshot; an edit that restores identical metadata can go unnoticed.
           if ((yield* head(root)) !== baseline) return yield* Worktree.changedDuringCapture("HEAD");
@@ -776,6 +874,7 @@ export class Git extends Context.Service<
             new: current.side,
             ...(modeChange && { modeChange }),
             ...(source && { renamedFrom: source.path }),
+            ...(generated.has(path) && { generated: true as const }),
           });
           const textual =
             (old.side.kind === "text" || old.side.kind === "absent") &&
@@ -800,9 +899,10 @@ export class Git extends Context.Service<
         root: string,
         scope: LocalScope,
         onProgress: (progress: CaptureProgress) => Effect.Effect<void> = () => Effect.void,
+        generated?: Generated,
       ) {
         const commits = scope.kind === "range" ? yield* range(root, scope.range) : undefined;
-        return yield* snapshot(root, scope, commits, onProgress);
+        return yield* snapshot(root, scope, commits, onProgress, generated);
       });
 
       const capturePullRequest = Effect.fn("Git.capturePullRequest")(function* (
@@ -810,9 +910,10 @@ export class Git extends Context.Service<
         scope: PullRequestScope,
         target: PullRequestTarget,
         onProgress: (progress: CaptureProgress) => Effect.Effect<void> = () => Effect.void,
+        generated?: Generated,
       ) {
         const commits = yield* pullRequestRange(root, scope, target);
-        return yield* snapshot(root, scope, { kind: "pr", ...commits }, onProgress);
+        return yield* snapshot(root, scope, { kind: "pr", ...commits }, onProgress, generated);
       });
 
       return Git.of({ repoRoot, capture, capturePullRequest, pullRequestRange });
