@@ -115,6 +115,8 @@ export function SearchField(props: {
           startTransition(() => props.onQuery(next));
         }}
         onKeyDown={(event) => {
+          // Enter or Escape then confirms or cancels the input method's text, not the search.
+          if (event.nativeEvent.isComposing) return;
           if (event.key === "Enter") {
             event.preventDefault();
             props.onEnter(draft, event.shiftKey ? -1 : 1);

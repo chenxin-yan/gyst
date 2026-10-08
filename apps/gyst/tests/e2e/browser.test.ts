@@ -2062,6 +2062,16 @@ describe("installed gyst in a sandboxed browser", () => {
     // long.ts lines 170-179 changed, each an old and a new line; line 17 is in a hidden range.
     await says(page, "1/20");
     await says(page, "README.md · file");
+    // Enter and Escape that end an input method's composition stay in the field.
+    await searchField(page).evaluate((input) => {
+      for (const key of ["Enter", "Escape"])
+        input.dispatchEvent(
+          new KeyboardEvent("keydown", { key, isComposing: true, bubbles: true }),
+        );
+    });
+    expect(await hasFocus(searchField(page))).toBe(true);
+    await says(page, "1/20");
+    await says(page, "README.md · file");
     await page.keyboard.press("Enter");
     expect(await hasFocus(searchField(page))).toBe(false);
     await says(page, "long.ts:170 · old");
