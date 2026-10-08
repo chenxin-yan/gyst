@@ -436,6 +436,7 @@ export function SemanticPeekView(props: {
       // An answer that arrives later never takes focus from typing or a dialog; while waiting the
       // keys stay with the review.
       focus={stage.kind === "waiting" ? "never" : "free"}
+      reveal
       onKeyDown={onKeyDown}
       overlay={props.overlay}
       handle={props.handle}

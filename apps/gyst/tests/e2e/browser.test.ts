@@ -4113,7 +4113,8 @@ describe("installed gyst in a sandboxed browser", () => {
     const session = await navigationSession("install-navigation", join(prefix, "bin"));
     const daemon = await daemonPid(data);
     const page = await newPage();
-    await page.setViewportSize({ width: 1400, height: 1200 });
+    // Short, so the peek opens below the panel's bottom and has to scroll into view.
+    await page.setViewportSize({ width: 1400, height: 500 });
     const writes = viewedOf(page);
     const asked = navigationOf(page);
     await page.goto(session.url);
@@ -4126,6 +4127,15 @@ describe("installed gyst in a sandboxed browser", () => {
     const addon = peek.getByRole("group", { name: "Navigation add-on" });
     await addon.waitFor({ timeout: 30_000 });
     expect(await addon.locator("[data-install]").textContent()).toBe(navigationInstall);
+    await waitFor(async () => {
+      const [shown, panel] = await Promise.all([peek.boundingBox(), pane.boundingBox()]);
+      return (
+        shown !== null &&
+        panel !== null &&
+        shown.y >= panel.y - 1 &&
+        shown.y + shown.height <= panel.y + panel.height + 1
+      );
+    }, "the peek scrolled into view");
     expect(await addon.getByRole("status").textContent()).toBe(
       "TS/JS navigation needs its optional add-on, which isn't on the PATH gyst was last opened from.",
     );
