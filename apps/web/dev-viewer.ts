@@ -4,7 +4,7 @@
 // them exactly as it does for a browser behind an SSH forward on another local port.
 import { webPaths } from "@gyst/core/web";
 import { execFileSync, spawn } from "node:child_process";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import type { AddressInfo } from "node:net";
 import { join, resolve } from "node:path";
 import type { Plugin } from "vite-plus";
@@ -16,6 +16,9 @@ const entry = join(checkout, "apps/gyst/src/index.ts");
 // The source daemon serves the packaged SPA from beside its entry, which a dev checkout has not
 // built; Vite serves the real viewer, so a placeholder says where it is. `dist/` is ignored.
 const webUiStub = join(checkout, "apps/gyst/src/dist/web-ui/index.html");
+// It reads an export's standalone reader from beside its entry too: this checkout's own export
+// build, once `pnpm build` (or `pnpm --filter @gyst/web build`) has made it.
+const exportReader = join(checkout, "apps/gyst/src/dist/export");
 
 const isAlive = (pid: number) => {
   try {
@@ -78,6 +81,8 @@ export function devViewer(launch: DevLaunch): Plugin {
         webUiStub,
         "<!doctype html><p>In development Vite serves the viewer: open the link apps/gyst/dev/gyst prints.</p>\n",
       );
+      await rm(exportReader, { recursive: true, force: true });
+      await symlink(join(import.meta.dirname, "dist-export"), exportReader, "dir");
       link = await openSession(launch);
       // An object, not Vite's string shorthand, which would set changeOrigin and rewrite the Host.
       // `ws` forwards the session subscription's WebSocket upgrade too.
