@@ -424,6 +424,9 @@ export class DaemonServer extends Context.Service<
         yield* acquirePidFile;
         // Only the socket owner reads the store: a rival may have changed it since we started.
         yield* sessions.load;
+        // Forked after the socket is acquired, so it stops before the socket is released and a
+        // successor daemon never reclaims beside it.
+        yield* Effect.forkScoped(sessions.reclaimer);
         yield* addons.load(new Set((yield* sessions.list).sessions.map(({ id }) => id)));
         // Bound after the socket, so a daemon that lost the socket never holds a port, and closed
         // before it, so the next daemon finds the port free again. Open tabs and SSH forwards name
