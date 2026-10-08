@@ -581,20 +581,21 @@ describe("Git.capture", () => {
   it("captures a range's whole commit messages oldest first, and none for other scopes", async () => {
     const cwd = await repo("range-messages");
     const initial = git(cwd, "rev-parse", "HEAD").trim();
-    // Signatures, notes and a configured format never reach a captured message.
+    // Signatures, notes, a configured format and output encoding never reach a captured message.
     git(cwd, "config", "log.showSignature", "true");
     git(cwd, "config", "format.pretty", "oneline");
+    git(cwd, "config", "i18n.logOutputEncoding", "ISO-8859-1");
     const first = "Add the café helper ✓\n\nWhy: callers repeat it.\n\n- one\n- two";
     await writeFile(join(cwd, "tracked.txt"), "two\n");
     git(cwd, "commit", "-qam", first);
     git(cwd, "notes", "add", "-m", "a note");
     await writeFile(join(cwd, "tracked.txt"), "three\n");
-    git(cwd, "commit", "-qam", "Second");
+    git(cwd, "commit", "-qam", "Second, naïve");
     const [one, two] = ["HEAD~1", "HEAD"].map((ref) => git(cwd, "rev-parse", ref).trim());
     const manifest = await capture(cwd, { kind: "range", range: `${initial}..HEAD` });
     expect(manifest.commits).toEqual([
       { id: one, message: first },
-      { id: two, message: "Second" },
+      { id: two, message: "Second, naïve" },
     ]);
     // A range without commits captures an explicit empty list.
     expect((await capture(cwd, { kind: "range", range: "HEAD..HEAD" })).commits).toEqual([]);
