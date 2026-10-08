@@ -29,6 +29,7 @@ import {
 import * as Socket from "effect/socket/Socket";
 import type * as SocketServer from "effect/socket/SocketServer";
 import { compare } from "semver";
+import { Navigation } from "./navigation.ts";
 import { Paths } from "./paths.ts";
 import { DaemonMessageSchema, daemonVersion, ProgressLineSchema } from "./protocol.ts";
 import { Sessions } from "./sessions.ts";
@@ -69,6 +70,7 @@ export class DaemonServer extends Context.Service<
     DaemonServer,
     Effect.gen(function* () {
       const sessions = yield* Sessions;
+      const navigation = yield* Navigation;
       const paths = yield* Paths;
       const fs = yield* FileSystem.FileSystem;
       const pid = String(process.pid);
@@ -166,10 +168,23 @@ export class DaemonServer extends Context.Service<
             return sessions.apply(request);
           case "viewed":
             return sessions.viewed(request);
+          // A replaced or deleted snapshot's analysis stops with it, before the reply.
           case "refresh":
-            return sessions.refresh(request, onProgress);
+            return sessions
+              .refresh(request, onProgress)
+              .pipe(Effect.tap(({ session }) => navigation.retire(session.id, session.snapshotId)));
           case "delete":
-            return sessions.delete(request);
+            return sessions
+              .delete(request)
+              .pipe(Effect.tap(({ sessionId }) => navigation.retire(sessionId)));
+          case "definition":
+            return navigation.definition(request);
+          case "references":
+            return navigation.references(request);
+          case "identifiers":
+            return navigation.identifiers(request);
+          case "navigation":
+            return navigation.status(request);
         }
       };
       // Accepted connections that have not replied yet; idle shutdown must not interrupt them.

@@ -6,6 +6,7 @@
       "repo": "chenxin-yan/gyst"
     }
   ],
+  "fixed": [["@gyst/cli", "@gyst/navigation-typescript"]],
   "access": "public",
   "baseBranch": "main",
   "privatePackages": {

@@ -856,7 +856,8 @@ describe("installed gyst in a sandboxed browser", () => {
     onTestFinished(() => page.close());
     await page.goto("chrome://sandbox/");
     expect(await page.locator("body").innerText()).toMatch(/You are adequately sandboxed/);
-  });
+    // The file's first page starts Chrome's first sandboxed renderer, up to 5 s on a CI runner.
+  }, 30_000);
 
   it("opens the root launch's uncommitted scope at its deep path and strips the fragment", async () => {
     one = await launch();

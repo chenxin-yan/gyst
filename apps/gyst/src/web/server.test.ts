@@ -1,19 +1,26 @@
 import { afterAll, beforeAll, describe, expect, it, onTestFinished } from "vite-plus/test";
 import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
+import * as NodeServices from "@effect/platform-node/NodeServices";
 import {
   type BrowserRequest,
   DaemonUnreachable,
+  navigationAddon,
   NoSession,
   type Request,
   type SubscribeRequest,
   type SubscriptionEvent,
 } from "@gyst/core";
-import { Clock, Effect, Exit, Schedule, Scope, Stream } from "effect";
+import { Clock, Duration, Effect, Exit, Schedule, Scope, Stream } from "effect";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
-import { rm } from "node:fs/promises";
+import { mkdtemp, realpath, rm, symlink } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { DaemonClient } from "../daemon/client.ts";
+import { daemonVersion } from "../daemon/protocol.ts";
 import { bootstrapLifetimeMillis, type Launch, makeLaunch } from "./auth.ts";
+import { makeNavigationAddon, type NavigationAddon } from "./navigation-addon.ts";
 import { browserApp, installedWebUiDir, loadWebAssets, type WebAssets } from "./server.ts";
 import {
   indexHtml,
@@ -34,7 +41,12 @@ const clock: Clock.Clock = {
   currentTimeNanos: Effect.sync(() => BigInt(now) * 1_000_000n),
   monotonicTimeNanosUnsafe: () => BigInt(now) * 1_000_000n,
   monotonicTimeNanos: Effect.sync(() => BigInt(now) * 1_000_000n),
-  sleep: () => Effect.void,
+  // Real waits: the add-on handshake's timeout must not fire at once.
+  sleep: (duration) =>
+    Effect.callback<void>((resume) => {
+      const timer = setTimeout(() => resume(Effect.void), Duration.toMillis(duration));
+      return Effect.sync(() => clearTimeout(timer));
+    }),
 };
 
 /** What the fake daemon received; the bridge must forward decoded browser input unchanged. */
@@ -86,8 +98,15 @@ beforeAll(async () => {
 });
 afterAll(() => rm(fixture.root, { recursive: true, force: true }));
 
+/** A launcher's add-on holder over `launchPath`, as `serveViewer` builds it. */
+const holder = (launchPath: string | undefined) =>
+  Effect.runPromise(
+    makeNavigationAddon(launchPath, daemonVersion).pipe(Effect.provide(NodeServices.layer)),
+  );
+
 /** Serves one launch on an ephemeral loopback port for the current test. */
-async function serve(launch: Launch = makeLaunch(t0)) {
+async function serve(launch: Launch = makeLaunch(t0), addon?: NavigationAddon) {
+  const navigation = addon ?? (await holder(undefined));
   const scope = Effect.runSync(Scope.make());
   onTestFinished(() => Effect.runPromise(Scope.close(scope, Exit.void)));
   const server = createServer();
@@ -95,7 +114,7 @@ async function serve(launch: Launch = makeLaunch(t0)) {
     Effect.gen(function* () {
       const http = yield* NodeHttpServer.make(() => server, { host: "127.0.0.1", port: 0 });
       yield* http.serve(
-        browserApp(launch, assets).pipe(
+        browserApp(launch, assets, navigation).pipe(
           Effect.provideService(DaemonClient, daemon),
           Effect.provideService(Clock.Clock, clock),
         ),
@@ -720,5 +739,115 @@ describe("cross-launch isolation", () => {
       401,
     );
     expect((await a.operation({ command: "list" })).status).toBe(200);
+  });
+});
+
+describe("browserApp navigation", () => {
+  const addonCli = fileURLToPath(
+    new URL("../../../../packages/navigation-typescript/src/cli.ts", import.meta.url),
+  );
+  const target = { session: "s1", snapshotId, side: "new", file: "src/a.ts" } as const;
+  const position = { line: 2, character: 4 };
+  const tempDir = async () => {
+    const dir = await mkdtemp(join(tmpdir(), "gyst-bridge-addon-"));
+    onTestFinished(() => rm(dir, { recursive: true, force: true }));
+    return dir;
+  };
+  /** Installs the workspace add-on into `bin` as npm's global bin link would. */
+  const install = (bin: string) => symlink(addonCli, join(bin, navigationAddon.bin));
+
+  it("binds the launcher's discovery into navigation and forwards everything else unchanged", async () => {
+    forwarded = [];
+    const bin = await tempDir();
+    await install(bin);
+    const { operation } = await serve(makeLaunch(t0), await holder(bin));
+    const available = {
+      kind: "available",
+      entry: await realpath(addonCli),
+      version: daemonVersion,
+    };
+    const requests: BrowserRequest[] = [
+      { command: "definition", ...target, position },
+      { command: "references", ...target, side: "old", position },
+      { command: "identifiers", ...target, line: 2 },
+      { command: "navigation", session: "s1", snapshotId },
+      { command: "status", session: "s1" },
+      { command: "code", session: "s1", snapshotId, file: "src/a.ts", side: "new" },
+    ];
+    for (const request of requests) expect((await operation(request)).status).not.toBe(400);
+    expect(forwarded).toEqual([
+      { command: "definition", ...target, position, addon: available },
+      { command: "references", ...target, side: "old", position, addon: available },
+      { command: "identifiers", ...target, line: 2, addon: available },
+      { command: "navigation", session: "s1", snapshotId, addon: available },
+      { command: "status", session: "s1" },
+      { command: "code", session: "s1", snapshotId, file: "src/a.ts", side: "new" },
+    ]);
+  });
+
+  it("refuses a browser-supplied add-on or executable with bad_args before the daemon", async () => {
+    forwarded = [];
+    const { operation } = await serve();
+    const addon = { kind: "available", entry: "/bin/sh", version: daemonVersion };
+    for (const body of [
+      { command: "definition", ...target, position, addon },
+      { command: "references", ...target, position, entry: "/bin/sh" },
+      { command: "identifiers", ...target, line: 1, addon: { kind: "missing" } },
+      { command: "navigation", session: "s1", snapshotId, addon },
+      { command: "navigation", session: "s1", snapshotId, recheck: true, entry: "/bin/sh" },
+      { command: "navigation", session: "s1", snapshotId, launchPath: "/tmp" },
+    ]) {
+      const response = await operation(body);
+      expect(response.status).toBe(400);
+      expect(JSON.parse(response.body)).toMatchObject({ ok: false, error: { code: "bad_args" } });
+    }
+    expect(forwarded).toEqual([]);
+  });
+
+  it("sees an install into an existing launch PATH directory only on Check again", async () => {
+    forwarded = [];
+    const bin = await tempDir();
+    const { operation } = await serve(makeLaunch(t0), await holder(`/nonexistent:${bin}`));
+    const addonOf = () => (forwarded.at(-1) as { addon?: unknown } | undefined)?.addon;
+    await operation({ command: "navigation", session: "s1", snapshotId });
+    expect(addonOf()).toEqual({ kind: "missing" });
+    await install(bin);
+    // The launcher keeps its discovery until asked to look again.
+    await operation({ command: "navigation", session: "s1", snapshotId });
+    expect(addonOf()).toEqual({ kind: "missing" });
+    await operation({ command: "definition", ...target, position });
+    expect(addonOf()).toEqual({ kind: "missing" });
+    await operation({ command: "navigation", session: "s1", snapshotId, recheck: true });
+    const available = {
+      kind: "available",
+      entry: await realpath(addonCli),
+      version: daemonVersion,
+    };
+    // `recheck` is the launcher's instruction, not part of the daemon request.
+    expect(forwarded.at(-1)).toEqual({
+      command: "navigation",
+      session: "s1",
+      snapshotId,
+      addon: available,
+    });
+    await operation({ command: "definition", ...target, position });
+    expect(addonOf()).toEqual(available);
+  });
+
+  it("looks only on the PATH it was launched with, never one changed later", async () => {
+    forwarded = [];
+    const launchBin = await tempDir();
+    const laterBin = await tempDir();
+    await install(laterBin);
+    const { operation } = await serve(makeLaunch(t0), await holder(launchBin));
+    const launchPath = process.env.PATH;
+    process.env.PATH = `${laterBin}:${launchPath ?? ""}`;
+    onTestFinished(() => {
+      process.env.PATH = launchPath;
+    });
+    await operation({ command: "navigation", session: "s1", snapshotId, recheck: true });
+    expect(forwarded).toEqual([
+      { command: "navigation", session: "s1", snapshotId, addon: { kind: "missing" } },
+    ]);
   });
 });

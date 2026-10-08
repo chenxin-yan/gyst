@@ -30,6 +30,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { manifestOf, noGitHub, publishingContent } from "./capture-doubles.ts";
 import { Git } from "./git.ts";
+import { Navigation } from "./navigation.ts";
 import { Paths } from "./paths.ts";
 import { DaemonInfoSchema, daemonVersion } from "./protocol.ts";
 import { DaemonServer } from "./server.ts";
@@ -98,6 +99,53 @@ const paths = Layer.sync(Paths, () => ({
   deleteReceiptsPath: join(dataDir, "delete-receipts"),
   sessionFile: (id: string) => join(dataDir, `${id}.json`),
 }));
+/** What reached the Navigation double, in order: navigation requests and retirements. */
+const navigationCalls: Array<unknown> = [];
+const located = (request: { session: string; snapshotId: string; side: "old" | "new" }) =>
+  Effect.sync(() => {
+    navigationCalls.push(request);
+    return {
+      sessionId: request.session,
+      snapshotId: request.snapshotId,
+      side: request.side,
+      file: "a.ts",
+      query: "definition" as const,
+      position: { line: 1, character: 0 },
+      outcome: { kind: "no-symbol" as const },
+    };
+  });
+const navigation = Layer.succeed(
+  Navigation,
+  Navigation.of({
+    definition: located,
+    references: (request) =>
+      Effect.map(located(request), (payload) => ({ ...payload, query: "references" as const })),
+    identifiers: (request) =>
+      Effect.sync(() => {
+        navigationCalls.push(request);
+        return {
+          sessionId: request.session,
+          snapshotId: request.snapshotId,
+          side: request.side,
+          file: request.file,
+          line: request.line,
+          outcome: { kind: "identifiers" as const, identifiers: [], gaps: [] },
+        };
+      }),
+    retire: (sessionId, keep) =>
+      Effect.sync(() => void navigationCalls.push({ retire: sessionId, keep })),
+    status: (request) =>
+      Effect.sync(() => {
+        navigationCalls.push(request);
+        return {
+          sessionId: request.session,
+          snapshotId: request.snapshotId,
+          addon: { kind: "available" as const, version: "1" },
+          sides: { old: { kind: "stopped" as const }, new: { kind: "queued" as const } },
+        };
+      }),
+  }),
+);
 const serverLayerOver = (platform: Layer.Layer<Layer.Success<typeof NodeServices.layer>>) =>
   DaemonServer.layer.pipe(
     Layer.provide(
@@ -105,6 +153,7 @@ const serverLayerOver = (platform: Layer.Layer<Layer.Success<typeof NodeServices
         Layer.provide(Layer.mergeAll(git, noGitHub, store, crypto, publishingContent())),
       ),
     ),
+    Layer.provide(navigation),
     Layer.provide(paths),
     Layer.provide(platform),
   );
@@ -259,6 +308,75 @@ describe("DaemonServer", () => {
           });
         }
         expect(files.size).toBe(0);
+        yield* Fiber.interrupt(running);
+      }).pipe(Effect.provide(serverLayer)),
+    );
+  }, 10_000);
+
+  it("dispatches navigation with the launcher's add-on and retires analysis on refresh and delete", async () => {
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        navigationCalls.length = 0;
+        const server = yield* DaemonServer;
+        const running = yield* Effect.forkChild(server.run);
+        const session = openedId(
+          yield* open("/navigate").pipe(
+            Effect.retry({ schedule: Schedule.spaced("10 millis"), times: 100 }),
+          ),
+        );
+        const status = yield* send({ command: "status", session });
+        if (!status.ok) throw new Error("status failed");
+        const snapshotId = (status.value as { session: { snapshotId: string } }).session.snapshotId;
+        // Ordinary review operations never reach navigation.
+        expect(navigationCalls).toEqual([]);
+
+        const addon = {
+          kind: "available",
+          entry: "/opt/gyst-navigation-typescript",
+          version: "1",
+        } as const;
+        const target = { session, snapshotId, side: "new", file: "a.ts" } as const;
+        const position = { line: 1, character: 0 };
+        const requests = [
+          { command: "definition", ...target, position, addon },
+          { command: "references", ...target, position, addon },
+          { command: "identifiers", ...target, line: 1, addon },
+          { command: "navigation", session, snapshotId, addon },
+        ] as const;
+        for (const request of requests) expect(ok(yield* send(request))).toBe(true);
+        expect(navigationCalls).toEqual(requests);
+        const answered = yield* send(requests[1]);
+        expect(answered.ok && answered.value).toMatchObject({
+          query: "references",
+          snapshotId,
+          outcome: { kind: "no-symbol" },
+        });
+        const readiness = yield* send(requests[3]);
+        expect(readiness.ok && readiness.value).toEqual({
+          sessionId: session,
+          snapshotId,
+          addon: { kind: "available", version: "1" },
+          sides: { old: { kind: "stopped" }, new: { kind: "queued" } },
+        });
+
+        navigationCalls.length = 0;
+        const refreshed = yield* send({ command: "refresh", session });
+        if (!refreshed.ok) throw new Error("refresh failed");
+        const current = (refreshed.value as { session: { snapshotId: string } }).session.snapshotId;
+        expect(navigationCalls).toEqual([{ retire: session, keep: current }]);
+        // A browser-shaped request without the launcher's discovery is refused before dispatch.
+        for (const request of [requests[0], requests[3]]) {
+          const { addon: _, ...unbound } = request;
+          expect(yield* send(unbound as unknown as Request)).toMatchObject({
+            ok: false,
+            error: { _tag: "bad_args" },
+          });
+        }
+        expect(ok(yield* remove(session))).toBe(true);
+        expect(navigationCalls).toEqual([
+          { retire: session, keep: current },
+          { retire: session, keep: undefined },
+        ]);
         yield* Fiber.interrupt(running);
       }).pipe(Effect.provide(serverLayer)),
     );

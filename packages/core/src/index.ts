@@ -93,6 +93,17 @@ export {
   parseReferenceHref,
 } from "./guidance.ts";
 export { setViewed, type ViewedOutcome, type ViewedRequest } from "./human-action.ts";
+export {
+  type AddonDiscovery,
+  AddonDiscoverySchema,
+  type AddonHandshake,
+  AddonHandshakeSchema,
+  type AddonState,
+  AddonStateSchema,
+  addonStateOf,
+  navigationAddon,
+  navigationInstallCommand,
+} from "./navigation.ts";
 export { refreshSession } from "./refresh.ts";
 export {
   type Group,
@@ -131,8 +142,22 @@ export {
   DeletePayloadSchema,
   type DiffPayload,
   DiffPayloadSchema,
+  type IdentifiersPayload,
+  IdentifiersPayloadSchema,
   type ListPayload,
   ListPayloadSchema,
+  type NavigationGap,
+  NavigationGapSchema,
+  type NavigationLocation,
+  NavigationLocationSchema,
+  type NavigationResultPayload,
+  NavigationResultPayloadSchema,
+  type NavigationSideState,
+  NavigationSideStateSchema,
+  type NavigationStatusPayload,
+  NavigationStatusPayloadSchema,
+  type NavigationUnavailable,
+  NavigationUnavailableSchema,
   type OpenPayload,
   OpenPayloadSchema,
   type Reply,
@@ -149,4 +174,8 @@ export {
   SubscriptionEventSchema,
   type StackPayload,
   StackPayloadSchema,
+  type TextPoint,
+  TextPointSchema,
+  type TextRange,
+  TextRangeSchema,
 } from "./wire.ts";

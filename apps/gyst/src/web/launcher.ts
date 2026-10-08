@@ -5,7 +5,9 @@ import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { DaemonClient } from "../daemon/client.ts";
+import { daemonVersion } from "../daemon/protocol.ts";
 import { makeLaunch } from "./auth.ts";
+import { makeNavigationAddon } from "./navigation-addon.ts";
 import { browserApp, loadWebAssets } from "./server.ts";
 
 /** A trusted-entry open: this process's cwd and scope, or an exact saved id. */
@@ -53,6 +55,11 @@ export const serveViewer = Effect.fn("serveViewer")(function* (
     readonly webUiDir: string;
     readonly opener: string | undefined;
     readonly stdout: (text: string) => void;
+    /**
+     * The PATH this launch was started with: the only place it looks for the navigation add-on,
+     * never the daemon's PATH or one changed later.
+     */
+    readonly launchPath: string | undefined;
     /** Shows a capture's progress while the open waits for it, then clears it. */
     readonly progress?:
       | {
@@ -69,10 +76,11 @@ export const serveViewer = Effect.fn("serveViewer")(function* (
     .request(open, options.progress?.report)
     .pipe(Effect.ensuring(options.progress?.clear ?? Effect.void))) as OpenPayload;
   const launch = makeLaunch(yield* Clock.currentTimeMillis);
+  const addon = yield* makeNavigationAddon(options.launchPath, daemonVersion);
 
   const server = createServer();
   const http = yield* NodeHttpServer.make(() => server, { host: "127.0.0.1", port: 0 });
-  yield* http.serve(browserApp(launch, assets));
+  yield* http.serve(browserApp(launch, assets, addon));
   // Runs before the server's own close, so open browser connections cannot hold shutdown.
   yield* Effect.addFinalizer(() => Effect.sync(() => server.closeAllConnections()));
 

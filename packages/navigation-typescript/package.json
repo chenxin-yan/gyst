@@ -1,0 +1,41 @@
+{
+  "name": "@gyst/navigation-typescript",
+  "version": "0.1.2",
+  "description": "Optional TypeScript/JavaScript definition and usage navigation for gyst",
+  "license": "MIT",
+  "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/chenxin-yan/gyst.git",
+    "directory": "packages/navigation-typescript"
+  },
+  "homepage": "https://github.com/chenxin-yan/gyst#readme",
+  "bugs": "https://github.com/chenxin-yan/gyst/issues",
+  "engines": {
+    "node": ">=24"
+  },
+  "publishConfig": {
+    "access": "public",
+    "directory": ".crust/root"
+  },
+  "bin": {
+    "gyst-navigation-typescript": "src/cli.ts"
+  },
+  "scripts": {
+    "build": "vp run build:task"
+  },
+  "crust": {
+    "runtime": "node",
+    "artifact": "package",
+    "external": [
+      "typescript"
+    ]
+  },
+  "dependencies": {
+    "@crustjs/core": "0.5.5",
+    "typescript": "7.0.2"
+  },
+  "devDependencies": {
+    "@crustjs/crust": "0.5.5"
+  }
+}
