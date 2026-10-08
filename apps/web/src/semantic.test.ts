@@ -17,7 +17,7 @@ import {
   targetOf,
 } from "./semantic.ts";
 import type { RangeRead } from "./captured.ts";
-import { SemanticPeekView } from "./semantic.tsx";
+import { SemanticPeekView, semanticKey } from "./semantic.tsx";
 
 // StyleX compiles away in the app build; Node renders the same markup without its classes.
 vi.mock("@stylexjs/stylex", () => ({
@@ -293,6 +293,28 @@ describe("words", () => {
     expect(readinessOf({ kind: "ready", files: 1, bytes: 2, gaps: [] })).toBe("ready");
     expect(readinessOf({ kind: "stopped" })).toBeUndefined();
     expect(readinessOf({ kind: "unavailable", reason: { kind: "historical" } })).toBeUndefined();
+  });
+});
+
+describe("semanticKey", () => {
+  const key = (stage: SemanticStage) => semanticKey({ kind: "semantic", origin, stage });
+  const ask = { kind: "identifiers", query: "definition" } as const;
+
+  it("keeps a waiting peek as its readiness changes, and an answer's as its selection moves", () => {
+    const waiting = key({ kind: "waiting", ask, ticket: 1 });
+    expect(key({ kind: "waiting", ask, ticket: 1, readiness: "queued" })).toBe(waiting);
+    expect(key({ kind: "waiting", ask, ticket: 1, readiness: "preparing" })).toBe(waiting);
+    expect(key({ kind: "waiting", ask, ticket: 1, readiness: "ready" })).toBe(waiting);
+    const choices = [three, plus].map((symbol) => ({ query: "definition" as const, symbol }));
+    expect(key({ kind: "choose", choices, selected: 1, gaps: [] })).toBe(
+      key({ kind: "choose", choices, selected: 0, gaps: [] }),
+    );
+  });
+
+  it("changes with another ask or its answer", () => {
+    const waiting = key({ kind: "waiting", ask, ticket: 1 });
+    expect(key({ kind: "waiting", ask, ticket: 2 })).not.toBe(waiting);
+    expect(key({ kind: "none", message: "x" })).not.toBe(waiting);
   });
 });
 
