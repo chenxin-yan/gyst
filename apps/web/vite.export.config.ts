@@ -13,9 +13,20 @@ const contentSecurityPolicy = [
   "font-src data:",
 ].join("; ");
 
+/** Adds the embedded faces' stylesheet before Vite bundles the page, so the live viewer lacks it. */
+const standaloneFonts = (): Plugin => ({
+  name: "gyst:standalone-fonts",
+  transformIndexHtml: {
+    order: "pre",
+    handler: () => [
+      { tag: "link", attrs: { rel: "stylesheet", href: "/src/fonts.css" }, injectTo: "head" },
+    ],
+  },
+});
+
 /**
  * Makes the build one self-contained document: the policy and the data slot go first in <head>,
- * and the bundle's one script and one stylesheet are inlined, their files dropped.
+ * and the bundle's one script and its stylesheets are inlined, their files dropped.
  */
 const standaloneHtml = (): Plugin => ({
   name: "gyst:standalone-html",
@@ -74,7 +85,7 @@ const standaloneHtml = (): Plugin => ({
 export default defineConfig({
   base: "./",
   mode: "export",
-  plugins: [...viewerPlugins, standaloneHtml()],
+  plugins: [...viewerPlugins, standaloneFonts(), standaloneHtml()],
   build: {
     outDir: "dist-export",
     assetsInlineLimit: () => true,
