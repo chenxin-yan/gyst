@@ -57,6 +57,8 @@ export class SessionStore extends Context.Service<
   {
     /** Undecodable files are skipped: a corrupt or older session must not block valid ones. */
     readonly loadAll: Effect.Effect<Array<Session>, PlatformError.PlatformError>;
+    /** The text of every session file `loadAll` skips, which reclaiming content must still respect. */
+    readonly loadUndecodable: Effect.Effect<Array<string>, PlatformError.PlatformError>;
     save(session: Session): Effect.Effect<void, PlatformError.PlatformError>;
     remove(id: string): Effect.Effect<void, PlatformError.PlatformError>;
     /** Empty until the first deletion; an unreadable receipt file is a defect, never an empty list. */
@@ -84,17 +86,31 @@ export class SessionStore extends Context.Service<
       const paths = yield* Paths;
       yield* fs.makeDirectory(paths.dataDir, { recursive: true, mode: 0o700 });
 
-      const loadAll = Effect.gen(function* () {
+      const readAll = Effect.gen(function* () {
         const files = yield* fs.readDirectory(paths.dataDir);
-        const sessions = yield* Effect.forEach(
+        return yield* Effect.forEach(
           files.filter((file) => file.endsWith(".json")),
           (file) =>
-            fs
-              .readFileString(paths.sessionFile(file.slice(0, -".json".length)))
-              .pipe(Effect.flatMap((content) => Effect.option(decodeSessionFile(content)))),
+            fs.readFileString(paths.sessionFile(file.slice(0, -".json".length))).pipe(
+              Effect.flatMap((content) =>
+                Effect.map(Effect.option(decodeSessionFile(content)), (session) => ({
+                  content,
+                  session,
+                })),
+              ),
+            ),
         );
-        return Array.getSomes(sessions);
-      }).pipe(Effect.withSpan("SessionStore.loadAll"));
+      });
+      const loadAll = readAll.pipe(
+        Effect.map((read) => Array.getSomes(read.map(({ session }) => session))),
+        Effect.withSpan("SessionStore.loadAll"),
+      );
+      const loadUndecodable = readAll.pipe(
+        Effect.map((read) =>
+          read.flatMap(({ content, session }) => (session._tag === "None" ? [content] : [])),
+        ),
+        Effect.withSpan("SessionStore.loadUndecodable"),
+      );
 
       const write = (path: string, content: string) =>
         writeAtomically(path, content).pipe(Effect.provideService(FileSystem.FileSystem, fs));
@@ -125,6 +141,7 @@ export class SessionStore extends Context.Service<
 
       return SessionStore.of({
         loadAll,
+        loadUndecodable,
         save,
         remove,
         loadDeleteReceipts,
