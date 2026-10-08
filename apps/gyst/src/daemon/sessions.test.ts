@@ -2874,7 +2874,9 @@ describe("Sessions captured reads over real captures", () => {
           commits: [{ id: two, message: "Second step" }],
           next: null,
         });
-        expect(yield* Effect.flip(read(session.snapshotId, two.replace(/./u, "0")))).toMatchObject({
+        // A well-formed id of no captured commit: two's with its first digit changed, whatever it is.
+        const unknown = two.replace(/./u, (digit) => (digit === "0" ? "1" : "0"));
+        expect(yield* Effect.flip(read(session.snapshotId, unknown))).toMatchObject({
           _tag: "validation_failed",
         });
 
