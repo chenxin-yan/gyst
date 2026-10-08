@@ -151,6 +151,37 @@ another session is rejected.
 
 For CLI options, run `gyst --help` or `gyst session --help`.
 
+## Export a walkthrough
+
+Once the agent's walkthrough is complete (every changed hunk in exactly one group, the overview
+and every group overview written, nothing Outdated) you can share it as one standalone HTML file.
+In the viewer, choose Export… in the top bar. Before anything is written it shows:
+
+- every file side the file will carry, with its content identity: the changed files in full, and
+  the files the guidance references, older pinned ones included, and nothing else of the project;
+- the references it cannot show, and why; they stay visible in the file with that reason;
+- where the sides came from: the recorded scope and the Git commits resolved when the snapshot was
+  captured, a three-dot range's merge base included. Uncommitted changes are the working tree as
+  captured, which no commit identifies; an unborn repository's old side is an empty baseline.
+
+Full files and guidance may disclose secrets or confidential content. Check them before you share
+the file; gyst neither scans nor redacts anything. Approve and download generates the file for
+exactly the state you approved: if the walkthrough or its snapshot changed meanwhile, nothing is
+exported and the new preview needs approving again. Exporting never refreshes, revalidates or
+reads the checkout.
+
+From a terminal, `gyst session export --session <id> [--output <file>]` shows the same preview
+on stderr and writes the file only once you type `yes`. It needs an interactive terminal, so an
+agent cannot export on your behalf through it. An existing file is never replaced, and a failed
+write leaves nothing behind. On success it prints the path, size, snapshot and export time as
+JSON.
+
+The file opens from disk in a browser, offline, without gyst, the daemon or the checkout. It is
+read-only: groups, files, notes, folds, layouts, full-file context, references with peek, expand
+and Back, and the reading keys work; it carries no conversations, Viewed progress, session id or
+local paths, makes no network request, and opens a web link only when you click it. It cannot be
+imported back into gyst. The reader itself is about 15 MiB; a 1,000-file export is about 20 MiB.
+
 ## Storage
 
 Sessions and their captured files live in gyst's data directory on the machine running the
