@@ -12,6 +12,7 @@ import type {
   HumanMessage,
   Thread,
   ThreadCode,
+  ThreadEntry,
   ThreadsPayload,
   Wording,
 } from "./thread.ts";
@@ -38,8 +39,17 @@ export const anchorKey = ({ snapshotId, path, side, startLine, endLine }: Captur
 export const threadVersionOf = (thread: Pick<Thread, "resolved" | "messages">) =>
   hash(JSON.stringify([thread.resolved, thread.messages]));
 
-const hasPending = (thread: Thread) =>
-  thread.messages.some((message) => message.author === "human" && message.pending);
+const isPending = (message: Thread["messages"][number]) =>
+  message.author === "human" && message.pending;
+const hasPending = (thread: Thread) => thread.messages.some(isPending);
+
+/** A thread as the browser's conversations listing names it, its messages left to `messages`. */
+export const threadEntryOf = ({ messages, ...thread }: Thread): ThreadEntry => ({
+  ...thread,
+  version: threadVersionOf({ resolved: thread.resolved, messages }),
+  messageCount: messages.length,
+  pendingCount: messages.filter(isPending).length,
+});
 
 /**
  * The threads a retrieval in `mode` returns: open ones only, and for `pending` only those holding a

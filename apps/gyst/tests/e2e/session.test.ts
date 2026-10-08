@@ -1118,8 +1118,8 @@ describe("gyst session CLI seam", () => {
       }),
     );
     expect(answered).toMatchObject({ groups: [{ id: "g" }], threads: { open: 1, pending: 0 } });
-    const read = await human({ command: "conversations" });
-    expect(read.threads[0].messages.at(-1)).toMatchObject({
+    const read = await human({ command: "messages", thread: asked.thread });
+    expect(read.messages.at(-1)).toMatchObject({
       author: "agent",
       markdown: "Three closes the list.",
     });
