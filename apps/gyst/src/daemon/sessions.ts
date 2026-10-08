@@ -56,6 +56,7 @@ import {
   threadAnchorsOf,
   type ThreadCode,
   threadsFor,
+  threadVersionOf,
   type ThreadsPayload,
   anchorKey,
   ValidationFailed,
@@ -885,7 +886,10 @@ export class Sessions extends Context.Service<
           snapshotId: session.snapshotId,
           revision: session.revision,
           version: conversationsOf(session),
-          threads: session.threads,
+          threads: session.threads.map((thread) => ({
+            ...thread,
+            version: threadVersionOf(thread),
+          })),
           drafts: session.drafts,
         } satisfies ConversationsPayload;
       }, Semaphore.withPermit(lock));

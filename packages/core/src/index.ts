@@ -32,6 +32,7 @@ export {
   threadAnchorsOf,
   threadsFor,
   type ThreadsRequest,
+  threadVersionOf,
 } from "./conversation.ts";
 export {
   BlobIdSchema,
