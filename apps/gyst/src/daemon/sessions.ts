@@ -533,6 +533,10 @@ export class Sessions extends Context.Service<
         ).pipe(Effect.andThen(reclaim), Effect.ignore);
         return once.pipe(Effect.catchIf(storageFull, () => recover.pipe(Effect.andThen(once))));
       };
+      // Like every save, a failure is a defect, but out of space before the file is replaced
+      // nothing changed, so `capturing` reclaims and retries it like a capture's own write.
+      const saveCaptured = (session: Session) =>
+        store.save(session).pipe(Effect.catchTag("PlatformError", (error) => Effect.die(error)));
       const capturingSource = <A, E extends { readonly _tag: string }, R>(
         attempt: Effect.Effect<A, E, R>,
       ) => Semaphore.withPermit(sourceLock, capturing(attempt));
@@ -613,7 +617,7 @@ export class Sessions extends Context.Service<
               pickupReceipts: [],
               ...(context && { pullRequest: context }),
             };
-            yield* store.save(session).pipe(Effect.orDie);
+            yield* saveCaptured(session);
             sessions.set(session.id, session);
             announceLayers(session);
             yield* idle.close;
@@ -1229,7 +1233,7 @@ export class Sessions extends Context.Service<
             );
             if (outcome.session) {
               // Effect and receipt are one file: saved before memory changes.
-              yield* store.save(outcome.session).pipe(Effect.orDie);
+              yield* saveCaptured(outcome.session);
               sessions.set(session.id, outcome.session);
               // This capture is newer than any cached check, replaced snapshot or not.
               sourceChecks.delete(session.id);

@@ -72,7 +72,11 @@ describe("SessionStore", () => {
   const observing =
     (
       calls: string[],
-      options: { fails?: "file" | "directory"; afterRename?: Effect.Effect<void> } = {},
+      options: {
+        fails?: "file" | "directory";
+        error?: PlatformError.PlatformError;
+        afterRename?: Effect.Effect<void>;
+      } = {},
     ) =>
     (real: FileSystem.FileSystem): FileSystem.FileSystem => ({
       ...real,
@@ -85,11 +89,12 @@ describe("SessionStore", () => {
                 calls.push(synced === "directory" ? "sync directory" : `sync ${basename(path)}`);
                 return options.fails === synced
                   ? Effect.fail(
-                      PlatformError.systemError({
-                        _tag: "Unknown",
-                        module: "FileSystem",
-                        method: "sync",
-                      }),
+                      options.error ??
+                        PlatformError.systemError({
+                          _tag: "Unknown",
+                          module: "FileSystem",
+                          method: "sync",
+                        }),
                     )
                   : handle.sync;
               }),
@@ -149,6 +154,38 @@ describe("SessionStore", () => {
       )._tag,
     ).toBe("PlatformError");
     await rm(join(dataDir, "unsynced.json"));
+  });
+
+  it("reports running out of space before the rename as storage_full, and never after it", async () => {
+    await run(SessionStore.use((s) => s.save(session("full"))));
+    const noSpace = (method: string) =>
+      PlatformError.systemError({
+        _tag: "Unknown",
+        module: "FileSystem",
+        method,
+        cause: Object.assign(new Error("ENOSPC: no space left on device"), { code: "ENOSPC" }),
+      });
+    const writing = await run(
+      Effect.flip(SessionStore.use((s) => s.save({ ...session("full"), revision: 1 }))),
+      (real) => ({
+        ...real,
+        writeFileString: () => Effect.fail(noSpace("writeFile")),
+      }),
+    );
+    expect(writing).toMatchObject({
+      _tag: "source_unavailable",
+      detail: { reason: "storage_full" },
+    });
+    expect(await revisionOnDisk("full")).toBe(0);
+    expect(await leftovers()).toEqual([]);
+    const syncing = await run(
+      Effect.flip(SessionStore.use((s) => s.save({ ...session("full"), revision: 2 }))),
+      observing([], { fails: "directory", error: noSpace("sync") }),
+    );
+    expect(syncing._tag).toBe("PlatformError");
+    expect(await revisionOnDisk("full")).toBe(2);
+    expect(await leftovers()).toEqual([]);
+    await rm(join(dataDir, "full.json"));
   });
 
   it("syncs the directory of a renamed file even when interrupted after the rename", async () => {

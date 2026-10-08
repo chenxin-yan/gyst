@@ -76,6 +76,8 @@ let pullRequestFailure: SourceUnavailable | undefined;
 let pullRequestEdit: Partial<PullRequest>;
 let pullRequestCaptureFailure: SourceUnavailable | undefined;
 let saveFails: boolean;
+/** How many session saves still run out of space before replacing the file. */
+let saveOutOfSpace: number;
 let removeFails: boolean;
 /**
  * What survives a machine crash: the session files and receipts as of the last directory sync,
@@ -229,8 +231,17 @@ const store = Layer.succeed(SessionStore, {
   loadAll: Effect.sync(() => [...files.values()]),
   loadSaved: Effect.sync(() => ({ sessions: [...files.values()], undecodable })),
   save: (session) =>
-    Effect.suspend(() => {
+    Effect.suspend((): Effect.Effect<void, PlatformError.PlatformError | SourceUnavailable> => {
       if (saveFails) return Effect.fail(writeFailure);
+      if (saveOutOfSpace > 0) {
+        saveOutOfSpace--;
+        return Effect.fail(
+          new SourceUnavailable({
+            message: "gyst's data directory is out of space",
+            detail: { reason: "storage_full" },
+          }),
+        );
+      }
       const write = Effect.sync(() => {
         commits.push(`session ${session.id}`);
         files.set(session.id, session);
@@ -408,6 +419,7 @@ beforeEach(() => {
   pullRequestEdit = {};
   pullRequestCaptureFailure = undefined;
   saveFails = false;
+  saveOutOfSpace = 0;
   removeFails = false;
   nextId = 0;
   gitPatch = patch;
@@ -3782,6 +3794,47 @@ describe("Sessions captured reads over real captures", () => {
         }),
       );
       expect(await onDisk("staging")).toEqual([]);
+    });
+
+    it("reclaims and retries once a capture whose session file ran out of space, never one already replaced", async () => {
+      const cwd = await repo("session-full", { "f.txt": "before\n" });
+      await writeFile(join(cwd, "f.txt"), "after\n");
+      await runReal(
+        Effect.scoped(
+          Effect.gen(function* () {
+            const sessions = yield* Sessions;
+            let drops = 0;
+            yield* sessions.disposable(Effect.sync(() => void drops++));
+            saveOutOfSpace = 1;
+            const { session } = yield* sessions.open({
+              command: "open",
+              cwd,
+              scope: uncommitted,
+            });
+            expect([saveOutOfSpace, drops]).toEqual([0, 1]);
+            yield* Effect.promise(() => writeFile(join(cwd, "f.txt"), "again\n"));
+            saveOutOfSpace = 1;
+            expect((yield* refreshNow(session.id)).replaced).toBe(true);
+            expect([saveOutOfSpace, drops]).toEqual([0, 2]);
+            const saved = files.get(session.id);
+            yield* Effect.promise(() => writeFile(join(cwd, "f.txt"), "refused\n"));
+            saveOutOfSpace = 2;
+            expect(yield* Effect.flip(refreshNow(session.id))).toMatchObject({
+              _tag: "source_unavailable",
+              detail: { reason: "storage_full" },
+            });
+            expect(files.get(session.id)).toEqual(saved);
+            // A save that failed once the file was replaced may have committed: never retried.
+            const saves = commits.length;
+            stopBeforeDirectorySync = true;
+            expect(Exit.isFailure(yield* Effect.exit(refreshNow(session.id)))).toBe(true);
+            expect(commits.length - saves).toBe(1);
+            yield* remove(session.id, "delete-session-full");
+          }),
+        ),
+      );
+      await runReal(reclaim);
+      expect(await onDisk("blobs")).toEqual([]);
     });
 
     it("keeps every snapshot a session file this version cannot read names", async () => {
