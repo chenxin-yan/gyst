@@ -1,5 +1,6 @@
 import {
   BadArgs,
+  type Commit,
   parseSnapshot,
   type Scope,
   type SnapshotManifest,
@@ -19,12 +20,14 @@ const text = (identity: string) => ({ kind: "text", blob: sha256(identity), size
 
 /**
  * What a `Git.capture` double returns: `patch`'s hunks over files whose new side is identified by
- * those hunks, plus unchanged `supporting` files identified by their text.
+ * those hunks, plus unchanged `supporting` files identified by their text, and for a range its
+ * `commits`.
  */
 export const manifestOf = (
   patch: string,
   scope: Scope,
   supporting: Readonly<Record<string, string>> = {},
+  commits: readonly Commit[] = [],
 ): SnapshotManifest => {
   const hunks = Result.getOrThrow(parseSnapshot(patch));
   const changed = Map.groupBy(hunks, (hunk) => hunk.file);
@@ -54,6 +57,7 @@ export const manifestOf = (
             },
     files,
     hunks,
+    ...(scope.kind === "range" && { commits }),
   };
 };
 
