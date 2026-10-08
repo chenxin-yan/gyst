@@ -4547,6 +4547,65 @@ describe("installed gyst in a sandboxed browser", () => {
     expect(writes).toEqual([]);
   }, 60_000);
 
+  it("keeps a note reply's draft whose thread went with its last message, resumed on the note and sent there", async () => {
+    const walk = await openWalk();
+    await publishWalk(walk);
+    const page = await newPage();
+    await page.setViewportSize({ width: 1280, height: 1200 });
+    await page.goto(`${one.origin}/session/${walk.id}`);
+    const pane = page.getByRole("main");
+    await page
+      .getByRole("navigation", { name: "gyst" })
+      .getByRole("button", { name: /^Parse the config/ })
+      .click();
+    await headingsAre(page, ["walk/b.ts", "walk/a.ts"]);
+    await keys(page, "]", "n", "]", "n", "k", "j");
+    await says(page, "a.ts:20 · new");
+    // The note's first reply starts its thread; a second reply in it is begun, then left.
+    const reply = pane.locator("[data-composer]").getByRole("textbox", { name: "Reply" });
+    await keys(page, "r");
+    await reply.fill("And twenty?");
+    await reply.press("Enter");
+    const thread = pane.locator("[data-thread]");
+    await thread.waitFor();
+    await reply.waitFor({ state: "detached" });
+    await keys(page, "r");
+    await reply.fill("Kept?");
+    await reply.press("Escape");
+    await reply.waitFor({ state: "detached" });
+    // Deleting the thread's only message takes the thread; the draft stays in Comments.
+    const chip = thread.getByRole("button", { name: /^Thread/ });
+    if ((await chip.getAttribute("aria-expanded")) !== "true") await chip.click();
+    await thread.getByText("And twenty?").waitFor();
+    await thread.getByRole("button", { name: "Delete" }).click();
+    await thread.waitFor({ state: "detached" });
+    await keys(page, "Shift+C");
+    const comments = page.getByRole("dialog", { name: "Comments" });
+    await comments.getByText("Reply on walk/a.ts:L20 · new").waitFor();
+    // Resuming it writes it under its note again, with its text, and sends it into a new thread there.
+    await comments.getByRole("button", { name: "Resume" }).click();
+    await comments.waitFor({ state: "detached" });
+    await reply.waitFor();
+    expect(await reply.inputValue()).toBe("Kept?");
+    await reply.press("Enter");
+    await reply.waitFor({ state: "detached" });
+    await thread.getByText("1 message").waitFor();
+    const status = await gyst("session", "status", "--session", walk.id);
+    expect(status.threads).toEqual({ open: 1, resolved: 0, pending: 1 });
+    const { threads } = await gyst(
+      "session",
+      "threads",
+      "--session",
+      walk.id,
+      "--open",
+      "--request-id",
+      "o1",
+    );
+    expect(threads).toMatchObject([
+      { note: { id: "span", removed: false }, messages: [{ markdown: "Kept?" }] },
+    ]);
+  }, 60_000);
+
   it("keeps a draft's text and original code through Esc, a daemon restart and a refresh, and sends it on that code", async () => {
     git("branch", "-f", "peek", "walk");
     const walk = await openWalk("walk~1...peek");

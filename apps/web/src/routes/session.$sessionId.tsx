@@ -1671,6 +1671,13 @@ function SessionReader(props: {
     );
   };
   const conversationOf = (id: string) => conversations.threads.find((thread) => thread.id === id);
+  /**
+   * The thread a draft is written in, while it exists. A thread goes with its last Pending message,
+   * leaving its drafts: a note reply's is then written as a first reply to the note, which gyst
+   * sends into the note's thread again, and any other in Comments.
+   */
+  const draftThread = (draft: Draft) =>
+    draft.thread !== undefined && conversationOf(draft.thread) ? draft.thread : undefined;
   const sayFailure = (what: string, error: unknown) => {
     if (!isExpectedFailure(error)) console.error(error);
     setNotice(
@@ -1740,7 +1747,7 @@ function SessionReader(props: {
     const kept = conversations.drafts.find((draft) =>
       thread
         ? draft.thread === thread.id
-        : draft.thread === undefined &&
+        : draftThread(draft) === undefined &&
           draft.note !== undefined &&
           draft.note.id === noteId &&
           !draft.note.removed,
@@ -1892,7 +1899,7 @@ function SessionReader(props: {
   const draftPlaced = (draft: Draft) =>
     draftPlace(draft, shownPaths, codeSnapshot) !== undefined ||
     (draft.thread !== undefined && placedThreads.has(draft.thread)) ||
-    (draft.thread === undefined &&
+    (draftThread(draft) === undefined &&
       liveNote(draft, allNotes) !== undefined &&
       notes.some(({ note }) => note.id === draft.note!.id));
 
@@ -2447,7 +2454,7 @@ function SessionReader(props: {
             const noteThread = threadsShown.find(({ note }) => note === annotation.note.id)?.thread;
             const noteDraft =
               draftNow &&
-              draftNow.thread === undefined &&
+              draftThread(draftNow) === undefined &&
               liveNote(draftNow, allNotes)?.id === annotation.note.id
                 ? draftNow
                 : undefined;
@@ -2572,13 +2579,13 @@ function SessionReader(props: {
             })
           }
           renderDraft={(draft) =>
-            draft.id === activeDraft && draft.thread === undefined && !draftPlaced(draft)
+            draft.id === activeDraft && draftThread(draft) === undefined && !draftPlaced(draft)
               ? composerOf(draft)
               : undefined
           }
           onResume={(draft) => {
             setActiveDraft(draft.id);
-            setExpandedThread(draft.thread);
+            setExpandedThread(draftThread(draft));
             if (draftPlaced(draft)) setDialog(undefined);
           }}
           onDiscard={(draft) =>
