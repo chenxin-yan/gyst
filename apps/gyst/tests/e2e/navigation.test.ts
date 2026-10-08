@@ -30,6 +30,7 @@ import {
   run,
   sandbox,
   succeeded,
+  write,
   waitFor,
 } from "./installed-gyst.ts";
 import {
