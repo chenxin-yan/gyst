@@ -140,11 +140,32 @@ describe("gyst session CLI seam", () => {
     expect((await check(session.id)).state).toBe("changed");
     expect(json(await gyst(box.root, ["session", "status", ...pinned]))).toEqual(captured);
     expect(await readFile(savedPath, "utf8")).toBe(saved);
-    succeeded(await gyst(box.root, ["session", "refresh", ...pinned]));
+    const refreshed = json(
+      await gyst(box.root, [
+        "session",
+        "refresh",
+        ...pinned,
+        "--snapshot",
+        session.snapshotId,
+        "--request-id",
+        "first",
+      ]),
+    );
     expect((await check(session.id)).state).toBe("unchanged");
     // Uncommitted scope covers untracked files, from the repository root.
     await writeFile(join(cwd, "new-untracked.txt"), "new\n");
-    const recaptured = json(await gyst(box.root, ["session", "refresh", ...pinned]));
+    succeeded(
+      await gyst(box.root, [
+        "session",
+        "refresh",
+        ...pinned,
+        "--snapshot",
+        refreshed.snapshotId,
+        "--request-id",
+        "second",
+      ]),
+    );
+    const recaptured = json(await gyst(box.root, ["session", "status", ...pinned]));
     expect(recaptured.files.map(({ path }: { path: string }) => path)).toEqual([
       "nested/inside.txt",
       "new-untracked.txt",
@@ -910,20 +931,68 @@ describe("gyst session CLI seam", () => {
 
     await writeFile(join(cwd, "second.txt"), "base\nreplacement change\n");
     await writeFile(join(cwd, "new.txt"), "brand new\n");
-    const refreshed = json(await gyst(cwd, ["session", "refresh", ...pinned]));
-    // Until #91 reconciles guidance, a new snapshot keeps the overview but drops the note.
+    const refresh = (snapshotId: string, requestId: string) =>
+      gyst(cwd, [
+        "session",
+        "refresh",
+        ...pinned,
+        "--snapshot",
+        snapshotId,
+        "--request-id",
+        requestId,
+      ]);
+    const replaced = await refresh(session.snapshotId, "refresh-1");
+    const result = json(replaced);
+    expect(result).toEqual({
+      sessionId: session.id,
+      previousSnapshotId: session.snapshotId,
+      snapshotId: expect.any(String),
+      revision: applied.revision + 1,
+      replaced: true,
+    });
+    // A lost reply's retry answers exactly as before; a new request for the old snapshot is stale.
+    expect((await refresh(session.snapshotId, "refresh-1")).stdout).toBe(replaced.stdout);
+    expect(failed(await refresh(session.snapshotId, "refresh-2")).code).toBe("stale_revision");
+    const refreshed = json(await gyst(cwd, ["session", "status", ...pinned]));
+    expect(refreshed.session.snapshotId).toBe(result.snapshotId);
+    // The unchanged hunk keeps its group, Viewed and note, which moves to the new snapshot.
     expect(refreshed.groups[0]).toEqual(
       expect.objectContaining({
         id: "group-1",
         hunkIds: [first.id],
         overview: { markdown: "intent and behavior", references: [] },
-        notes: [],
+        notes: [
+          {
+            id: "note-1",
+            anchor: { ...addedLine(first), snapshotId: result.snapshotId },
+            markdown: "Anchored to the first snapshot.",
+            references: [],
+          },
+        ],
       }),
     );
-    expect(refreshed.groups).toHaveLength(1);
+    // The group whose hunk changed stays in place, empty and Outdated, so it is not complete.
+    expect(refreshed.groups[1]).toEqual(
+      expect.objectContaining({
+        id: "group-2",
+        hunkIds: [],
+        files: [],
+        overview: { markdown: "stale group", references: [], outdated: ["code"] },
+      }),
+    );
+    expect(refreshed.preparation).toMatchObject({
+      state: "incomplete",
+      groupsOutdated: ["group-2"],
+    });
     // Only the unchanged hunk keeps Viewed; the replaced and the new hunk start unviewed.
     expect(refreshed.viewedHunkIds).toEqual([first.id]);
     expect(refreshed.files).toHaveLength(3);
+    // An identical capture replaces nothing.
+    expect(json(await refresh(result.snapshotId, "refresh-3"))).toEqual({
+      ...result,
+      previousSnapshotId: result.snapshotId,
+      replaced: false,
+    });
 
     const updated = json(
       await gyst(
@@ -1017,10 +1086,27 @@ describe("gyst session CLI seam", () => {
     // Same key, same batch: the exact recorded answer.
     expect((await apply(session.snapshotId, 0, "publish", ops)).stdout).toBe(published.stdout);
 
-    const refreshed = json(await gyst(cwd, ["session", "refresh", ...pinned]));
+    succeeded(
+      await gyst(cwd, [
+        "session",
+        "refresh",
+        ...pinned,
+        "--snapshot",
+        session.snapshotId,
+        "--request-id",
+        "refresh",
+      ]),
+    );
+    const refreshed = json(await gyst(cwd, ["session", "status", ...pinned]));
     expect(refreshed.session.snapshotId).not.toBe(session.snapshotId);
-    // Authored pins name the snapshot they were checked against, not the refreshed one.
+    // Authored pins name the snapshot they were checked against, not the refreshed one; the
+    // helper they read is unchanged, so they stay current.
     expect(refreshed.overview.references).toEqual([at(2)]);
+    expect(refreshed.groups[0].overview.outdated).toBeUndefined();
+    // The earlier snapshot stays readable while guidance pins it.
+    expect(json(await gyst(cwd, ["session", "code", ...pinned, ...helper])).content.text).toBe(
+      "export const a = 1;\nexport const b = 2;\n",
+    );
     const stale = failed(
       await apply(session.snapshotId, refreshed.revision, "stale", [
         { type: "walkthrough.update", overview: "Again [live](gyst:new/live.ts#L1)." },

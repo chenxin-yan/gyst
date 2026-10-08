@@ -1,64 +1,208 @@
+import { Result } from "effect";
 import { draftOf } from "./draft.ts";
-import type { Hunk, Session } from "./session.ts";
+import { StaleRevision, ValidationFailed } from "./errors.ts";
+import {
+  anchoredHunkIds,
+  type CapturedRange,
+  type GuidanceText,
+  type OutdatedReason,
+  OutdatedReasonSchema,
+} from "./guidance.ts";
+import { hash } from "./hash.ts";
+import { mapRange, matchHunks, type SnapshotLines } from "./mapping.ts";
+import type { RefreshPayload, Session } from "./session.ts";
+import type { BrowserRequest } from "./wire.ts";
 
+export type RefreshRequest = Extract<BrowserRequest, { readonly command: "refresh" }>;
+/** A captured snapshot a refresh moves to: its id and the lines its manifest describes. */
+export type FreshSnapshot = { readonly snapshotId: string; readonly snapshot: SnapshotLines };
+/** A replayed or identical refresh has no snapshot change; `session` is what to persist, if any. */
+export type RefreshOutcome = { readonly result: RefreshPayload; readonly session?: Session };
+
+const withReasons = <Text extends GuidanceText>(
+  text: Text,
+  reasons: readonly OutdatedReason[],
+): Text => {
+  const all = new Set([...(text.outdated ?? []), ...reasons]);
+  if (all.size === 0) return text;
+  return { ...text, outdated: OutdatedReasonSchema.literals.filter((reason) => all.has(reason)) };
+};
+
+/**
+ * The session reconciled onto `fresh`. Hunks keep their id, Viewed and group only through an exact
+ * counterpart (`matchHunks`); new hunks start unviewed and ungrouped. Groups keep their place, an
+ * emptied one included. Guidance is kept and marked Outdated rather than dropped: a note when its
+ * anchored hunks or range changed, an overview when its group's or the review's hunks changed, and
+ * any text whose references no longer map unchanged from their pinned snapshot. A note whose range
+ * maps moves with it; one that cannot keeps its old anchor. References stay pinned. A reference
+ * that changed in this refresh unviews its note's anchored hunks, never the target's.
+ *
+ * `retained` holds the lines of the session's current snapshot and of every snapshot its guidance
+ * pins; a pin whose snapshot is missing cannot be verified, so its guidance is Outdated.
+ */
 export function refreshSession(
   session: Session,
-  freshHunks: readonly Hunk[],
+  fresh: FreshSnapshot,
+  retained: ReadonlyMap<string, SnapshotLines>,
   updatedAt: string,
 ): Session {
   const draft = draftOf(session);
-  const oldByMatch = Map.groupBy(session.hunks, (hunk) => `${hunk.file}\0${hunk.contentHash}`);
-  const freshMatchCounts = new Map<string, number>();
-  for (const hunk of freshHunks) {
-    const key = `${hunk.file}\0${hunk.contentHash}`;
-    freshMatchCounts.set(key, (freshMatchCounts.get(key) ?? 0) + 1);
-  }
-  const freshById = new Map(freshHunks.map((hunk) => [hunk.id, hunk]));
-  const stableDuplicates = new Map<string, Hunk>();
-  // An exact ID is safe for duplicates only when none of its peers moved or vanished.
-  for (const [key, matches] of oldByMatch) {
-    if (matches.length < 2 || matches.length !== freshMatchCounts.get(key)) continue;
-    if (
-      matches.every((old) => {
-        const fresh = freshById.get(old.id);
-        return fresh?.file === old.file && fresh.patch === old.patch;
-      })
-    ) {
-      for (const old of matches) stableDuplicates.set(old.id, old);
-    }
-  }
-  const survivingIds = new Set<string>();
-  draft.hunks = freshHunks.map((fresh) => {
-    const key = `${fresh.file}\0${fresh.contentHash}`;
-    const matches = oldByMatch.get(key);
-    const old =
-      matches?.length === 1 && freshMatchCounts.get(key) === 1
-        ? matches[0]
-        : stableDuplicates.get(fresh.id);
-    if (!old) return { ...fresh };
-    survivingIds.add(old.id);
-    return { ...fresh, id: old.id };
-  });
+  const matches = matchHunks(session.hunks, fresh.snapshot.hunks);
+  const survivorOf = new Map([...matches].map(([oldId, hunk]) => [hunk.id, oldId]));
+  draft.hunks = fresh.snapshot.hunks.map((hunk) => ({
+    ...hunk,
+    id: survivorOf.get(hunk.id) ?? hunk.id,
+  }));
+  draft.snapshotId = fresh.snapshotId;
 
+  const linesOf = (snapshotId: string) =>
+    snapshotId === fresh.snapshotId ? fresh.snapshot : retained.get(snapshotId);
+  const mapped = (range: CapturedRange, snapshotId: string) => {
+    const from = linesOf(range.snapshotId);
+    const to = linesOf(snapshotId);
+    return from && to ? mapRange(from, to, range) : undefined;
+  };
+  /** Whether each pinned reference still reads the same lines in the fresh snapshot. */
+  const referencesOf = (text: GuidanceText) => {
+    const unmapped = text.references.filter((range) => !mapped(range, fresh.snapshotId));
+    return {
+      changed: unmapped.length > 0,
+      // Changed by this refresh: it still mapped onto the snapshot being replaced.
+      changedNow: unmapped.some((range) => mapped(range, session.snapshotId)),
+    };
+  };
+  const overviewOf = (overview: GuidanceText | null, codeChanged: boolean) => {
+    if (!overview) return overview;
+    const reasons: OutdatedReason[] = [];
+    if (codeChanged) reasons.push("code");
+    if (referencesOf(overview).changed) reasons.push("references");
+    return withReasons(overview, reasons);
+  };
+
+  const unviewed = new Set<string>();
+  const reviewChanged =
+    matches.size !== session.hunks.length || matches.size !== fresh.snapshot.hunks.length;
+  draft.overview = overviewOf(draft.overview, reviewChanged);
   const fileOf = new Map(draft.hunks.map(({ id, file }) => [id, file]));
-  draft.groups = draft.groups.flatMap((group) => {
-    const hunkIds = group.hunkIds.filter((id) => survivingIds.has(id));
-    if (hunkIds.length === 0) return [];
+  draft.groups = draft.groups.map((group) => {
+    const hunkIds = group.hunkIds.filter((id) => matches.has(id));
     const files = new Set(hunkIds.map((id) => fileOf.get(id)));
-    return [
-      {
-        ...group,
-        hunkIds,
-        files: group.files.filter((file) => files.has(file)),
-        // Interim until #91 reconciles guidance: a note survives only on its own snapshot.
-        notes: group.notes.filter(({ anchor }) => anchor.snapshotId === draft.snapshotId),
-      },
-    ];
+    const notes = group.notes.map((note) => {
+      const range = mapped(note.anchor, fresh.snapshotId);
+      const anchor = range ? { ...range, snapshotId: fresh.snapshotId } : note.anchor;
+      const before =
+        note.anchor.snapshotId === session.snapshotId
+          ? anchoredHunkIds(session.hunks, note.anchor)
+          : [];
+      const after = range ? anchoredHunkIds(draft.hunks, anchor) : [];
+      const references = referencesOf(note);
+      const reasons: OutdatedReason[] = [];
+      if (
+        !range ||
+        before.some((id) => !matches.has(id)) ||
+        before.length !== after.length ||
+        after.some((id) => !before.includes(id))
+      )
+        reasons.push("code");
+      if (references.changed) reasons.push("references");
+      if (references.changedNow) for (const id of after) unviewed.add(id);
+      return withReasons({ ...note, anchor }, reasons);
+    });
+    return {
+      ...group,
+      hunkIds,
+      files: group.files.filter((file) => files.has(file)),
+      overview: overviewOf(group.overview, hunkIds.length !== group.hunkIds.length),
+      notes,
+    };
   });
-  // Viewed survives only on an exactly matched hunk; changed, ambiguous and new hunks start
-  // unviewed. Full reconciliation (guidance-driven invalidation) is #91.
-  draft.viewedHunkIds = draft.viewedHunkIds.filter((id) => survivingIds.has(id));
+  draft.viewedHunkIds = draft.viewedHunkIds.filter((id) => matches.has(id) && !unviewed.has(id));
   draft.revision++;
   draft.updatedAt = updatedAt;
   return draft;
+}
+
+/**
+ * The snapshots whose captured content the session still needs, its current one first: those its
+ * guidance anchors or references pin. Reads may name any of them, and refresh maps from them.
+ */
+export function pinnedSnapshotIds(session: Session): string[] {
+  const ids = new Set([session.snapshotId]);
+  const pin = (text: GuidanceText | null) => {
+    for (const { snapshotId } of text?.references ?? []) ids.add(snapshotId);
+  };
+  pin(session.overview);
+  for (const group of session.groups) {
+    pin(group.overview);
+    for (const note of group.notes) {
+      ids.add(note.anchor.snapshotId);
+      pin(note);
+    }
+  }
+  return [...ids];
+}
+
+/**
+ * A refresh's recorded answer for `request.requestId`, or undefined when it has none and the
+ * request still names the current snapshot. Receipts answer first, so a retry after a lost reply
+ * gets its original result however the session moved on; the same id with another payload, or a
+ * new request for a replaced snapshot, fails.
+ */
+export function recordedRefresh(
+  session: Session,
+  request: RefreshRequest,
+): Result.Result<RefreshPayload | undefined, StaleRevision | ValidationFailed> {
+  // Schema decoding already ordered the keys, so the JSON text is a canonical form of the request.
+  const digest = hash(JSON.stringify(request));
+  const receipt = session.refreshReceipts.find(({ requestId }) => requestId === request.requestId);
+  if (receipt) {
+    if (receipt.digest === digest) return Result.succeed(receipt.result);
+    return Result.fail(
+      new ValidationFailed({
+        message: "request id reused with a different payload",
+        detail: { requestId: request.requestId },
+      }),
+    );
+  }
+  if (request.snapshotId !== session.snapshotId)
+    return Result.fail(
+      new StaleRevision({
+        message: `refresh was requested for snapshot ${request.snapshotId}, which a refresh already replaced; read the session again`,
+        detail: { snapshotId: session.snapshotId, revision: session.revision },
+      }),
+    );
+  return Result.succeed(undefined);
+}
+
+/**
+ * Commits one refresh of `session` onto `fresh`, all or nothing, with its receipt. An identical
+ * capture keeps the snapshot, revision and review state and records only the receipt.
+ */
+export function refresh(
+  session: Session,
+  request: RefreshRequest,
+  fresh: FreshSnapshot,
+  retained: ReadonlyMap<string, SnapshotLines>,
+  updatedAt: string,
+): Result.Result<RefreshOutcome, StaleRevision | ValidationFailed> {
+  const recorded = recordedRefresh(session, request);
+  if (Result.isFailure(recorded)) return Result.fail(recorded.failure);
+  if (recorded.success) return Result.succeed({ result: recorded.success });
+  const replaced = fresh.snapshotId !== session.snapshotId;
+  const draft = replaced
+    ? draftOf(refreshSession(session, fresh, retained, updatedAt))
+    : draftOf(session);
+  const result: RefreshPayload = {
+    sessionId: session.id,
+    previousSnapshotId: session.snapshotId,
+    snapshotId: draft.snapshotId,
+    revision: draft.revision,
+    replaced,
+  };
+  draft.refreshReceipts.push({
+    requestId: request.requestId,
+    digest: hash(JSON.stringify(request)),
+    result,
+  });
+  return Result.succeed({ result, session: draft });
 }
