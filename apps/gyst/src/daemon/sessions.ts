@@ -453,12 +453,15 @@ export class Sessions extends Context.Service<
         for (const session of saved)
           for (const [snapshotId, paths] of retainedFiles(session)) keep(snapshotId, paths);
         // A saved review this version cannot read is still a saved review: keep whole every
-        // snapshot its file names.
+        // snapshot its file names. Other hashes in it name no snapshot.
         for (const text of yield* store.loadUndecodable)
           for (const id of new Set(text.match(/[0-9a-f]{64}/g)))
             if (
               !kept.has(id) &&
-              (yield* content.loadManifest(id).pipe(Effect.option))._tag === "Some"
+              (yield* content.loadManifest(id).pipe(
+                Effect.as(true),
+                Effect.catchTag("bad_args", () => Effect.succeed(false)),
+              ))
             )
               keep(id, "all");
         const blobs = new Set<string>();
@@ -498,6 +501,9 @@ export class Sessions extends Context.Service<
           Effect.catchIf(storageFull, () => reclaim.pipe(Effect.ignore, Effect.andThen(once))),
         );
       };
+      const capturingSource = <A, E extends { readonly _tag: string }, R>(
+        attempt: Effect.Effect<A, E, R>,
+      ) => Semaphore.withPermit(sourceLock, capturing(attempt));
 
       /** The recorded scope's manifest; a PR's range comes from what GitHub reports now. */
       const acquire = Effect.fn("Sessions.acquire")(function* (
@@ -1142,53 +1148,52 @@ export class Sessions extends Context.Service<
         return lines;
       });
 
-      const refresh = Effect.fn("Sessions.refresh")(
-        function* (request: Input<"refresh">, onProgress?: OnProgress) {
-          const observed = yield* underLock(selected(request));
-          // A recorded or stale request captures nothing.
-          const recorded = yield* Effect.fromResult(recordedRefresh(observed, request));
-          if (recorded) return recorded;
-          // A PR re-reads only its range; its stack context changes on an explicit recheck alone.
-          const { manifest } = yield* acquire(observed.repoRoot, observed.scope, onProgress);
-          const snapshotId =
-            snapshotIdOf(manifest) === observed.snapshotId
-              ? observed.snapshotId
-              : yield* publish(manifest);
-          const retained = yield* pinnedLinesOf(observed);
-          return yield* underLock(
-            Effect.gen(function* () {
-              // The session as it is now: work saved during the capture is reconciled too, and a
-              // deletion during it wins (the published manifest is then reclaimed).
-              const session = yield* selected(request);
-              const outcome = yield* Effect.fromResult(
-                refreshOnto(
-                  // The fresh snapshot's Generated files, so a replaced snapshot carries its own.
-                  { ...session, generatedFiles: generatedFilesOf(manifest) },
-                  request,
-                  { snapshotId, snapshot: manifest },
-                  retained,
-                  DateTime.formatIso(yield* DateTime.now),
-                ),
-              );
-              if (outcome.session) {
-                // Effect and receipt are one file: saved before memory changes.
-                yield* store.save(outcome.session).pipe(Effect.orDie);
-                sessions.set(session.id, outcome.session);
-                // This capture is newer than any cached check, replaced snapshot or not.
-                sourceChecks.delete(session.id);
-                if (outcome.result.replaced) {
-                  announceChanged(outcome.session);
-                  announceLayers(outcome.session);
-                  yield* requestReclaim;
-                }
+      const refresh = Effect.fn("Sessions.refresh")(function* (
+        request: Input<"refresh">,
+        onProgress?: OnProgress,
+      ) {
+        const observed = yield* underLock(selected(request));
+        // A recorded or stale request captures nothing.
+        const recorded = yield* Effect.fromResult(recordedRefresh(observed, request));
+        if (recorded) return recorded;
+        // A PR re-reads only its range; its stack context changes on an explicit recheck alone.
+        const { manifest } = yield* acquire(observed.repoRoot, observed.scope, onProgress);
+        const snapshotId =
+          snapshotIdOf(manifest) === observed.snapshotId
+            ? observed.snapshotId
+            : yield* publish(manifest);
+        const retained = yield* pinnedLinesOf(observed);
+        return yield* underLock(
+          Effect.gen(function* () {
+            // The session as it is now: work saved during the capture is reconciled too, and a
+            // deletion during it wins (the published manifest is then reclaimed).
+            const session = yield* selected(request);
+            const outcome = yield* Effect.fromResult(
+              refreshOnto(
+                // The fresh snapshot's Generated files, so a replaced snapshot carries its own.
+                { ...session, generatedFiles: generatedFilesOf(manifest) },
+                request,
+                { snapshotId, snapshot: manifest },
+                retained,
+                DateTime.formatIso(yield* DateTime.now),
+              ),
+            );
+            if (outcome.session) {
+              // Effect and receipt are one file: saved before memory changes.
+              yield* store.save(outcome.session).pipe(Effect.orDie);
+              sessions.set(session.id, outcome.session);
+              // This capture is newer than any cached check, replaced snapshot or not.
+              sourceChecks.delete(session.id);
+              if (outcome.result.replaced) {
+                announceChanged(outcome.session);
+                announceLayers(outcome.session);
+                yield* requestReclaim;
               }
-              return outcome.result;
-            }),
-          );
-        },
-        capturing,
-        Semaphore.withPermit(sourceLock),
-      );
+            }
+            return outcome.result;
+          }),
+        );
+      }, capturingSource);
 
       const remove = Effect.fn("Sessions.delete")(function* (request: Input<"delete">) {
         const { requestId } = request;
