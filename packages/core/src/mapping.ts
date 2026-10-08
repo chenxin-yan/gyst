@@ -51,23 +51,31 @@ function startsOf(hunk: Hunk): Record<CodeSide, number> | undefined {
   return { old: start(match[1]!, match[2]), new: start(match[3]!, match[4]) };
 }
 
-/** Each body row's line on each side: context has both, a removal only old, an addition only new. */
-function rowsOf(hunk: Hunk): { old?: number; new?: number }[] | undefined {
+/**
+ * One body row: its line on each side (context has both, a removal only old, an addition only new)
+ * and its text, a missing final newline included.
+ */
+type Row = { old?: number; new?: number; text: string };
+type ParsedHunk = Hunk & { readonly starts: Record<CodeSide, number>; readonly rows: Row[] };
+
+function parse(hunk: Hunk): ParsedHunk | undefined {
   const starts = startsOf(hunk);
   if (!starts) return undefined;
   let { old, new: current } = starts;
-  const rows: { old?: number; new?: number }[] = [];
+  const rows: Row[] = [];
   for (const line of hunk.patch.split("\n").slice(1)) {
-    if (line.startsWith("-")) rows.push({ old: old++ });
-    else if (line.startsWith("+")) rows.push({ new: current++ });
-    else if (line.startsWith(" ")) rows.push({ old: old++, new: current++ });
+    const text = line.slice(1);
+    if (line.startsWith("-")) rows.push({ old: old++, text });
+    else if (line.startsWith("+")) rows.push({ new: current++, text });
+    else if (line.startsWith(" ")) rows.push({ old: old++, new: current++, text });
+    else if (line.startsWith("\\") && rows.length > 0) rows.at(-1)!.text += `\n${line}`;
   }
-  return rows;
+  return { ...hunk, starts, rows };
 }
 
 type Located = {
-  /** The hunk holding the line, and how many lines after its first line on the side. */
-  readonly within?: { readonly hunk: Hunk; readonly offset: number };
+  /** The hunk holding the line, how many lines after its first line on the side, and its row. */
+  readonly within?: { readonly hunk: ParsedHunk; readonly offset: number; readonly row: Row };
   /** For an unchanged line, the other side's line holding the same text. */
   readonly other: number | undefined;
 };
@@ -76,18 +84,17 @@ type Located = {
  * Where `line` of one side of a file sits in its diff: inside a hunk, as a changed or a context
  * line, or between hunks. `hunks` are the file's, in order.
  */
-function locate(hunks: readonly Hunk[], side: CodeSide, line: number): Located | undefined {
+function locate(hunks: readonly ParsedHunk[], side: CodeSide, line: number): Located {
   let delta = 0;
   for (const hunk of hunks) {
-    const starts = startsOf(hunk);
-    const rows = rowsOf(hunk);
-    if (!starts || !rows) return undefined;
+    const { starts, rows } = hunk;
     if (line < starts[side]) break;
     const own = rows.filter((row) => row[side] !== undefined);
     const other = rows.filter((row) => row[otherSide(side)] !== undefined);
     if (line < starts[side] + own.length) {
       const offset = line - starts[side];
-      return { within: { hunk, offset }, other: own[offset]![otherSide(side)] };
+      const row = own[offset]!;
+      return { within: { hunk, offset, row }, other: row[otherSide(side)] };
     }
     delta = starts[otherSide(side)] + other.length - (starts[side] + own.length);
   }
@@ -111,10 +118,108 @@ export function sideChanged(
 }
 
 /**
+ * Maps single lines of one side of `path` from `from` to `to` (see `mapRange`), or undefined when
+ * either snapshot lacks that side as text.
+ */
+function lineMapper(
+  from: SnapshotLines,
+  to: SnapshotLines,
+  { path, side }: Pick<CodeRange, "path" | "side">,
+): ((line: number) => number | undefined) | undefined {
+  const before = from.files.find((file) => file.path === path);
+  const after = to.files.find((file) => file.path === path);
+  if (!before || !after || before[side].kind !== "text" || after[side].kind !== "text")
+    return undefined;
+  if (sameContent(before[side], after[side])) return (line) => line;
+  const other = otherSide(side);
+  const sameOther = sameContent(before[other], after[other]);
+  const fromHunks = from.hunks.filter((hunk) => hunk.file === path);
+  const toHunks = to.hunks.filter((hunk) => hunk.file === path);
+  const matches = matchHunks(fromHunks, toHunks);
+  const parsedFrom = fromHunks.map(parse);
+  const parsedTo = toHunks.map(parse);
+  if (
+    !parsedFrom.every((hunk) => hunk !== undefined) ||
+    !parsedTo.every((hunk) => hunk !== undefined)
+  )
+    return undefined;
+  // The other side's lines either snapshot changes. With its bytes the same, each other line of it
+  // stays one unchanged line of this side in both.
+  const changedOther = new Set(
+    [...parsedFrom, ...parsedTo].flatMap(({ rows }) =>
+      rows.flatMap((row) => (row[side] === undefined ? [row[other]!] : [])),
+    ),
+  );
+  /**
+   * This side's lines strictly between two other-side lines neither snapshot changes, each as the
+   * other-side line it holds or, for a changed line, its text.
+   */
+  const between = (hunks: readonly ParsedHunk[], low: number, high: number) => {
+    const start = low === 0 ? 0 : locate(hunks, other, low).other!;
+    const end = locate(hunks, other, high).other!;
+    const lines: { line: number; token: string }[] = [];
+    for (let line = start + 1; line < end; line++) {
+      const at = locate(hunks, side, line);
+      lines.push({
+        line,
+        token: at.other === undefined ? `+${at.within!.row.text}` : `=${at.other}`,
+      });
+    }
+    return lines;
+  };
+  /**
+   * A line only this side of a changed hunk holds maps as the same line when every line between it
+   * and the nearest unchanged line before or after it is the same in both snapshots, and both ways
+   * agree.
+   */
+  const alignChanged = ({ hunk, row }: NonNullable<Located["within"]>) => {
+    const index = hunk.rows.indexOf(row);
+    const above = hunk.rows.slice(0, index).findLast((each) => each[other] !== undefined);
+    // The changed line sits just before this other-side line.
+    const gap = above === undefined ? hunk.starts[other] : above[other]! + 1;
+    let low = gap - 1;
+    while (low > 0 && changedOther.has(low)) low--;
+    let high = gap;
+    while (changedOther.has(high)) high++;
+    const fromLines = between(parsedFrom, low, high);
+    const toLines = between(parsedTo, low, high);
+    const at = fromLines.findIndex(({ line }) => line === row[side]);
+    let prefix = 0;
+    while (
+      prefix < Math.min(fromLines.length, toLines.length) &&
+      fromLines[prefix]!.token === toLines[prefix]!.token
+    )
+      prefix++;
+    let suffix = 0;
+    while (
+      suffix < Math.min(fromLines.length, toLines.length) &&
+      fromLines.at(-1 - suffix)!.token === toLines.at(-1 - suffix)!.token
+    )
+      suffix++;
+    const byStart = at < prefix ? at : undefined;
+    const byEnd =
+      at >= fromLines.length - suffix ? at + toLines.length - fromLines.length : undefined;
+    if (byStart !== undefined && byEnd !== undefined && byStart !== byEnd) return undefined;
+    const found = byStart ?? byEnd;
+    return found === undefined ? undefined : toLines[found]!.line;
+  };
+  return (line) => {
+    const at = locate(parsedFrom, side, line);
+    const counterpart = at.within && matches.get(at.within.hunk.id);
+    if (at.within && counterpart) return startsOf(counterpart)![side] + at.within.offset;
+    if (!sameOther) return undefined;
+    if (at.other !== undefined) return locate(parsedTo, other, at.other).other;
+    return alignChanged(at.within!);
+  };
+}
+
+/**
  * `range`, read in `from`, as the same lines of `to`: every line must map, unchanged and
  * unambiguously, to one contiguous range of the same file and side. A side with identical bytes
- * maps to itself. Otherwise a line of a hunk maps through that hunk's exact counterpart, and any
- * other unchanged line only through the other side's identical bytes to an unchanged line of `to`.
+ * maps to itself. Otherwise a line of a hunk maps through that hunk's exact counterpart; an
+ * unchanged line only through the other side's identical bytes to an unchanged line of `to`; and a
+ * changed line, with the other side's identical bytes, only where `to` holds the same text with
+ * nothing else changed between them and an unchanged line on one side of it, both sides agreeing.
  * No similarity, rename or cross-file matching: anything else is undefined.
  */
 export function mapRange(
@@ -122,33 +227,15 @@ export function mapRange(
   to: SnapshotLines,
   range: CodeRange,
 ): CodeRange | undefined {
-  const { path, side } = range;
-  const before = from.files.find((file) => file.path === path);
-  const after = to.files.find((file) => file.path === path);
-  if (!before || !after || before[side].kind !== "text" || after[side].kind !== "text")
-    return undefined;
-  if (sameContent(before[side], after[side]))
-    return { path, side, startLine: range.startLine, endLine: range.endLine };
-  const fromHunks = from.hunks.filter((hunk) => hunk.file === path);
-  const toHunks = to.hunks.filter((hunk) => hunk.file === path);
-  const sameOther = sameContent(before[otherSide(side)], after[otherSide(side)]);
-  const matches = matchHunks(fromHunks, toHunks);
+  const map = lineMapper(from, to, range);
+  if (!map) return undefined;
   let startLine: number | undefined;
   let previous: number | undefined;
   for (let line = range.startLine; line <= range.endLine; line++) {
-    const at = locate(fromHunks, side, line);
-    const within = at?.within;
-    const counterpart = within && matches.get(within.hunk.id);
-    let next: number | undefined;
-    if (within && counterpart) {
-      const starts = startsOf(counterpart);
-      next = starts && starts[side] + within.offset;
-    } else if (at?.other !== undefined && sameOther) {
-      next = locate(toHunks, otherSide(side), at.other)?.other;
-    }
+    const next = map(line);
     if (next === undefined || (previous !== undefined && next !== previous + 1)) return undefined;
     startLine ??= next;
     previous = next;
   }
-  return { path, side, startLine: startLine!, endLine: previous! };
+  return { path: range.path, side: range.side, startLine: startLine!, endLine: previous! };
 }

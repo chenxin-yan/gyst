@@ -283,6 +283,40 @@ describe("refreshSession", () => {
     expect(changed.viewedHunkIds).toEqual([hunkB]);
   });
 
+  it("keeps guidance current when its referenced added lines survive edits beside them", () => {
+    // The helper's working tree adds three lines after line 1; na references the last two.
+    const helperAdds = (current: string, body: string) =>
+      lines(
+        { ...files, "helper.ts": ["h0", current] },
+        { "a.ts": changeA, "b.ts": changeB, "helper.ts": body },
+      );
+    const added = helperAdds("h5", "@@ -1,2 +1,5 @@\n h1\n+x\n+y\n+z\n h2");
+    const reference = pin("helper.ts", "new", 3, 4);
+    const original: Session = {
+      ...session(),
+      hunks: added.hunks,
+      groups: [
+        group("ga", [hunkA], "a.ts", [note("na", pin("a.ts", "new", 10), [reference])]),
+        session().groups[1]!,
+      ],
+    };
+    const fromAdded = new Map([["s1", added]]);
+    for (const body of [
+      // The line beside the referenced ones changed.
+      "@@ -1,2 +1,5 @@\n h1\n+X\n+y\n+z\n h2",
+      // A line was inserted right before them.
+      "@@ -1,2 +1,6 @@\n h1\n+x\n+new\n+y\n+z\n h2",
+    ]) {
+      const refreshed = refreshSession(original, to(helperAdds("h6", body)), fromAdded, LATER);
+      expect(refreshed.groups[0]!.notes[0]!.outdated).toBeUndefined();
+      expect(refreshed.viewedHunkIds).toEqual([hunkA, hunkB]);
+    }
+    const edited = helperAdds("h7", "@@ -1,2 +1,5 @@\n h1\n+x\n+Y\n+z\n h2");
+    const changed = refreshSession(original, to(edited), fromAdded, LATER);
+    expect(changed.groups[0]!.notes[0]!.outdated).toEqual(["references"]);
+    expect(changed.viewedHunkIds).toEqual([hunkB]);
+  });
+
   it("cannot verify a reference whose pinned snapshot it cannot read", () => {
     const original: Session = {
       ...session(),
