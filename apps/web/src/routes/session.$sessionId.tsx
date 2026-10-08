@@ -497,6 +497,9 @@ const lineStep = 57;
 
 const noWholeFiles: ReadonlyMap<string, string> = new Map();
 
+const generatedOf = (status: StatusPayload): ReadonlySet<string> =>
+  new Set(status.files.flatMap(({ path, generated }) => (generated ? [path] : [])));
+
 function SessionReader(props: {
   session: SessionSummary;
   hunks: readonly Hunk[];
@@ -509,7 +512,9 @@ function SessionReader(props: {
   const router = useRouter();
   const [pages, setPages] = useState([props.firstPage]);
   // Where the reader left this session earlier in this page's life, as far as a refresh kept it.
-  const [recalled] = useState(() => recall(session.id, snapshotId, hunks));
+  const [recalled] = useState(() =>
+    recall(session.id, snapshotId, hunks, generatedOf(props.status)),
+  );
   const [review, setReview] = useState<ReviewView>(recalled?.review ?? { kind: "files", path: "" });
   const [mode, setMode] = useState<LayoutMode>("auto");
   const [width, setWidth] = useState(0);
@@ -520,9 +525,7 @@ function SessionReader(props: {
   // Generated files start folded in every view; the fold state is shared, so they unfold as usual.
   // A return keeps the folds it left.
   const [folded, setFolded] = useState<ReadonlySet<string>>(
-    () =>
-      recalled?.folded ??
-      new Set(props.status.files.flatMap(({ path, generated }) => (generated ? [path] : []))),
+    () => recalled?.folded ?? generatedOf(props.status),
   );
   const [dialog, setDialog] = useState<"menu" | "help">();
   // Hidden lines opened per file. They live here, not in the renderer, which forgets them with
@@ -592,10 +595,7 @@ function SessionReader(props: {
   );
   const files = useMemo(() => changedFiles(hunks, manifest), [hunks, manifest]);
   // From status as well as pages: it is complete when the reader starts.
-  const generated = useMemo(
-    () => new Set(status.files.flatMap((file) => (file.generated ? [file.path] : []))),
-    [status],
-  );
+  const generated = useMemo(() => generatedOf(status), [status]);
   const byPath = useMemo(() => new Map(files.map((file) => [file.path, file])), [files]);
   // Memoized: a new list makes the renderer reconcile its items and restore the reading position.
   // An expanded reference shows its one file: every hunk of a changed one, with no Viewed section.
