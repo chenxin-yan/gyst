@@ -49,8 +49,13 @@ export type Readiness = "queued" | "preparing" | "ready";
 export type SemanticStage =
   /** Asked and not answered; the answer applies only while this very `ticket` waits. */
   | { kind: "waiting"; ask: SemanticAsk; ticket: number; readiness?: Readiness }
-  /** Several symbols or queries to pick from; `selected` is previewed. */
-  | { kind: "choose"; choices: readonly Choice[]; selected: number }
+  /** Several symbols or queries to pick from, and what finding them may lack; `selected` is previewed. */
+  | {
+      kind: "choose";
+      choices: readonly Choice[];
+      selected: number;
+      gaps: readonly NavigationGap[];
+    }
   /** The answer: its places in captured text, how many lie outside it and what it may lack. */
   | {
       kind: "locations";
@@ -60,8 +65,8 @@ export type SemanticStage =
       gaps: readonly NavigationGap[];
       selected: number;
     }
-  /** Nothing to ask of, said in words. */
-  | { kind: "none"; message: string }
+  /** Nothing to ask of, said in words, with what finding a line's symbols may lack. */
+  | { kind: "none"; message: string; gaps?: readonly NavigationGap[] }
   /** Navigation can't run; `checking` is the Check again in flight, `checked` says one found nothing. */
   | {
       kind: "unavailable";
@@ -132,19 +137,21 @@ export function afterIdentifiers(
   const { outcome } = reply;
   if (outcome.kind === "unavailable")
     return { stage: { kind: "unavailable", ask, reason: outcome.reason } };
+  // Only identifiers the engine resolves are offered, so a missing input can hide one.
+  const { gaps } = outcome;
   if ("query" in ask) {
     const choices = outcome.identifiers.map((symbol) => ({ query: ask.query, symbol }));
     if (choices.length === 1) return { ask: { kind: "query", choice: choices[0]! } };
     return choices.length === 0
-      ? { stage: { kind: "none", message: `No symbol to look up on line ${reply.line}.` } }
-      : { stage: { kind: "choose", choices, selected: 0 } };
+      ? { stage: { kind: "none", message: `No symbol to look up on line ${reply.line}.`, gaps } }
+      : { stage: { kind: "choose", choices, selected: 0, gaps } };
   }
   const { start, end } = ask.token;
   const symbol = outcome.identifiers.find(
     ({ range }) => range.start.character < end && range.end.character > start,
   );
   return symbol === undefined
-    ? { stage: { kind: "none", message: "No symbol to look up there." } }
+    ? { stage: { kind: "none", message: "No symbol to look up there.", gaps } }
     : {
         stage: {
           kind: "choose",
@@ -153,6 +160,7 @@ export function afterIdentifiers(
             { query: "references", symbol },
           ],
           selected: 0,
+          gaps,
         },
       };
 }

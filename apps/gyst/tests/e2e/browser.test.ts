@@ -3953,6 +3953,10 @@ describe("installed gyst in a sandboxed browser", () => {
     expect(await peek.getAttribute("aria-label")).toBe(
       `src/use.ts:2 · new side · snapshot ${session.snapshot}`,
     );
+    // Finding the line's symbols names the project inputs it may lack, as an answer does.
+    expect(
+      await peek.getByRole("note", { name: "Potentially incomplete" }).textContent(),
+    ).toContain("package.json declares packages, and installed packages are never captured");
     await waitFor(() => hasFocus(symbols), "the symbols focused");
     await waitFor(async () => (await markedOf(page)).join("") === "three", "three previewed");
     await page.keyboard.press("j");
