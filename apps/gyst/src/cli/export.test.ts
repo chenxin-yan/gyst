@@ -1,6 +1,6 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import type { ExportPreviewPayload } from "@gyst/core";
-import { Effect } from "effect";
+import { Effect, FileSystem, PlatformError } from "effect";
 import { mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -136,5 +136,37 @@ describe("writeNewFile", () => {
       message: `could not write ${join(dir, "missing", "w.html")}. Nothing was written.`,
     });
     expect((await readdir(dir)).sort()).toEqual(["kept.html", "w.html"]);
+  });
+
+  it("takes the file back when its directory cannot be synced, and says so when even that fails", async () => {
+    const failing = (method: string) =>
+      PlatformError.systemError({ _tag: "Unknown", module: "FileSystem", method });
+    /** `writeNewFile` on a file system whose directory sync fails, and whose `remove` may too. */
+    const unsynced = (path: string, removable: boolean) =>
+      Effect.runPromise(
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          return yield* Effect.flip(writeNewFile(path, "export")).pipe(
+            Effect.provideService(FileSystem.FileSystem, {
+              ...fs,
+              open: (file, options) =>
+                file === dir ? Effect.fail(failing("open")) : fs.open(file, options),
+              remove: (file, options) =>
+                removable ? fs.remove(file, options) : Effect.fail(failing("remove")),
+            }),
+          );
+        }).pipe(Effect.provide(NodeServices.layer)),
+      );
+    const before = (await readdir(dir)).sort();
+    expect(await unsynced(join(dir, "unsynced.html"), true)).toMatchObject({
+      _tag: "bad_args",
+      message: `could not write ${join(dir, "unsynced.html")}. Nothing was written.`,
+    });
+    expect((await readdir(dir)).sort()).toEqual(before);
+    expect(await unsynced(join(dir, "stuck.html"), false)).toMatchObject({
+      _tag: "bad_args",
+      message: `${join(dir, "stuck.html")} holds the whole walkthrough, but gyst could not confirm it is saved or remove it; check it before sharing it, or delete it.`,
+    });
+    expect(await readFile(join(dir, "stuck.html"), "utf8")).toBe("export");
   });
 });
