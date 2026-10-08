@@ -65,14 +65,16 @@ function rowsOf(hunk: Hunk): { old?: number; new?: number }[] | undefined {
   return rows;
 }
 
-type Located =
-  | { readonly kind: "changed"; readonly hunk: Hunk; readonly offset: number }
-  | { readonly kind: "unchanged"; readonly other: number };
+type Located = {
+  /** The hunk holding the line, and how many lines after its first line on the side. */
+  readonly within?: { readonly hunk: Hunk; readonly offset: number };
+  /** For an unchanged line, the other side's line holding the same text. */
+  readonly other: number | undefined;
+};
 
 /**
- * Where `line` of one side of a file sits in its diff: a changed line of a hunk, `offset` lines
- * after that hunk's first line on the side, or an unchanged line and the other side's line holding
- * the same text. `hunks` are the file's, in order.
+ * Where `line` of one side of a file sits in its diff: inside a hunk, as a changed or a context
+ * line, or between hunks. `hunks` are the file's, in order.
  */
 function locate(hunks: readonly Hunk[], side: CodeSide, line: number): Located | undefined {
   let delta = 0;
@@ -84,15 +86,12 @@ function locate(hunks: readonly Hunk[], side: CodeSide, line: number): Located |
     const own = rows.filter((row) => row[side] !== undefined);
     const other = rows.filter((row) => row[otherSide(side)] !== undefined);
     if (line < starts[side] + own.length) {
-      const row = own[line - starts[side]]!;
-      const counterpart = row[otherSide(side)];
-      return counterpart === undefined
-        ? { kind: "changed", hunk, offset: line - starts[side] }
-        : { kind: "unchanged", other: counterpart };
+      const offset = line - starts[side];
+      return { within: { hunk, offset }, other: own[offset]![otherSide(side)] };
     }
     delta = starts[otherSide(side)] + other.length - (starts[side] + own.length);
   }
-  return { kind: "unchanged", other: line + delta };
+  return { other: line + delta };
 }
 
 const sameContent = (a: ContentSide, b: ContentSide) =>
@@ -103,9 +102,9 @@ const sameContent = (a: ContentSide, b: ContentSide) =>
 /**
  * `range`, read in `from`, as the same lines of `to`: every line must map, unchanged and
  * unambiguously, to one contiguous range of the same file and side. A side with identical bytes
- * maps to itself. Otherwise a changed line maps only inside its hunk's exact counterpart, and an
- * unchanged line only through the other side's identical bytes to an unchanged line of `to`. No
- * similarity, rename or cross-file matching: anything else is undefined.
+ * maps to itself. Otherwise a line of a hunk maps through that hunk's exact counterpart, and any
+ * other unchanged line only through the other side's identical bytes to an unchanged line of `to`.
+ * No similarity, rename or cross-file matching: anything else is undefined.
  */
 export function mapRange(
   from: SnapshotLines,
@@ -127,14 +126,14 @@ export function mapRange(
   let previous: number | undefined;
   for (let line = range.startLine; line <= range.endLine; line++) {
     const at = locate(fromHunks, side, line);
+    const within = at?.within;
+    const counterpart = within && matches.get(within.hunk.id);
     let next: number | undefined;
-    if (at?.kind === "changed") {
-      const counterpart = matches.get(at.hunk.id);
-      const starts = counterpart && startsOf(counterpart);
-      next = starts && starts[side] + at.offset;
-    } else if (at && sameOther) {
-      const back = locate(toHunks, otherSide(side), at.other);
-      next = back?.kind === "unchanged" ? back.other : undefined;
+    if (within && counterpart) {
+      const starts = startsOf(counterpart);
+      next = starts && starts[side] + within.offset;
+    } else if (at?.other !== undefined && sameOther) {
+      next = locate(toHunks, otherSide(side), at.other)?.other;
     }
     if (next === undefined || (previous !== undefined && next !== previous + 1)) return undefined;
     startLine ??= next;

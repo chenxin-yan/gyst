@@ -57,6 +57,15 @@ describe("mapRange", () => {
     expect(mapRange(first, rebased, range("new", 10))).toEqual(range("new", 12));
   });
 
+  it("maps context lines through an exactly matched hunk when both sides moved", () => {
+    // Base and head both gained two lines above the change: only coordinates moved.
+    const moved = snapshot("5", "6", "@@ -11,3 +11,3 @@\n l9\n-l10\n+L10\n l11\n");
+    expect(mapRange(first, moved, range("new", 9, 11))).toEqual(range("new", 11, 13));
+    expect(mapRange(first, moved, range("old", 9, 10))).toEqual(range("old", 11, 12));
+    // Outside the hunk nothing proves where a line went.
+    expect(mapRange(first, moved, range("new", 8, 9))).toBeUndefined();
+  });
+
   it("maps nothing to a file the other snapshot lacks", () => {
     expect(mapRange(first, { files: [], hunks: [] }, range("new", 1))).toBeUndefined();
   });
