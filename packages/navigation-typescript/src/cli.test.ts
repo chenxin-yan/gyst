@@ -10,6 +10,7 @@ import {
   readlink,
   realpath,
   rm,
+  symlink,
   writeFile,
 } from "node:fs/promises";
 import { createRequire } from "node:module";
@@ -155,8 +156,7 @@ const until = async (done: () => boolean, ms: number) => {
 
 describe("gyst-navigation-typescript", () => {
   it("pins the exact engine it depends on", async () => {
-    expect(packageJson.dependencies).toEqual({ typescript: "7.0.2" });
-    expect(packageJson.dependencies.typescript).toMatch(/^\d+\.\d+\.\d+$/);
+    expect(packageJson.dependencies.typescript).toBe("7.0.2");
     const resolved = JSON.parse(await readFile(typescriptPackage, "utf8"));
     expect(resolved.version).toBe("7.0.2");
   });
@@ -184,6 +184,10 @@ describe("gyst-navigation-typescript", () => {
       recursive: true,
       dereference: true,
     });
+    await symlink(
+      join(dirname(cli), "..", "node_modules", "@crustjs"),
+      join(addon, "node_modules", "@crustjs"),
+    );
     const { stdout } = await run(process.execPath, [join(addon, "src", "cli.ts"), "--version"]);
     const handshake = JSON.parse(stdout);
     expect(handshake.version).toBe(packageJson.version);
@@ -193,10 +197,10 @@ describe("gyst-navigation-typescript", () => {
 
   it("refuses to start an engine for another release, and unknown arguments", async () => {
     const refused = await exitOf(["lsp", "--expect", "0.0.0"]);
-    expect(refused).toMatchObject({ code: 2, stdout: "" });
+    expect(refused).toMatchObject({ code: 1, stdout: "" });
     expect(refused.stderr).toContain(`${packageJson.version} was started by gyst 0.0.0`);
     for (const args of [[], ["lsp"], ["lsp", "--expect"], ["serve"], ["--version", "extra"]])
-      expect(await exitOf(args), args.join(" ")).toMatchObject({ code: 2, stdout: "" });
+      expect(await exitOf(args), args.join(" ")).toMatchObject({ code: 1, stdout: "" });
   });
 
   it.runIf(process.platform === "linux")(

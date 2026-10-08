@@ -25,7 +25,7 @@ gyst runs it with its own Node.js and no shell:
   `"engine":{"ok":false,"problem":"..."}`.
 - `gyst-navigation-typescript lsp --expect <version>` becomes that engine's
   `tsc --lsp --stdio` in the same process, without a `PATH`, so the engine cannot run npm to
-  acquire types. It exits with status 2 if `<version>` is not its own release.
+  acquire types. It exits with status 1 if `<version>` is not its own release.
 
 The engine is always the one installed with this package, never a reviewed project's TypeScript.
 

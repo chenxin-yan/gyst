@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { Crust, defineCommand } from "@crustjs/core";
 import { execFile } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
@@ -65,28 +66,48 @@ const engineCheck = () =>
     );
   });
 
-const [command, ...rest] = process.argv.slice(2);
-if (command === "--version" && rest.length === 0) {
-  const engine = await engineCheck();
-  process.stdout.write(
-    `${JSON.stringify({ name: packageJson.name, version: packageJson.version, protocol, engine })}\n`,
-  );
-} else if (command === "lsp" && rest.length === 2 && rest[0] === "--expect") {
-  // gyst validated this executable's handshake earlier; refusing here closes the window in which
-  // the install was replaced by another release before the daemon started it.
-  if (rest[1] !== packageJson.version) {
-    process.stderr.write(
-      `${packageJson.name} ${packageJson.version} was started by gyst ${rest[1]}; install the matching release.\n`,
+await new Crust("gyst-navigation-typescript", {
+  description: "TypeScript/JavaScript navigation for gyst",
+  version: packageJson.version,
+})
+  .flags({
+    name: "version",
+    type: "boolean",
+    noNegate: true,
+    description: "Print the handshake gyst reads: this release, its protocol and its engine",
+  })
+  .action(async ({ flags, stdout }) => {
+    if (!flags.version) throw new Error("Run --version, or lsp --expect <version> from gyst");
+    const engine = await engineCheck();
+    stdout(
+      JSON.stringify({ name: packageJson.name, version: packageJson.version, protocol, engine }),
     );
-    process.exit(2);
-  }
-  if (process.execve === undefined) {
-    process.stderr.write(`${packageJson.name} needs a Node.js with process.execve.\n`);
-    process.exit(1);
-  }
-  // Replacing this process keeps the PID gyst spawned, so stopping it stops the engine.
-  process.execve(process.execPath, [process.execPath, engineBin(), "--lsp", "--stdio"], engineEnv);
-} else {
-  process.stderr.write("usage: gyst-navigation-typescript --version | lsp --expect <version>\n");
-  process.exit(2);
-}
+  })
+  .add(
+    defineCommand("lsp", { description: "Become the language server gyst started" }, (command) =>
+      command
+        .flags({
+          name: "expect",
+          type: "string",
+          required: true,
+          description: "The gyst release starting it, which must equal this add-on's",
+        })
+        .action(({ flags }) => {
+          // gyst validated this executable's handshake earlier; refusing here closes the window in
+          // which the install was replaced by another release before the daemon started it.
+          if (flags.expect !== packageJson.version)
+            throw new Error(
+              `${packageJson.name} ${packageJson.version} was started by gyst ${flags.expect}; install the matching release.`,
+            );
+          if (process.execve === undefined)
+            throw new Error(`${packageJson.name} needs a Node.js with process.execve.`);
+          // Replacing this process keeps the PID gyst spawned, so stopping it stops the engine.
+          process.execve(
+            process.execPath,
+            [process.execPath, engineBin(), "--lsp", "--stdio"],
+            engineEnv,
+          );
+        }),
+    ),
+  )
+  .execute();

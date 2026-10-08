@@ -4,8 +4,7 @@ export default defineConfig({
   run: {
     tasks: {
       "build:task": {
-        // A plain CLI, not a Crust app: it has no Command Snapshot for the build to validate.
-        command: "crust build --no-validate",
+        command: "crust build",
         // Crust bundles with Bun, whose file reads Vite+ doesn't track on Linux
         // (https://github.com/voidzero-dev/vite-task/issues/777).
         cache: {
