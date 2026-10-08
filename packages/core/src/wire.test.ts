@@ -100,7 +100,14 @@ describe("daemon wire envelopes", () => {
       message: "m1",
       seen: { markdown: "Why?", kind: "question" },
     },
-    { command: "resolve", session: "s1", requestId: "r7", thread: "t1", resolved: false },
+    {
+      command: "resolve",
+      session: "s1",
+      requestId: "r7",
+      thread: "t1",
+      seen: "v1",
+      resolved: false,
+    },
     { command: "discard", session: "s1", requestId: "r8", draft: "d1" },
     { command: "conversations", session: "s1" },
   ];
@@ -161,6 +168,8 @@ describe("daemon wire envelopes", () => {
       // An edit or deletion names the message as its author read it.
       { command: "edit", session: "s1", requestId: "r1", message: "m1", kind: "change" },
       { command: "retract", session: "s1", requestId: "r1", message: "m1" },
+      // A resolution names the thread as its author read it.
+      { command: "resolve", session: "s1", requestId: "r1", thread: "t1", resolved: true },
       { ...humanConversation[0], target: { kind: "group", group: "g1" } },
       { ...humanConversation[0], target: { kind: "overview" } },
       { ...humanConversation[0], target: { kind: "comment", anchor: { path: "a", side: "new" } } },

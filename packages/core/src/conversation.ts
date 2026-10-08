@@ -34,6 +34,10 @@ export type PickupOutcome = { readonly result: ThreadsPayload; readonly session?
 export const anchorKey = ({ snapshotId, path, side, startLine, endLine }: CapturedRange) =>
   `${snapshotId}\0${side}\0${path}\0${startLine}\0${endLine}`;
 
+/** A thread's `version`: an identity of its messages and resolution, the thread a human read. */
+export const threadVersionOf = (thread: Pick<Thread, "resolved" | "messages">) =>
+  hash(JSON.stringify([thread.resolved, thread.messages]));
+
 const hasPending = (thread: Thread) =>
   thread.messages.some((message) => message.author === "human" && message.pending);
 
@@ -185,7 +189,7 @@ const idOf = (kind: string, requestId: string) => hash(`${kind}\0${requestId}`);
  * One human conversation action, all or nothing, with its receipt. A recorded `requestId` answers
  * first, so a retry after a lost reply gets its original result however the session moved on.
  * Actions name their targets, never a revision; an edit or deletion also names the message as
- * the human read it. `captured` indexes the snapshots `conversationTargetsOf` names. Viewed is
+ * the human read it, and a resolution or reopening the thread. `captured` indexes the snapshots `conversationTargetsOf` names. Viewed is
  * never touched.
  */
 export function converse(
@@ -450,6 +454,13 @@ function act(
       const thread = threadOf(request.thread);
       if (!thread)
         return invalid(`thread ${request.thread} does not exist`, { thread: request.thread });
+      if (threadVersionOf(thread) !== request.seen)
+        return Result.fail(
+          new StaleRevision({
+            message: `thread ${thread.id} changed since it was read; read it again`,
+            detail: { snapshotId: session.snapshotId, revision: session.revision },
+          }),
+        );
       if (thread.resolved !== request.resolved) {
         thread.resolved = request.resolved;
         changed();

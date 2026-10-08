@@ -8,6 +8,7 @@ import {
   converse,
   pickUp,
   type ThreadsRequest,
+  threadVersionOf,
 } from "./conversation.ts";
 import type { CapturedRange } from "./guidance.ts";
 import { setViewed } from "./human-action.ts";
@@ -81,6 +82,9 @@ const done = (session: Session, requestId: string, request: Act) =>
   Result.getOrThrow(act(session, requestId, request));
 const refused = (session: Session, requestId: string, request: Act) =>
   Result.getOrThrow(Result.flip(act(session, requestId, request)));
+/** A thread's version as a human reading `session` sees it. */
+const seenOf = (session: Session, thread: string) =>
+  threadVersionOf(session.threads.find(({ id }) => id === thread)!);
 
 /** Drafts and sends one message, returning the session and what the send made. */
 function post(
@@ -299,14 +303,24 @@ describe("human conversation actions", () => {
 
   it("asks for reopening before a human reply to a resolved thread", () => {
     const { session, thread } = post(base, { kind: "comment", anchor: range(4) }, "Why?");
-    const resolved = done(session, "s1", { command: "resolve", thread, resolved: true }).session!;
+    const resolved = done(session, "s1", {
+      command: "resolve",
+      thread,
+      seen: seenOf(session, thread),
+      resolved: true,
+    }).session!;
     expect(statusOf(resolved).threads).toEqual({ open: 0, resolved: 1, pending: 1 });
     expect(
       refused(resolved, "d1", { command: "draft", target: { kind: "thread", thread } }),
     ).toMatchObject({ _tag: "validation_failed" });
     // A draft opened before the resolution cannot be sent into it either.
     const drafted = done(session, "d2", { command: "draft", target: { kind: "thread", thread } });
-    const late = done(drafted.session!, "s2", { command: "resolve", thread, resolved: true });
+    const late = done(drafted.session!, "s2", {
+      command: "resolve",
+      thread,
+      seen: seenOf(drafted.session!, thread),
+      resolved: true,
+    });
     expect(
       refused(late.session!, "send", {
         command: "send",
@@ -315,7 +329,12 @@ describe("human conversation actions", () => {
         kind: "question",
       }),
     ).toMatchObject({ _tag: "validation_failed" });
-    const reopened = done(resolved, "s3", { command: "resolve", thread, resolved: false }).session!;
+    const reopened = done(resolved, "s3", {
+      command: "resolve",
+      thread,
+      seen: seenOf(resolved, thread),
+      resolved: false,
+    }).session!;
     expect(
       post(reopened, { kind: "thread", thread }, "More?").session.threads[0]!.messages,
     ).toHaveLength(2);
@@ -458,6 +477,52 @@ describe("human conversation actions", () => {
     expect(elsewhere.threads[0]!.messages[0]).toMatchObject({ markdown: "Typo", kind: "change" });
   });
 
+  it("refuses a resolution or reopening from a reader that has not seen the thread since", () => {
+    const { session, thread } = post(base, { kind: "comment", anchor: range(4) }, "Why?");
+    const stale = seenOf(session, thread);
+    // Another tab resolves, reopens and sends a correction; this tab still shows the thread as it was.
+    const resolved = done(session, "t1", {
+      command: "resolve",
+      thread,
+      seen: stale,
+      resolved: true,
+    }).session!;
+    const reopened = done(resolved, "t2", {
+      command: "resolve",
+      thread,
+      seen: seenOf(resolved, thread),
+      resolved: false,
+    }).session!;
+    const corrected = post(reopened, { kind: "thread", thread }, "Rather, why not?").session;
+    for (const resolved of [true, false])
+      expect(
+        refused(corrected, `late-${resolved}`, {
+          command: "resolve",
+          thread,
+          seen: stale,
+          resolved,
+        }),
+      ).toMatchObject({ _tag: "stale_revision" });
+    expect(statusOf(corrected).threads).toEqual({ open: 1, resolved: 0, pending: 2 });
+    // The first resolution's retry still answers with its recorded result, after all of that.
+    const replayed = act(corrected, "t1", {
+      command: "resolve",
+      thread,
+      seen: stale,
+      resolved: true,
+    });
+    expect(Result.getOrThrow(replayed)).toEqual({
+      result: { sessionId: "session", revision: resolved.revision, thread },
+    });
+    const fresh = done(corrected, "t3", {
+      command: "resolve",
+      thread,
+      seen: seenOf(corrected, thread),
+      resolved: true,
+    });
+    expect(fresh.session!.threads[0]!.resolved).toBe(true);
+  });
+
   it("keeps a draft's context when its note is removed, sending into the retained place", () => {
     const drafted = done(base, "d", {
       command: "draft",
@@ -596,6 +661,7 @@ describe("pickUp", () => {
     const resolved = done(session, "r", {
       command: "resolve",
       thread: second,
+      seen: seenOf(session, second),
       resolved: true,
     }).session!;
     const picked = pick(resolved, "pending", "p1");
@@ -609,6 +675,7 @@ describe("pickUp", () => {
     const reopened = done(recovered.session!, "o", {
       command: "resolve",
       thread: second,
+      seen: seenOf(recovered.session!, second),
       resolved: false,
     }).session!;
     const exposed = pick(reopened, "pending", "p2");
@@ -651,7 +718,12 @@ describe("pickUp", () => {
   it("lets agent replies land in resolved threads without reopening them, immutable afterwards", () => {
     const session = pick(two(), "pending", "p1").session!;
     const thread = session.threads[0]!.id;
-    const resolved = done(session, "r", { command: "resolve", thread, resolved: true }).session!;
+    const resolved = done(session, "r", {
+      command: "resolve",
+      thread,
+      seen: seenOf(session, thread),
+      resolved: true,
+    }).session!;
     const replied = Result.getOrThrow(
       applyBatch(
         resolved,
@@ -700,7 +772,12 @@ describe("pickUp", () => {
         LATER,
       ),
     ).session!;
-    const resolved = done(unviewed, "r", { command: "resolve", thread, resolved: true }).session!;
+    const resolved = done(unviewed, "r", {
+      command: "resolve",
+      thread,
+      seen: seenOf(unviewed, thread),
+      resolved: true,
+    }).session!;
     expect(resolved).toMatchObject({
       viewedHunkIds: [],
       threads: [{ resolved: true }, { resolved: false }],
