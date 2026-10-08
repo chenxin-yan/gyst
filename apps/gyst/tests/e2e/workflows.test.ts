@@ -88,6 +88,8 @@ async function humanOf(box: Sandbox, cwd: string, args: string[]) {
     id: viewer.id,
     comment: (anchor: object, markdown: string, kind: "question" | "change" = "question") =>
       say({ kind: "comment", anchor }, markdown, kind),
+    follow: (thread: string, markdown: string) =>
+      say({ kind: "thread", thread }, markdown, "question"),
     /** A reply to a note, written against the note text `wording` the human read. */
     replyToNote: (note: string, wording: string, markdown: string) =>
       say({ kind: "note", note }, markdown, "question", wording),
@@ -296,8 +298,9 @@ describe("review workflows through the installed CLI", () => {
       { snapshotId, path: "src/auth.ts", side: "new", startLine: 2, endLine: 2 },
       "Is `expired` the final name?",
     );
+    const followUp = await human.follow(asked.thread, "And why not inject `now` itself?");
     expect((await agent.threads("pending", "respond-1")).stdout).toBe(pickup.stdout);
-    expect((await agent.status()).threads).toEqual({ open: 3, resolved: 0, pending: 1 });
+    expect((await agent.status()).threads).toEqual({ open: 3, resolved: 0, pending: 2 });
 
     // 5. One answer improves reusable guidance with its reply. The human acted since the pickup,
     // so its revision is stale: reread status and send the rebuilt batch under a new key.
@@ -330,31 +333,45 @@ describe("review workflows through the installed CLI", () => {
 
     // The run is cut off before answering the note reply: --open recovers the read work.
     const recovered = json(await agent.threads("open", "recover-1"));
-    // The resent batch posted its reply once.
-    expect(
-      recovered.threads
-        .find(({ id }: { id: string }) => id === asked.thread)
-        .messages.filter(({ author }: { author: string }) => author === "agent"),
-    ).toHaveLength(1);
-    const unanswered = recovered.threads.filter(
-      ({ messages }: { messages: { author: string }[] }) => messages.at(-1)!.author === "human",
-    );
-    expect(unanswered.map(({ id }: { id: string }) => id)).toEqual([onNote.thread, later.thread]);
-    // Recovery reads, and so freezes, the later message it returns.
-    expect(recovered.threads.find(({ id }: { id: string }) => id === later.thread).unread).toEqual([
-      later.message,
+    const thread = (id: string) =>
+      recovered.threads.find((entry: { id: string }) => id === entry.id);
+    // Recovery reads, and so freezes, the later messages it returns, including the follow-up that
+    // an agent reply now comes after: message order is no answered state.
+    expect(recovered.threads.map(({ id, unread }: any) => [id, unread])).toEqual([
+      [asked.thread, [followUp.message]],
+      [onNote.thread, []],
+      [later.thread, [later.message]],
     ]);
-    json(
+    expect(thread(asked.thread).messages.map(({ author }: any) => author)).toEqual([
+      "human",
+      "human",
+      "agent",
+    ]);
+    // The already-read note reply is still in the history, with nothing answering it.
+    expect(thread(onNote.thread).messages.map(({ id, author }: any) => [id, author])).toEqual([
+      [onNote.message, "human"],
+    ]);
+    const settled = json(
       await agent.apply({
         revision: recovered.revision,
         snapshotId,
         idempotencyKey: "recover-1-a",
         ops: [
-          { type: "thread.reply", thread: onNote.thread, markdown: "Skew fails closed too." },
+          {
+            type: "thread.reply",
+            thread: asked.thread,
+            markdown: "A bare `now` would do too; the object leaves room for a monotonic reading.",
+          },
+          {
+            type: "thread.reply",
+            thread: onNote.thread,
+            markdown: "`<=` settles only the boundary instant; skew can still move the cutoff.",
+          },
           { type: "thread.reply", thread: later.thread, markdown: "Yes." },
         ],
       }),
     );
+    expect(settled.threads).toEqual({ open: 3, resolved: 0, pending: 0 });
 
     // 2. Empty bundles report from progress and stop: still reading, then finished.
     const reading = json(await agent.threads("pending", "respond-2"));
@@ -391,10 +408,12 @@ describe("review workflows through the installed CLI", () => {
       [change.thread, ["change"]],
       [question.thread, ["question"]],
     ]);
-    expect(prepared.session.scope).toEqual({ kind: "uncommitted" });
+    // The session's checkout and scope come from status, not from the preparing run.
+    const context = (await agent.status()).session;
+    expect(context.scope).toEqual({ kind: "uncommitted" });
 
     // The Change request's fix is a working-tree edit, which the recorded scope includes.
-    await write(cwd, {
+    await write(context.repoRoot, {
       "src/auth.ts":
         'export function authenticate(token, clock) {\n  if (token.expiresAt <= clock.now()) return { error: "credential_expired" };\n  return lookup(token);\n}\n',
     });
@@ -518,7 +537,10 @@ describe("review workflows through the installed CLI", () => {
 
     const bundle = json(await agent.threads("pending", "respond-1"));
     expect(bundle.threads[0].messages[0]).toMatchObject({ id: change.message, kind: "change" });
-    await write(checkout, { "b.txt": "layer b: the second layer\n" });
+    const context = await agent.status();
+    expect(context.session.scope).toMatchObject({ kind: "pr", number: 2 });
+    expect(context.pullRequest.stack.layers).toHaveLength(3);
+    await write(context.session.repoRoot, { "b.txt": "layer b: the second layer\n" });
     // A PR scope is what was pushed: the edit is reported, not committed, pushed or refreshed.
     const replied = json(
       await agent.apply({
