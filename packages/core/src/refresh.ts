@@ -158,40 +158,60 @@ export function refreshSession(
 }
 
 /**
- * The snapshots whose captured content the session still needs, its current one first: those its
- * guidance anchors or references pin, and those of every conversation (resolved ones included),
- * message, reply wording and its note's code then, and draft. Reads may name any of them, and refresh maps from them.
+ * The captured files the session still needs, by snapshot, its current one first. Of the current
+ * snapshot and of each snapshot a live draft was begun on (its message's links, written in the
+ * browser, may name any file) it keeps every file (`"all"`). Of any other it keeps both sides of
+ * each file its guidance anchors or references, conversations (resolved ones included), messages,
+ * reply wording and its note's code, and drafts name; the manifest stays whole, so a pin still maps
+ * on refresh. Reads may name exactly these, and storage reclaims the rest.
  */
-export function pinnedSnapshotIds(session: Session): string[] {
-  const ids = new Set([session.snapshotId]);
+export function retainedFiles(session: Session): ReadonlyMap<string, ReadonlySet<string> | "all"> {
+  const kept = new Map<string, Set<string> | "all">([[session.snapshotId, "all"]]);
+  const pinRange = ({ snapshotId, path }: CapturedRange) => {
+    const paths = kept.get(snapshotId) ?? new Set<string>();
+    if (paths === "all") return;
+    paths.add(path);
+    kept.set(snapshotId, paths);
+  };
   const pin = (text: Pick<GuidanceText, "references"> | null | undefined) => {
-    for (const { snapshotId } of text?.references ?? []) ids.add(snapshotId);
+    for (const range of text?.references ?? []) pinRange(range);
   };
   const pinWording = (wording: Wording | undefined) => {
     pin(wording);
-    if (wording) ids.add(wording.anchor.snapshotId);
+    if (wording) pinRange(wording.anchor);
   };
+  for (const draft of session.drafts) kept.set(draft.snapshotId, "all");
   for (const thread of session.threads) {
-    ids.add(thread.anchor.snapshotId);
+    pinRange(thread.anchor);
     for (const message of thread.messages) {
       pin(message);
       if (message.author === "human") pinWording(message.wording);
     }
   }
   for (const draft of session.drafts) {
-    ids.add(draft.snapshotId);
-    ids.add(draft.anchor.snapshotId);
+    pinRange(draft.anchor);
     pinWording(draft.wording);
   }
   pin(session.overview);
   for (const group of session.groups) {
     pin(group.overview);
     for (const note of group.notes) {
-      ids.add(note.anchor.snapshotId);
+      pinRange(note.anchor);
       pin(note);
     }
   }
-  return [...ids];
+  return kept;
+}
+
+/** Whether the session still keeps `path` of `snapshotId` (see `retainedFiles`). */
+export function keepsFile(session: Session, snapshotId: string, path: string): boolean {
+  const paths = retainedFiles(session).get(snapshotId);
+  return paths === "all" || (paths?.has(path) ?? false);
+}
+
+/** The snapshots `retainedFiles` keeps anything of, the current one first. */
+export function pinnedSnapshotIds(session: Session): string[] {
+  return [...retainedFiles(session).keys()];
 }
 
 /**

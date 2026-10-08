@@ -6,7 +6,9 @@ import type { CapturedRange, Note } from "./guidance.ts";
 import type { SnapshotLines } from "./mapping.ts";
 import {
   type FreshSnapshot,
+  keepsFile,
   pinnedSnapshotIds,
+  retainedFiles,
   refresh,
   refreshSession,
   type RefreshRequest,
@@ -651,6 +653,43 @@ describe("refreshSession conversations", () => {
         "draft-note-code",
       ].toSorted(),
     );
+  });
+
+  it("keeps every file of the current and draft-begun snapshots, and only the pinned files of others", () => {
+    const at = (snapshotId: string, path: string): CapturedRange => ({
+      ...pin(path, "old", 1),
+      snapshotId,
+    });
+    const resolved = thread("resolved", at("s0", "thread.ts"), {
+      resolved: true,
+      messages: [
+        {
+          ...asked("h"),
+          references: [at("s0", "linked.ts")],
+          wording: { markdown: "w", references: [], anchor: at("s0", "note.ts") },
+        },
+      ],
+    });
+    const kept = retainedFiles({
+      ...session(),
+      overview: { markdown: "Overview.", references: [at("s0", "overview.ts")] },
+      groups: [],
+      threads: [resolved],
+      drafts: [{ id: "d", snapshotId: "s-begun", anchor: at("s-draft", "draft.ts") }],
+    });
+    expect(kept).toEqual(
+      new Map<string, unknown>([
+        ["s1", "all"],
+        ["s-begun", "all"],
+        ["s0", new Set(["thread.ts", "linked.ts", "note.ts", "overview.ts"])],
+        ["s-draft", new Set(["draft.ts"])],
+      ]),
+    );
+    const withDraft = { ...session(), threads: [resolved] };
+    expect(keepsFile(withDraft, "s0", "thread.ts")).toBe(true);
+    expect(keepsFile(withDraft, "s0", "other.ts")).toBe(false);
+    expect(keepsFile(withDraft, "s1", "other.ts")).toBe(true);
+    expect(keepsFile(withDraft, "gone", "thread.ts")).toBe(false);
   });
 });
 
