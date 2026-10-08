@@ -1,6 +1,7 @@
 import type { CapturedRange, Draft, HumanMessage, Thread } from "@gyst/core/wire";
 import { describe, expect, it } from "vite-plus/test";
 import {
+  commentDraftOn,
   commentsOrder,
   draftChange,
   draftPlace,
@@ -71,6 +72,20 @@ describe("threadPlaces", () => {
     });
     expect(draftPlace({ ...comment, thread: "t" }, ["a.ts"], "s2")).toBeUndefined();
     expect(draftPlace(comment, ["a.ts"], "s3")).toBeUndefined();
+  });
+
+  it("resumes a comment draft only on the same snapshot's lines, so a refresh's earlier one stays apart", () => {
+    const earlier: Draft = { id: "earlier", snapshotId: "s1", anchor: range("a.ts", 2, 3, "s1") };
+    const reply: Draft = {
+      id: "reply",
+      snapshotId: "s2",
+      anchor: range("a.ts", 2, 3),
+      thread: "t",
+    };
+    expect(commentDraftOn([earlier, reply], range("a.ts", 2, 3))).toBeUndefined();
+    expect(commentDraftOn([earlier, reply], range("a.ts", 2, 3, "s1"))).toBe(earlier);
+    const current: Draft = { ...earlier, id: "current", anchor: range("a.ts", 2, 3) };
+    expect(commentDraftOn([earlier, current], range("a.ts", 2, 3))).toBe(current);
   });
 });
 

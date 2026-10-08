@@ -25,9 +25,12 @@ import {
   replyOutdated,
   threadLocation,
 } from "./conversation.ts";
+import type { RangeRead } from "./captured.ts";
+import { PeekPreview } from "./peek.tsx";
 import { RichText } from "./rich.tsx";
 import { theme } from "./tokens.stylex.ts";
 import type { StatusNote } from "./walkthrough.ts";
+import { useRefocus } from "./walkthrough.tsx";
 
 type HumanAction = Extract<
   BrowserRequest,
@@ -47,23 +50,39 @@ export type Act = (
 
 /**
  * The session's threads and draft pins, read again whenever the live link announces other
- * conversations and after each action of this reader. A late read never replaces a newer one. An
- * action whose reply was lost keeps its request id, so doing the same again is its retry.
+ * conversations or connects again, and after each action of this reader. A late read never
+ * replaces a newer one. A failed read is the link's loss, so it reconnects and reads again rather
+ * than leaving the conversations stale. An action whose reply was lost keeps its request id, so
+ * doing the same again is its retry.
  */
-export function useConversations(sessionId: string, announced: string | undefined) {
+export function useConversations(
+  sessionId: string,
+  link: {
+    announced: string | undefined;
+    generation: number;
+    lost: (generation: number, error: unknown) => boolean;
+  },
+) {
+  const { announced, generation } = link;
   const [read, setRead] = useState<ConversationsPayload>();
   const latest = useRef<ConversationsPayload>(undefined);
-  const known = useRef(announced);
-  known.current = announced;
+  const known = useRef(link);
+  known.current = link;
   const mounted = useMounted();
   // One read at a time, each skipped once a read already shows what was announced, so the first
-  // announcement after the mount's read costs nothing. An action's own read always runs: a draft
-  // pin changes no conversation.
+  // announcement after the mount's read costs nothing. An action's own read always runs, so its
+  // effect shows before the announcement arrives.
   const queue = useRef(Promise.resolve());
   const load = useCallback(
     (always: boolean) =>
       (queue.current = queue.current.then(async () => {
-        if (!always && latest.current !== undefined && known.current === latest.current.version)
+        const now = known.current;
+        // Until the link announces a version, the read already made is as new as any.
+        if (
+          !always &&
+          latest.current !== undefined &&
+          (now.announced === undefined || now.announced === latest.current.version)
+        )
           return;
         try {
           const answer = await operation({ command: "conversations", session: sessionId });
@@ -72,13 +91,13 @@ export function useConversations(sessionId: string, announced: string | undefine
           latest.current = answer;
           setRead(answer);
         } catch (error) {
-          // The live link reports an outage; the next announcement reads again.
           if (!isExpectedFailure(error)) console.error(error);
+          if (mounted.current) now.lost(now.generation, error);
         }
       })),
     [sessionId, mounted],
   );
-  useEffect(() => void load(false), [load, announced]);
+  useEffect(() => void load(false), [load, announced, generation]);
   const uncertain = useRef(new Map<string, string>());
   const act = useCallback<Act>(
     async (request) => {
@@ -407,12 +426,20 @@ export function ThreadCard(props: {
   located?: boolean;
   /** Goes to the thread where the panel shows it. */
   onShow?: (() => void) | undefined;
+  /** Reads the captured code of a thread left on earlier code, disclosed on request. */
+  readCode: () => Promise<RangeRead>;
+  /** A reference whose peek just closed, focused again. */
+  refocus?: CapturedRange | undefined;
 }) {
   const { thread } = props;
   const pending = pendingCount(thread);
   const removed = thread.note?.removed === true;
+  const earlier = thread.anchor.snapshotId !== props.snapshotId;
+  const [code, setCode] = useState(false);
+  const slot = useRef<HTMLDivElement>(null);
+  useRefocus(slot, props.refocus);
   return (
-    <div data-thread={thread.id} data-annotation {...stylex.props(styles.slot)}>
+    <div ref={slot} data-thread={thread.id} data-annotation {...stylex.props(styles.slot)}>
       <div {...stylex.props(styles.box)}>
         <button
           type="button"
@@ -433,10 +460,21 @@ export function ThreadCard(props: {
                 Its note was removed; the conversation stays on the code it was about.
               </p>
             )}
-            {thread.anchor.snapshotId !== props.snapshotId && (
-              <p role="note" {...stylex.props(styles.flag)}>
-                On earlier code a refresh changed; it stays there.
-              </p>
+            {earlier && (
+              <>
+                <p role="note" {...stylex.props(styles.flag)}>
+                  On earlier code a refresh changed; it stays there.
+                </p>
+                <button
+                  type="button"
+                  aria-expanded={code}
+                  onClick={() => setCode(!code)}
+                  {...stylex.props(styles.disclose)}
+                >
+                  {code ? "Hide the earlier code" : "Show the earlier code"}
+                </button>
+                {code && <PeekPreview target={thread.anchor} read={props.readCode} />}
+              </>
             )}
             <ol {...stylex.props(styles.messages)}>
               {thread.messages.map((message) => (
@@ -589,6 +627,11 @@ const styles = stylex.create({
     color: theme.muted,
   },
   flag: { fontSize: "12px", color: theme.hunkHeader },
+  disclose: {
+    justifySelf: "start",
+    fontSize: "12px",
+    color: { default: theme.muted, ":hover": theme.ink },
+  },
   alert: { fontSize: "12px", color: theme.del },
   field: { display: "grid", gap: "6px", marginTop: "4px" },
   textarea: {

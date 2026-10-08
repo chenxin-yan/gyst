@@ -123,7 +123,11 @@ export const commands: readonly Command[] = [
     keys: [["Z", "O"]],
     label: "Open the hidden lines, the note, the thread or the folded file at the cursor",
   },
-  { id: "cancel", keys: [["Escape"]], label: "Close the composer, or cancel the selection" },
+  {
+    id: "cancel",
+    keys: [["Escape"]],
+    label: "Close the composer, the selection, the peek or the open thread",
+  },
   {
     id: "fold",
     keys: [["Z", "C"]],
