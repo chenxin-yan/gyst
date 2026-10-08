@@ -508,8 +508,8 @@ function SessionReader(props: {
   const navigate = useNavigate();
   const router = useRouter();
   const [pages, setPages] = useState([props.firstPage]);
-  // Where the reader left this session earlier in this page's life, if in this snapshot.
-  const [recalled] = useState(() => recall(session.id, snapshotId));
+  // Where the reader left this session earlier in this page's life, as far as a refresh kept it.
+  const [recalled] = useState(() => recall(session.id, snapshotId, hunks));
   const [review, setReview] = useState<ReviewView>(recalled?.review ?? { kind: "files", path: "" });
   const [mode, setMode] = useState<LayoutMode>("auto");
   const [width, setWidth] = useState(0);
@@ -791,15 +791,15 @@ function SessionReader(props: {
     inputMode,
     cursor,
   };
-  useEffect(() => remember(session.id, snapshotId, readingPlace.current));
+  useEffect(() => remember(session.id, snapshotId, hunks, readingPlace.current));
   const returning = useRef(recalled !== undefined);
   const onPosition = useCallback(
     (top: Restore) => {
       if (returning.current) return;
       readingPlace.current = { ...readingPlace.current, top };
-      remember(session.id, snapshotId, readingPlace.current);
+      remember(session.id, snapshotId, hunks, readingPlace.current);
     },
-    [session.id, snapshotId],
+    [session.id, snapshotId, hunks],
   );
 
   const tree = useMemo(
