@@ -953,6 +953,31 @@ describe("Git.capture Generated files", () => {
     expect(generatedOf(await capture(cwd))).toEqual(["dist/old.js", "new/added.js"]);
   });
 
+  it("reads uncommitted attributes from the captured attributes files only, not the index or attr.tree", async () => {
+    const cwd = await repo("generated-captured-attributes");
+    await mkdir(join(cwd, "sub"));
+    await writeFile(join(cwd, ".gitattributes"), "b.js linguist-vendored\n");
+    await writeFile(join(cwd, "sub", ".gitattributes"), "a.js linguist-generated\n");
+    for (const path of ["sub/a.js", "b.js", "c.js"]) await writeFile(join(cwd, path), "before\n");
+    git(cwd, "add", ".");
+    git(cwd, "commit", "-qm", "attributes");
+    // Deleted without staging: Git alone would fall back to the index copy.
+    await rm(join(cwd, "sub", ".gitattributes"));
+    await writeFile(join(cwd, ".gitattributes"), "c.js linguist-vendored\n");
+    await mkdir(join(cwd, "new"));
+    await writeFile(join(cwd, "new", ".gitattributes"), "d.js linguist-generated\n");
+    for (const path of ["sub/a.js", "b.js", "c.js", "new/d.js"])
+      await writeFile(join(cwd, path), "after\n");
+
+    expect(generatedOf(await capture(cwd))).toEqual(["c.js", "new/d.js"]);
+    git(cwd, "config", "attr.tree", "HEAD");
+    // The tree of captured attributes files never writes into the repository.
+    git(cwd, "config", "core.splitIndex", "true");
+    const before = await readdir(join(cwd, ".git"));
+    expect(generatedOf(await capture(cwd))).toEqual(["c.js", "new/d.js"]);
+    expect(await readdir(join(cwd, ".git"))).toEqual(before);
+  });
+
   it("reads a range's attributes from its commits, while uncommitted work reads the checkout's", async () => {
     const cwd = await repo("generated-range");
     await writeFile(join(cwd, ".gitattributes"), "gone.js linguist-vendored\n");
