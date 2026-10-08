@@ -80,12 +80,12 @@ Two Questions from one pickup. The first would puzzle every reader, so the note 
     {
       "type": "note.update",
       "id": "expiry-guard",
-      "markdown": "`<=` makes a credential expiring exactly now count as expired: the guard fails closed at the boundary, so clock skew can reject a token a moment early but never accept one late."
+      "markdown": "`<=` makes a credential expiring exactly now count as expired: the guard fails closed at the boundary. It compares against this machine's clock, so skew still moves the cutoff: a fast clock rejects a token early, a slow one accepts it late."
     },
     {
       "type": "thread.reply",
       "thread": "thread-id-on-the-guard",
-      "markdown": "It fails closed on purpose; I added the clock-skew consequence to the note so the next reader sees it too."
+      "markdown": "`<=` only settles the boundary instant; it does not correct skew, which can reject a token early or accept it late. I added that to the note so the next reader sees it too."
     },
     {
       "type": "thread.reply",
