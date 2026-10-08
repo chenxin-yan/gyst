@@ -129,12 +129,14 @@ export {
 export { mapRange, matchHunks, type SnapshotLines } from "./mapping.ts";
 export {
   type FreshSnapshot,
+  keepsFile,
   pinnedSnapshotIds,
   recordedRefresh,
   refresh,
   type RefreshOutcome,
   type RefreshRequest,
   refreshSession,
+  retainedFiles,
 } from "./refresh.ts";
 export {
   type Group,

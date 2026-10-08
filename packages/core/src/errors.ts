@@ -29,15 +29,18 @@ export class DaemonUnreachable extends Schema.TaggedError<DaemonUnreachable>()(
 export class BadArgs extends Schema.TaggedError<BadArgs>()("bad_args", errorFields) {}
 
 /**
- * Why a PR's source could not be read: the host's `gh` is missing, unauthenticated or denied, GitHub
- * failed, the checkout has no matching remote, required Git objects could not be fetched, or the
- * PR head moved while it was being read (retry).
+ * Why a source could not be captured: the host's `gh` is missing, unauthenticated or denied, GitHub
+ * failed, the checkout has no matching remote, required Git objects could not be fetched, the PR
+ * head moved while it was being read (retry), the changed files exceed the configured snapshot
+ * quota, or gyst's data directory ran out of space.
  */
 export const SourceUnavailableReasonSchema = Schema.Literals([
   ...GitHubUnavailableReasonSchema.literals,
   "checkout_mismatch",
   "objects_missing",
   "head_moved",
+  "quota_exceeded",
+  "storage_full",
 ]);
 export type SourceUnavailableReason = typeof SourceUnavailableReasonSchema.Type;
 /** An environment problem on the gyst host, not a caller mistake; `message` says what to do. */
