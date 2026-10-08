@@ -2,7 +2,7 @@ import type { PullRequest } from "@gyst/core/wire";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vite-plus/test";
-import { commitParts, describes, shortCommitId } from "./author.ts";
+import { commitParts } from "./author.ts";
 import { CommitsCard, DescriptionCard, type RangeCommits } from "./author.tsx";
 
 // StyleX compiles away in the app build; Node renders the same markup without its classes.
@@ -45,18 +45,12 @@ const commits = (read: RangeCommits["read"]) =>
   );
 
 describe("author helpers", () => {
-  it("treats a missing or blank description as none", () => {
-    for (const blank of ["", "  \n\t"]) expect(describes(blank)).toBe(false);
-    expect(describes(" Why. ")).toBe(true);
-  });
-
   it("splits a commit message into its subject and body", () => {
     expect(commitParts(commit("a", "Subject"))).toEqual({ subject: "Subject", body: "" });
     expect(commitParts(commit("a", "Subject\n\n\nBody\n\n- one"))).toEqual({
       subject: "Subject",
       body: "Body\n\n- one",
     });
-    expect(shortCommitId("abcdef0123456789")).toBe("abcdef0");
   });
 });
 
@@ -97,7 +91,8 @@ describe("DescriptionCard", () => {
   });
 
   it("says so when the PR has no description", () => {
-    expect(description(" \n")).toContain("This pull request has no description.");
+    for (const blank of ["", "  \n\t"])
+      expect(description(blank)).toContain("This pull request has no description.");
   });
 });
 
@@ -111,7 +106,7 @@ describe("CommitsCard", () => {
       total: 2,
       next: null,
     });
-    expect(out.indexOf("aaaaaaa")).toBeLessThan(out.indexOf("bbbbbbb"));
+    expect(out).toMatch(/>aaaaaaa<\/code>[^]*>bbbbbbb<\/code>/);
     expect(out).toContain("Add &lt;b&gt;bold&lt;/b&gt; **widgets**");
     expect(out).toContain("Why:\n  - callers repeat it");
     expect(out).not.toContain("<strong>");
