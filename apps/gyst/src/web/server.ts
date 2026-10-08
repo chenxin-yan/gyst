@@ -137,13 +137,15 @@ const eventFrame = (event: SubscriptionEvent) => `data: ${JSON.stringify(encodeE
 // The viewer loads only its own scripts and talks only to the daemon; nothing an agent wrote can
 // make the page fetch, however a renderer handles it. Styles stay inline-capable because Mermaid's
 // SVG carries its theme in a <style>, and the diff renderer styles its shadow roots with <style>
-// elements; images are only the `data:` favicon.
+// elements; images are only the `data:` favicon. With no login, any page could frame the viewer and
+// overlay its controls (`default-src` does not cover ancestors), so no page may embed it.
 const contentSecurityPolicy = [
   "default-src 'none'",
   "script-src 'self'",
   "style-src 'self' 'unsafe-inline'",
   "img-src data:",
   "connect-src 'self'",
+  "frame-ancestors 'none'",
 ].join("; ");
 
 const securityHeaders = {
