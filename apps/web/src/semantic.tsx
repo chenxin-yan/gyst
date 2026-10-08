@@ -161,14 +161,12 @@ export function useSemanticNavigation(props: {
     );
   };
 
-  /** Asks again what the shown failure or unavailable answer asked. */
   const retry = () => {
     const peek = semantic();
     if (peek?.stage.kind === "unavailable" || peek?.stage.kind === "failed")
       ask(peek.origin, peek.stage.ask);
   };
 
-  /** Asks the selected choice. */
   const choose = (index?: number) => {
     const peek = semantic();
     if (peek?.stage.kind !== "choose") return;
@@ -176,7 +174,6 @@ export function useSemanticNavigation(props: {
     if (choice) ask(peek.origin, { kind: "query", choice });
   };
 
-  /** Moves the selection, which the preview follows. */
   const select = (to: { by: number } | { index: number }) => {
     const peek = semantic();
     if (peek === undefined) return;
