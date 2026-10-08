@@ -82,37 +82,53 @@ const codeOf = (error: PlatformError.PlatformError) => {
   return typeof cause === "object" && cause !== null && "code" in cause ? cause.code : undefined;
 };
 
+/** The failure of a write that left nothing at `path`. */
+const unwritten = (path: string) => (error: PlatformError.PlatformError) =>
+  error.reason._tag === "AlreadyExists"
+    ? new BadArgs({
+        message: `${path} already exists; choose another --output. Nothing was written.`,
+      })
+    : codeOf(error) === "ENOSPC" || codeOf(error) === "EDQUOT"
+      ? new SourceUnavailable({
+          message: `no space left to write ${path}. Nothing was written.`,
+          detail: { reason: "storage_full" },
+        })
+      : new BadArgs({
+          message: `could not write ${path}. Nothing was written.`,
+          detail: error.message,
+        });
+
 /**
  * Writes `text` to `path`, which must not exist yet: synced in a temporary file beside it, then
  * hard-linked into place, so the path never holds part of the file and an existing file, even one
- * created meanwhile, is never replaced. A failure leaves no file at `path`.
+ * created meanwhile, is never replaced. A failure leaves no file at `path`; if the file is in place
+ * but its directory cannot be synced and the file cannot be removed again, the failure says so.
  */
 export const writeNewFile = (path: string, text: string) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
-    const temporary = yield* fs.makeTempFileScoped({ directory: dirname(path) });
-    yield* fs.writeFileString(temporary, text);
-    yield* Effect.scoped(Effect.flatMap(fs.open(temporary, { flag: "r" }), (file) => file.sync));
-    yield* fs.link(temporary, path);
+    yield* Effect.gen(function* () {
+      const temporary = yield* fs.makeTempFileScoped({ directory: dirname(path) });
+      yield* fs.writeFileString(temporary, text);
+      yield* Effect.scoped(Effect.flatMap(fs.open(temporary, { flag: "r" }), (file) => file.sync));
+      yield* fs.link(temporary, path);
+    }).pipe(Effect.scoped, Effect.mapError(unwritten(path)));
     yield* Effect.scoped(
       Effect.flatMap(fs.open(dirname(path), { flag: "r" }), (directory) => directory.sync),
+    ).pipe(
+      Effect.catch((error) =>
+        fs.remove(path).pipe(
+          Effect.matchEffect({
+            onSuccess: () => Effect.fail(unwritten(path)(error)),
+            onFailure: () =>
+              Effect.fail(
+                new BadArgs({
+                  message: `${path} holds the whole walkthrough, but gyst could not confirm it is saved or remove it; check it before sharing it, or delete it.`,
+                  detail: error.message,
+                }),
+              ),
+          }),
+        ),
+      ),
     );
-  }).pipe(
-    Effect.scoped,
-    Effect.mapError((error) =>
-      error.reason._tag === "AlreadyExists"
-        ? new BadArgs({
-            message: `${path} already exists; choose another --output. Nothing was written.`,
-          })
-        : codeOf(error) === "ENOSPC" || codeOf(error) === "EDQUOT"
-          ? new SourceUnavailable({
-              message: `no space left to write ${path}. Nothing was written.`,
-              detail: { reason: "storage_full" },
-            })
-          : new BadArgs({
-              message: `could not write ${path}. Nothing was written.`,
-              detail: error.message,
-            }),
-    ),
-    Effect.withSpan("writeNewFile"),
-  );
+  }).pipe(Effect.withSpan("writeNewFile"));
