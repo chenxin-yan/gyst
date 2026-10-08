@@ -77,7 +77,7 @@ let pullRequestEdit: Partial<PullRequest>;
 let pullRequestCaptureFailure: SourceUnavailable | undefined;
 let saveFails: boolean;
 let removeFails: boolean;
-/** Session files this version cannot read, as `SessionStore.loadUndecodable` returns them. */
+/** Session files this version cannot read, as `SessionStore.loadSaved` returns them. */
 let undecodable: string[];
 let nextId: number;
 let gitPatch: string;
@@ -204,7 +204,7 @@ const writeFailure = PlatformError.systemError({
 
 const store = Layer.succeed(SessionStore, {
   loadAll: Effect.sync(() => [...files.values()]),
-  loadUndecodable: Effect.sync(() => undecodable),
+  loadSaved: Effect.sync(() => ({ sessions: [...files.values()], undecodable })),
   save: (session) =>
     Effect.suspend(() => {
       if (saveFails) return Effect.fail(writeFailure);
@@ -3709,6 +3709,25 @@ describe("Sessions captured reads over real captures", () => {
       undecodable = [];
       await runReal(reclaim);
       expect(await onDisk("blobs")).toEqual([]);
+    });
+
+    it("keeps what a saved session file names even when memory never learned of the save", async () => {
+      const cwd = await repo("apart", { "f.ts": "f\n" });
+      await writeFile(join(cwd, "f.ts"), "f first\n");
+      const opened = await runReal(
+        Sessions.use((s) => s.open({ command: "open", cwd, scope: uncommitted })),
+      );
+      const first = files.get(opened.session.id)!;
+      await writeFile(join(cwd, "f.ts"), "f second\n");
+      await runReal(refreshNow(first.id));
+      const second = files.get(first.id)!;
+      // This daemon loads the session at its first snapshot; its refresh's save then lands on disk
+      // without reaching memory, as an interrupted publication would leave it.
+      files.set(first.id, first);
+      await runReal(Effect.sync(() => files.set(first.id, second)).pipe(Effect.andThen(reclaim)));
+      expect(await onDisk("blobs")).toContain(sha256("f second\n"));
+      expect(await onDisk("snapshots")).toContain(`${second.snapshotId}.json`);
+      await runReal(remove(first.id, "delete-apart").pipe(Effect.andThen(reclaim)));
     });
 
     it("keeps whole a snapshot another session pins part of when a file it cannot read names it", async () => {
