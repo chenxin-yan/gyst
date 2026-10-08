@@ -695,44 +695,50 @@ export class Navigation extends Context.Service<
           ),
         );
 
-      /** The request's captured source text, or why it cannot be analysed. */
-      const select = Effect.fnUntraced(function* (request: Target) {
-        const { manifest } = yield* sessions
-          .snapshot(request)
-          .pipe(
-            Effect.catchTag("stale_revision", () =>
-              Effect.fail(new Unavailable({ reason: { kind: "historical" } })),
-            ),
-          );
-        const file = manifest.files.find(({ path: member }) => member === request.file);
-        if (!file)
-          return yield* new ValidationFailed({
-            message: "file is not in this snapshot",
-            detail: { file: request.file },
-          });
-        const captured = file[request.side];
-        if (captured.kind !== "text")
-          return yield* new Unavailable({
-            reason: {
-              kind: "not-source",
-              detail:
-                captured.kind === "absent"
-                  ? `${request.file} has no ${request.side} side`
-                  : `the ${request.side} side of ${request.file} was not captured as text (${captured.reason})`,
-            },
-          });
-        if (lspLanguageId(request.file) === undefined)
-          return yield* new Unavailable({
-            reason: {
-              kind: "not-source",
-              detail: `${request.file} is not a TypeScript or JavaScript source`,
-            },
-          });
-        const addon = usableAddon(request.addon);
-        if (addon.kind !== "available") return yield* new Unavailable({ reason: addon });
-        const text = yield* readText(request.file, captured.blob, captured.size);
-        return { manifest, text, addon };
-      });
+      /**
+       * The request's captured source text, or why it cannot be analysed. Held from choosing the
+       * snapshot, so a refresh's reclaim meanwhile cannot remove the text before it is read.
+       */
+      const select = Effect.fnUntraced(
+        function* (request: Target) {
+          const { manifest } = yield* sessions
+            .snapshot(request)
+            .pipe(
+              Effect.catchTag("stale_revision", () =>
+                Effect.fail(new Unavailable({ reason: { kind: "historical" } })),
+              ),
+            );
+          const file = manifest.files.find(({ path: member }) => member === request.file);
+          if (!file)
+            return yield* new ValidationFailed({
+              message: "file is not in this snapshot",
+              detail: { file: request.file },
+            });
+          const captured = file[request.side];
+          if (captured.kind !== "text")
+            return yield* new Unavailable({
+              reason: {
+                kind: "not-source",
+                detail:
+                  captured.kind === "absent"
+                    ? `${request.file} has no ${request.side} side`
+                    : `the ${request.side} side of ${request.file} was not captured as text (${captured.reason})`,
+              },
+            });
+          if (lspLanguageId(request.file) === undefined)
+            return yield* new Unavailable({
+              reason: {
+                kind: "not-source",
+                detail: `${request.file} is not a TypeScript or JavaScript source`,
+              },
+            });
+          const addon = usableAddon(request.addon);
+          if (addon.kind !== "available") return yield* new Unavailable({ reason: addon });
+          const text = yield* readText(request.file, captured.blob, captured.size);
+          return { manifest, text, addon };
+        },
+        (selecting) => content.hold(selecting),
+      );
 
       /**
        * Runs `use` on the ready engine for the request's key, waiting for an engine slot, its

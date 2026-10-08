@@ -111,10 +111,23 @@ let readGate:
   | undefined;
 /** How many blob writes still fail as out of space before writes succeed again. */
 let outOfSpace = 0;
+/** When set, the next load of `snapshotId`'s manifest signals `started`, then waits for `release`. */
+let manifestGate:
+  | { snapshotId: string; started: Deferred.Deferred<void>; release: Deferred.Deferred<void> }
+  | undefined;
 const gatedContent = Layer.effect(
   CapturedContent,
   Effect.map(CapturedContent, (real) => ({
     ...real,
+    loadManifest: (snapshotId: string) => {
+      const gate = manifestGate;
+      if (gate?.snapshotId !== snapshotId) return real.loadManifest(snapshotId);
+      manifestGate = undefined;
+      return Deferred.succeed(gate.started, undefined).pipe(
+        Effect.andThen(Deferred.await(gate.release)),
+        Effect.andThen(real.loadManifest(snapshotId)),
+      );
+    },
     putBlob: <E>(bytes: Stream.Stream<Uint8Array, E>) => {
       if (outOfSpace === 0) return real.putBlob(bytes);
       outOfSpace--;
@@ -1140,6 +1153,49 @@ describe("Navigation lifecycle", () => {
       }),
     );
   }, 120_000);
+
+  it("holds captured content from choosing a snapshot to reading it, so a reclaim meanwhile waits", async () => {
+    const dataDir = join(dir, "data-select");
+    const cwdA = await changedRepo("select-a");
+    const cwdB = await changedRepo("select-b");
+    await write(cwdB, { "src/other.ts": "export {};\n" });
+    await runReal(
+      dataDir,
+      Effect.gen(function* () {
+        const sessions = yield* Sessions;
+        const a = yield* changedSession(cwdA);
+        // The one-entry manifest cache now holds B's, so the query loads A's again.
+        yield* changedSession(cwdB);
+        const gate = {
+          snapshotId: a.session.snapshotId,
+          started: yield* Deferred.make<void>(),
+          release: yield* Deferred.make<void>(),
+        };
+        manifestGate = gate;
+        const query = yield* Effect.forkChild(definition(a.target("new"), plusAt("new")));
+        yield* Deferred.await(gate.started);
+        yield* Effect.promise(() => write(cwdA, { "src/use.ts": `${newUse}// later\n` }));
+        yield* sessions.refresh({
+          command: "refresh",
+          session: a.session.id,
+          snapshotId: a.session.snapshotId,
+          requestId: "later",
+        });
+        let reclaimed = false;
+        const reclaiming = yield* Effect.forkChild(
+          sessions.reclaim.pipe(Effect.tap(() => Effect.sync(() => (reclaimed = true)))),
+        );
+        yield* Effect.sleep("50 millis");
+        expect(reclaimed).toBe(false);
+        yield* Deferred.succeed(gate.release, undefined);
+        expect((yield* Fiber.join(query)).outcome).toEqual({
+          kind: "unavailable",
+          reason: { kind: "historical" },
+        });
+        yield* Fiber.join(reclaiming);
+      }),
+    );
+  }, 60_000);
 
   it("drops a crashed daemon's leftovers and idle engines, never an active one, before a capture refuses for space", async () => {
     const dataDir = join(dir, "data-space");
