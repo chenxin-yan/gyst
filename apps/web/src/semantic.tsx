@@ -29,6 +29,9 @@ import {
 } from "./semantic.ts";
 import { theme } from "./tokens.stylex.ts";
 
+/** How many known missing inputs a result lists without being asked. */
+const shownGaps = 3;
+
 /** How often the queried side's readiness is read again while an answer is awaited. */
 const readinessEvery = 750;
 
@@ -270,7 +273,7 @@ export function SemanticPeekView(props: {
   const onKeyDown = (event: KeyboardEvent<HTMLElement>) => {
     if (event.nativeEvent.isComposing || event.altKey || event.ctrlKey || event.metaKey) return;
     const onControl =
-      event.target instanceof Element && event.target.closest("button, a[href]") !== null;
+      event.target instanceof Element && event.target.closest("button, a[href], summary") !== null;
     switch (event.key) {
       case "Escape":
         props.onClose();
@@ -360,13 +363,19 @@ export function SemanticPeekView(props: {
             <section aria-label="Potentially incomplete" role="note">
               <p {...stylex.props(styles.warning)}>
                 Potentially incomplete
-                {empty ? ": finding none doesn't mean there are none" : ""}. Known missing inputs:
+                {empty ? ": finding none doesn't mean there are none" : ""}.
               </p>
-              <ul {...stylex.props(styles.gaps)}>
-                {stage.gaps.map((gap) => (
-                  <li key={JSON.stringify(gap)}>{gapText(gap)}</li>
-                ))}
-              </ul>
+              {/* A monorepo can lack dozens of inputs; a few are shown, more on request. */}
+              <details open={stage.gaps.length <= shownGaps}>
+                <summary {...stylex.props(styles.summary)}>
+                  {stage.gaps.length} known missing {stage.gaps.length === 1 ? "input" : "inputs"}
+                </summary>
+                <ul {...stylex.props(styles.gaps)}>
+                  {stage.gaps.map((gap) => (
+                    <li key={JSON.stringify(gap)}>{gapText(gap)}</li>
+                  ))}
+                </ul>
+              </details>
             </section>
           )}
         </div>
@@ -523,6 +532,7 @@ const styles = stylex.create({
   warning: { color: theme.ink, fontWeight: 500 },
   footer: { display: "grid", gap: "4px", color: theme.muted, fontSize: "12px" },
   gaps: { paddingInlineStart: "18px", listStyleType: "disc" },
+  summary: { cursor: "pointer", color: { default: theme.muted, ":hover": theme.ink } },
   list: {
     display: "grid",
     gap: "2px",
