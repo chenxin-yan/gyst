@@ -1,101 +1,63 @@
 ---
 name: gyst
-description: Use when the user requests a gyst walkthrough of a diff, range or PR, or when gyst-refresh needs authoring rules. Plan full coverage, then publish self-contained groups for human review.
+description: Use when the user asks for a gyst walkthrough of uncommitted changes, a Git range or a GitHub PR, or asks to revisit, refresh or regroup an existing gyst session. Opens the session headlessly, plans full coverage, publishes complete groups progressively and sends the human the session's link.
 ---
 
-# Compose a walkthrough
+# Prepare a walkthrough
 
-A **walkthrough** is an overall overview and an ordered list of **groups**. A group is one review question covering one or more hunks, with a short title, an overview, an order for its files and optional notes. Ungrouped hunks stay readable under their files. Leave Viewed progress to the human; it means read, not approved.
+Gyst helps a human build the mental model they need to judge a change. You prepare a **walkthrough** in a gyst session: an overall overview and an ordered list of **groups**, each one review question with a title, an overview, its hunks and notes on the logical steps. The human reads it in the browser and marks hunks Viewed, which means read, not approved. You never mark Viewed, resolve threads or judge the change for them.
 
-## 1. Select the snapshot
+Before writing any guidance, read [the authoring reference](references/authoring.md); [the examples](references/examples.md) show complete batches. Use the `gyst-cli` skill for exact command syntax, the `apply` envelope and its ops, JSON output and error codes.
 
-Resolve the requested scope; fetch remote refs when needed. Use the `gyst-cli` skill when command syntax is uncertain.
+## 1. Open the session
 
-- Working changes, including untracked files: `gyst session open`.
-- Git range: `gyst session open <range>`, such as `main...feature` or `main..feature`; the range is recorded as written and covers the whole repository.
-- GitHub PR: `gyst session open --pr <number>`, or `--pr <PR URL>` such as `https://github.com/owner/name/pull/123`, from a clone of that repository; a number is in the repository `gh` resolves for the checkout; it captures the PR's own merge-base-to-head range.
-- A saved session the user names: `gyst session open --session <id>`.
+Open headlessly; this never starts a browser:
 
-Opening returns the saved session for this repository and scope unchanged when one exists (`created: false`); it never refreshes the snapshot or rewrites groups. Ask before changing scope. For a requested snapshot update or regrouping, use `gyst-refresh`.
+- Uncommitted changes, including untracked files: `gyst session open`.
+- A Git range, recorded as written over the whole repository: `gyst session open main...feature` (or `main..feature`).
+- A GitHub PR, from a clone of its repository: `gyst session open --pr <number>` or `--pr <PR URL>`. It captures the PR's own merge-base-to-head range without touching the checkout.
+- A saved session the human names: `gyst session open --session <id>`.
 
-Record `session.id` from the reply; every later session command requires `--session <id>`.
+Keep `session.id`, `session.snapshotId` and `link` from the reply exactly as returned. Every later command names `--session <id>`; never select a session by the current directory or by guessing from `gyst session list`.
 
-A PR session's status `pullRequest` gives its whole native stack: ordered layers with titles, descriptions, bases and states, the selected PR, and verification (`stack.verifiedAt`, or `unavailable` when the latest discovery failed). Prepare and respond only in the selected PR's session. Other layers' titles and descriptions are context, not proof of behavior: before relying on a claim about another layer, open its session (`gyst session open --pr <its PR URL>`) and inspect its code. `gyst session check --session <id> --stack` rechecks stack metadata only.
+`created: false` means the saved session for that scope came back as it was. Reopening never refreshes the snapshot, rewrites guidance or deletes anything; continue from its status (section 6) instead of starting over. Ask before changing the scope the user asked for.
 
-## 2. Plan full coverage
+## 2. Understand the whole change
 
-Read status, `gyst session diff --session <id>`, surrounding code, callers and relevant tests. Narrow reads with `--file`, `--group` or `--hunk` as needed. `gyst session files` and `gyst session code`, with `--session <id> --snapshot <snapshotId>` from status or diff, read the snapshot's captured files, unchanged ones included, rather than the live checkout, which may have changed since.
+Read `gyst session status --session <id>` and `gyst session diff --session <id>` (narrow with `--file`, `--group` or `--hunk`). Read surrounding code, callers and the relevant tests from the snapshot with `gyst session files` and `gyst session code`, passing `--snapshot <snapshotId>`. The snapshot is what the human reviews; the live checkout may have changed since.
 
-Before publishing, assign **every snapshot hunk to exactly one planned group** and choose the complete order. Group by review question, not filename: an entry point, implementation and tests can belong together across files. Independent changes can be one-hunk groups. Include mechanical changes. Files Git attributes mark generated or vendored (`generated` in status `files`, `generatedFiles` in diff) start folded for the human; group them like any other change.
+A PR session's status has `pullRequest`: the selected PR with its title and description, and its native stack in order with each layer's title, description, base, head and state. `stack.verifiedAt` says when GitHub last confirmed it; `unavailable` says the latest discovery failed, so membership is unknown, not absent. `sessions` lists only the layers already opened. Use the whole stack as context, but prepare only the selected PR's session. Titles and descriptions are claims, not proof: code from lower layers is inside this snapshot as unchanged source, so read it there. To check another layer's own change, read its commits in Git, or open its session only if you must, knowing that leaves a plain saved session for that layer. Never prepare, reply or refresh in another layer's session. `gyst session check --session <id> --stack` rechecks stack metadata only.
 
-Order concepts before consequences, and members along the explanation: entry point → behavior → tests. Keep the plan in agent context; publish only finished groups.
+## 3. Plan coverage and order
 
-## 3. Author self-contained guidance
+Before publishing anything, assign **every hunk of the snapshot to exactly one planned group** and fix the order. Group by review question, not by file: an entry point, its implementation and its tests can belong together; an independent change can be a one-hunk group; mechanical changes belong somewhere too. Files Git attributes mark generated or vendored (`generated` in status `files`, `generatedFiles` in diff) start folded for the human; group them like any other change. Order concepts before consequences, and members along the explanation, such as entry point, behavior, then tests. Keep the plan in your own context; publish only finished groups.
 
-A reader should understand each group without reconstructing another group or the chat. Write for a reviewer who knows the language but not the subsystem.
+## 4. Write the guidance
 
-**Walkthrough overview**: the purpose of the whole change and the mental model that connects its groups. **Group overview**: what this group contributes and how to read it. The two complement each other; do not repeat one in the other.
+Follow [the authoring reference](references/authoring.md): mental model first, complementary overviews, notes on logical steps with valid ranges, examples for behavior and invariants, exact captured references, safe Markdown and Mermaid, and honest evidence that tells sketches, inspected tests and executed checks apart. Guidance must stand alone without this chat.
 
-**Title**: name the change in a few words (`Reject expired credentials`), not a sentence explaining it. Titles are single-line plain text, 1–120 Unicode code points, without terminal controls.
+## 5. Publish progressively
 
-**Notes**: explain a logical step, a non-obvious consequence, a caveat or a connection; let obvious mechanical changes speak for themselves. A note has a stable `id` and anchors to one contiguous line range on one side (`old` or `new`) of one file, as numbered in the snapshot's captured content. The range must cover a changed line of its own group and no changed line of another group or of an ungrouped hunk; it may span unchanged lines and several of its group's hunks. Notes display in code order beside the code, so do not restate it.
+Pipe one JSON batch at a time to `gyst session apply --session <id>`. Its `snapshotId` and `revision` come from status, then from each successful reply. The first batch carries the walkthrough overview and the first complete groups; each later batch appends the next complete group or a few consecutive ones, with all their notes. A batch is validated as a whole and applied all or nothing, so the human never sees a half-written group.
 
-Overviews and notes are ordinary Markdown: inline code, emphasis, lists, compact tables, fenced code and Mermaid diagrams. No raw HTML, images or terminal controls. Concise overviews and one- or two-sentence notes are defaults, not caps. Use stable symbols and paths. Distinguish tests run from tests inspected and snapshot evidence from later working-tree code. Keep the walkthrough in the session, not in chat.
+- Success: the reply is the new status; use its `revision` for the next batch.
+- Lost reply (timeout, killed process, no JSON): resend the identical batch with the same `idempotencyKey`. It returns the recorded result and applies nothing twice. That result is history: reread status before building the next batch.
+- `validation_failed`: fix what `detail` names and send the corrected batch under a new key.
+- `stale_revision`: someone else changed the session, usually the human. Reread status, reconcile and send the rebuilt batch under a new key.
 
-**References**: point at exact captured code with a `gyst:<side>/<path>#L<start>-L<end>` link, such as `[the retry loop](gyst:new/src/retry.ts#L40-L52)`; write `%20` or wrap the target in `<…>` for spaces. The file may be an unchanged supporting one, but it must be in the snapshot: a file created after capture is rejected. Each changed text's references are checked and pinned to the batch's snapshot, and a later refresh never moves them: it marks the text Outdated when the referenced lines changed. Other links must be absolute `http(s)` URLs; relative, fragment, `mailto:` and other schemes are rejected, and so are Mermaid `%%{…}%%` directives, `---` frontmatter, `@{…}` shape data, `$$…$$` math, sequence `properties`/`details`/`links`/`link` statements and styling statements (`style`, `classDef`, `linkStyle`, `cssClass`, C4 `Update…Style`, sequence `rect`/`box`): the viewer owns diagram colours.
+**Once the first groups are published, send the human the `link` from `gyst session open`** in one short message, saying the walkthrough is still being published and they can start reading. Do not ask them to run `gyst` or start a viewer; the daemon already serves the link. The viewer shows later batches as they land without moving the reader.
 
-## 4. Publish atomically
+Continue at complete-group boundaries until status reports `preparation.state` as `complete`: a walkthrough overview, every group overview, every current hunk in exactly one group and no Outdated guidance.
 
-Read the current revision. Pipe a batch to `gyst session apply --session <id>`. Publish one complete group or a small consecutive batch. Append planned groups in order.
+## 6. Revisit, refresh or regroup
 
-Example first batch; replace the revision, snapshot id, key, hunk ids and ranges:
+The same workflow continues an existing session; there is no separate refresh workflow.
 
-```json
-{
-  "revision": 0,
-  "snapshotId": "snapshot-id-from-status",
-  "idempotencyKey": "fresh-uuid",
-  "ops": [
-    {
-      "type": "walkthrough.update",
-      "overview": "Expired credentials could still load an account. This change rejects them at the boundary and pins the edge case with a test."
-    },
-    {
-      "type": "group.create",
-      "id": "expiry",
-      "title": "Reject expired credentials",
-      "overview": "The guard runs before the account lookup, so an expired credential never reaches the database.",
-      "memberHunkIds": ["guard-hunk", "test-hunk"]
-    },
-    {
-      "type": "note.create",
-      "id": "expiry-boundary",
-      "group": "expiry",
-      "anchor": { "path": "src/auth.test.ts", "side": "new", "startLine": 40, "endLine": 46 },
-      "markdown": "A credential expiring exactly at request time counts as expired. Test inspected, not run."
-    }
-  ]
-}
-```
+- **Revisit** (`created: false`, or the user names a session): read status. `preparation` lists what is missing: ungrouped hunks (`groupedHunks` against `totalHunks`), missing overviews, and Outdated guidance (`overviewOutdated`, `groupsOutdated`, `notesOutdated`). Complete or repair that work; leave finished groups alone.
+- **Refresh** only when the human asks for the session to include newer code: `gyst session refresh --session <id> --snapshot <snapshotId> --request-id <new id>`, with the snapshot id you read. Choose the request id before running it and reuse it only to retry a lost reply. `replaced: false` means the capture was identical and nothing changed; `stale_revision` means it was refreshed already, so reread status rather than refreshing again. Fetch remote refs first when the scope names them. Then repair as the reference's "After a refresh" section says.
+- **Regroup** without refreshing when the human asks to split, merge or reorder groups: `group.update`, `group.dissolve`, `group.create` and `walkthrough.update` with `groupOrder`, on the current snapshot.
+- `gyst session check --session <id>` says whether the recorded scope has changed since capture. It is a notice, not authorization to refresh; `unavailable` proves nothing either way.
 
-`snapshotId` and `revision` come from status; a batch for an older snapshot or revision is stale. Ops:
+## 7. Report and stop
 
-- `walkthrough.update`: `overview` (`null` removes it) and/or `groupOrder` (every group id once).
-- `group.create`: `id`, `title`, `overview`, `memberHunkIds`, optional `files` (defaults to the members' files in snapshot order). Groups append in order.
-- `group.update`: `id` with any of `title`, `overview` (`null` removes it), `memberHunkIds`, `files`. `group.dissolve`: `id`; its hunks become ungrouped and its notes go.
-- `note.create`: `id`, `group`, `anchor`, `markdown`. `note.update`: `id` with `anchor` (re-anchors, keeping its id) and/or `markdown`. `note.remove`: `id`.
-- `thread.reply`: `thread`, `markdown`: a free-form reply in an existing thread from `gyst session threads`, published with the batch's other ops. Replies cannot be edited, and they never resolve or reopen a thread.
-- `walkthrough.revalidate`, `group.revalidate` (`id`) and `note.revalidate` (`id`): keep an Outdated text's wording after checking it against this batch's snapshot. Its references are pinned again to that snapshot and must be captured text there; a note must already be anchored to that snapshot, so re-anchor it in the same batch first if needed. Revalidation changes no Viewed.
-
-The batch is validated as a whole: a hunk belongs to at most one group, `files` lists exactly the members' files, and every note still fits its group after membership changes. Edit guidance in place by id rather than recreating it. Adding, editing or removing a note, and editing or removing an overview, unviews the affected hunks; reordering does not, so avoid no-op rewrites.
-
-- Successful batch: use its returned revision for the next batch.
-- `stale_revision`: reread status and reconcile concurrent human work before rebuilding.
-- Identical retry: reuse the key, but its receipt is historical; reread status before continuing.
-- Changed content or corrected `validation_failed`: use a fresh key.
-
-As soon as groups are published, tell the human they can run `gyst`; leave launching it to them. Continue at complete-group boundaries. Finish when status reports `preparation.state` as `complete`: a walkthrough overview, every group's overview and every current hunk in a group. Otherwise report remaining work.
-
-## Source changes
-
-`gyst session check` reports freshness of the recorded scope without replacing the snapshot. Results are cached; `unavailable` does not establish freshness. A changed result is a notice, not authorization to refresh. Use `gyst-refresh` when the user requests an update.
+Tell the human what you published, what is still missing and why, and anything you could not verify. Leave reading, Viewed and resolving threads to them. Human comments are answered by the `gyst-respond` workflow when the human invokes it.

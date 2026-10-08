@@ -150,6 +150,7 @@ export {
   navigationInstallCommand,
 } from "./navigation.ts";
 export { mapRange, matchHunks, type SnapshotLines } from "./mapping.ts";
+export { inspectMarkdown, type MarkdownInspection } from "./markdown.ts";
 export {
   type FreshSnapshot,
   keepsFile,
