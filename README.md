@@ -177,11 +177,12 @@ no query is using.
 There is no built-in size limit. To bound what one snapshot keeps, set `GYST_SNAPSHOT_QUOTA` to
 a size with a unit, such as `500 MiB`, in the environment gyst's daemon starts from:
 
-- The files with reviewed text changes (and renames, which name their bytes) must fit whole, or
-  the capture fails with `source_unavailable` (`quota_exceeded`) and nothing is saved; a review
-  is never published truncated.
-- Every other file's text, unchanged supporting files and mode-only changes included, then fills
-  the rest in path order. Text left out is never stored, and reads as unavailable with reason
+- The files with reviewed text changes must fit whole, or the capture fails with
+  `source_unavailable` (`quota_exceeded`) and nothing is saved; a review is never published
+  truncated.
+- Every other file's text, unchanged supporting files, mode-only changes and renames included,
+  then fills the rest in path order; a rename keeps or leaves out both its paths together, and is
+  still recorded as a rename. Text left out is never stored, and reads as unavailable with reason
   `quota`, in `files`, `code`, the viewer and navigation; it is never replaced by the file in
   your checkout. A source check of uncommitted changes reports `unavailable` while files are left
   out, since it cannot see whether they changed.
