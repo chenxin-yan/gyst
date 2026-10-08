@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vite-plus/test";
 import { Result } from "effect";
 import type { ManifestFile } from "./content.ts";
+import { setViewed } from "./human-action.ts";
 import type { CapturedRange, Note } from "./guidance.ts";
 import type { SnapshotLines } from "./mapping.ts";
 import { type FreshSnapshot, refresh, refreshSession, type RefreshRequest } from "./refresh.ts";
@@ -218,6 +219,24 @@ describe("refreshSession", () => {
     expect(gb.overview).toEqual({ ...original.groups[1]!.overview, outdated: ["references"] });
     expect(ga.overview?.outdated).toBeUndefined();
     expect(refreshed.overview?.outdated).toBeUndefined();
+    // The human can still mark the current code Viewed while its guidance stays Outdated.
+    const read = Result.getOrThrow(
+      setViewed(
+        refreshed,
+        {
+          command: "viewed",
+          session: "session",
+          snapshotId: "s2",
+          revision: refreshed.revision,
+          requestId: "read-a",
+          hunkIds: [hunkA],
+          viewed: true,
+        },
+        LATER,
+      ),
+    ).session!;
+    expect(read.viewedHunkIds).toEqual([hunkA, hunkB]);
+    expect(read.groups[0]!.notes[0]!.outdated).toEqual(["references"]);
     // An Outdated reference already unviewed its note once; the next refresh does not again.
     const viewedAgain = { ...refreshed, viewedHunkIds: [hunkA, hunkB] };
     const next = refreshSession(
