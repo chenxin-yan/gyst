@@ -671,7 +671,7 @@ describe("Navigation over real captures and the workspace add-on", () => {
   it("reports add-on problems with the exact install command, including a release replaced after discovery", async () => {
     const dataDir = join(dir, "data-addon");
     const cwd = await repo("addon", { "src/math.ts": oldMath, "src/use.ts": oldUse });
-    // A copy of the real add-on whose version changed after the launcher validated it.
+    // A copy of the real add-on whose version changed after discovery validated it.
     const replaced = join(dir, "replaced-addon");
     await mkdir(join(replaced, "src"), { recursive: true });
     const manifest = JSON.parse(await readFile(join(addonDir, "package.json"), "utf8"));
