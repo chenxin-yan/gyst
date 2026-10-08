@@ -339,6 +339,10 @@ const persisted: Session = {
   applyReceipts: [],
   viewedReceipts: [],
   refreshReceipts: [],
+  threads: [],
+  drafts: [],
+  conversationReceipts: [],
+  pickupReceipts: [],
 };
 
 const uncommitted = { kind: "uncommitted" } as const;

@@ -434,6 +434,10 @@ export class Sessions extends Context.Service<
               applyReceipts: [],
               viewedReceipts: [],
               refreshReceipts: [],
+              threads: [],
+              drafts: [],
+              conversationReceipts: [],
+              pickupReceipts: [],
               ...(context && { pullRequest: context }),
             };
             yield* store.save(session).pipe(Effect.orDie);

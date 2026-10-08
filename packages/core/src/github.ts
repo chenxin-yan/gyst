@@ -154,13 +154,14 @@ export type PullRequestContext = typeof PullRequestContextSchema.Type;
 export const PullRequestStatusSchema = Schema.Struct({
   ...pullRequestContextFields,
   selected: PullRequestNumberSchema,
-  // #92 adds unresolved-thread counts to these entries.
   sessions: Schema.Array(
     Schema.Struct({
       number: PullRequestNumberSchema,
       sessionId: Schema.String,
       hunkCount: Schema.Natural,
       viewedCount: Schema.Natural,
+      /** Unresolved threads, apart from Viewed: all hunks Viewed is not a finished conversation. */
+      openThreads: Schema.Natural,
     }),
   ),
 }).check(discoveryOutcome(), stackContainsPullRequest());
@@ -201,6 +202,7 @@ export const pullRequestStatusOf = (
               sessionId: layer.id,
               hunkCount: layer.hunks.length,
               viewedCount: layer.viewedHunkIds.length,
+              openThreads: layer.threads.filter(({ resolved }) => !resolved).length,
             },
           ]
         : [];

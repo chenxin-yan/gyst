@@ -1,12 +1,15 @@
 import type { Note } from "./guidance.ts";
 import type {
   ApplyReceipt,
+  ConversationReceipt,
   Group,
   Hunk,
+  PickupReceipt,
   RefreshReceipt,
   Session,
   ViewedReceipt,
 } from "./session.ts";
+import type { Draft, Thread } from "./thread.ts";
 
 type Mutable<T> = { -readonly [K in keyof T]: T[K] };
 type MutableHunk = Mutable<Hunk>;
@@ -25,6 +28,10 @@ export type MutableSession = Mutable<
     | "applyReceipts"
     | "viewedReceipts"
     | "refreshReceipts"
+    | "threads"
+    | "drafts"
+    | "conversationReceipts"
+    | "pickupReceipts"
   >
 > & {
   hunks: MutableHunk[];
@@ -34,13 +41,28 @@ export type MutableSession = Mutable<
   applyReceipts: ApplyReceipt[];
   viewedReceipts: ViewedReceipt[];
   refreshReceipts: RefreshReceipt[];
+  threads: MutableThread[];
+  drafts: Mutable<Draft>[];
+  conversationReceipts: ConversationReceipt[];
+  pickupReceipts: PickupReceipt[];
+};
+export type MutableThread = Mutable<Omit<Thread, "messages">> & {
+  messages: Thread["messages"][number][];
 };
 
 export function draftOf(session: Session): MutableSession {
-  const { receiptTexts, applyReceipts, viewedReceipts, refreshReceipts, ...live } = session;
+  const {
+    receiptTexts,
+    applyReceipts,
+    viewedReceipts,
+    refreshReceipts,
+    conversationReceipts,
+    pickupReceipts,
+    ...live
+  } = session;
   // structuredClone detaches the live state, so dropping readonly cannot alias the caller's session.
   // Receipt history is append-only and its entries are never mutated, so sharing them is safe.
-  const { hunks, groups, viewedHunkIds, ...rest } = structuredClone(live);
+  const { hunks, groups, viewedHunkIds, threads, drafts, ...rest } = structuredClone(live);
   return {
     ...rest,
     hunks: [...hunks],
@@ -51,9 +73,13 @@ export function draftOf(session: Session): MutableSession {
       notes: [...group.notes],
     })),
     viewedHunkIds: [...viewedHunkIds],
+    threads: threads.map((thread) => ({ ...thread, messages: [...thread.messages] })),
+    drafts: [...drafts],
     receiptTexts: [...receiptTexts],
     applyReceipts: [...applyReceipts],
     viewedReceipts: [...viewedReceipts],
     refreshReceipts: [...refreshReceipts],
+    conversationReceipts: [...conversationReceipts],
+    pickupReceipts: [...pickupReceipts],
   };
 }
