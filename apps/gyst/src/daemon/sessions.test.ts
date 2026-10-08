@@ -3589,6 +3589,68 @@ describe("Sessions captured reads over real captures", () => {
       expect(kept).not.toContain(sha256("d-first\nd2\n"));
     });
 
+    it("reclaims in the background what a discarded draft or a changed source check leaves", async () => {
+      const cwd = await repo("background", { "d.ts": "d\n", "o.ts": "o\n" });
+      await writeFile(join(cwd, "d.ts"), "d first\n");
+      await writeFile(join(cwd, "o.ts"), "o first\n");
+      /** Resolves once `blob` is gone from disk, failing after about two seconds. */
+      const gone = (blob: string) =>
+        Effect.promise(async () => {
+          for (let attempt = 0; attempt < 100; attempt++) {
+            if (!(await onDisk("blobs")).includes(blob)) return;
+            await new Promise((resolve) => setTimeout(resolve, 20));
+          }
+          throw new Error(`${blob} was never reclaimed`);
+        });
+      await runReal(
+        Effect.gen(function* () {
+          const sessions = yield* Sessions;
+          yield* Effect.forkChild(sessions.reclaimer);
+          const { session } = yield* sessions.open({ command: "open", cwd, scope: uncommitted });
+          const live = yield* act({
+            command: "draft",
+            session: session.id,
+            requestId: "live",
+            target: {
+              kind: "comment",
+              anchor: {
+                snapshotId: session.snapshotId,
+                path: "d.ts",
+                side: "new",
+                startLine: 1,
+                endLine: 1,
+              },
+            },
+          });
+          yield* Effect.promise(() =>
+            Promise.all([
+              writeFile(join(cwd, "d.ts"), "d second\n"),
+              writeFile(join(cwd, "o.ts"), "o second\n"),
+            ]),
+          );
+          expect((yield* refreshNow(session.id)).replaced).toBe(true);
+          // The draft still pins its whole first snapshot; discarding it releases that.
+          yield* Effect.sleep("50 millis");
+          expect(yield* Effect.promise(() => onDisk("blobs"))).toContain(sha256("o first\n"));
+          yield* act({
+            command: "discard",
+            session: session.id,
+            requestId: "discard",
+            draft: live.draft!,
+          });
+          yield* gone(sha256("o first\n"));
+
+          yield* Effect.promise(() => writeFile(join(cwd, "o.ts"), "o third\n"));
+          expect(yield* sessions.check({ command: "check", session: session.id })).toMatchObject({
+            state: "changed",
+          });
+          yield* gone(sha256("o third\n"));
+          yield* remove(session.id, "delete-background");
+          yield* gone(sha256("o second\n"));
+        }),
+      );
+    });
+
     it("never reclaims what an in-flight read or capture holds", async () => {
       const cwd = await repo("held", { "x.txt": "before\n" });
       await writeFile(join(cwd, "x.txt"), "read while deleted\n");
