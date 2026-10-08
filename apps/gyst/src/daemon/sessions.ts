@@ -351,8 +351,8 @@ export class Sessions extends Context.Service<
      * holds content. It runs before retrying a capture that ran out of space, and through
      * `reclaimer` after loading, deleting, refreshing, a failed capture, a source check that
      * found a change, and a change that releases a pin (a discarded draft). A session file this
-     * version cannot read keeps every snapshot it names; a manifest that cannot be read reclaims
-     * nothing.
+     * version cannot read keeps every snapshot it names; a manifest that cannot be read, or saved
+     * files that cannot be made durable (`SessionStore.syncSaved`), reclaim nothing.
      */
     readonly reclaim: Effect.Effect<
       Reclaimed,
@@ -447,6 +447,9 @@ export class Sessions extends Context.Service<
       // Every root of captured content is a saved session's (`retainedFiles`); receipts embed the
       // code they return rather than naming it. A durable reader added later adds its roots here.
       const retainedContent = Effect.gen(function* () {
+        // Roots are read from saved files, which must not revert to older ones in a crash; until
+        // they are durable nothing is reclaimed.
+        yield* store.syncSaved;
         const loaded = yield* underLock(Effect.sync(() => [...sessions.values()]));
         // A save cut off before memory learned of it, or a removal that failed, leaves the file
         // and memory apart; the next daemon loads the file, so both are roots.
@@ -911,6 +914,17 @@ export class Sessions extends Context.Service<
       }, holding);
 
       const load = Effect.gen(function* () {
+        // A daemon stopped between renaming a file into place and syncing its directory leaves it
+        // visible but not durable. Until it is, a removal it commits would outlive it in a crash.
+        const durable = yield* store.syncSaved.pipe(
+          Effect.as(true),
+          Effect.catch((error) =>
+            Effect.as(
+              Effect.logWarning("could not make saved sessions durable; removing nothing", error),
+              false,
+            ),
+          ),
+        );
         const receipts = yield* store.loadDeleteReceipts;
         const persisted = yield* store.loadAll;
         sessions.clear();
@@ -920,8 +934,8 @@ export class Sessions extends Context.Service<
         const deleted = new Set(receipts.map(({ sessionId }) => sessionId));
         for (const session of persisted) {
           // A receipt is the commit point: finish a removal that failed or was cut off after it.
-          if (deleted.has(session.id)) yield* store.remove(session.id).pipe(Effect.ignore);
-          else sessions.set(session.id, session);
+          if (!deleted.has(session.id)) sessions.set(session.id, session);
+          else if (durable) yield* store.remove(session.id).pipe(Effect.ignore);
         }
         // Whatever a crash left staged or unpublished is reclaimed by the daemon that owns the store.
         yield* requestReclaim;
