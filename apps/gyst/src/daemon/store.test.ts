@@ -25,6 +25,7 @@ const session = (id: string): Session => ({
   receiptTexts: [],
   applyReceipts: [],
   viewedReceipts: [],
+  refreshReceipts: [],
 });
 
 const run = <A, E>(effect: Effect.Effect<A, E, SessionStore>) =>
@@ -117,6 +118,7 @@ describe("SessionStore", () => {
               },
               markdown: "Different operations, one behavior.",
               references: [],
+              outdated: ["references"],
             },
           ],
         },
@@ -154,6 +156,19 @@ describe("SessionStore", () => {
             revision: 1,
             hunkIds: ["h"],
             viewed: true,
+          },
+        },
+      ],
+      refreshReceipts: [
+        {
+          requestId: "r2",
+          digest: "digest",
+          result: {
+            sessionId: "semantic",
+            previousSnapshotId: "earlier",
+            snapshotId: "snapshot",
+            revision: 1,
+            replaced: true,
           },
         },
       ],

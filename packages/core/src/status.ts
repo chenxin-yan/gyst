@@ -13,17 +13,33 @@ function preparationOf(session: Session): Preparation {
     overview === null ? [id] : [],
   );
   const covered = groupedHunks === current.size && memberships.length === groupedHunks;
+  const overviewOutdated = session.overview?.outdated !== undefined;
+  // An emptied group is Outdated, never complete by having nothing left to read.
+  const groupsOutdated = session.groups.flatMap(({ id, hunkIds, overview }) =>
+    hunkIds.length === 0 || overview?.outdated ? [id] : [],
+  );
+  const notesOutdated = session.groups.flatMap(({ notes }) =>
+    notes.flatMap(({ id, outdated }) => (outdated ? [id] : [])),
+  );
   return {
     state:
       session.groups.length === 0 && overviewMissing
         ? "plain"
-        : covered && !overviewMissing && groupsMissingOverview.length === 0
+        : covered &&
+            !overviewMissing &&
+            groupsMissingOverview.length === 0 &&
+            !overviewOutdated &&
+            groupsOutdated.length === 0 &&
+            notesOutdated.length === 0
           ? "complete"
           : "incomplete",
     groupedHunks,
     totalHunks: current.size,
     overviewMissing,
     groupsMissingOverview,
+    overviewOutdated,
+    groupsOutdated,
+    notesOutdated,
   };
 }
 
