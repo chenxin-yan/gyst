@@ -46,7 +46,8 @@ export type PeekOverlay = { spacer: HTMLDivElement | null; extent: () => Extent 
  * An open peek. With an `overlay` it is the full-width element over that spacer, spanning the
  * rendered diff item; without one it reads in flow. Once placed it focuses its selector
  * (`data-peek-focus`), else Expand, else Close: always, unless the reader is typing or in a dialog
- * (`free`, for an answer that arrives later), or never.
+ * (`free`, for an answer that arrives later), or never. With `reveal` its first placement also
+ * scrolls the panel just enough to show it, as a peek opened by a key may open below the panel.
  */
 export function InlinePeek(props: {
   label: string;
@@ -63,15 +64,17 @@ export function InlinePeek(props: {
   /** Stack the preview and its selector instead of setting them side by side. */
   narrow: boolean;
   focus?: "always" | "free" | "never";
+  reveal?: boolean;
   onKeyDown?: (event: KeyboardEvent<HTMLElement>) => void;
   overlay?: PeekOverlay | undefined;
   handle?: Ref<PeekHandle> | undefined;
 }) {
-  const { overlay, focus: focusing = "always" } = props;
+  const { overlay, focus: focusing = "always", reveal = false } = props;
   const inFlow = overlay === undefined;
   const box = useRef<HTMLElement>(null);
   const expand = useRef<HTMLButtonElement>(null);
   const focused = useRef(false);
+  const revealed = useRef(false);
   const latest = useRef(overlay);
   latest.current = overlay;
 
@@ -115,8 +118,12 @@ export function InlinePeek(props: {
     element.style.left = `${extent.left}px`;
     element.style.width = `${extent.width}px`;
     element.style.visibility = "visible";
+    if (reveal && !revealed.current) {
+      revealed.current = true;
+      element.scrollIntoView({ block: "nearest" });
+    }
     focus();
-  }, [focus]);
+  }, [focus, reveal]);
   useImperativeHandle(props.handle, () => ({ place }), [place]);
 
   // The spacer reserves exactly the overlay's height, which the renderer then lays out.
