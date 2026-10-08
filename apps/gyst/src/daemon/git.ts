@@ -9,6 +9,7 @@ import {
   type Provenance,
   type PullRequestScope,
   pullRequestUrlOf,
+  sameSide,
   type Scope,
   type SnapshotManifest,
   SourceUnavailable,
@@ -134,10 +135,6 @@ type FileMode = "100644" | "100755";
 type TreeEntry = { readonly mode: string; readonly oid: string };
 type CapturedSide = { readonly side: ContentSide; readonly mode?: FileMode };
 
-const sameSide = (old: ContentSide, current: ContentSide) =>
-  old.kind === current.kind &&
-  (old.kind !== "text" || (current.kind === "text" && old.blob === current.blob)) &&
-  (old.kind !== "unavailable" || (current.kind === "unavailable" && old.reason === current.reason));
 /** Changed content or mode; two unavailable sides with one reason carry no evidence of a change. */
 const changed = (old: CapturedSide, current: CapturedSide) =>
   !sameSide(old.side, current.side) ||

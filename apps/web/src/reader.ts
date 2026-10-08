@@ -1,6 +1,12 @@
 // Pure pieces of the session reader: captured hunks and pages in, @pierre/diffs inputs and tree
 // structure out. No React or DOM here, so each is unit tested on its own.
-import type { CodePayload, ContentSide, Hunk, ManifestFile } from "@gyst/core/wire";
+import {
+  type CodePayload,
+  type ContentSide,
+  type Hunk,
+  type ManifestFile,
+  sameSide,
+} from "@gyst/core/wire";
 import { type FileDiffLoadedChangedFiles, type FileDiffMetadata, processFile } from "@pierre/diffs";
 
 // ─── changed files ───────────────────────────────────────────────────────
@@ -11,11 +17,6 @@ export type ReaderFile = {
   hunks: readonly Hunk[];
   manifest: ManifestFile | undefined;
 };
-
-const sameSide = (old: ContentSide, current: ContentSide) =>
-  old.kind === current.kind &&
-  (old.kind !== "text" || (current.kind === "text" && old.blob === current.blob)) &&
-  (old.kind !== "unavailable" || (current.kind === "unavailable" && old.reason === current.reason));
 
 /**
  * Whether a manifest entry records a change without hunks: an unavailable side, an added or
