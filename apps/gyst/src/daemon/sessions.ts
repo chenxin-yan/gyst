@@ -441,7 +441,10 @@ export class Sessions extends Context.Service<
       // Every root of captured content is a saved session's (`retainedFiles`); receipts embed the
       // code they return rather than naming it. A durable reader added later adds its roots here.
       const retainedContent = Effect.gen(function* () {
-        const saved = yield* underLock(Effect.sync(() => [...sessions.values()]));
+        const loaded = yield* underLock(Effect.sync(() => [...sessions.values()]));
+        // A save cut off before memory learned of it, or a removal that failed, leaves the file
+        // and memory apart; the next daemon loads the file, so both are roots.
+        const saved = yield* store.loadSaved;
         const kept = new Map<string, Set<string> | "all">();
         const keep = (snapshotId: string, paths: ReadonlySet<string> | "all") => {
           const prior = kept.get(snapshotId);
@@ -450,11 +453,11 @@ export class Sessions extends Context.Service<
             prior === "all" || paths === "all" ? "all" : new Set([...(prior ?? []), ...paths]),
           );
         };
-        for (const session of saved)
+        for (const session of [...loaded, ...saved.sessions])
           for (const [snapshotId, paths] of retainedFiles(session)) keep(snapshotId, paths);
         // A saved review this version cannot read is still a saved review: keep whole every
         // snapshot its file names. Other hashes in it name no snapshot.
-        for (const text of yield* store.loadUndecodable)
+        for (const text of saved.undecodable)
           for (const id of new Set(text.match(/[0-9a-f]{64}/g)))
             if (
               kept.get(id) !== "all" &&

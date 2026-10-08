@@ -62,8 +62,14 @@ export class SessionStore extends Context.Service<
   {
     /** Undecodable files are skipped: a corrupt or older session must not block valid ones. */
     readonly loadAll: Effect.Effect<Array<Session>, PlatformError.PlatformError>;
-    /** The text of every session file `loadAll` skips, which reclaiming content must still respect. */
-    readonly loadUndecodable: Effect.Effect<Array<string>, PlatformError.PlatformError>;
+    /**
+     * Every session file as saved now: the sessions `loadAll` returns and the text of each one it
+     * skips, all of which reclaiming content must respect.
+     */
+    readonly loadSaved: Effect.Effect<
+      { readonly sessions: Array<Session>; readonly undecodable: Array<string> },
+      PlatformError.PlatformError
+    >;
     save(session: Session): Effect.Effect<void, PlatformError.PlatformError>;
     remove(id: string): Effect.Effect<void, PlatformError.PlatformError>;
     /** Empty until the first deletion; an unreadable receipt file is a defect, never an empty list. */
@@ -110,11 +116,14 @@ export class SessionStore extends Context.Service<
         Effect.map((read) => Array.getSomes(read.map(({ session }) => session))),
         Effect.withSpan("SessionStore.loadAll"),
       );
-      const loadUndecodable = readAll.pipe(
-        Effect.map((read) =>
-          read.flatMap(({ content, session }) => (session._tag === "None" ? [content] : [])),
-        ),
-        Effect.withSpan("SessionStore.loadUndecodable"),
+      const loadSaved = readAll.pipe(
+        Effect.map((read) => ({
+          sessions: Array.getSomes(read.map(({ session }) => session)),
+          undecodable: read.flatMap(({ content, session }) =>
+            session._tag === "None" ? [content] : [],
+          ),
+        })),
+        Effect.withSpan("SessionStore.loadSaved"),
       );
 
       const write = (path: string, content: string) =>
@@ -146,7 +155,7 @@ export class SessionStore extends Context.Service<
 
       return SessionStore.of({
         loadAll,
-        loadUndecodable,
+        loadSaved,
         save,
         remove,
         loadDeleteReceipts,
