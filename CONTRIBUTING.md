@@ -95,7 +95,9 @@ daemon's port in it, with their `Host` and `Origin` unchanged. The browser talks
 `localhost`, as it would through an SSH forward on another local port, so the daemon's host and
 origin checks run as in production. The source daemon serves the packaged viewer from beside its
 entry, so the plugin writes a placeholder pointing here to the git-ignored
-`apps/gyst/src/dist/web-ui/`.
+`apps/gyst/src/dist/web-ui/`. It links `apps/gyst/src/dist/export/` to the standalone reader
+`apps/web/dist-export/` that exports are built from; build that once with `pnpm build` (or
+`pnpm --filter @gyst/web build`) before exporting in development.
 
 This is for trying changes by hand. It does not replace `pnpm test`, which tests the packed npm
 install.
