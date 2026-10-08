@@ -807,18 +807,37 @@ export class Git extends Context.Service<
        * A tree of exactly these captured `.gitattributes` files, written to a private object
        * directory, never the repository's: uncommitted attributes then come from the captured
        * bytes, not an index copy of one deleted only from the working tree or a configured
-       * `attr.tree`.
+       * `attr.tree`. A file a quota only measured (in `unstored`) is read again, and must be the
+       * bytes measured: whether the quota keeps it or not, its attributes apply.
        */
       const attributesTree = Effect.fn("Git.attributesTree")(
-        function* (root: string, files: ReadonlyArray<{ path: string; blob: string }>) {
+        function* (
+          root: string,
+          files: ReadonlyArray<{ path: string; blob: string }>,
+          unstored: Map<string, Stream.Stream<Uint8Array, BadArgs>> | undefined,
+        ) {
           const objects = yield* fs.makeTempDirectoryScoped();
+          const measuredCopies = yield* fs.makeTempDirectoryScoped();
           const extra = { GIT_OBJECT_DIRECTORY: objects, GIT_INDEX_FILE: join(objects, "index") };
           // Writing the index would run the post-index-change hook, a project program, and a
           // split index would put its shared part in the repository.
           const privateIndex = ["-c", "core.hooksPath=/dev/null", "-c", "core.splitIndex=false"];
           const staged: Array<{ path: string; copy: string }> = [];
-          for (const { path, blob } of files)
-            staged.push({ path, copy: yield* content.materialize(blob) });
+          for (const [at, { path, blob }] of files.entries()) {
+            const bytes = unstored?.get(blob);
+            if (bytes === undefined) {
+              staged.push({ path, copy: yield* content.materialize(blob) });
+              continue;
+            }
+            const copy = join(measuredCopies, `${at}`);
+            const hash = createHash("sha256");
+            yield* bytes.pipe(
+              Stream.tap((chunk) => Effect.sync(() => void hash.update(chunk))),
+              Stream.run(fs.sink(copy)),
+            );
+            if (hash.digest("hex") !== blob) return yield* Worktree.changedDuringCapture(path);
+            staged.push({ path, copy });
+          }
           for (const chunk of argvChunks(staged, stagedArgBytes)) {
             const hashed = yield* run(
               root,
@@ -910,6 +929,7 @@ export class Git extends Context.Service<
                         ? [{ path, blob: side.blob }]
                         : [],
                     ),
+                    unstored,
                   )
                 : { tree: newCommit, extra: undefined };
             for (const path of yield* generatedIn(
