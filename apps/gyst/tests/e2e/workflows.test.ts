@@ -70,7 +70,7 @@ async function humanOf(box: Sandbox, cwd: string, args: string[]) {
     target: object,
     markdown: string,
     kind: "question" | "change",
-    wording?: string,
+    wording?: object,
   ) => {
     const id = `human-${++requests}`;
     const { draft } = await act({ command: "draft", requestId: `${id}-draft`, target, wording });
@@ -82,9 +82,15 @@ async function humanOf(box: Sandbox, cwd: string, args: string[]) {
       say({ kind: "comment", anchor }, markdown, kind),
     follow: (thread: string, markdown: string) =>
       say({ kind: "thread", thread }, markdown, "question"),
-    /** A reply to a note, written against the note text `wording` the human read. */
-    replyToNote: (note: string, wording: string, markdown: string) =>
-      say({ kind: "note", note }, markdown, "question", wording),
+    /** A reply to a note, written against the note as the human reads it: text, links and code. */
+    replyToNote: async (note: string, markdown: string) => {
+      const status = await act({ command: "status" });
+      const read = status.groups
+        .flatMap((group: any) => group.notes)
+        .find(({ id }: any) => id === note);
+      const wording = { markdown: read.markdown, references: read.references, anchor: read.anchor };
+      return say({ kind: "note", note }, markdown, "question", wording);
+    },
     viewAll: async (snapshotId: string, revision: number, hunkIds: string[]) =>
       act({
         command: "viewed",
@@ -268,11 +274,7 @@ describe("review workflows through the installed CLI", () => {
       { snapshotId, path: "src/clock.ts", side: "new", startLine: 1, endLine: 1 },
       "Why an object rather than a function?",
     );
-    const onNote = await human.replyToNote(
-      "expiry-guard",
-      "`<=` fails closed at the boundary.",
-      "What about clock skew?",
-    );
+    const onNote = await human.replyToNote("expiry-guard", "What about clock skew?");
 
     // 1. One pickup under a request id chosen first; a lost reply is retried with that id.
     const pickup = await agent.threads("pending", "respond-1");
