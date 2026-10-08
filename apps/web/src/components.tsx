@@ -2,7 +2,7 @@ import type { Scope, SessionSummary } from "@gyst/core/wire";
 import * as stylex from "@stylexjs/stylex";
 import { Link, useRouter } from "@tanstack/react-router";
 import { type ComponentProps, type ReactNode, useEffect, useRef, useState } from "react";
-import { isExpectedFailure, newRequestId, operation, TransportError } from "./api.ts";
+import { isExpectedFailure, newRequestId, operation } from "./api.ts";
 import { media, theme } from "./tokens.stylex.ts";
 
 // ─── layout ──────────────────────────────────────────────────────────────
@@ -322,19 +322,8 @@ const deletion = stylex.create({
 
 // ─── failures ────────────────────────────────────────────────────────────
 
-/** Explains a failed request without echoing credentials; 401 gets relaunch guidance. */
+/** Explains a failed request. */
 export function FailureNotice({ error }: { error: unknown }) {
-  if (error instanceof TransportError && error.reason === "unauthorized")
-    return (
-      <div role="alert" {...stylex.props(notice.box)}>
-        <p>{error.message}</p>
-        <p {...stylex.props(ui.muted, notice.next)}>
-          Run <code>gyst</code> (or <code>gyst --session &lt;id&gt;</code>) in the repository again
-          and open the new link it prints. A link signs a browser in within 10 minutes of launch;
-          that browser then stays signed in until its gyst stops.
-        </p>
-      </div>
-    );
   return (
     <p role="alert" {...stylex.props(notice.box)}>
       {error instanceof Error ? error.message : "Something went wrong."}
@@ -344,20 +333,16 @@ export function FailureNotice({ error }: { error: unknown }) {
 
 const notice = stylex.create({
   box: { maxWidth: "80ch", marginBottom: "14px" },
-  next: { marginTop: "6px" },
 });
 
 export function RouteError({ error }: { error: unknown }) {
   const router = useRouter();
-  const retryable = !(error instanceof TransportError && error.reason === "unauthorized");
   return (
     <Frame top={<Title>Couldn't load this page</Title>}>
       <FailureNotice error={error} />
-      {retryable && (
-        <button type="button" {...stylex.props(ui.pill)} onClick={() => void router.invalidate()}>
-          Try again
-        </button>
-      )}
+      <button type="button" {...stylex.props(ui.pill)} onClick={() => void router.invalidate()}>
+        Try again
+      </button>
     </Frame>
   );
 }

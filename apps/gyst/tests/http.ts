@@ -1,8 +1,8 @@
-// For the bridge unit tests: a raw HTTP/1.1 client (full control of Host, duplicates and request
-// targets) and a throwaway packaged-SPA fixture.
+// For the viewer's unit tests: a raw HTTP/1.1 client (full control of Host, duplicates and request
+// targets), a throwaway packaged-SPA fixture and free loopback ports.
 import { mkdir, mkdtemp, realpath, symlink, writeFile } from "node:fs/promises";
 import { request as httpRequest } from "node:http";
-import { connect } from "node:net";
+import { type AddressInfo, connect, createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -150,3 +150,14 @@ export async function webUiFixture() {
   await symlink(join(root, "secret.txt"), join(dir, "assets", "link.txt"));
   return { root, dir };
 }
+
+/** A port the OS just reported free on 127.0.0.1, so a test's viewer never starts at 4978. */
+export const freePort = () =>
+  new Promise<number>((resolve, reject) => {
+    const server = createServer();
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", () => {
+      const { port } = server.address() as AddressInfo;
+      server.close(() => resolve(port));
+    });
+  });

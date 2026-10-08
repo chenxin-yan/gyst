@@ -2,7 +2,7 @@ import { Schema } from "effect";
 
 /**
  * The optional TS/JS navigation add-on. Its release version always equals gyst's, so the running
- * version is the only one a launcher accepts and the one every install instruction names.
+ * version is the only one the daemon accepts and the one every install instruction names.
  */
 export const navigationAddon = {
   name: "@gyst/navigation-typescript",
@@ -37,8 +37,8 @@ const AbsolutePathSchema = Schema.String.check(
 );
 
 /**
- * What a launcher found on its own launch PATH. `entry` is the resolved real path of the add-on's
- * executable script; only a launcher produces it, and the daemon runs it with its own Node.
+ * What the daemon found on the PATH a session was last opened with. `entry` is the resolved real
+ * path of the add-on's executable script, which the daemon runs with its own Node.
  */
 export const AddonDiscoverySchema = Schema.Union([
   Schema.Struct({

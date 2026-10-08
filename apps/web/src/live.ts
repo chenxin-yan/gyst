@@ -47,8 +47,7 @@ export type LiveEvent =
 export const initialLive: LiveState = { generation: 0, phase: "connecting", attempts: 0 };
 
 const isRefusal = (error: unknown) =>
-  error instanceof TransportError &&
-  (error.reason === "unauthorized" || error.reason === "forbidden");
+  error instanceof TransportError && error.reason === "forbidden";
 
 /**
  * The next state after an event. `ready` resynchronizes: its version replaces what was known.
