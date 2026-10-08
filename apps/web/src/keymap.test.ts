@@ -1,9 +1,4 @@
-import {
-  areHotkeysEqual,
-  formatForDisplay,
-  type Hotkey,
-  validateHotkey,
-} from "@tanstack/react-hotkeys";
+import { areHotkeysEqual, formatForDisplay, validateHotkey } from "@tanstack/react-hotkeys";
 import { describe, expect, it } from "vite-plus/test";
 import { commands, commandsFor, completesSequence, keyLabels, typed } from "./keymap.ts";
 
@@ -48,12 +43,25 @@ describe("commands", () => {
     expect(completesSequence({ key: "m" }, { key: "z", at: 1000 }, 1500)).toBe(false);
   });
 
-  it("has no keys of later tickets yet", () => {
-    for (const later of ["C", "R", "X"] satisfies Hotkey[])
-      expect(
-        singles.some((single) => areHotkeysEqual(single, later)),
-        later,
-      ).toBe(false);
+  // c comments and r replies, while ]c, zc and zR keep their sequences; C lists every comment.
+  it("binds conversation keys beside the sequences they end", () => {
+    const label = (id: string) =>
+      keysOf(id).map((keys) =>
+        keys.map((key) => formatForDisplay(key, { platform: "linux", keyLabels })).join(" "),
+      );
+    expect(
+      ["comment", "reply", "resolve", "comments", "nextThread", "previousThread"].map(label),
+    ).toEqual([["c"], ["r"], ["x"], ["Shift+c"], ["] t"], ["[ t"]]);
+    expect(completesSequence({ key: "c" }, { key: "]", at: 1000 }, 1500)).toBe(true);
+    expect(completesSequence({ key: "c" }, { key: "z", at: 1000 }, 1500)).toBe(true);
+    expect(completesSequence({ key: "c" }, { key: "j", at: 1000 }, 1500)).toBe(false);
+    expect(typed("C", { key: "C" })).toBe(false);
+    expect(typed("Shift+C", { key: "C" })).toBe(true);
+    expect(typed("R", { key: "R" })).toBe(false);
+    // Mouse mode comments on its selection, and replies or resolves in the open thread.
+    expect(commandsFor("mouse").map(({ id }) => id)).toEqual(
+      expect.arrayContaining(["comment", "reply", "resolve", "comments", "nextThread"]),
+    );
   });
 
   it("prints keys for the help and the menu as the platform shows them", () => {

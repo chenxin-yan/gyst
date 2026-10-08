@@ -223,6 +223,8 @@ export function NoteCard(props: {
   onReference: (target: CapturedRange) => void;
   /** A reference whose peek just closed: focused again, also when the renderer remounts the note. */
   refocus?: CapturedRange | undefined;
+  /** Replies to the note, starting its thread if it has none. */
+  onReply?: (() => void) | undefined;
 }) {
   const { note, onHighlight, refocus } = props;
   const slot = useRef<HTMLDivElement>(null);
@@ -264,6 +266,11 @@ export function NoteCard(props: {
               references={note.references}
               onReference={props.onReference}
             />
+            {props.onReply && (
+              <button type="button" onClick={props.onReply} {...stylex.props(noteStyles.reply)}>
+                Reply
+              </button>
+            )}
           </div>
         )}
       </div>
@@ -366,6 +373,11 @@ const noteStyles = stylex.create({
   },
   chevronOpen: { transform: "rotate(45deg)" },
   body: { marginTop: "4px" },
+  reply: {
+    marginTop: "4px",
+    fontSize: "12px",
+    color: { default: theme.muted, ":hover": theme.ink },
+  },
   foreign: {
     padding: "2px 10px 4px",
     fontFamily: theme.sans,

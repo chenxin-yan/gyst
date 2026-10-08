@@ -1,10 +1,12 @@
 import {
   type CapturedRange,
+  type Draft,
   type FilesPayload,
   type Hunk,
   pullRequestUrlOf,
   type SessionSummary,
   type StatusPayload,
+  type Thread,
 } from "@gyst/core/wire";
 import {
   type CodeViewItem,
@@ -55,6 +57,16 @@ import {
 } from "../api.ts";
 import { AuthorEntry, CommitsCard, DescriptionCard, useRangeCommits } from "../author.tsx";
 import { CommandMenu, KeyHelp } from "../commands.tsx";
+import {
+  draftChange,
+  draftPlace,
+  forgetDraftText,
+  liveNote,
+  notesById,
+  type ThreadPlace,
+  threadPlaces,
+} from "../conversation.ts";
+import { Composer, CommentsList, ThreadCard, useConversations } from "../conversation.tsx";
 import {
   AllSessionsLink,
   Crumb,
@@ -550,7 +562,7 @@ function SessionReader(props: {
   const [folded, setFolded] = useState<ReadonlySet<string>>(
     () => recalled?.folded ?? generatedOf(props.status),
   );
-  const [dialog, setDialog] = useState<"menu" | "help">();
+  const [dialog, setDialog] = useState<"menu" | "help" | "comments">();
   // Hidden lines opened per file. They live here, not in the renderer, which forgets them with
   // an item it drops; bumping the version re-reads the cursor model after the renderer opened some.
   const [opened] = useState(() => recalled?.opened ?? new Map<string, Map<number, Opened>>());
@@ -570,6 +582,10 @@ function SessionReader(props: {
     authorShown && session.scope.kind === "range",
     recalled?.author.commits,
   );
+  const conversations = useConversations(session.id, live.state.known?.revision);
+  // One conversation is open at a time, and one composer, shown only once asked for.
+  const [expandedThread, setExpandedThread] = useState<string>();
+  const [activeDraft, setActiveDraft] = useState<string>();
   const mounted = useMounted();
   // Captured-code navigation: the reference expanded in the main panel, the open peek, the places
   // Back returns to, and the panel's restart key with where it starts. Never Viewed. A return from
@@ -690,18 +706,45 @@ function SessionReader(props: {
       };
     return peekNote === undefined ? undefined : notes.find(({ note }) => note.id === peekNote);
   }, [lineFile, lineSide, lineNumber, peekNote, notes]);
+  // Threads read where their code is shown: an expanded earlier file shows its own snapshot's.
+  const codeSnapshot = captured?.snapshotId ?? snapshotId;
+  const allNotes = useMemo(() => notesById(status), [status]);
+  const threadsShown = useMemo(
+    () => threadPlaces(conversations.threads, shownPaths, codeSnapshot, notes, allNotes),
+    [conversations.threads, shownPaths, codeSnapshot, notes, allNotes],
+  );
+  const draftNow = conversations.drafts.find(({ id }) => id === activeDraft);
+  const draftAt = draftNow && draftPlace(draftNow, shownPaths, codeSnapshot);
+  // Rebuilt only when what sits where changes, so a reread keeps the renderer's items and the
+  // composer being typed in.
+  const conversationRows = JSON.stringify([
+    threadsShown.flatMap(({ thread, note, file, side, line }) =>
+      note === undefined ? [[thread.id, file, side, line]] : [],
+    ),
+    draftAt && [draftNow.id, draftAt.file, draftAt.side, draftAt.line],
+  ]);
   const annotations = useMemo(() => {
-    if (peekPlace === undefined) return noteAnnotations;
-    const spacerRow: DiffLineAnnotation<DiffAnnotation> = {
-      side: peekPlace.side,
-      lineNumber: peekPlace.line,
-      metadata: { kind: "peek" },
-    };
-    return new Map(noteAnnotations).set(peekPlace.file, [
-      ...(noteAnnotations.get(peekPlace.file) ?? []),
-      spacerRow,
-    ]);
-  }, [noteAnnotations, peekPlace]);
+    const rows = new Map(noteAnnotations);
+    const add = (file: string, annotation: DiffLineAnnotation<DiffAnnotation>) =>
+      rows.set(file, [...(rows.get(file) ?? []), annotation]);
+    const [threadRows, draftRow] = JSON.parse(conversationRows) as [
+      [string, string, "deletions" | "additions", number][],
+      [string, string, "deletions" | "additions", number] | undefined,
+    ];
+    for (const [threadId, file, side, line] of threadRows)
+      add(file, { side, lineNumber: line, metadata: { kind: "thread", threadId } });
+    if (draftRow) {
+      const [draftId, file, side, line] = draftRow;
+      add(file, { side, lineNumber: line, metadata: { kind: "draft", draftId } });
+    }
+    if (peekPlace !== undefined)
+      add(peekPlace.file, {
+        side: peekPlace.side,
+        lineNumber: peekPlace.line,
+        metadata: { kind: "peek" },
+      });
+    return rows;
+  }, [noteAnnotations, peekPlace, conversationRows]);
   const [collapsedNotes, setCollapsedNotes] = useState<ReadonlySet<string>>(new Set());
   // The note Mouse mode last scrolled to, which its scrolled-to place no longer names.
   const lastNote = useRef<number>(undefined);
@@ -1586,12 +1629,280 @@ function SessionReader(props: {
     }
   };
 
+  // ─── conversations ───
+  /**
+   * The thread a command acts on: in Vim mode one at the cursor's line, the open one first; in
+   * Mouse mode, which has no cursor, the open one.
+   */
+  const threadAt = (target: Cursor | undefined): ThreadPlace | undefined => {
+    if (!vim) return threadsShown.find(({ thread }) => thread.id === expandedThread);
+    if (target?.kind !== "line") return undefined;
+    const from = noteFrom(target);
+    const onLine = threadsShown.filter(
+      (at) => at.fileIndex === from.fileIndex && at.side === from.side && at.line === from.line,
+    );
+    return onLine.find(({ thread }) => thread.id === expandedThread) ?? onLine[0];
+  };
+  const conversationOf = (id: string) => conversations.threads.find((thread) => thread.id === id);
+  const sayFailure = (what: string, error: unknown) => {
+    if (!isExpectedFailure(error)) console.error(error);
+    setNotice(
+      `Couldn't ${what}${error instanceof Error && error.message ? `: ${error.message}` : "."}`,
+    );
+  };
+  /** Pins what a message is composed against, then opens its composer; a lost link pins nothing. */
+  const startDraft = async (
+    target:
+      | { kind: "comment"; anchor: CapturedRange }
+      | { kind: "thread"; thread: string }
+      | { kind: "note"; note: string },
+    wording: string | undefined,
+  ) => {
+    if (live.state.phase !== "live")
+      return setNotice("Can't reach gyst, so nothing can be written now; your drafts are kept.");
+    try {
+      const { draft } = await conversations.act({
+        command: "draft",
+        requestId: newRequestId(),
+        target,
+        ...(wording !== undefined && { wording }),
+      });
+      if (!mounted.current) return;
+      setLines(null);
+      setActiveDraft(draft);
+      setExpandedThread(target.kind === "thread" ? target.thread : undefined);
+    } catch (error) {
+      if (mounted.current) sayFailure("start writing", error);
+    }
+  };
+  /** A comment on the selected lines, or the Vim cursor's line: one side of one shown file. */
+  const comment = () => {
+    const picked =
+      lines ??
+      (vim && here?.kind === "line"
+        ? { id: here.file, range: { start: here.line, side: here.side, end: here.line } }
+        : undefined);
+    if (picked === undefined)
+      return setNotice("Select lines, or put the cursor on a line, to comment on them.");
+    const { range } = picked;
+    const shownWhole = captured !== undefined && !diffs.has(picked.id);
+    if (!shownWhole && range.endSide !== undefined && range.endSide !== range.side)
+      return setNotice("A comment covers lines of one side; select them on one side.");
+    const side = shownWhole ? captured.side : range.side === "deletions" ? "old" : "new";
+    const existing = conversations.drafts.find(
+      ({ anchor, thread, note }) =>
+        thread === undefined &&
+        note === undefined &&
+        anchor.path === picked.id &&
+        anchor.side === side &&
+        anchor.startLine === Math.min(range.start, range.end) &&
+        anchor.endLine === Math.max(range.start, range.end),
+    );
+    if (existing) return setActiveDraft(existing.id);
+    void startDraft(
+      {
+        kind: "comment",
+        anchor: {
+          snapshotId: shownWhole ? captured.snapshotId : snapshotId,
+          path: picked.id,
+          side,
+          startLine: Math.min(range.start, range.end),
+          endLine: Math.max(range.start, range.end),
+        },
+      },
+      undefined,
+    );
+  };
+  /** A reply in a thread, or to a note, which starts its only thread; a kept draft is resumed. */
+  const replyTo = (target: { thread: string } | { note: string }) => {
+    const thread =
+      "thread" in target
+        ? conversationOf(target.thread)
+        : conversations.threads.find(
+            (candidate) => liveNote(candidate, allNotes)?.id === target.note,
+          );
+    if (thread?.resolved) return setNotice("This thread is resolved; reopen it (x) to reply.");
+    const noteId = thread
+      ? liveNote(thread, allNotes)?.id
+      : "note" in target
+        ? target.note
+        : undefined;
+    const kept = conversations.drafts.find((draft) =>
+      thread
+        ? draft.thread === thread.id
+        : draft.thread === undefined &&
+          draft.note !== undefined &&
+          draft.note.id === noteId &&
+          !draft.note.removed,
+    );
+    if (kept) {
+      setActiveDraft(kept.id);
+      return setExpandedThread(thread?.id);
+    }
+    const wording = noteId === undefined ? undefined : allNotes.get(noteId)?.markdown;
+    void startDraft(
+      thread ? { kind: "thread", thread: thread.id } : { kind: "note", note: noteId! },
+      wording,
+    );
+  };
+  const reply = () => {
+    const at = threadAt(here);
+    if (at) return replyTo({ thread: at.thread.id });
+    const note = vim ? noteAt(here) : undefined;
+    if (note) return replyTo({ note: note.note.id });
+    setNotice("Put the cursor on a note or a thread to reply.");
+  };
+  /** Resolves an open thread or reopens a resolved one; only the human does either. */
+  const setResolved = async (threadId: string, resolved: boolean) => {
+    try {
+      await conversations.act({
+        command: "resolve",
+        requestId: newRequestId(),
+        thread: threadId,
+        resolved,
+      });
+      if (!mounted.current) return;
+      if (resolved && activeDraft !== undefined) setActiveDraft(undefined);
+      setNotice(resolved ? "Thread resolved; it stays in Comments (C)." : "Thread reopened.");
+    } catch (error) {
+      if (mounted.current) sayFailure(resolved ? "resolve the thread" : "reopen the thread", error);
+    }
+  };
+  // The thread `]t`/`[t` last went to in Mouse mode, which its scrolled-to place no longer names.
+  const lastThread = useRef<number>(undefined);
+  /** Goes to the next or previous open thread shown, as `]n` goes to notes. */
+  const stepThread = (direction: 1 | -1) => {
+    if (vim) {
+      if (here === undefined || selecting) return;
+      const on = threadAt(here);
+      const index = noteStep(
+        threadsShown,
+        noteFrom(here),
+        direction,
+        on && threadsShown.indexOf(on),
+      );
+      const at = index === undefined ? undefined : threadsShown[index]!;
+      if (at === undefined) return;
+      if (folded.has(at.file)) setFolds([at.file], false);
+      if (at.note !== undefined) cursorNote.current = at.note;
+      return go({ file: at.file, kind: "line", side: at.side, line: at.line });
+    }
+    const top = viewer.current?.visibleAt("top");
+    const index = noteStep(threadsShown, top && noteFrom(top), direction, lastThread.current);
+    const at = index === undefined ? undefined : threadsShown[index]!;
+    if (at === undefined) return;
+    lastThread.current = index;
+    if (folded.has(at.file)) setFolds([at.file], false);
+    viewer.current?.reveal(
+      { file: at.file, side: at.side, line: at.line, full: layout !== "split" },
+      "top",
+    );
+  };
+  /** A thread where it is read, in the panel or in Comments, with its reply composer if open here. */
+  const threadCard = (thread: Thread, located: boolean, composer: boolean, onShow?: () => void) => {
+    const draft = composer && draftNow?.thread === thread.id ? draftNow : undefined;
+    return (
+      <ThreadCard
+        key={thread.id}
+        thread={thread}
+        snapshotId={snapshotId}
+        notes={allNotes}
+        located={located}
+        expanded={expandedThread === thread.id || draft !== undefined}
+        onToggle={() => {
+          if (expandedThread === thread.id) return setExpandedThread(undefined);
+          setExpandedThread(thread.id);
+          if (draftNow && draftNow.thread !== thread.id) setActiveDraft(undefined);
+        }}
+        onReply={() => replyTo({ thread: thread.id })}
+        onResolve={() => void setResolved(thread.id, !thread.resolved)}
+        act={conversations.act}
+        onReference={expand}
+        composer={draft && composerOf(draft)}
+        onShow={located && placedThreads.has(thread.id) ? onShow : undefined}
+      />
+    );
+  };
+  /** Opens a thread the panel shows and brings it into view, at the cursor in Vim mode. */
+  const showThread = (threadId: string) => {
+    const at = threadsShown.find(({ thread }) => thread.id === threadId);
+    if (at === undefined) return;
+    setExpandedThread(threadId);
+    if (folded.has(at.file)) setFolds([at.file], false);
+    if (vim) return go({ file: at.file, kind: "line", side: at.side, line: at.line }, "top");
+    viewer.current?.reveal(
+      { file: at.file, side: at.side, line: at.line, full: layout !== "split" },
+      "top",
+    );
+  };
+  const composerOf = (draft: Draft) => (
+    <Composer
+      key={draft.id}
+      sessionId={session.id}
+      draft={draft}
+      change={draftChange(draft, conversations.threads, allNotes, snapshotId)}
+      offline={live.state.phase === "live" ? undefined : "Can't reach gyst; your draft is kept."}
+      act={conversations.act}
+      onClose={() => setActiveDraft(undefined)}
+    />
+  );
+  const openThreads = conversations.threads.filter(({ resolved }) => !resolved).length;
+  // Drafts and threads the panel places; Comments shows the others' composers itself.
+  const placedThreads = new Set(threadsShown.map(({ thread }) => thread.id));
+  const draftPlaced = (draft: Draft) =>
+    draftPlace(draft, shownPaths, codeSnapshot) !== undefined ||
+    (draft.thread !== undefined && placedThreads.has(draft.thread)) ||
+    (draft.thread === undefined &&
+      liveNote(draft, allNotes) !== undefined &&
+      notes.some(({ note }) => note.id === draft.note!.id));
+
+  /** A note, a foreign hunk's label or a peek's reserved row, as the panel draws it. */
+  const noteRow = (annotation: Exclude<DiffAnnotation, { kind: "thread" | "draft" }>) =>
+    annotation.kind === "peek" ? (
+      <PeekSpacer ref={setSpacer} />
+    ) : annotation.kind === "foreign" ? (
+      <ForeignHunkLabel owner={annotation.owner} />
+    ) : (
+      <NoteCard
+        note={annotation.note}
+        collapsed={collapsedNotes.has(annotation.note.id)}
+        onToggle={() =>
+          setCollapsedNotes((before) => {
+            const after = new Set(before);
+            if (!after.delete(annotation.note.id)) after.add(annotation.note.id);
+            return after;
+          })
+        }
+        onHighlight={(range) => viewer.current?.highlight(range)}
+        onReference={(target) => follow(target, { kind: "note", noteId: annotation.note.id })}
+        refocus={
+          refocus?.origin.kind === "note" && refocus.origin.noteId === annotation.note.id
+            ? refocus.target
+            : undefined
+        }
+        onReply={() => replyTo({ note: annotation.note.id })}
+      />
+    );
+
   const run = (id: CommandId) => {
     const view = viewer.current;
     if (id !== "nextNote" && id !== "previousNote") lastNote.current = undefined;
     setRefocus(undefined);
     setNotice(undefined);
-    if (id === "menu" || id === "help") return setDialog(id);
+    if (id === "menu" || id === "help" || id === "comments") return setDialog(id);
+    if (id !== "nextThread" && id !== "previousThread") lastThread.current = undefined;
+    if (id === "comment") return comment();
+    if (id === "reply") return reply();
+    if (id === "resolve") {
+      const at = threadAt(here);
+      if (!at)
+        return setNotice(
+          vim ? "Put the cursor on an open thread to resolve it." : "Open a thread to resolve it.",
+        );
+      return void setResolved(at.thread.id, true);
+    }
+    if (id === "nextThread" || id === "previousThread")
+      return stepThread(id === "nextThread" ? 1 : -1);
     if (id === "refresh") return void refresh();
     if (id === "check") return void checkSource();
     if (id === "search") {
@@ -1631,8 +1942,10 @@ function SessionReader(props: {
       const fold = id === "foldAll";
       return setFolds(model.files, fold, fold && here ? { ...here, kind: "header" } : undefined);
     }
-    // Esc ends a selection first, then clears the search highlight, then closes the peek.
+    // Esc closes the composer first, keeping its draft, then ends a selection, then clears the
+    // search highlight, then closes the peek.
     if (id === "cancel") {
+      if (activeDraft !== undefined) return setActiveDraft(undefined);
       if (lines !== null) return setLines(null);
       return searchShown ? closeSearch() : closePeek();
     }
@@ -1676,6 +1989,7 @@ function SessionReader(props: {
     }
     if (here === undefined) return;
     const noteHere = noteAt(here);
+    const threadHere = here.kind === "line" ? threadAt(here) : undefined;
     switch (id) {
       case "down":
       case "up":
@@ -1725,16 +2039,21 @@ function SessionReader(props: {
         if (selecting) return;
         return go(fileStep(model, here, id === "nextFile" ? 1 : -1), "top");
       case "open":
-        if (here.kind === "range") return openRange(here);
-        if (here.kind === "header" && diffs.has(here.file))
-          return setFolds([here.file], !folded.has(here.file));
-        return noteHere && setNoteCollapsed(noteHere.note.id, false);
       case "unfold":
         if (here.kind === "range") return openRange(here);
-        if (here.kind === "header" && folded.has(here.file)) return setFolds([here.file], false);
+        if (here.kind === "header" && diffs.has(here.file))
+          return id === "open"
+            ? setFolds([here.file], !folded.has(here.file))
+            : folded.has(here.file) && setFolds([here.file], false);
+        // One level at a time: a collapsed note opens before its thread.
+        if (noteHere && collapsedNotes.has(noteHere.note.id))
+          return setNoteCollapsed(noteHere.note.id, false);
+        if (threadHere) return setExpandedThread(threadHere.thread.id);
         return noteHere && setNoteCollapsed(noteHere.note.id, false);
       case "fold":
-        // One level at a time: an open note at the cursor closes before its file folds.
+        // One level at a time: an open thread, then an open note, closes before its file folds.
+        if (threadHere && expandedThread === threadHere.thread.id)
+          return setExpandedThread(undefined);
         if (noteHere && !collapsedNotes.has(noteHere.note.id))
           return setNoteCollapsed(noteHere.note.id, true);
         if (!diffs.has(here.file) || folded.has(here.file)) return;
@@ -1877,6 +2196,10 @@ function SessionReader(props: {
           <PillButton onClick={() => setDialog("menu")}>
             Commands <kbd {...stylex.props(styles.kbd)}>⌘K</kbd>
           </PillButton>
+          <PillButton onClick={() => setDialog("comments")}>
+            Comments
+            {openThreads > 0 && <span {...stylex.props(styles.count)}>{openThreads} open</span>}
+          </PillButton>
           <AllSessionsLink />
           {/* Keyed: switching sessions on this route starts a new deletion intent, never B's retry. */}
           <DeleteSession
@@ -1956,6 +2279,7 @@ function SessionReader(props: {
               {selected} {selected === 1 ? "line" : "lines"} selected
             </span>
           )}
+          {lines !== null && <PillButton onClick={() => run("comment")}>Comment</PillButton>}
           <Switch
             label="Diff layout"
             name="diff-layout"
@@ -2066,34 +2390,29 @@ function SessionReader(props: {
           target={captured}
           restore={panel.restore}
           onPaint={() => peekHandle.current?.place()}
-          renderAnnotation={(annotation) =>
-            annotation.kind === "peek" ? (
-              <PeekSpacer ref={setSpacer} />
-            ) : annotation.kind === "foreign" ? (
-              <ForeignHunkLabel owner={annotation.owner} />
-            ) : (
-              <NoteCard
-                note={annotation.note}
-                collapsed={collapsedNotes.has(annotation.note.id)}
-                onToggle={() =>
-                  setCollapsedNotes((before) => {
-                    const after = new Set(before);
-                    if (!after.delete(annotation.note.id)) after.add(annotation.note.id);
-                    return after;
-                  })
-                }
-                onHighlight={(range) => viewer.current?.highlight(range)}
-                onReference={(target) =>
-                  follow(target, { kind: "note", noteId: annotation.note.id })
-                }
-                refocus={
-                  refocus?.origin.kind === "note" && refocus.origin.noteId === annotation.note.id
-                    ? refocus.target
-                    : undefined
-                }
-              />
-            )
-          }
+          renderAnnotation={(annotation) => {
+            if (annotation.kind === "thread") {
+              const thread = conversationOf(annotation.threadId);
+              return thread && threadCard(thread, false, true);
+            }
+            if (annotation.kind === "draft")
+              return draftNow?.id === annotation.draftId && composerOf(draftNow);
+            if (annotation.kind !== "note") return noteRow(annotation);
+            const noteThread = threadsShown.find(({ note }) => note === annotation.note.id)?.thread;
+            const noteDraft =
+              draftNow &&
+              draftNow.thread === undefined &&
+              liveNote(draftNow, allNotes)?.id === annotation.note.id
+                ? draftNow
+                : undefined;
+            return (
+              <>
+                {noteRow(annotation)}
+                {noteThread && threadCard(noteThread, false, true)}
+                {noteDraft && composerOf(noteDraft)}
+              </>
+            );
+          }}
           loadDiffFiles={loadDiffFiles}
           onWindow={onWindow}
           onWidth={setWidth}
@@ -2195,6 +2514,36 @@ function SessionReader(props: {
           onClose={() => setDialog((open) => (open === "help" ? undefined : open))}
         />
       )}
+      {dialog === "comments" && (
+        <CommentsList
+          threads={conversations.threads}
+          drafts={conversations.drafts}
+          snapshotId={snapshotId}
+          renderThread={(thread) =>
+            threadCard(thread, true, !placedThreads.has(thread.id), () => {
+              setDialog(undefined);
+              showThread(thread.id);
+            })
+          }
+          renderDraft={(draft) =>
+            draft.id === activeDraft && draft.thread === undefined && !draftPlaced(draft)
+              ? composerOf(draft)
+              : undefined
+          }
+          onResume={(draft) => {
+            setActiveDraft(draft.id);
+            setExpandedThread(draft.thread);
+            if (draftPlaced(draft)) setDialog(undefined);
+          }}
+          onDiscard={(draft) =>
+            void conversations
+              .act({ command: "discard", requestId: newRequestId(), draft: draft.id })
+              .then(() => forgetDraftText(session.id, draft.id))
+              .catch((error: unknown) => sayFailure("discard the draft", error))
+          }
+          onClose={() => setDialog((open) => (open === "comments" ? undefined : open))}
+        />
+      )}
     </Frame>
   );
 }
@@ -2230,6 +2579,7 @@ const styles = stylex.create({
     fontSize: "11px",
   },
   keysButton: { color: { default: theme.muted, ":hover": theme.ink } },
+  count: { marginLeft: "6px", color: theme.ink },
 });
 
 /**

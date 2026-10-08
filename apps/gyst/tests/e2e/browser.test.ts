@@ -973,6 +973,7 @@ describe("installed gyst in a sandboxed browser", () => {
     // Eager captured-content reads are bounded and checked in their own test.
     const reads = operations.map(operationOf).filter((op) => op.command !== "code");
     expect(reads.sort((a, b) => a.command.localeCompare(b.command))).toEqual([
+      { command: "conversations", session: one.id },
       { command: "diff", session: one.id },
       { command: "files", session: one.id, snapshotId: sessions[0].snapshotId },
       { command: "open", session: one.id },
@@ -1681,7 +1682,8 @@ describe("installed gyst in a sandboxed browser", () => {
     const commands: string[] = [];
     third.on("request", (request) => {
       const operation = operationOf(request);
-      if (operation) commands.push(operation.command);
+      // Conversations are read again on each change too; Viewed's own order is what counts here.
+      if (operation && operation.command !== "conversations") commands.push(operation.command);
     });
     let lost = false;
     await third.route(isOperationUrl, async (route) => {
@@ -2484,7 +2486,7 @@ describe("installed gyst in a sandboxed browser", () => {
     ])
       await help.getByText(label, { exact: true }).waitFor();
     // Keys of later tickets are not listed.
-    expect(await help.getByText(/Reply|comment|Resolve/i).count()).toBe(0);
+    expect(await help.getByText(/Search/).count()).toBe(0);
     await page.keyboard.press("j");
     await says(page, "README.md · file");
     await page.keyboard.press("Escape");
@@ -4403,6 +4405,272 @@ describe("installed gyst in a sandboxed browser", () => {
     });
   }, 30_000);
 
+  it("comments on code and replies to a note from the keyboard, Pending until the agent's pickup, with the agent's answer, Outdated wording and resolution live", async () => {
+    const walk = await openWalk();
+    await publishWalk(walk);
+    const page = await newPage();
+    await page.setViewportSize({ width: 1280, height: 1200 });
+    const writes = viewedOf(page);
+    await page.goto(`${one.origin}/session/${walk.id}`);
+    const pane = page.getByRole("main");
+    await page
+      .getByRole("navigation", { name: "gyst" })
+      .getByRole("button", { name: /^Parse the config/ })
+      .click();
+    await headingsAre(page, ["walk/b.ts", "walk/a.ts"]);
+    await page.getByRole("radio", { name: "Split", exact: true }).check();
+    await keys(page, "]", "n", "]", "n", "k");
+    await says(page, "a.ts:19 · new");
+
+    // c opens a composer under the line; typing never moves the reader, Shift+Enter adds a line.
+    await keys(page, "c");
+    const composer = pane.locator("[data-composer]");
+    const field = composer.getByRole("textbox", { name: "Comment" });
+    await field.waitFor();
+    await waitFor(
+      () => field.evaluate((element) => element === document.activeElement),
+      "the composer to take focus",
+    );
+    await page.keyboard.type("Why *double* jk?");
+    await page.keyboard.press("Shift+Enter");
+    await page.keyboard.type("Two lines.");
+    await says(page, "a.ts:19 · new");
+    expect(await field.inputValue()).toBe("Why *double* jk?\nTwo lines.");
+    await composer.getByRole("combobox", { name: "Kind" }).selectOption("change");
+    await field.press("Enter");
+    await composer.waitFor({ state: "detached" });
+    await pane.locator("[data-thread]").getByText("Pending").waitFor();
+    const codeId = await pane.locator("[data-thread]").getAttribute("data-thread");
+    const code = pane.locator(`[data-thread="${codeId}"]`);
+    // Status counts it without its body.
+    const counted = await gyst("session", "status", "--session", walk.id);
+    expect(counted.threads).toEqual({ open: 1, resolved: 0, pending: 1 });
+    await code.getByRole("button", { name: /^Thread/ }).click();
+    await code.getByText("double", { exact: true }).waitFor();
+    await code.getByText("Change request", { exact: false }).waitFor();
+    // The author edits it while it is Pending.
+    await code.getByRole("button", { name: "Edit" }).click();
+    const edit = code.getByRole("textbox", { name: "Edit message" });
+    await edit.fill("Why double here?");
+    await edit.press("Enter");
+    await code.getByText("Why double here?").waitFor();
+
+    // r on the note starts its only thread with the note's wording.
+    await keys(page, "j");
+    await says(page, "a.ts:20 · new");
+    await keys(page, "r");
+    const reply = pane.locator("[data-composer]").getByRole("textbox", { name: "Reply" });
+    await reply.waitFor();
+    await reply.fill("And twenty?");
+    await reply.press("Enter");
+    const span = pane.locator(`[data-thread]:not([data-thread="${codeId}"])`);
+    await waitFor(async () => (await pane.locator("[data-thread]").count()) === 2, "two threads");
+
+    // The agent retrieves both, freezing them; its answer and a rewrite of the note arrive live.
+    const bundle = await gyst(
+      "session",
+      "threads",
+      "--session",
+      walk.id,
+      "--pending",
+      "--request-id",
+      "p1",
+    );
+    expect(bundle.threads.map(({ messages }: any) => messages[0].markdown)).toEqual([
+      "Why double here?",
+      "And twenty?",
+    ]);
+    expect(bundle.threads[1].messages[0].wording.markdown).toBe(
+      "Both doublings share **one** reason.",
+    );
+    await waitFor(async () => (await pane.getByText("Pending").count()) === 0, "Pending gone");
+    expect(await code.getByRole("button", { name: "Edit" }).count()).toBe(0);
+    await walk.publish(bundle.revision, "answer", [
+      { type: "thread.reply", thread: bundle.threads[0].id, markdown: "So the *total* doubles." },
+      { type: "note.update", id: "span", markdown: "Both doublings share a reason." },
+    ]);
+    // One conversation is open at a time: the reply to the note closed this one.
+    await code.getByRole("button", { name: /^Thread/ }).click();
+    await code.getByText("total").waitFor();
+    await code.getByText("Agent").waitFor();
+    // The note reply keeps the wording it answered, shown on request.
+    await span.getByRole("button", { name: /^Thread/ }).click();
+    const outdated = span.getByRole("button", { name: "Outdated" });
+    await outdated.click();
+    await span.getByText("one", { exact: true }).waitFor();
+
+    // ]t and [t walk open threads; x resolves one, which leaves the diff for Comments.
+    await keys(page, "g", "g", "]", "t");
+    await says(page, "a.ts:19 · new");
+    await keys(page, "]", "t");
+    await says(page, "a.ts:20 · new");
+    await keys(page, "[", "t");
+    await says(page, "a.ts:19 · new");
+    await keys(page, "x");
+    await says(page, "Thread resolved; it stays in Comments (C).");
+    await waitFor(async () => (await pane.locator("[data-thread]").count()) === 1, "one left");
+    await keys(page, "Shift+C");
+    const comments = page.getByRole("dialog", { name: "Comments" });
+    await comments.waitFor();
+    const resolved = comments.locator("[data-thread]").filter({ hasText: "Resolved" });
+    await resolved.getByRole("button", { name: /a\.ts:L19/ }).click();
+    // A resolved thread takes no new human reply until reopened.
+    expect(await resolved.getByRole("button", { name: "Reply" }).count()).toBe(0);
+    await resolved.getByRole("button", { name: "Reopen" }).click();
+    await waitFor(
+      async () => (await comments.getByText("Resolved").count()) === 0,
+      "the thread reopened",
+    );
+    await page.keyboard.press("Escape");
+    await comments.waitFor({ state: "detached" });
+    await waitFor(async () => (await pane.locator("[data-thread]").count()) === 2, "both back");
+    expect(await gyst("session", "status", "--session", walk.id)).toMatchObject({
+      threads: { open: 2, resolved: 0, pending: 0 },
+      viewedHunkIds: [],
+    });
+    // The help lists the conversation keys.
+    await keys(page, "?");
+    const help = page.getByRole("dialog", { name: "Keyboard shortcuts" });
+    await help.getByText("Reply to the thread or note at the cursor").waitFor();
+    await page.keyboard.press("Escape");
+    expect(writes).toEqual([]);
+  }, 60_000);
+
+  it("keeps a draft's text and original code through Esc, a daemon restart and a refresh, and sends it on that code", async () => {
+    git("branch", "-f", "peek", "walk");
+    const walk = await openWalk("walk~1...peek");
+    await publishWalk(walk);
+    const page = await newPage();
+    await page.setViewportSize({ width: 1280, height: 1200 });
+    await page.goto(`${one.origin}/session/${walk.id}`);
+    const pane = page.getByRole("main");
+    await page
+      .getByRole("navigation", { name: "gyst" })
+      .getByRole("button", { name: /^Parse the config/ })
+      .click();
+    await headingsAre(page, ["walk/b.ts", "walk/a.ts"]);
+    await keys(page, "]", "n", "k");
+    await says(page, "b.ts:4 · new");
+    await keys(page, "Shift+V", "j");
+    await says(page, "2 lines selected");
+    await keys(page, "c");
+    const field = pane.locator("[data-composer]").getByRole("textbox", { name: "Comment" });
+    await field.waitFor();
+    await field.fill("Is five times two right?");
+    // Esc closes the composer without discarding the draft; c on the same lines resumes it.
+    await field.press("Escape");
+    await field.waitFor({ state: "detached" });
+    await says(page, "b.ts:5 · new");
+    await keys(page, "Shift+V", "k", "c");
+    await field.waitFor();
+    expect(await field.inputValue()).toBe("Is five times two right?");
+
+    // Across a daemon restart nothing is sent, and the draft stays.
+    await killDaemon(data, "SIGTERM");
+    await says(page, "Reconnecting…");
+    await pane.getByText("Can't reach gyst; your draft is kept.").waitFor();
+    expect(await pane.getByRole("button", { name: "Send" }).isDisabled()).toBe(true);
+    await gyst("session", "list");
+    await says(page, "Live");
+    expect(await field.inputValue()).toBe("Is five times two right?");
+
+    // A refresh changes those lines: the draft keeps its earlier code, flagged, from Comments.
+    git("branch", "-f", "peek", "walk-fix");
+    await keys(page, "Shift+R");
+    await headingsAre(page, ["walk/a.ts"]);
+    await keys(page, "Shift+C");
+    const comments = page.getByRole("dialog", { name: "Comments" });
+    await comments.getByText("walk/b.ts:L4–5 · new · earlier code").waitFor();
+    await comments.getByRole("button", { name: "Resume" }).click();
+    await comments.getByText("A refresh changed this code.", { exact: false }).waitFor();
+    const resumed = comments.getByRole("textbox", { name: "Comment" });
+    expect(await resumed.inputValue()).toBe("Is five times two right?");
+    await resumed.press("Enter");
+    await comments.locator("[data-thread]").waitFor();
+    await comments.getByText("walk/b.ts:L4–5 · new · earlier code").waitFor();
+    await page.keyboard.press("Escape");
+    // The agent receives the code it was written against.
+    const bundle = await gyst(
+      "session",
+      "threads",
+      "--session",
+      walk.id,
+      "--open",
+      "--request-id",
+      "o1",
+    );
+    expect(bundle.threads[0].code).toEqual({
+      kind: "text",
+      lines: ["export const b4 = 4;", "export const b5 = 5 * 2;"],
+    });
+  }, 60_000);
+
+  it("comments inside an expanded captured file and in Mouse mode with the hover +, never touching Viewed", async () => {
+    const walk = await openWalk();
+    await publishWalk(walk);
+    await walk.publish(1, "refs", referenceOps);
+    const page = await newPage();
+    await page.setViewportSize({ width: 1280, height: 1200 });
+    const writes = viewedOf(page);
+    await page.goto(`${one.origin}/session/${walk.id}`);
+    const pane = page.getByRole("main");
+    await page
+      .getByRole("navigation", { name: "gyst" })
+      .getByRole("button", { name: /^Parse the config/ })
+      .click();
+    await headingsAre(page, ["walk/b.ts", "walk/a.ts"]);
+    await pane.locator("[data-note=b-note]").getByRole("button", { name: "line 40" }).click();
+    await peekOf(page).getByRole("button", { name: "Expand" }).click();
+    await headingsAre(page, ["src/long.ts"]);
+    await says(page, "long.ts:40 · new");
+    await keys(page, "c");
+    const field = pane.locator("[data-composer]").getByRole("textbox", { name: "Comment" });
+    await field.fill("Supporting code: still forty?");
+    await field.press("Enter");
+    await pane.locator("[data-thread]").getByText("Pending").waitFor();
+
+    // Back in the diff, Mouse mode's hover + selects a line and the status line comments on it.
+    await keys(page, "Backspace");
+    await headingsAre(page, ["walk/b.ts", "walk/a.ts"]);
+    await page
+      .getByRole("radiogroup", { name: "Input mode" })
+      .getByRole("radio", { name: "Mouse" })
+      .check();
+    const line = pane.getByText("export const a19 = 19;", { exact: true }).last();
+    const plus = pane.locator("button[data-utility-button]").filter({ visible: true }).first();
+    await waitFor(async () => {
+      await line.hover();
+      await plus.click({ timeout: 500 }).catch(() => {});
+      return (await statusLine(page).getByText("1 line selected", { exact: true }).count()) === 1;
+    }, "the hover + selecting the line");
+    await statusLine(page).getByRole("button", { name: "Comment" }).click();
+    const mouseField = pane.locator("[data-composer]").getByRole("textbox", { name: "Comment" });
+    await mouseField.fill("And nineteen?");
+    await pane.locator("[data-composer]").getByRole("button", { name: "Send" }).click();
+    await waitFor(
+      async () => (await pane.locator("[data-thread]").count()) === 1,
+      "the mouse comment's thread",
+    );
+
+    const bundle = await gyst(
+      "session",
+      "threads",
+      "--session",
+      walk.id,
+      "--pending",
+      "--request-id",
+      "p1",
+    );
+    expect(
+      bundle.threads.map(({ anchor, code }: any) => [anchor.path, anchor.startLine, code.lines]),
+    ).toEqual([
+      ["src/long.ts", 40, ["export const line40 = 40;"]],
+      ["walk/a.ts", 19, ["export const a19 = 19;"]],
+    ]);
+    expect(bundle.progress).toEqual({ viewed: 0, total: 5 });
+    expect(writes).toEqual([]);
+  }, 60_000);
+
   it("keeps hostile prose inert, opens a web link only on a click, and leaves the view unchanged when the CLI refuses unsafe Markdown", async () => {
     const walk = await openWalk();
     const overview = [
@@ -5535,7 +5803,8 @@ describe("installed gyst in a sandboxed browser", () => {
     const commands: string[] = [];
     page.on("request", (request) => {
       const operation = operationOf(request);
-      if (operation) commands.push(operation.command);
+      // Conversations are read again on each change too; Viewed's own order is what counts here.
+      if (operation && operation.command !== "conversations") commands.push(operation.command);
     });
     let lost = false;
     await page.route(isOperationUrl, async (route) => {
