@@ -4,7 +4,7 @@
 // change. Nothing here touches Viewed.
 import type { AddonState, CapturedRange, NavigationUnavailable } from "@gyst/core/wire";
 import * as stylex from "@stylexjs/stylex";
-import { type KeyboardEvent, type Ref, useMemo, useRef } from "react";
+import { type KeyboardEvent, type Ref, useEffect, useMemo, useRef } from "react";
 import { isExpectedFailure, operation } from "./api.ts";
 import type { RangeRead } from "./captured.ts";
 import { useMounted } from "./components.tsx";
@@ -456,8 +456,19 @@ function Listbox(props: {
   onPick: (index: number) => void;
 }) {
   const id = `peek-${props.label.toLowerCase()}`;
+  const list = useRef<HTMLUListElement>(null);
+  // Within the list only: scrollIntoView would also scroll the review around the peek.
+  useEffect(() => {
+    const element = list.current;
+    const option = element?.children[props.selected];
+    if (!element || !option) return;
+    const [box, row] = [element.getBoundingClientRect(), option.getBoundingClientRect()];
+    if (row.top < box.top) element.scrollTop -= box.top - row.top;
+    else if (row.bottom > box.bottom) element.scrollTop += row.bottom - box.bottom;
+  }, [props.selected]);
   return (
     <ul
+      ref={list}
       role="listbox"
       aria-label={props.label}
       aria-activedescendant={`${id}-${props.selected}`}
