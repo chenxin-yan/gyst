@@ -186,8 +186,8 @@ const eligibleText = <E>(bytes: Stream.Stream<Uint8Array, E>) => {
 
 /**
  * The optional per-snapshot quota of captured text, each distinct blob counted once. There is no
- * default. Read from the daemon's environment, so it applies from the daemon's next start; an
- * invalid value fails each capture, which names it.
+ * default. Read when the daemon starts, from its environment; an invalid value fails each capture,
+ * which names it.
  */
 const snapshotQuota = Config.option(Config.ByteSize("GYST_SNAPSHOT_QUOTA")).pipe(
   Effect.mapError(
@@ -311,6 +311,7 @@ export class Git extends Context.Service<
       const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
       const fs = yield* FileSystem.FileSystem;
       const content = yield* CapturedContent;
+      const quota = yield* Effect.result(snapshotQuota);
       const env = environment();
       const command = (
         cwd: string,
@@ -1029,9 +1030,9 @@ export class Git extends Context.Service<
           if (textual && !same && !renamed.has(path))
             diffed.push({ path, old: old.side, new: current.side });
         }
-        const quota = yield* snapshotQuota;
+        const limit = yield* Effect.fromResult(quota);
         const captured =
-          quota._tag === "Some" ? yield* withinQuota(files, Number(quota.value)) : files;
+          limit._tag === "Some" ? yield* withinQuota(files, Number(limit.value)) : files;
         const hunks = [];
         yield* report("diff", 0, diffed.length);
         for (const [index, { path, old, new: current }] of diffed.entries()) {

@@ -34,7 +34,8 @@ import {
 } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import { execFileSync } from "node:child_process";
-import { mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, realpath, rm, writeFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { manifestOf, publishingContent } from "./capture-doubles.ts";
@@ -76,6 +77,8 @@ let pullRequestEdit: Partial<PullRequest>;
 let pullRequestCaptureFailure: SourceUnavailable | undefined;
 let saveFails: boolean;
 let removeFails: boolean;
+/** Session files this version cannot read, as `SessionStore.loadUndecodable` returns them. */
+let undecodable: string[];
 let nextId: number;
 let gitPatch: string;
 let supporting: Record<string, string>;
@@ -201,7 +204,7 @@ const writeFailure = PlatformError.systemError({
 
 const store = Layer.succeed(SessionStore, {
   loadAll: Effect.sync(() => [...files.values()]),
-  loadUndecodable: Effect.succeed([]),
+  loadUndecodable: Effect.sync(() => undecodable),
   save: (session) =>
     Effect.suspend(() => {
       if (saveFails) return Effect.fail(writeFailure);
@@ -357,6 +360,7 @@ const openScope = (scope: Scope = uncommitted, cwd = root) =>
 
 beforeEach(() => {
   files = new Map([[persisted.id, persisted]]);
+  undecodable = [];
   deleteReceipts = [];
   captureCalls = [];
   githubCalls = [];
@@ -2613,10 +2617,36 @@ describe("Sessions captured reads over real captures", () => {
 
   /** When set, each captured-content read signals `started` and then waits for `release`. */
   let readGate: { started: Deferred.Deferred<void>; release: Deferred.Deferred<void> } | undefined;
+  /** When set, the next diff copy (all blobs committed) signals `started`, then waits for `release`. */
+  let diffGate: { started: Deferred.Deferred<void>; release: Deferred.Deferred<void> } | undefined;
+  /** How many blob writes still fail as out of space before writes succeed again. */
+  let outOfSpace = 0;
   const gatedContent = Layer.effect(
     CapturedContent,
     Effect.map(CapturedContent, (real) => ({
       ...real,
+      putBlob: <E>(bytes: Stream.Stream<Uint8Array, E>) => {
+        if (outOfSpace > 0) {
+          outOfSpace--;
+          return Effect.fail(
+            new SourceUnavailable({
+              message: "gyst's data directory is out of space",
+              detail: { reason: "storage_full" },
+            }),
+          );
+        }
+        return real.putBlob(bytes);
+      },
+      materialize: (blob: string) => {
+        const held = diffGate;
+        diffGate = undefined;
+        return held
+          ? Deferred.succeed(held.started, undefined).pipe(
+              Effect.andThen(Deferred.await(held.release)),
+              Effect.andThen(real.materialize(blob)),
+            )
+          : real.materialize(blob);
+      },
       readBlob: (blob: string, range: ByteRange) =>
         readGate
           ? Stream.unwrap(
@@ -2628,8 +2658,16 @@ describe("Sessions captured reads over real captures", () => {
           : real.readBlob(blob, range),
     })),
   ).pipe(Layer.provide(CapturedContent.layer));
+  // Sessions here are real captures; the shared fixture names no captured snapshot.
+  beforeEach(() => {
+    files.delete(persisted.id);
+    outOfSpace = 0;
+  });
   /** Real Git capture into real captured content under a private data dir. */
-  const runReal = <A, E>(effect: Effect.Effect<A, E, Sessions>) =>
+  const runReal = <A, E>(
+    effect: Effect.Effect<A, E, Sessions>,
+    environment: Record<string, string> = {},
+  ) =>
     Effect.runPromise(
       Effect.provide(
         Sessions.use((s) => s.load).pipe(Effect.andThen(effect)),
@@ -2639,7 +2677,9 @@ describe("Sessions captured reads over real captures", () => {
           Layer.provide(Paths.layer),
           Layer.provide(NodeServices.layer),
           Layer.provide(
-            ConfigProvider.layer(ConfigProvider.fromUnknown({ GYST_DATA_DIR: join(dir, "data") })),
+            ConfigProvider.layer(
+              ConfigProvider.fromUnknown({ GYST_DATA_DIR: join(dir, "data"), ...environment }),
+            ),
           ),
         ),
       ),
@@ -3340,5 +3380,376 @@ describe("Sessions captured reads over real captures", () => {
         ).toEqual(["plain.txt"]);
       }),
     );
+  });
+
+  describe("reclaiming storage", () => {
+    const onDisk = (kind: "blobs" | "snapshots" | "staging") =>
+      readdir(join(dir, "data", "content", kind));
+    const sha256 = (text: string) => createHash("sha256").update(text).digest("hex");
+    const reclaim = Sessions.use((s) => s.reclaim);
+    const remove = (session: string, requestId: string) =>
+      Sessions.use((s) => s.delete({ command: "delete", session, requestId }));
+    type Act = Input<"draft" | "send" | "resolve" | "discard">;
+    const act = (request: Act) => Sessions.use((s) => s.converse(request));
+
+    it("shares content across sessions and deletes one releasing only what no other retains", async () => {
+      const cwd = await repo("shared", { "shared.ts": "shared\n", "a.ts": "a one\n" });
+      await writeFile(join(cwd, "a.ts"), "a two\n");
+      await writeFile(join(cwd, "b.ts"), "b\n");
+      git(cwd, "add", ".");
+      git(cwd, "commit", "-qm", "second");
+      await writeFile(join(cwd, "a.ts"), "a three\n");
+      const { uncommittedId, rangeId } = await runReal(
+        Effect.gen(function* () {
+          const sessions = yield* Sessions;
+          const open = (scope: Scope) => sessions.open({ command: "open", cwd, scope });
+          const local = (yield* open(uncommitted)).session;
+          const range = (yield* open({ kind: "range", range: "HEAD~1..HEAD" })).session;
+          yield* reclaim;
+          return { uncommittedId: local.id, rangeId: range.id };
+        }),
+      );
+      // Only "a one" is the range's alone; the uncommitted scope's old side is the range's head.
+      const bytes = ["shared\n", "a one\n", "a two\n", "a three\n", "b\n"];
+      expect((await onDisk("blobs")).toSorted()).toEqual(bytes.map(sha256).toSorted());
+      expect(await onDisk("snapshots")).toHaveLength(2);
+
+      await runReal(
+        Effect.gen(function* () {
+          expect(yield* remove(rangeId, "delete-range")).toEqual({
+            deleted: true,
+            sessionId: rangeId,
+          });
+          expect(yield* reclaim).toEqual({ snapshots: 1, blobs: 1 });
+        }),
+      );
+      expect((await onDisk("blobs")).toSorted()).toEqual(
+        ["shared\n", "a two\n", "a three\n", "b\n"].map(sha256).toSorted(),
+      );
+      // What the remaining session reads survives the checkout too.
+      await rm(cwd, { recursive: true, force: true });
+      await runReal(
+        Effect.gen(function* () {
+          const { session } = yield* Sessions.use((s) =>
+            s.open({ command: "open", session: uncommittedId }),
+          );
+          const read = (file: string, side: "old" | "new") =>
+            code({ session: uncommittedId, snapshotId: session.snapshotId, file, side }).pipe(
+              Effect.map(({ content }) => content.kind === "text" && content.text),
+            );
+          expect(yield* read("shared.ts", "new")).toBe("shared\n");
+          expect(yield* read("a.ts", "old")).toBe("a two\n");
+          expect(yield* read("a.ts", "new")).toBe("a three\n");
+          // A lost reply's retry still gets the recorded deletion.
+          expect(yield* remove(rangeId, "delete-range")).toEqual({
+            deleted: true,
+            sessionId: rangeId,
+          });
+          yield* remove(uncommittedId, "delete-local");
+          expect(yield* reclaim).toEqual({ snapshots: 1, blobs: 4 });
+        }),
+      );
+      expect(await onDisk("blobs")).toEqual([]);
+      expect(await onDisk("snapshots")).toEqual([]);
+    });
+
+    it("keeps of an older snapshot what references, resolved threads and live drafts pin, across a restart", async () => {
+      const numbered = (prefix: string, count: number) =>
+        Array.from({ length: count }, (_, index) => `${prefix}${index + 1}\n`).join("");
+      const cwd = await repo("pins", {
+        "a.ts": numbered("a", 20),
+        "helper.ts": numbered("h", 4),
+        "thread.ts": "t1\nt2\n",
+        "draft.ts": "d1\nd2\n",
+        "other.ts": "o1\n",
+      });
+      const edit = (version: string) =>
+        Promise.all([
+          writeFile(join(cwd, "a.ts"), numbered("a", 20).replace("a10\n", "changed\n")),
+          writeFile(join(cwd, "thread.ts"), `t-${version}\nt2\n`),
+          writeFile(join(cwd, "draft.ts"), `d-${version}\nd2\n`),
+          writeFile(join(cwd, "other.ts"), `o-${version}\n`),
+        ]);
+      await edit("first");
+      const { sessionId, earlier, draft } = await runReal(
+        Effect.gen(function* () {
+          const sessions = yield* Sessions;
+          const { session } = yield* sessions.open({ command: "open", cwd, scope: uncommitted });
+          const change = (yield* sessions.diff({
+            command: "diff",
+            session: session.id,
+          })).hunks.find(({ file }) => file === "a.ts");
+          const others = (yield* sessions.diff({ command: "diff", session: session.id })).hunks
+            .filter(({ file }) => file !== "a.ts")
+            .map(({ id }) => id);
+          yield* sessions.apply({
+            command: "apply",
+            session: session.id,
+            batch: JSON.stringify({
+              revision: 0,
+              snapshotId: session.snapshotId,
+              idempotencyKey: "publish",
+              ops: [
+                { type: "walkthrough.update", overview: "Edits." },
+                {
+                  type: "group.create",
+                  id: "g",
+                  title: "Change",
+                  overview: "The change.",
+                  memberHunkIds: [change!.id, ...others],
+                },
+                {
+                  type: "note.create",
+                  id: "n",
+                  group: "g",
+                  anchor: { path: "a.ts", side: "new", startLine: 10, endLine: 10 },
+                  markdown: "Calls [the helper](gyst:new/helper.ts#L2-L3).",
+                },
+              ],
+            }),
+          });
+          const anchor = (path: string) => ({
+            snapshotId: session.snapshotId,
+            path,
+            side: "new" as const,
+            startLine: 1,
+            endLine: 1,
+          });
+          const comment = yield* act({
+            command: "draft",
+            session: session.id,
+            requestId: "comment",
+            target: { kind: "comment", anchor: anchor("thread.ts") },
+          });
+          const sent = yield* act({
+            command: "send",
+            session: session.id,
+            requestId: "send",
+            draft: comment.draft!,
+            markdown: "Why?",
+            kind: "question",
+          });
+          yield* act({
+            command: "resolve",
+            session: session.id,
+            requestId: "resolve",
+            thread: sent.thread!,
+            resolved: true,
+          });
+          const live = yield* act({
+            command: "draft",
+            session: session.id,
+            requestId: "live",
+            target: { kind: "comment", anchor: anchor("draft.ts") },
+          });
+          yield* Effect.promise(async () => {
+            await edit("second");
+            await writeFile(join(cwd, "helper.ts"), numbered("h", 4).replace("h2\n", "H2\n"));
+          });
+          expect((yield* refreshNow(session.id)).replaced).toBe(true);
+          return { sessionId: session.id, earlier: session.snapshotId, draft: live.draft! };
+        }),
+      );
+      const readEarlier = (file: string) =>
+        code({ session: sessionId, snapshotId: earlier, file, side: "new" }).pipe(
+          Effect.map(({ content }) => content.kind === "text" && content.text),
+        );
+      // A new daemon: the browser that began the draft is long gone, and its pin still holds the
+      // whole snapshot its links may name.
+      await runReal(
+        Effect.gen(function* () {
+          yield* reclaim;
+          expect(yield* readEarlier("other.ts")).toBe("o-first\n");
+          expect(yield* readEarlier("draft.ts")).toBe("d-first\nd2\n");
+        }),
+      );
+      expect(await onDisk("blobs")).toContain(sha256("o-first\n"));
+      await runReal(
+        Effect.gen(function* () {
+          yield* act({ command: "discard", session: sessionId, requestId: "discard", draft });
+          yield* reclaim;
+          expect(yield* readEarlier("helper.ts")).toBe(numbered("h", 4));
+          expect(yield* readEarlier("thread.ts")).toBe("t-first\nt2\n");
+          for (const file of ["other.ts", "draft.ts"])
+            expect(
+              yield* Effect.flip(
+                code({ session: sessionId, snapshotId: earlier, file, side: "new" }),
+              ),
+            ).toMatchObject({ _tag: "stale_revision", message: expect.stringContaining(file) });
+          const listed = yield* Sessions.use((s) =>
+            s.files({ command: "files", session: sessionId, snapshotId: earlier }),
+          );
+          // The note moved on with its unchanged line; its reference and the thread did not.
+          expect(listed.files.map(({ path }) => path)).toEqual(["helper.ts", "thread.ts"]);
+        }),
+      );
+      const kept = await onDisk("blobs");
+      expect(kept).toContain(sha256("t-first\nt2\n"));
+      expect(kept).not.toContain(sha256("o-first\n"));
+      expect(kept).not.toContain(sha256("d-first\nd2\n"));
+    });
+
+    it("never reclaims what an in-flight read or capture holds", async () => {
+      const cwd = await repo("held", { "x.txt": "before\n" });
+      await writeFile(join(cwd, "x.txt"), "read while deleted\n");
+      const second = await repo("captured", { "y.txt": "before\n" });
+      await writeFile(join(second, "y.txt"), "captured during a reclaim\n");
+      await runReal(
+        Effect.gen(function* () {
+          const sessions = yield* Sessions;
+          const { session } = yield* sessions.open({ command: "open", cwd, scope: uncommitted });
+          const held = {
+            started: yield* Deferred.make<void>(),
+            release: yield* Deferred.make<void>(),
+          };
+          readGate = held;
+          const reading = yield* Effect.forkChild(
+            code({
+              session: session.id,
+              snapshotId: session.snapshotId,
+              file: "x.txt",
+              side: "new",
+            }),
+          );
+          yield* Deferred.await(held.started);
+          readGate = undefined;
+          yield* remove(session.id, "delete-while-reading");
+          let reclaimed = false;
+          const reclaiming = yield* Effect.forkChild(
+            reclaim.pipe(Effect.tap(() => Effect.sync(() => (reclaimed = true)))),
+          );
+          yield* Effect.sleep("50 millis");
+          expect(reclaimed).toBe(false);
+          yield* Deferred.succeed(held.release, undefined);
+          expect(yield* Fiber.join(reading)).toMatchObject({
+            content: { text: "read while deleted\n" },
+          });
+          yield* Fiber.join(reclaiming);
+          expect(yield* Effect.promise(() => onDisk("blobs"))).not.toContain(
+            sha256("read while deleted\n"),
+          );
+
+          // Every blob of this capture is committed while no session names them yet.
+          const diffing = {
+            started: yield* Deferred.make<void>(),
+            release: yield* Deferred.make<void>(),
+          };
+          diffGate = diffing;
+          const opening = yield* Effect.forkChild(
+            sessions.open({ command: "open", cwd: second, scope: uncommitted }),
+          );
+          yield* Deferred.await(diffing.started);
+          reclaimed = false;
+          const racing = yield* Effect.forkChild(
+            reclaim.pipe(Effect.tap(() => Effect.sync(() => (reclaimed = true)))),
+          );
+          yield* Effect.sleep("50 millis");
+          expect(reclaimed).toBe(false);
+          yield* Deferred.succeed(diffing.release, undefined);
+          const opened = (yield* Fiber.join(opening)).session;
+          yield* Fiber.join(racing);
+          expect(
+            yield* code({
+              session: opened.id,
+              snapshotId: opened.snapshotId,
+              file: "y.txt",
+              side: "new",
+            }),
+          ).toMatchObject({ content: { text: "captured during a reclaim\n" } });
+          yield* remove(opened.id, "delete-captured");
+        }),
+      );
+    });
+
+    it("reclaims and retries a capture that ran out of space once, then refuses with nothing saved", async () => {
+      const retried = await repo("full-once", { "f.txt": "before\n" });
+      await writeFile(join(retried, "f.txt"), "after\n");
+      const refused = await repo("full", { "f.txt": "before\n" });
+      await writeFile(join(refused, "f.txt"), "after\n");
+      await runReal(
+        Effect.gen(function* () {
+          const sessions = yield* Sessions;
+          outOfSpace = 1;
+          const { session } = yield* sessions.open({
+            command: "open",
+            cwd: retried,
+            scope: uncommitted,
+          });
+          expect(outOfSpace).toBe(0);
+          const saved = new Set(files.keys());
+          outOfSpace = 2;
+          const error = yield* Effect.flip(
+            sessions.open({ command: "open", cwd: refused, scope: uncommitted }),
+          );
+          expect(error).toMatchObject({
+            _tag: "source_unavailable",
+            detail: { reason: "storage_full" },
+          });
+          expect(new Set(files.keys())).toEqual(saved);
+          expect((yield* sessions.list).sessions.map(({ id }) => id)).toEqual([session.id]);
+          yield* remove(session.id, "delete-full");
+          yield* reclaim;
+        }),
+      );
+      expect(await onDisk("staging")).toEqual([]);
+    });
+
+    it("keeps every snapshot a session file this version cannot read names", async () => {
+      const cwd = await repo("unreadable", { "u.txt": "before\n" });
+      await writeFile(join(cwd, "u.txt"), "kept for an older version\n");
+      const saved = await runReal(
+        Sessions.use((s) => s.open({ command: "open", cwd, scope: uncommitted })),
+      );
+      const session = files.get(saved.session.id)!;
+      files.delete(session.id);
+      undecodable = [JSON.stringify({ ...session, revision: "from another version" })];
+      await runReal(reclaim);
+      expect(await onDisk("snapshots")).toEqual([`${session.snapshotId}.json`]);
+      expect(await onDisk("blobs")).toContain(sha256("kept for an older version\n"));
+      undecodable = [];
+      await runReal(reclaim);
+      expect(await onDisk("blobs")).toEqual([]);
+    });
+
+    it("captures under an optional snapshot quota and says which supporting files it left out", async () => {
+      const cwd = await repo("quota", { "big.ts": "x".repeat(1000), "small.ts": "small\n" });
+      await writeFile(join(cwd, "small.ts"), "changed\n");
+      await runReal(
+        Effect.gen(function* () {
+          const sessions = yield* Sessions;
+          const { session } = yield* sessions.open({ command: "open", cwd, scope: uncommitted });
+          const listed = yield* sessions.files({
+            command: "files",
+            session: session.id,
+            snapshotId: session.snapshotId,
+          });
+          const omitted = { kind: "unavailable", reason: "quota" };
+          expect(listed.files).toContainEqual({ path: "big.ts", old: omitted, new: omitted });
+          expect(
+            yield* code({
+              session: session.id,
+              snapshotId: session.snapshotId,
+              file: "big.ts",
+              side: "new",
+            }),
+          ).toMatchObject({ content: omitted });
+          expect(yield* sessions.check({ command: "check", session: session.id })).toMatchObject({
+            state: "unavailable",
+            message: expect.stringContaining("quota"),
+          });
+          yield* remove(session.id, "delete-quota");
+        }),
+        { GYST_SNAPSHOT_QUOTA: "100 B" },
+      );
+      const tooSmall = await runReal(
+        Effect.flip(Sessions.use((s) => s.open({ command: "open", cwd, scope: uncommitted }))),
+        { GYST_SNAPSHOT_QUOTA: "5 B" },
+      );
+      expect(tooSmall).toMatchObject({
+        _tag: "source_unavailable",
+        detail: { reason: "quota_exceeded" },
+      });
+      expect([...files.values()].filter(({ repoRoot }) => repoRoot === cwd)).toEqual([]);
+    });
   });
 });

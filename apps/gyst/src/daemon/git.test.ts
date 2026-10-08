@@ -57,6 +57,7 @@ const run = <A, E>(
   effect: Effect.Effect<A, E, Git | CapturedContent>,
   wrap: (real: ContentService) => ContentService = (real) => real,
   spawner: Layer.Layer<ChildProcessSpawner.ChildProcessSpawner> = NodeServices.layer,
+  environment: Record<string, string> = {},
 ) =>
   Effect.runPromise(
     Effect.provide(
@@ -70,7 +71,11 @@ const run = <A, E>(
         Layer.provide(spawner),
         Layer.provide(Paths.layer),
         Layer.provide(NodeServices.layer),
-        Layer.provide(ConfigProvider.layer(ConfigProvider.fromUnknown({ GYST_DATA_DIR: dataDir }))),
+        Layer.provide(
+          ConfigProvider.layer(
+            ConfigProvider.fromUnknown({ GYST_DATA_DIR: dataDir, ...environment }),
+          ),
+        ),
       ),
     ),
   );
@@ -885,6 +890,80 @@ describe("Git.capture", () => {
     const range = await heard({ kind: "range", range: "main~1..main" });
     expect(range.progress.at(0)).toMatchObject({ phase: "capture", done: 0, total: 2 });
     expect(range.progress.at(-1)).toMatchObject({ phase: "diff", done: 1, total: 1 });
+  });
+
+  it("keeps changed files whole under a snapshot quota and leaves out supporting files beyond it in path order", async () => {
+    const cwd = await repo("quota");
+    const write = (path: string, bytes: number, fill = path[0]!) =>
+      writeFile(join(cwd, path), fill.repeat(bytes));
+    await write("a-small.txt", 10);
+    await write("b-large.txt", 60);
+    await write("c-small.txt", 10);
+    await write("d-small.txt", 10);
+    await write("same-as-a.txt", 10, "a");
+    git(cwd, "add", ".");
+    git(cwd, "commit", "-qm", "supporting");
+    // Changed: tracked.txt (4 bytes before, 5 after) and an added 30-byte file.
+    await writeFile(join(cwd, "tracked.txt"), "two!\n");
+    await write("new.txt", 30);
+    const quota = (size: string) =>
+      run(
+        Effect.gen(function* () {
+          const manifest = yield* Git.use((g) => g.capture(cwd, { kind: "uncommitted" }));
+          yield* CapturedContent.use((c) => c.putManifest(manifest));
+          return manifest;
+        }),
+        undefined,
+        undefined,
+        { GYST_SNAPSHOT_QUOTA: size },
+      );
+    // 39 bytes changed, so 11 are left: a-small fits, then neither b-large nor the small files
+    // after it, while same-as-a costs nothing more, its bytes already counted.
+    const manifest = await quota("50 B");
+    const omitted = { kind: "unavailable", reason: "quota" };
+    const sides = Object.fromEntries(
+      manifest.files.map(({ path, old, new: current }) => [path, [old.kind, current]]),
+    );
+    expect(Object.keys(sides)).toEqual([
+      "a-small.txt",
+      "b-large.txt",
+      "c-small.txt",
+      "d-small.txt",
+      "new.txt",
+      "same-as-a.txt",
+      "tracked.txt",
+    ]);
+    expect(fileOf(manifest, "a-small.txt")?.new.kind).toBe("text");
+    expect(fileOf(manifest, "same-as-a.txt")?.new.kind).toBe("text");
+    for (const path of ["b-large.txt", "c-small.txt", "d-small.txt"])
+      expect(fileOf(manifest, path)).toEqual({ path, old: omitted, new: omitted });
+    expect(hunkFiles(manifest)).toEqual(["new.txt", "tracked.txt"]);
+    expect(await bytesOf(fileOf(manifest, "tracked.txt")?.new)).toEqual(Buffer.from("two!\n"));
+    // Without a quota every file is captured.
+    expect((await capture(cwd)).files.every(({ new: side }) => side.kind === "text")).toBe(true);
+
+    const refused = await run(
+      Effect.flip(Git.use((g) => g.capture(cwd, { kind: "uncommitted" }))),
+      undefined,
+      undefined,
+      { GYST_SNAPSHOT_QUOTA: "38 B" },
+    );
+    expect(refused).toMatchObject({
+      _tag: "source_unavailable",
+      message: expect.stringContaining("GYST_SNAPSHOT_QUOTA"),
+      detail: { reason: "quota_exceeded" },
+    });
+    const invalid = await run(
+      Effect.flip(Git.use((g) => g.capture(cwd, { kind: "uncommitted" }))),
+      undefined,
+      undefined,
+      { GYST_SNAPSHOT_QUOTA: "50" },
+    );
+    expect(invalid).toMatchObject({
+      _tag: "bad_args",
+      message: expect.stringContaining("GYST_SNAPSHOT_QUOTA"),
+    });
+    expect(await staging()).toEqual([]);
   });
 
   it("reports a failed content write as an actionable error and leaves no staging", async () => {
