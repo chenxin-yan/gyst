@@ -49,9 +49,11 @@ always has the commits listed here. Each is a small TypeScript project whose tes
 
 `stack-layer` stands in for a GitHub PR stack: a real one needs network access, `gh` and a hosted
 repository, so the case is not self-contained. The selected layer is a recorded range instead,
-and each layer's commit message stands in for its PR description. The agent is given the stack
-context below in its request, in place of the stack metadata a PR session's status would carry.
-Every claim in it can be checked against the clone's branches.
+and each layer's commit message stands in for its PR description. The range captures the selected
+layer's own commit message with its snapshot, and the viewer shows it in the Commits entry where a
+PR session shows its description. The other layers' messages are outside the range, so the agent
+is given the stack context below in its request, in place of the stack metadata a PR session's
+status would carry. Every claim in it can be checked against the clone's branches.
 
 > This range is the middle layer of a local three-layer stack, oldest first. Each layer is one
 > commit on the branch below it, and its commit message is its description:
