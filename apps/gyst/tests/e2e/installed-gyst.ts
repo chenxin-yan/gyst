@@ -1,11 +1,12 @@
 import { spawn, spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
-import { request as httpRequest, type IncomingHttpHeaders } from "node:http";
+import { request as httpRequest } from "node:http";
 import { mkdir, mkdtemp, readFile, realpath, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { delimiter, dirname, join } from "node:path";
 import { inject, onTestFinished } from "vite-plus/test";
 
+import { freePort } from "../http.ts";
 import type { InstalledGyst } from "./global-setup.ts";
 
 export const installed: InstalledGyst = inject("installedGyst");
@@ -182,13 +183,14 @@ export async function stopDaemon(dataDir: string): Promise<void> {
   throw new Error(`daemon ${pid} ignored SIGTERM during cleanup`);
 }
 
-// Cleanup must attempt every resource even if stopping one daemon fails.
+// Cleanup must attempt every resource even if stopping one daemon fails. Each sandbox's viewer
+// starts at its own free port, never 4978, where a real daemon may be serving.
 export async function sandbox() {
   const root = await realpath(await mkdtemp(join(tmpdir(), "gyst-e2e-")));
   const home = join(root, "home");
   const data = join(root, "data");
   await mkdir(home);
-  const env = isolatedEnv(home, { GYST_DATA_DIR: data });
+  const env = isolatedEnv(home, { GYST_DATA_DIR: data, GYST_PORT: String(await freePort()) });
   const dataDirs = new Set([data]);
   onTestFinished(async () => {
     const failures: unknown[] = [];
@@ -210,94 +212,58 @@ export async function sandbox() {
   };
 }
 
-/** A POST to a launch's listener on loopback, with exactly the given headers. */
+/** A POST to the daemon's viewer on loopback, with exactly the given headers. */
 const post = (port: number, path: string, headers: Record<string, string>, body = "") =>
-  new Promise<{ status: number | undefined; headers: IncomingHttpHeaders; body: string }>(
-    (resolve, reject) => {
-      const request = httpRequest(
-        { host: "127.0.0.1", port, method: "POST", path, headers, setHost: false },
-        (response) => {
-          const chunks: Buffer[] = [];
-          response.on("data", (chunk: Buffer) => chunks.push(chunk));
-          response.once("error", reject);
-          response.once("end", () =>
-            resolve({
-              status: response.statusCode,
-              headers: response.headers,
-              body: Buffer.concat(chunks).toString("utf8"),
-            }),
-          );
-        },
-      );
-      request.once("error", reject);
-      request.end(body);
-    },
-  );
+  new Promise<{ status: number | undefined; body: string }>((resolve, reject) => {
+    const request = httpRequest(
+      { host: "127.0.0.1", port, method: "POST", path, headers, setHost: false },
+      (response) => {
+        const chunks: Buffer[] = [];
+        response.on("data", (chunk: Buffer) => chunks.push(chunk));
+        response.once("error", reject);
+        response.once("end", () =>
+          resolve({ status: response.statusCode, body: Buffer.concat(chunks).toString("utf8") }),
+        );
+      },
+    );
+    request.once("error", reject);
+    request.end(body);
+  });
+
+/** The `http://localhost:<port>/session/<id>` link a one-shot `gyst` printed, as its parts. */
+export function viewerLink(stdout: string) {
+  const link = stdout.split("\n").find((line) => line.startsWith("http://")) ?? "";
+  const match = /^http:\/\/localhost:(\d+)\/session\/([^/?#\s]+)$/.exec(link);
+  if (!match) throw new Error(`gyst printed no viewer link:\n${stdout}`);
+  return { link, port: Number(match[1]), id: decodeURIComponent(match[2]!) };
+}
 
 /**
- * A foreground `gyst` launch signed in as its browser would be: the private URL's secret is
- * exchanged for the auth cookie, and `operation` posts a browser operation to the bridge, resolving
- * the daemon's reply. Stopped with SIGINT (Ctrl-C) after the test.
+ * Opens a session with the one-shot `gyst`, then acts as a browser on the link it printed:
+ * `operation` posts a browser operation to the daemon's viewer, resolving its reply.
  */
 export async function launchViewer(
   args: ReadonlyArray<string>,
   options: { cwd: string; env: NodeJS.ProcessEnv },
 ) {
-  const name = ["gyst", ...args].join(" ");
-  const child = spawn(installed.bin, args, {
-    cwd: options.cwd,
-    env: options.env,
-    stdio: ["ignore", "pipe", "pipe"],
-  });
-  let stdout = "";
-  let stderr = "";
-  let exit: number | string | undefined;
-  child.stdout.setEncoding("utf8").on("data", (chunk: string) => (stdout += chunk));
-  child.stderr.setEncoding("utf8").on("data", (chunk: string) => (stderr += chunk));
-  child.once("error", (error) => (exit ??= error.message));
-  child.once("close", (code, signal) => (exit ??= code ?? signal ?? "closed"));
-  const stop = async () => {
-    if (exit === undefined) child.kill("SIGINT");
-    await waitFor(() => exit !== undefined, `${name} to exit on SIGINT`, 10_000);
-  };
-  onTestFinished(stop);
-  await waitFor(
-    () => stdout.includes("Press Ctrl-C") || exit !== undefined,
-    `${name} to be ready`,
-    20_000,
+  const { port, id } = viewerLink(
+    succeeded(await run(installed.bin, args, { ...options, timeout: 60_000 })).stdout,
   );
-  // stdout is left out: it holds the secret-bearing URL.
-  if (exit !== undefined) throw new Error(`${name} exited ${exit} early:\n${stderr}`);
-  const url = stdout.split("\n").find((line) => line.startsWith("http://")) ?? "";
-  const match = /^http:\/\/(g-[0-9a-f]{32}\.localhost):(\d+)\/session\/([^#]+)#([\w-]{43})$/.exec(
-    url,
-  );
-  if (!match) throw new Error("the launch URL lacks the .localhost host, session path or secret");
-  const [, hostname = "", port = "", id = "", secret = ""] = match;
-  const host = `${hostname}:${port}`;
+  const host = `localhost:${port}`;
   const origin = `http://${host}`;
-  const bootstrap = await post(Number(port), "/bootstrap", {
-    host,
-    origin,
-    authorization: `Bearer ${secret}`,
-  });
-  const cookie = bootstrap.headers["set-cookie"]?.[0]?.split(";", 1)[0];
-  if (bootstrap.status !== 204 || cookie === undefined)
-    throw new Error(`${name} refused its own bootstrap: ${bootstrap.status}`);
   return {
-    /** The session the launch opened. */
-    id: decodeURIComponent(id),
+    /** The session the command opened. */
+    id,
     operation: async (operation: object): Promise<any> => {
       const reply = await post(
-        Number(port),
+        port,
         "/api/operation",
-        { host, origin, cookie, "content-type": "application/json" },
+        { host, origin, "content-type": "application/json" },
         JSON.stringify(operation),
       );
       if (reply.status !== 200)
         throw new Error(`${JSON.stringify(operation)} answered ${reply.status}: ${reply.body}`);
       return JSON.parse(reply.body);
     },
-    stop,
   };
 }
