@@ -77,9 +77,15 @@ const owned: Owned[] = [];
 /**
  * A checkout of github.com/acme/widgets whose PRs form native stack 7: A (#1, merged) <- B (#2, two
  * files) <- C (#3). Its fake gh is first on the shared PATH, so the daemon inherits it; the local
- * sessions above never call it. `stack()` records the verified stack again for every layer.
+ * sessions above never call it. `stack()` records the verified stack again for every layer, and
+ * `layers` are the PRs as recorded at the start.
  */
-let github: { checkout: string; fake: FakeGh; stack: () => Promise<void> };
+let github: {
+  checkout: string;
+  fake: FakeGh;
+  stack: () => Promise<void>;
+  layers: readonly FakePullRequest[];
+};
 
 /** Spawns a process kept until afterAll, resolving once `ready` appears in its output. */
 async function start(name: string, file: string, args: string[], cwd: string, ready: string) {
@@ -659,7 +665,7 @@ describe("installed gyst in a sandboxed browser", () => {
         await fake.stack(number, { number: 7, baseRefName: "main", layers });
     };
     await stack();
-    github = { checkout: origin.checkout, fake, stack };
+    github = { checkout: origin.checkout, fake, stack, layers };
 
     git("init", "-q", "-b", "main");
     git("config", "user.email", "t@gyst.invalid");
@@ -5091,6 +5097,209 @@ describe("installed gyst in a sandboxed browser", () => {
       expect(x).toBeGreaterThanOrEqual(panel.x);
       expect(x + width).toBeLessThanOrEqual(panel.x + panel.width);
     }
+    await settled(page);
+  }, 30_000);
+
+  it("shows a PR's description above the walkthrough as untrusted text from its stack metadata, following a recheck like the title", async () => {
+    deletePullRequestSessionsAfter();
+    const layerB = github.layers[1]!;
+    onTestFinished(async () => {
+      await github.fake.pullRequest(layerB);
+      await github.stack();
+    });
+    await github.fake.pullRequest({
+      ...layerB,
+      body: [
+        `Raw ${hostile} stays text.`,
+        "",
+        "![tracker](https://tracker.example.com/pixel.png)",
+        "",
+        "[run](javascript:window.injected=3) and [code](gyst:new/b.txt#L1-L1).",
+        "",
+        "Read [the guide](https://example.com/guide).",
+      ].join("\n"),
+    });
+    // Remote pages and images are answered here: nothing may be fetched without a click.
+    const fetched: string[] = [];
+    const remote = (url: URL) => url.hostname.endsWith("example.com");
+    const answer = (route: Route) => {
+      fetched.push(route.request().url());
+      return route.fulfill({ contentType: "text/html", body: "<title>Remote</title>" });
+    };
+    await context.route(remote, answer);
+    onTestFinished(() => context.unroute(remote, answer));
+    const b = await launchIn(github.checkout, "--pr", pullRequestUrl(2));
+    const ghCalls = (await github.fake.calls()).length;
+    const before = await gyst("session", "status", "--session", b.id);
+    const page = await newPage();
+    const operations: any[] = [];
+    page.on("request", (request) => {
+      if (operationOf(request)) operations.push(operationOf(request));
+    });
+    await page.goto(b.url);
+    await page.getByRole("main").getByText("b two").waitFor();
+
+    // The entry sits above the walkthrough, which this plain diff session doesn't have yet.
+    const side = page.getByRole("navigation", { name: "gyst" });
+    expect((await side.innerText()).split("\n").filter(Boolean).slice(0, 5)).toEqual([
+      "gyst",
+      "Description",
+      "#2 on GitHub",
+      "Walkthrough",
+      "No walkthrough for this session yet.",
+    ]);
+    const onGitHub = side.getByRole("link", { name: "#2 on GitHub" });
+    expect(
+      await onGitHub.evaluate((anchor) =>
+        ["href", "target", "rel"].map((at) => anchor.getAttribute(at)),
+      ),
+    ).toEqual([pullRequestUrl(2), "_blank", "noopener noreferrer nofollow"]);
+    const entry = side.getByRole("button", { name: "Description" });
+    expect(await entry.getAttribute("aria-expanded")).toBe("false");
+    const card = page.getByRole("main").getByRole("region", { name: "Pull request description" });
+    expect(await card.count()).toBe(0);
+
+    await entry.click();
+    await card.getByText(`Raw ${hostile} stays text.`, { exact: true }).waitFor();
+    expect(await entry.getAttribute("aria-expanded")).toBe("true");
+    expect(await card.getByText("Add layer B", { exact: true }).count()).toBe(1);
+    expect(await card.locator("img, script").count()).toBe(0);
+    // An image shows its alt text; unsafe and unpinned links are inert; a web link waits for a click.
+    expect(await card.getByText("tracker", { exact: true }).count()).toBe(1);
+    expect(await card.getByText("run", { exact: true }).evaluate((at) => at.tagName)).toBe("SPAN");
+    expect(await card.getByTitle("Unavailable: not a validated reference").textContent()).toBe(
+      "code",
+    );
+    expect(await card.getByRole("link", { name: "the guide" }).getAttribute("href")).toBe(
+      "https://example.com/guide",
+    );
+    await settled(page);
+    expect(await page.evaluate(() => "injected" in window)).toBe(false);
+    expect(fetched).toEqual([]);
+    // The description came with the stack metadata the open read: no request to GitHub since.
+    expect(await github.fake.calls()).toHaveLength(ghCalls);
+
+    // A recheck brings GitHub's newer title and empty description, and nothing else changes.
+    await github.fake.pullRequest({ ...layerB, title: "Add layer B, retitled", body: "  \n" });
+    const { trigger, dialog } = switcher(page);
+    await trigger.click();
+    await dialog.getByRole("button", { name: "Recheck stack" }).click();
+    await card.getByText("This pull request has no description.", { exact: true }).waitFor();
+    expect(await card.getByText("Add layer B, retitled", { exact: true }).count()).toBe(1);
+    await page.keyboard.press("Escape");
+    await entry.click();
+    await card.waitFor({ state: "detached" });
+    await settled(page);
+    const after = await gyst("session", "status", "--session", b.id);
+    const reviewOf = ({ revision, session, viewedHunkIds, preparation }: any) => ({
+      revision,
+      snapshotId: session.snapshotId,
+      viewedHunkIds,
+      preparation,
+    });
+    expect(reviewOf(after)).toEqual(reviewOf(before));
+    expect(after.pullRequest.pullRequest).toMatchObject({
+      title: "Add layer B, retitled",
+      description: "  \n",
+    });
+    expect(operations.filter(({ command }) => ["viewed", "diff"].includes(command))).toEqual([
+      { command: "diff", session: b.id },
+    ]);
+  }, 30_000);
+
+  it("shows a recorded range's commit messages oldest first as text, recaptured by refresh and not by a check", async () => {
+    // A worktree of its own, so the shared checkout's branch and edits stay as they are.
+    const tree = join(root, "authored");
+    git("worktree", "add", "-q", "-b", "authored", tree, "main");
+    onTestFinished(() => {
+      git("worktree", "remove", "--force", tree);
+      git("branch", "-D", "authored");
+    });
+    const inTree = (...args: string[]) => execFileSync("git", args, { cwd: tree, env });
+    const first = `Add the helper ${hostile}\n\nWhy: **callers** repeat it.\n  - indented`;
+    for (const [content, message] of [
+      ["one\n", first],
+      ["two\n", "Second step"],
+    ] as const) {
+      await writeFile(join(tree, "authored.txt"), content);
+      inTree("add", ".");
+      inTree("commit", "-qm", message);
+    }
+    const id = await freshSession("main..authored");
+    const reads: any[] = [];
+    const page = await newPage();
+    page.on("request", (request) => {
+      if (operationOf(request)?.command === "commits") reads.push(operationOf(request));
+    });
+    await page.goto(`${one.origin}/session/${id}`);
+    await crumbIs(page, "demo/main..authored");
+    const side = page.getByRole("navigation", { name: "gyst" });
+    const entry = side.getByRole("button", { name: "Commits" });
+    expect(await side.getByRole("button", { name: "Description" }).count()).toBe(0);
+    expect(await side.getByRole("link", { name: /on GitHub/ }).count()).toBe(0);
+    await settled(page);
+    // Read only once shown.
+    expect(reads).toEqual([]);
+    await entry.click();
+    const card = page.getByRole("main").getByRole("region", { name: "Commits" });
+    const commitsShown = () =>
+      card.getByRole("listitem").evaluateAll((items) => items.map((item) => item.textContent));
+    await card.getByRole("listitem").nth(1).waitFor();
+    const shortOf = (ref: string) =>
+      execFileSync("git", ["rev-parse", "--short=7", ref], {
+        cwd: repo,
+        env,
+        encoding: "utf8",
+      }).trim();
+    expect(await commitsShown()).toEqual([
+      `${shortOf("authored~1")} Add the helper ${hostile}Why: **callers** repeat it.\n  - indented`,
+      `${shortOf("authored")} Second step`,
+    ]);
+    expect(await card.locator("img, strong").count()).toBe(0);
+    expect(await page.evaluate(() => "injected" in window)).toBe(false);
+    expect(await entry.textContent()).toBe("Commits2");
+    expect(reads).toEqual([{ command: "commits", session: id, snapshotId: expect.any(String) }]);
+
+    // A reworded commit: a check sees the change and replaces nothing; refresh recaptures it.
+    inTree("commit", "-q", "--amend", "-m", "Second step, reworded");
+    expect((await gyst("session", "check", "--session", id)).state).toBe("changed");
+    await settled(page);
+    const second = (await commitsShown())[1];
+    expect(second).toMatch(/^[0-9a-f]{7} Second step$/);
+    expect(second).not.toBe(`${shortOf("authored")} Second step`);
+    expect(reads).toHaveLength(1);
+    await gyst("session", "refresh", "--session", id);
+    const refreshed = statusLine(page).getByText("This session was refreshed.");
+    await refreshed.getByRole("button", { name: "Reload session" }).click();
+    await refreshed.waitFor({ state: "detached" });
+    // The refreshed snapshot starts its own reader, with the commits hidden until asked for.
+    await waitFor(
+      async () => (await entry.getAttribute("aria-expanded")) === "false",
+      "the refreshed reader",
+    );
+    await entry.click();
+    await card.getByText("Second step, reworded", { exact: true }).waitFor();
+    expect((await commitsShown())[1]).toBe(`${shortOf("authored")} Second step, reworded`);
+    expect(reads.at(-1)).toEqual({
+      command: "commits",
+      session: id,
+      snapshotId: (await gyst("session", "status", "--session", id)).session.snapshotId,
+    });
+
+    // A range without commits says so, above a snapshot without changes.
+    const empty = await freshSession("authored..authored");
+    await page.goto(`${one.origin}/session/${empty}`);
+    await side.getByRole("button", { name: "Commits" }).click();
+    await card.getByText("This range has no commits.", { exact: true }).waitFor();
+    await page
+      .getByRole("main")
+      .getByText("This session's snapshot has no changes.", { exact: true })
+      .waitFor();
+
+    // An uncommitted session has neither entry.
+    await page.goto(`${one.origin}/session/${one.id}`);
+    await page.getByRole("main").getByRole("heading", { level: 2 }).first().waitFor();
+    expect(await side.getByRole("button", { name: /^(Description|Commits)/ }).count()).toBe(0);
     await settled(page);
   }, 30_000);
 
