@@ -7,6 +7,7 @@ import {
   type SessionSummary,
   type StatusPayload,
   type ThreadEntry,
+  type Wording,
 } from "@gyst/core/wire";
 import {
   type CodeViewItem,
@@ -1687,7 +1688,7 @@ function SessionReader(props: {
   /** Pins what a message is composed against, then opens its composer; a lost link pins nothing. */
   const startDraft = async (
     target: Extract<Parameters<Act>[0], { command: "draft" }>["target"],
-    wording: string | undefined,
+    wording: Wording | undefined,
   ) => {
     if (live.state.phase !== "live")
       return setNotice("Can't reach gyst, so nothing can be written now; your drafts are kept.");
@@ -1756,7 +1757,12 @@ function SessionReader(props: {
       setActiveDraft(kept.id);
       return setExpandedThread(thread?.id);
     }
-    const wording = noteId === undefined ? undefined : allNotes.get(noteId)?.markdown;
+    const note = noteId === undefined ? undefined : allNotes.get(noteId);
+    const wording = note && {
+      markdown: note.markdown,
+      references: note.references,
+      anchor: note.anchor,
+    };
     void startDraft(
       thread ? { kind: "thread", thread: thread.id } : { kind: "note", note: noteId! },
       wording,

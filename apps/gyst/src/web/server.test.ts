@@ -354,7 +354,11 @@ describe("browserApp operations", () => {
         session: "s1",
         requestId: "r2",
         target: { kind: "note", note: "n1" },
-        wording: "The note.",
+        wording: {
+          markdown: "The note.",
+          references: [],
+          anchor: { snapshotId, path: "src/a.ts", side: "new", startLine: 2, endLine: 4 },
+        },
       },
       {
         command: "send",

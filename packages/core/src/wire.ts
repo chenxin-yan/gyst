@@ -17,7 +17,7 @@ import {
 } from "./guidance.ts";
 import { AddonStateSchema } from "./navigation.ts";
 import { HunkSchema, ScopeSchema, SessionSummarySchema } from "./session.ts";
-import { MessageKindSchema } from "./thread.ts";
+import { MessageKindSchema, WordingSchema } from "./thread.ts";
 
 // `@gyst/core/wire` is the browser-safe entry: every contract the browser needs, without the
 // Node-only snapshot parsing and hashing the root `@gyst/core` export pulls in.
@@ -550,8 +550,8 @@ export const BrowserRequestSchema = Schema.Union([
    *
    * `draft` pins what a message is composed against before it is written: a new comment on a
    * captured range of the current or a retained snapshot, a reply in a thread, or a reply to a
-   * note. A reply to a note, or in its thread, names the note `wording` the human sees; it must
-   * still be the note's text.
+   * note. A reply to a note, or in its thread, names the note `wording` the human sees, its text,
+   * links and code; it must still be the note's, so a reply never begins on a note moved unseen.
    */
   Schema.Struct({
     command: Schema.Literal("draft"),
@@ -562,7 +562,7 @@ export const BrowserRequestSchema = Schema.Union([
       Schema.Struct({ kind: Schema.Literal("thread"), thread: Schema.String }),
       Schema.Struct({ kind: Schema.Literal("note"), note: Schema.String }),
     ]),
-    wording: Schema.optional(MarkdownSchema),
+    wording: Schema.optional(WordingSchema),
   }),
   /** Posts the message composed in `draft`, Pending, and releases the draft's pin. */
   Schema.Struct({

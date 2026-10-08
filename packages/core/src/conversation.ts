@@ -35,6 +35,9 @@ export type PickupOutcome = { readonly result: ThreadsPayload; readonly session?
 export const anchorKey = ({ snapshotId, path, side, startLine, endLine }: CapturedRange) =>
   `${snapshotId}\0${side}\0${path}\0${startLine}\0${endLine}`;
 
+const wordingKey = ({ markdown, references, anchor }: Wording) =>
+  JSON.stringify([markdown, references.map(anchorKey), anchorKey(anchor)]);
+
 /** A thread's `version`: an identity of its messages and resolution, the thread a human read. */
 export const threadVersionOf = (thread: Pick<Thread, "resolved" | "messages">) =>
   hash(JSON.stringify([thread.resolved, thread.messages]));
@@ -303,21 +306,21 @@ function act(
       references: references.map((range) => keptOf(range) ?? { snapshotId, ...range }),
     });
   };
-  /** The note as the human sees it; `seen` must still be its text, so nothing rebinds unseen. */
-  const wordingOf = (id: string, seen: string | undefined) => {
-    const note = noteOf(id)!;
-    if (seen !== note.markdown)
+  /**
+   * The note as the human sees it; `seen` must still be its text, links and code, so nothing
+   * rebinds unseen, not even a note moved with its words unchanged.
+   */
+  const wordingOf = (id: string, seen: Wording | undefined) => {
+    const { markdown, references, anchor } = noteOf(id)!;
+    const wording = { markdown, references, anchor };
+    if (seen === undefined || wordingKey(seen) !== wordingKey(wording))
       return Result.fail(
         new StaleRevision({
           message: `note ${id} changed since it was read; read the session again`,
           detail: { snapshotId: session.snapshotId, revision: session.revision },
         }),
       );
-    return Result.succeed({
-      markdown: note.markdown,
-      references: note.references,
-      anchor: note.anchor,
-    });
+    return Result.succeed(wording);
   };
   const reopenFirst = (id: string) =>
     invalid(`thread ${id} is resolved; reopen it before replying`, { thread: id });
