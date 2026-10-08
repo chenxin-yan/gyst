@@ -1736,6 +1736,17 @@ describe("installed gyst in a sandboxed browser", () => {
     await says(page, "2 lines selected");
   }, 30_000);
 
+  it("scrolls the reader by wheel over a file header", async () => {
+    const page = await newPage();
+    await page.setViewportSize({ width: 1280, height: 600 });
+    await page.goto(`${one.origin}${one.path}`);
+    const header = page.getByRole("main").getByRole("heading", { name: "README.md" });
+    await header.hover();
+    expect(await panelTop(page)).toBe(0);
+    await page.mouse.wheel(0, 300);
+    await waitFor(async () => ((await panelTop(page)) ?? 0) > 0, "the reader scrolled");
+  }, 15_000);
+
   it("scrolls with movement keys in Mouse mode, without a cursor, and selects lines with the hover + and by dragging", async () => {
     const page = await newPage();
     await page.setViewportSize({ width: 1280, height: 800 });

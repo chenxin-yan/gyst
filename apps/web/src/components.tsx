@@ -57,6 +57,7 @@ const frame = stylex.create({
     flexDirection: "column",
     padding: "8px 8px 12px",
     overflow: "auto",
+    overscrollBehavior: "none",
   },
   brand: {
     display: "flex",
@@ -98,6 +99,7 @@ const frame = stylex.create({
   pane: {
     minHeight: 0,
     overflow: "auto",
+    overscrollBehavior: "none",
     padding: { default: "24px 32px 120px", [media.narrow]: "16px 12px 80px" },
   },
   fill: { padding: 0, overflow: "hidden" },
