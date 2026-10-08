@@ -1,10 +1,10 @@
 import { afterAll, beforeAll, describe, expect, it } from "vite-plus/test";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { type Session, statusOf } from "@gyst/core";
-import { ConfigProvider, Effect, Layer } from "effect";
+import { ConfigProvider, Effect, FileSystem, Layer, PlatformError } from "effect";
 import { chmod, mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { Paths } from "./paths.ts";
 import { inspectSavedSessions, SessionStore } from "./store.ts";
 
@@ -32,12 +32,17 @@ const session = (id: string): Session => ({
   pickupReceipts: [],
 });
 
-const run = <A, E>(effect: Effect.Effect<A, E, SessionStore>) =>
+/** `wrap` may replace file system operations to observe or fail them. */
+const run = <A, E>(
+  effect: Effect.Effect<A, E, SessionStore>,
+  wrap: (real: FileSystem.FileSystem) => FileSystem.FileSystem = (real) => real,
+) =>
   Effect.runPromise(
     Effect.provide(
       effect,
       SessionStore.layer.pipe(
         Layer.provide(Paths.layer),
+        Layer.provide(Layer.effect(FileSystem.FileSystem, Effect.map(FileSystem.FileSystem, wrap))),
         Layer.provide(NodeServices.layer),
         Layer.provide(ConfigProvider.layer(ConfigProvider.fromUnknown({ GYST_DATA_DIR: dataDir }))),
       ),
@@ -58,6 +63,56 @@ describe("SessionStore", () => {
     expect(error._tag).toBe("PlatformError");
     expect((await readdir(dataDir)).sort()).toEqual(["a.json", "blocked.json"]);
     await rm(join(dataDir, "blocked.json"), { recursive: true });
+  });
+
+  it("syncs a saved file before its rename and its directory after, and keeps the old one when a sync fails", async () => {
+    const calls: string[] = [];
+    let syncFails = false;
+    const observed = (real: FileSystem.FileSystem): FileSystem.FileSystem => ({
+      ...real,
+      open: (path, options) =>
+        Effect.map(real.open(path, options), (handle) =>
+          Object.create(handle, {
+            sync: {
+              value: Effect.suspend(() => {
+                calls.push(path === dataDir ? "sync directory" : `sync ${basename(path)}`);
+                return syncFails
+                  ? Effect.fail(
+                      PlatformError.systemError({
+                        _tag: "Unknown",
+                        module: "FileSystem",
+                        method: "sync",
+                      }),
+                    )
+                  : handle.sync;
+              }),
+            },
+          }),
+        ),
+      rename: (from, to) =>
+        Effect.suspend(() => {
+          calls.push(`rename to ${basename(to)}`);
+          return real.rename(from, to);
+        }),
+    });
+    await run(
+      SessionStore.use((s) => s.save(session("synced"))),
+      observed,
+    );
+    expect(calls).toEqual([
+      expect.stringMatching(/^sync /),
+      "rename to synced.json",
+      "sync directory",
+    ]);
+    syncFails = true;
+    const error = await run(
+      Effect.flip(SessionStore.use((s) => s.save({ ...session("synced"), revision: 1 }))),
+      observed,
+    );
+    expect(error._tag).toBe("PlatformError");
+    expect(JSON.parse(await readFile(join(dataDir, "synced.json"), "utf8")).revision).toBe(0);
+    expect((await readdir(dataDir)).filter((name) => !name.endsWith(".json"))).toEqual([]);
+    await rm(join(dataDir, "synced.json"));
   });
 
   it("skips undecodable session files but keeps the valid ones", async () => {
