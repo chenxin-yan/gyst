@@ -91,8 +91,21 @@ const decodeSubscribe = Schema.decodeUnknownEffect(Schema.fromJsonString(Subscri
 const encodeEvent = Schema.encodeSync(SubscriptionEventSchema);
 const eventFrame = (event: SubscriptionEvent) => `data: ${JSON.stringify(encodeEvent(event))}\n\n`;
 
+// The viewer loads only its own scripts and talks only to this bridge; nothing an agent wrote can
+// make the page fetch, however a renderer handles it. Styles stay inline-capable because Mermaid's
+// SVG carries its theme in a <style>, and the diff renderer styles its shadow roots with <style>
+// elements; images are only the `data:` favicon.
+const contentSecurityPolicy = [
+  "default-src 'none'",
+  "script-src 'self'",
+  "style-src 'self' 'unsafe-inline'",
+  "img-src data:",
+  "connect-src 'self'",
+].join("; ");
+
 const securityHeaders = {
   "cache-control": "no-store",
+  "content-security-policy": contentSecurityPolicy,
   "referrer-policy": "no-referrer",
   "x-content-type-options": "nosniff",
 };

@@ -5,8 +5,8 @@ import { type ChildProcess, execFileSync, spawn, spawnSync } from "node:child_pr
 import { randomBytes } from "node:crypto";
 import { accessSync, constants } from "node:fs";
 import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
-import { request as httpRequest } from "node:http";
-import { createServer } from "node:net";
+import { createServer as createHttpServer, request as httpRequest } from "node:http";
+import { type AddressInfo, createServer } from "node:net";
 import { homedir, userInfo } from "node:os";
 import { delimiter, join } from "node:path";
 import {
@@ -15,12 +15,14 @@ import {
   chromium,
   type Page,
   type Request as PageRequest,
+  type Route,
 } from "playwright-core";
 import { afterAll, beforeAll, describe, expect, it, onTestFinished } from "vite-plus/test";
 
 import {
   commandLine,
   daemonPid,
+  failed,
   installed,
   isAlive,
   isolatedEnv,
@@ -340,8 +342,13 @@ async function launchFor(id: string) {
 }
 /** A CLI apply of no ops: a change committed elsewhere that only raises the revision. */
 async function applyFromCli(id: string): Promise<number> {
-  const { revision } = await gyst("session", "status", "--session", id);
-  const batch = { revision, idempotencyKey: randomBytes(16).toString("hex"), ops: [] };
+  const { revision, session } = await gyst("session", "status", "--session", id);
+  const batch = {
+    revision,
+    snapshotId: session.snapshotId,
+    idempotencyKey: randomBytes(16).toString("hex"),
+    ops: [],
+  };
   const applied = await run(installed.bin, ["session", "apply", "--session", id], {
     cwd: repo,
     env,
@@ -349,6 +356,153 @@ async function applyFromCli(id: string): Promise<number> {
   });
   return json(applied).revision;
 }
+
+/** Runs one agent batch through the installed CLI, as a skill does. */
+const applyRun = (session: string, batch: object) =>
+  run(installed.bin, ["session", "apply", "--session", session], {
+    cwd: repo,
+    env,
+    stdin: JSON.stringify(batch),
+  });
+/** Applies one agent batch; resolves its status. */
+const applyBatch = async (session: string, batch: object) => json(await applyRun(session, batch));
+
+/** A fresh walk~1...walk session, deleted after the test, with its hunk ids by changed line. */
+async function openWalk() {
+  const id = await openRange("walk~1...walk");
+  onTestFinished(() =>
+    gyst("session", "delete", "--session", id, "--request-id", randomBytes(16).toString("hex")),
+  );
+  const { hunks, snapshotId } = await gyst("session", "diff", "--session", id);
+  const of = (file: string) =>
+    hunks
+      .filter((hunk: { file: string }) => hunk.file === `walk/${file}`)
+      .map((hunk: { id: string }) => hunk.id);
+  const [a10, a20, a40] = of("a.ts");
+  const [b5] = of("b.ts");
+  const [c3] = of("c.ts");
+  const attempt = (revision: number, idempotencyKey: string, ops: object[]) =>
+    applyRun(id, { revision, snapshotId, idempotencyKey, ops });
+  const publish = async (revision: number, idempotencyKey: string, ops: object[]) =>
+    json(await attempt(revision, idempotencyKey, ops));
+  return { id, a10, a20, a40, b5, c3, attempt, publish };
+}
+type Walk = Awaited<ReturnType<typeof openWalk>>;
+
+const walkOverview = [
+  "Two independent edits.",
+  "",
+  "| Step | File |",
+  "| --- | --- |",
+  "| parse | `a.ts` |",
+  "",
+  "```ts",
+  "const parsed = parse(input);",
+  "```",
+].join("\n");
+const coreGroup = (walk: Walk) => ({
+  type: "group.create",
+  id: "core",
+  title: "Parse the config",
+  overview: "Reads **every** value once.",
+  memberHunkIds: [walk.a10, walk.a20, walk.b5],
+  files: ["walk/b.ts", "walk/a.ts"],
+});
+const edgeGroup = (walk: Walk) => ({
+  type: "group.create",
+  id: "edge",
+  title: "Handle the edge",
+  overview: "Drops the unused `c3`.",
+  memberHunkIds: [walk.a40, walk.c3],
+  files: ["walk/c.ts", "walk/a.ts"],
+});
+/** span covers two of core's hunks and the unchanged lines between them; c-note a pure deletion. */
+const walkNotes = [
+  {
+    type: "note.create",
+    id: "span",
+    group: "core",
+    anchor: { path: "walk/a.ts", side: "new", startLine: 10, endLine: 20 },
+    markdown: "Both doublings share **one** reason.",
+  },
+  {
+    type: "note.create",
+    id: "b-note",
+    group: "core",
+    anchor: { path: "walk/b.ts", side: "new", startLine: 5, endLine: 5 },
+    markdown: "Five doubles too.",
+  },
+  {
+    type: "note.create",
+    id: "c-note",
+    group: "edge",
+    anchor: { path: "walk/c.ts", side: "old", startLine: 3, endLine: 3 },
+    markdown: "Nothing reads three.",
+  },
+];
+/** The complete walkthrough: overview, core then edge, and every note. */
+const publishWalk = (walk: Walk) =>
+  walk.publish(0, "complete", [
+    { type: "walkthrough.update", overview: walkOverview },
+    coreGroup(walk),
+    edgeGroup(walk),
+    ...walkNotes,
+  ]);
+
+/**
+ * References for the walkthrough: span's to b.ts (a changed file whose note links on), b-note's to
+ * the unchanged src/long.ts, and the overview's to long.ts too.
+ */
+const referenceOps = [
+  {
+    type: "note.update",
+    id: "span",
+    markdown: "Both doublings share **one** reason; see [the five](gyst:new/walk/b.ts#L4-L6).",
+  },
+  {
+    type: "note.update",
+    id: "b-note",
+    markdown: "Five doubles too, like [line 40](gyst:new/src/long.ts#L40-L44).",
+  },
+  {
+    type: "walkthrough.update",
+    overview: "Two independent edits over [the constants](gyst:new/src/long.ts#L10-L12).",
+  },
+];
+/** The open reference peek, and its renderer row when it opened under a note. */
+const peekOf = (page: Page) => page.getByRole("main").locator("[data-peek]");
+const spacerOf = (page: Page) => page.getByRole("main").locator("[data-peek-spacer]");
+/** The panel's scroll offset, read from the scrolling element around the diff. */
+const panelTop = (page: Page) =>
+  page
+    .getByRole("main")
+    .locator("[data-peek], h2")
+    .first()
+    .evaluate((element) => {
+      let at: Element | null = element;
+      while (at && getComputedStyle(at).overflowY !== "auto") at = at.parentElement;
+      return at?.scrollTop;
+    });
+const focusedText = (page: Page) => page.evaluate(() => document.activeElement?.textContent);
+/** Chromium's console error for an image the viewer's Content-Security-Policy refuses. */
+const blockedImage = (url: string) =>
+  expect.stringMatching(
+    new RegExp(
+      `^console .*'${RegExp.escape(url)}'.* Content Security Policy directive: "img-src data:"`,
+    ),
+  );
+
+const walkthroughRows = (page: Page) =>
+  page
+    .getByRole("navigation", { name: "gyst" })
+    .getByRole("list", { name: "Walkthrough" })
+    .getByRole("button")
+    .evaluateAll((rows) => rows.map((row) => row.getAttribute("aria-label") ?? row.textContent));
+const headingsAre = (page: Page, paths: string[]) =>
+  waitFor(
+    async () => JSON.stringify(await fileHeadings(page)) === JSON.stringify(paths),
+    `the files ${paths.join(", ")}`,
+  );
 
 /**
  * A raw request to a launch's listener with explicit headers, as a hostile client could send;
@@ -500,6 +654,33 @@ describe("installed gyst in a sandboxed browser", () => {
     await writeFile(join(repo, "src", "long.ts"), longTs(true));
     git("add", ".");
     git("commit", "-qm", "live");
+
+    // walk~1...walk, for walkthroughs: walk/a.ts doubles lines 10, 20 and 40 of 50 (three hunks),
+    // walk/b.ts line 5 of 10, and walk/c.ts deletes line 3 of 10.
+    git("switch", "-q", "main");
+    git("switch", "-qc", "walk");
+    await mkdir(join(repo, "walk"));
+    for (const edited of [false, true]) {
+      const lines = (name: string, count: number, doubled: number[]) =>
+        Array.from({ length: count }, (_, i) => i + 1)
+          .filter((n) => !(edited && name === "c" && n === 3))
+          .map(
+            (n) =>
+              `export const ${name}${n} = ${n}${edited && doubled.includes(n) ? " * 2" : ""};\n`,
+          )
+          .join("");
+      await writeFile(join(repo, "walk", "a.ts"), lines("a", 50, [10, 20, 40]));
+      await writeFile(join(repo, "walk", "b.ts"), lines("b", 10, [5]));
+      await writeFile(join(repo, "walk", "c.ts"), lines("c", 10, []));
+      git("add", ".");
+      git("commit", "-qm", edited ? "walk" : "walk base");
+    }
+    // walk-next adds walk/d.ts on top of walk, so a walk~1...peek session refreshed from walk to
+    // walk-next gets a new snapshot that keeps every walk hunk.
+    git("switch", "-qc", "walk-next");
+    await writeFile(join(repo, "walk", "d.ts"), "export const d1 = 1;\n");
+    git("add", ".");
+    git("commit", "-qm", "walk next");
     git("switch", "-q", "main");
     git("switch", "-qc", "feature");
     await writeFile(join(repo, "feature.ts"), "export const feature = 'range-only';\n");
@@ -1532,11 +1713,12 @@ describe("installed gyst in a sandboxed browser", () => {
         menu.getByRole("option", { selected: true }).boundingBox(),
         menu.boundingBox(),
       ]);
+      // Within a pixel: the menu scrolls by whole pixels and an option can be a fraction taller.
       return (
         option !== null &&
         box !== null &&
-        option.y >= box.y &&
-        option.y + option.height <= box.y + box.height
+        option.y >= box.y - 1 &&
+        option.y + option.height <= box.y + box.height + 1
       );
     }, "the last option in view");
     await page.keyboard.press("Escape");
@@ -2114,6 +2296,1159 @@ describe("installed gyst in a sandboxed browser", () => {
     expect(await sessionRows(page).count()).toBe(1);
     expect(await page.getByText(b).count()).toBe(0);
     expect(await sessionIds()).toEqual([one.id]);
+  }, 30_000);
+
+  it("reads a plain diff session with no walkthrough and no guidance required", async () => {
+    const walk = await openWalk();
+    const page = await newPage();
+    await page.setViewportSize({ width: 1280, height: 1200 });
+    await page.goto(`${one.origin}/session/${walk.id}`);
+    const pane = page.getByRole("main");
+    const side = page.getByRole("navigation", { name: "gyst" });
+    await headingsAre(page, ["walk/a.ts", "walk/b.ts", "walk/c.ts"]);
+    await side.getByText("No walkthrough for this session yet.", { exact: true }).waitFor();
+    expect(await side.getByRole("list", { name: "Walkthrough" }).count()).toBe(0);
+    expect(await side.getByLabel("Walkthrough coverage").count()).toBe(0);
+    expect(await pane.getByRole("region").count()).toBe(0);
+    expect(await pane.locator("[data-note]").count()).toBe(0);
+    expect((await gyst("session", "status", "--session", walk.id)).preparation.state).toBe("plain");
+    await says(page, "0/5 hunks viewed in 3 files");
+    await viewedBox(page, "walk/b.ts").check();
+    await says(page, "1/5 hunks viewed in 3 files");
+    // Group keys have no groups to walk.
+    await keys(page, "Shift+J");
+    expect(await fileHeadings(page)).toEqual(["walk/a.ts", "walk/b.ts", "walk/c.ts"]);
+  }, 30_000);
+
+  it("shows a walkthrough the CLI publishes progressively, live and without a reload: incomplete coverage, then complete, in the agent's group and file order", async () => {
+    const walk = await openWalk();
+    const page = await newPage();
+    await page.setViewportSize({ width: 1280, height: 1200 });
+    await page.goto(`${one.origin}/session/${walk.id}`);
+    const pane = page.getByRole("main");
+    const side = page.getByRole("navigation", { name: "gyst" });
+    const coverage = side.getByLabel("Walkthrough coverage");
+    await side.getByText("No walkthrough for this session yet.", { exact: true }).waitFor();
+
+    const first = await walk.publish(0, "first", [
+      { type: "walkthrough.update", overview: walkOverview },
+      coreGroup(walk),
+    ]);
+    expect(first.preparation).toMatchObject({
+      state: "incomplete",
+      groupedHunks: 3,
+      totalHunks: 5,
+    });
+    await coverage.getByText("3 of 5 hunks are in groups; the rest are under Files.").waitFor();
+    expect(await walkthroughRows(page)).toEqual([
+      "Overview",
+      "Parse the config, 0 of 3 hunks viewed",
+    ]);
+    // The walkthrough overview reads above the whole snapshot, as GFM with highlighted code.
+    const overview = pane.getByRole("region", { name: "Walkthrough overview" });
+    await overview.getByRole("cell", { name: "parse", exact: true }).waitFor();
+    await overview.locator("pre code span[style*='color']").first().waitFor();
+    // Ungrouped hunks stay under Files, readable in the snapshot view; there is no inbox for them.
+    expect(await fileHeadings(page)).toEqual(["walk/a.ts", "walk/b.ts", "walk/c.ts"]);
+    expect(await side.getByText(/inbox|ungrouped/i).count()).toBe(0);
+
+    await side.getByRole("button", { name: /^Parse the config/ }).click();
+    await headingsAre(page, ["walk/b.ts", "walk/a.ts"]);
+    const groupOverview = pane.getByRole("region", { name: "Group overview" });
+    await groupOverview.getByText("Parse the config", { exact: true }).waitFor();
+    expect(await groupOverview.locator("strong").textContent()).toBe("every");
+    // a.ts's third hunk is in no group yet: it reads as a labelled change of this group's file.
+    await pane.getByText("Not yet in a group", { exact: true }).waitFor();
+    await says(page, "0/3 hunks viewed in 2 files");
+
+    const second = await walk.publish(1, "second", [
+      edgeGroup(walk),
+      { type: "walkthrough.update", groupOrder: ["edge", "core"] },
+    ]);
+    expect(second.preparation.state).toBe("complete");
+    await side.getByRole("button", { name: /^Handle the edge/ }).waitFor();
+    expect(await walkthroughRows(page)).toEqual([
+      "Overview",
+      "Handle the edge, 0 of 2 hunks viewed",
+      "Parse the config, 0 of 3 hunks viewed",
+    ]);
+    expect(await coverage.count()).toBe(0);
+    // From the files view, Shift+J and Shift+K walk the groups in the agent's order, each in its
+    // own file order.
+    await side.getByRole("button", { name: "Overview", exact: true }).click();
+    await keys(page, "Shift+J");
+    await headingsAre(page, ["walk/c.ts", "walk/a.ts"]);
+    expect(
+      await side.getByRole("button", { name: /^Handle the edge/ }).getAttribute("aria-current"),
+    ).toBe("true");
+    await waitFor(
+      async () =>
+        (await pane
+          .getByText("Change from another group · Parse the config", { exact: true })
+          .count()) === 2,
+      "core's two a.ts hunks labelled",
+    );
+    await keys(page, "Shift+J");
+    await headingsAre(page, ["walk/b.ts", "walk/a.ts"]);
+    await keys(page, "Shift+J");
+    await headingsAre(page, ["walk/b.ts", "walk/a.ts"]);
+    await keys(page, "Shift+K");
+    await headingsAre(page, ["walk/c.ts", "walk/a.ts"]);
+    await side.getByRole("button", { name: "Overview", exact: true }).click();
+    await headingsAre(page, ["walk/a.ts", "walk/b.ts", "walk/c.ts"]);
+    await overview.waitFor();
+  }, 30_000);
+
+  it("shows notes beside their code in code order, highlights a note's range on hover and walks notes with ]n, [n and i", async () => {
+    const walk = await openWalk();
+    await publishWalk(walk);
+    const page = await newPage();
+    await page.setViewportSize({ width: 1280, height: 1200 });
+    await page.goto(`${one.origin}/session/${walk.id}`);
+    const pane = page.getByRole("main");
+    const side = page.getByRole("navigation", { name: "gyst" });
+    await side.getByRole("button", { name: /^Parse the config/ }).click();
+    await headingsAre(page, ["walk/b.ts", "walk/a.ts"]);
+    const notes = pane.locator("[data-note]");
+    await waitFor(async () => (await notes.count()) === 2, "the group's two notes");
+    expect(
+      await notes.evaluateAll((all) => all.map((note) => note.getAttribute("data-note"))),
+    ).toEqual(["b-note", "span"]);
+    // The note over two hunks and the unchanged lines between them reads once, without a heading or
+    // Ask, under its range's last changed line on the new side.
+    expect(await pane.getByText("Both doublings share").count()).toBe(1);
+    expect(await notes.getByText(/Agent note|Ask/).count()).toBe(0);
+    const chip = pane.getByRole("button", { name: "L10–20 · new", exact: true });
+    const span = pane.locator("[data-note=span]");
+    const added = (n: number) => pane.getByText(`export const a${n} = ${n} * 2;`, { exact: true });
+    const [note, line20, old20] = await Promise.all([
+      span.boundingBox(),
+      added(20).boundingBox(),
+      pane.getByText("export const a20 = 20;", { exact: true }).boundingBox(),
+    ]);
+    expect(note!.y).toBeGreaterThanOrEqual(line20!.y + line20!.height - 2);
+    expect(note!.y).toBeLessThan(line20!.y + line20!.height + 12);
+    expect(note!.x).toBeGreaterThan(old20!.x + old20!.width);
+
+    // Hovering the note highlights its labelled range, from line 10 to line 20 of the new side.
+    const range = pane.locator("[data-range]");
+    expect(await range.isVisible()).toBe(false);
+    await chip.hover();
+    await range.waitFor();
+    const [box, from, to] = await Promise.all([
+      range.boundingBox(),
+      added(10).boundingBox(),
+      added(20).boundingBox(),
+    ]);
+    expect(box!.y).toBeLessThanOrEqual(from!.y + 2);
+    expect(box!.y).toBeGreaterThan(from!.y - 8);
+    expect(box!.y + box!.height).toBeGreaterThanOrEqual(to!.y + to!.height - 2);
+    expect(box!.y + box!.height).toBeLessThan(to!.y + to!.height + 8);
+    expect(box!.x).toBeGreaterThan(old20!.x + old20!.width);
+    await page.mouse.move(1, 1);
+    await range.waitFor({ state: "hidden" });
+
+    // ]n and [n move the cursor to each note's line in code order.
+    await keys(page, "g", "g");
+    await says(page, "b.ts · file");
+    await keys(page, "]", "n");
+    await says(page, "b.ts:5 · new");
+    await keys(page, "]", "n");
+    await says(page, "a.ts:20 · new");
+    await keys(page, "]", "n");
+    await says(page, "a.ts:20 · new");
+    await keys(page, "[", "n");
+    await says(page, "b.ts:5 · new");
+    // i collapses every note to its chip, and shows them all again.
+    await keys(page, "i");
+    await waitFor(
+      async () => (await pane.getByText(/Five doubles too|Both doublings/).count()) === 0,
+      "every note collapsed",
+    );
+    expect(await chip.getAttribute("aria-expanded")).toBe("false");
+    expect(await notes.count()).toBe(2);
+    await keys(page, "i");
+    await pane.getByText("Five doubles too.").waitFor();
+    await pane.getByText("Both doublings share").waitFor();
+    // A chip collapses its own note only.
+    await chip.click();
+    await waitFor(
+      async () => (await pane.getByText("Both doublings share").count()) === 0,
+      "the span note collapsed",
+    );
+    expect(await pane.getByText("Five doubles too.").count()).toBe(1);
+
+    // The next group's note on a pure deletion sits on the old side.
+    await keys(page, "Shift+J");
+    await headingsAre(page, ["walk/c.ts", "walk/a.ts"]);
+    await keys(page, "]", "n");
+    await says(page, "c.ts:3 · old");
+    await pane.getByText("Nothing reads three.").waitFor();
+  }, 30_000);
+
+  it("shares Viewed between group and file views, unviews exactly a reworded note's hunks and keeps Viewed across a reorder", async () => {
+    const walk = await openWalk();
+    await publishWalk(walk);
+    const page = await newPage();
+    await page.setViewportSize({ width: 1280, height: 1200 });
+    const writes = viewedOf(page);
+    await page.goto(`${one.origin}/session/${walk.id}`);
+    const side = page.getByRole("navigation", { name: "gyst" });
+    await side.getByRole("button", { name: /^Parse the config/ }).click();
+    await headingsAre(page, ["walk/b.ts", "walk/a.ts"]);
+
+    // A group view's file checkbox covers the group's hunks in the file only.
+    await viewedBox(page, "walk/a.ts").check();
+    await says(page, "2/3 hunks viewed in 2 files");
+    expect(writes).toEqual([
+      expect.objectContaining({ hunkIds: [walk.a10, walk.a20], viewed: true }),
+    ]);
+    await viewedBox(page, "walk/b.ts").check();
+    await says(page, "3/3 hunks viewed in 2 files");
+    await side
+      .getByRole("button", { name: "Parse the config, all 3 of 3 hunks viewed", exact: true })
+      .waitFor();
+    // The snapshot view reads the same hunks: a.ts's third, another group's, is not Viewed.
+    await side.getByRole("button", { name: "All changes", exact: true }).click();
+    await says(page, "3/5 hunks viewed in 3 files");
+    expect(await viewedBox(page, "walk/a.ts").isChecked()).toBe(false);
+    expect(await viewedBox(page, "walk/b.ts").isChecked()).toBe(true);
+
+    // Rewording the note over a.ts unviews exactly the hunks it anchors.
+    const { revision } = await gyst("session", "status", "--session", walk.id);
+    const reworded = await walk.publish(revision, "reword", [
+      { type: "note.update", id: "span", markdown: "Reworded." },
+    ]);
+    expect(reworded.viewedHunkIds).toEqual([walk.b5]);
+    await settled(page);
+    await page.reload();
+    await side
+      .getByRole("button", { name: "Parse the config, 1 of 3 hunks viewed", exact: true })
+      .waitFor();
+    await says(page, "1/5 hunks viewed in 3 files");
+    expect(await viewedBox(page, "walk/b.ts").isChecked()).toBe(true);
+
+    // Reordering groups and a group's files alone keeps every Viewed hunk.
+    const reordered = await walk.publish(revision + 1, "reorder", [
+      { type: "walkthrough.update", groupOrder: ["edge", "core"] },
+      { type: "group.update", id: "core", files: ["walk/a.ts", "walk/b.ts"] },
+    ]);
+    expect(reordered.viewedHunkIds).toEqual([walk.b5]);
+    await settled(page);
+    await page.reload();
+    await side.getByRole("button", { name: /^Handle the edge/ }).waitFor();
+    expect(await walkthroughRows(page)).toEqual([
+      "Overview",
+      "Handle the edge, 0 of 2 hunks viewed",
+      "Parse the config, 1 of 3 hunks viewed",
+    ]);
+    await side.getByRole("button", { name: /^Parse the config/ }).click();
+    await headingsAre(page, ["walk/a.ts", "walk/b.ts"]);
+    expect(await viewedBox(page, "walk/b.ts").isChecked()).toBe(true);
+    expect(await viewedBox(page, "walk/a.ts").isChecked()).toBe(false);
+    expect(writes).toHaveLength(2);
+  }, 30_000);
+
+  it("shows another group's hunk in a group's file as a labelled real change, split and stacked", async () => {
+    const walk = await openWalk();
+    await publishWalk(walk);
+    const page = await newPage();
+    await page.setViewportSize({ width: 1280, height: 1200 });
+    await page.goto(`${one.origin}/session/${walk.id}`);
+    const pane = page.getByRole("main");
+    const side = page.getByRole("navigation", { name: "gyst" });
+    await side.getByRole("button", { name: /^Parse the config/ }).click();
+    await headingsAre(page, ["walk/b.ts", "walk/a.ts"]);
+    const label = pane.getByText("Change from another group · Handle the edge", { exact: true });
+    const lines = (type: string, text: string) =>
+      pane.locator(`[data-line-type="${type}"]`).filter({ hasText: text });
+    for (const layout of ["Split", "Stacked"]) {
+      await page.getByRole("radio", { name: layout, exact: true }).check();
+      await label.waitFor();
+      await lines("change-addition", "export const a40 = 40 * 2;").first().waitFor();
+      await lines("change-deletion", "export const a40 = 40;").first().waitFor();
+      expect(
+        await pane.locator("[data-line-type^='context']").filter({ hasText: "a40" }).count(),
+      ).toBe(0);
+    }
+    // Its lines are real changes, not part of this group's Viewed section.
+    await viewedBox(page, "walk/a.ts").check();
+    await says(page, "2/3 hunks viewed in 2 files");
+    expect((await gyst("session", "status", "--session", walk.id)).viewedHunkIds).not.toContain(
+      walk.a40,
+    );
+  }, 30_000);
+
+  it("opens a note's reference as a full-width inline peek over a row both split columns reserve, stacked when narrow", async () => {
+    const walk = await openWalk();
+    await publishWalk(walk);
+    await walk.publish(1, "refs", referenceOps);
+    const page = await newPage();
+    await page.setViewportSize({ width: 1280, height: 1200 });
+    await page.goto(`${one.origin}/session/${walk.id}`);
+    const pane = page.getByRole("main");
+    const side = page.getByRole("navigation", { name: "gyst" });
+    await side.getByRole("button", { name: /^Parse the config/ }).click();
+    await headingsAre(page, ["walk/b.ts", "walk/a.ts"]);
+    await page.getByRole("radio", { name: "Split", exact: true }).check();
+    await pane.locator("[data-note=span]").getByRole("button", { name: "the five" }).click();
+    const peek = peekOf(page);
+    await peek.waitFor();
+    // The preview reads b.ts's captured lines 1 to 9, lines 4 to 6 highlighted.
+    const preview = peek.locator("[data-peek-preview]");
+    await preview.waitFor();
+    expect(await preview.locator("[data-target]").allTextContents()).toEqual([
+      "4export const b4 = 4;",
+      "5export const b5 = 5 * 2;",
+      "6export const b6 = 6;",
+    ]);
+    const location = peek.getByRole("list", { name: "Reference location" });
+    expect(await location.textContent()).toContain("walk/b.ts");
+    expect(await peek.getByRole("button", { name: "Expand" }).count()).toBe(1);
+    expect(await peek.getByRole("button", { name: "Close reference" }).count()).toBe(1);
+    expect(await page.getByRole("dialog").count()).toBe(0);
+    expect(await focusedText(page)).toBe("Expand");
+
+    // The overlay spans the whole diff item over its spacer, which is exactly as tall.
+    const spacer = spacerOf(page);
+    const item = spacer.locator("xpath=../..");
+    const fits = async () => {
+      const [over, row, file] = await Promise.all([
+        peek.boundingBox(),
+        spacer.boundingBox(),
+        item.boundingBox(),
+      ]);
+      return (
+        over !== null &&
+        row !== null &&
+        file !== null &&
+        Math.abs(over.x - file.x) <= 1 &&
+        Math.abs(over.width - file.width) <= 1 &&
+        Math.abs(over.y - row.y) <= 1 &&
+        Math.abs(over.height - row.height) <= 1 &&
+        row.height > 40
+      );
+    };
+    await waitFor(fits, "the peek over its spacer, as wide as the diff");
+    // Both split columns reserve the row: the old column's next line sits below it, not under it.
+    const row = (await spacer.boundingBox())!;
+    const copies = (text: string) =>
+      pane.getByText(text, { exact: true }).evaluateAll((all) =>
+        all.map((element) => {
+          const box = element.getBoundingClientRect();
+          return { x: box.x, y: box.y, bottom: box.bottom };
+        }),
+      );
+    const [old21, new21] = (await copies("export const a21 = 21;")).sort((a, b) => a.x - b.x);
+    expect(old21!.x).toBeLessThan(new21!.x);
+    expect(old21!.y).toBeGreaterThanOrEqual(row.y + row.height - 1);
+    expect(new21!.y).toBeGreaterThanOrEqual(row.y + row.height - 1);
+    const [old20] = (await copies("export const a20 = 20;")).sort((a, b) => a.x - b.x);
+    expect(old20!.bottom).toBeLessThanOrEqual(row.y + 1);
+    // Preview on the left, its location on the right.
+    const [shown, listed] = await Promise.all([preview.boundingBox(), location.boundingBox()]);
+    expect(listed!.x).toBeGreaterThanOrEqual(shown!.x + shown!.width);
+
+    // Narrow: the location stacks under the preview, and the peek stays inside the panel.
+    await page.setViewportSize({ width: 700, height: 1000 });
+    await waitFor(async () => {
+      const [a, b] = await Promise.all([preview.boundingBox(), location.boundingBox()]);
+      return a !== null && b !== null && b.y >= a.y + a.height - 1;
+    }, "the location under the preview");
+    await waitFor(fits, "the narrow peek over its spacer, as wide as the diff");
+    const [narrow, main] = await Promise.all([peek.boundingBox(), pane.boundingBox()]);
+    expect(narrow!.x).toBeGreaterThanOrEqual(main!.x);
+    expect(narrow!.x + narrow!.width).toBeLessThanOrEqual(main!.x + main!.width + 1);
+
+    // Esc closes it, and its row goes with it.
+    await keys(page, "Escape");
+    await peek.waitFor({ state: "detached" });
+    expect(await spacer.count()).toBe(0);
+  }, 30_000);
+
+  it("expands a reference to an unchanged file in the main panel with ordinary movement and selection, and never marks it Viewed", async () => {
+    const walk = await openWalk();
+    await publishWalk(walk);
+    await walk.publish(1, "refs", referenceOps);
+    const page = await newPage();
+    await page.setViewportSize({ width: 1280, height: 1200 });
+    const writes = viewedOf(page);
+    await page.goto(`${one.origin}/session/${walk.id}`);
+    const pane = page.getByRole("main");
+    const side = page.getByRole("navigation", { name: "gyst" });
+    await side.getByRole("button", { name: /^Parse the config/ }).click();
+    await headingsAre(page, ["walk/b.ts", "walk/a.ts"]);
+    await page.getByRole("radio", { name: "Split", exact: true }).check();
+    await pane.locator("[data-note=b-note]").getByRole("button", { name: "line 40" }).click();
+    await peekOf(page).getByRole("button", { name: "Expand" }).click();
+
+    const identity = pane.getByRole("region", { name: "Captured file" });
+    await identity.waitFor();
+    expect(await identity.textContent()).toMatch(
+      /Captured · src\/long\.ts · new side · snapshot [0-9a-f]{7}/,
+    );
+    await headingsAre(page, ["src/long.ts"]);
+    await says(page, "long.ts:40 · new");
+    await says(page, "Captured file");
+    await pane.getByText("export const line40 = 40;", { exact: true }).waitFor();
+    // The target range is highlighted, lines 40 to 44.
+    const range = pane.locator("[data-range]");
+    await range.waitFor();
+    const [box, from, to] = await Promise.all([
+      range.boundingBox(),
+      pane.getByText("export const line40 = 40;", { exact: true }).boundingBox(),
+      pane.getByText("export const line44 = 44;", { exact: true }).boundingBox(),
+    ]);
+    expect(box!.y).toBeLessThanOrEqual(from!.y + 2);
+    expect(box!.y + box!.height).toBeGreaterThanOrEqual(to!.y + to!.height - 2);
+    // Ordinary movement and V selection; the cursor bar is on the line.
+    await keys(page, "j");
+    await says(page, "long.ts:41 · new");
+    await barOn(page, "export const line41 = 41;");
+    await keys(page, "Shift+V", "j", "j");
+    await says(page, "long.ts:43 · new");
+    await says(page, "3 lines selected");
+    await keys(page, "Escape");
+    await keys(page, "Shift+G");
+    await says(page, "long.ts:300 · new");
+    // Viewed and its key do nothing here.
+    expect(await pane.getByRole("checkbox").count()).toBe(0);
+    await keys(page, "m");
+    await statusLine(page)
+      .getByText("Viewed doesn't change while a captured file is expanded.")
+      .waitFor();
+
+    await keys(page, "Backspace");
+    await headingsAre(page, ["walk/b.ts", "walk/a.ts"]);
+    await peekOf(page).waitFor();
+    await says(page, "0/3 hunks viewed in 2 files");
+    expect(writes).toEqual([]);
+  }, 30_000);
+
+  it("expands references twice over and goes back twice to the same file, line, side, cursor, selection and peek, never touching Viewed", async () => {
+    const walk = await openWalk();
+    await publishWalk(walk);
+    await walk.publish(1, "refs", referenceOps);
+    const page = await newPage();
+    await page.setViewportSize({ width: 1280, height: 1200 });
+    const writes = viewedOf(page);
+    await page.goto(`${one.origin}/session/${walk.id}`);
+    const pane = page.getByRole("main");
+    const side = page.getByRole("navigation", { name: "gyst" });
+    await side.getByRole("button", { name: /^Parse the config/ }).click();
+    await headingsAre(page, ["walk/b.ts", "walk/a.ts"]);
+    await page.getByRole("radio", { name: "Split", exact: true }).check();
+    // The origin: lines 18 to 20 of a.ts's new side selected, the cursor on 18.
+    await keys(page, "g", "g", "]", "n", "]", "n");
+    await says(page, "a.ts:20 · new");
+    await keys(page, "Shift+V", "k", "k");
+    await says(page, "a.ts:18 · new");
+    await says(page, "3 lines selected");
+    const originTop = await panelTop(page);
+
+    await pane.locator("[data-note=span]").getByRole("button", { name: "the five" }).click();
+    await peekOf(page).getByRole("button", { name: "Expand" }).click();
+    // b.ts expanded: its whole diff, its notes from every group, the target highlighted.
+    const identity = pane.getByRole("region", { name: "Captured file" });
+    await identity.getByText("walk/b.ts", { exact: true }).waitFor();
+    await headingsAre(page, ["walk/b.ts"]);
+    await says(page, "b.ts:4 · new");
+    expect(await pane.getByRole("checkbox").count()).toBe(0);
+    await pane.locator("[data-range]").waitFor();
+    await keys(page, "j");
+    await says(page, "b.ts:5 · new");
+
+    await pane.locator("[data-note=b-note]").getByRole("button", { name: "line 40" }).click();
+    await peekOf(page).getByRole("button", { name: "Expand" }).click();
+    await identity.getByText("src/long.ts", { exact: true }).waitFor();
+    await headingsAre(page, ["src/long.ts"]);
+    await says(page, "long.ts:40 · new");
+
+    // Back to b.ts: its cursor, and its peek open again with Expand focused.
+    await keys(page, "Backspace");
+    await headingsAre(page, ["walk/b.ts"]);
+    await says(page, "b.ts:5 · new");
+    const reopened = peekOf(page);
+    await reopened.waitFor();
+    expect(await reopened.getAttribute("aria-label")).toBe("Reference src/long.ts:L40–44 · new");
+    await waitFor(async () => (await focusedText(page)) === "Expand", "Expand focused");
+
+    // Back to the group: the same cursor, selection, position and peek.
+    await keys(page, "Backspace");
+    await headingsAre(page, ["walk/b.ts", "walk/a.ts"]);
+    await says(page, "a.ts:18 · new");
+    await says(page, "3 lines selected");
+    await says(page, "0/3 hunks viewed in 2 files");
+    await waitFor(
+      async () =>
+        (await peekOf(page).getAttribute("aria-label")) === "Reference walk/b.ts:L4–6 · new",
+      "the b.ts peek again",
+    );
+    await waitFor(async () => (await focusedText(page)) === "Expand", "Expand focused");
+    await waitFor(
+      async () => Math.abs(((await panelTop(page)) ?? 0) - (originTop ?? 0)) < 40,
+      "the origin's position",
+    );
+    await barOn(page, "export const a18 = 18;");
+    // Nowhere further back.
+    await keys(page, "Backspace");
+    await says(page, "a.ts:18 · new");
+    await side
+      .getByRole("button", { name: "Parse the config, 0 of 3 hunks viewed", exact: true })
+      .waitFor();
+    expect(writes).toEqual([]);
+  }, 30_000);
+
+  it("opens an overview's reference in flow inside the overview card, Back returns there, and closing the peek focuses the reference again", async () => {
+    const walk = await openWalk();
+    await publishWalk(walk);
+    await walk.publish(1, "refs", referenceOps);
+    const page = await newPage();
+    await page.setViewportSize({ width: 1280, height: 1200 });
+    await page.goto(`${one.origin}/session/${walk.id}`);
+    const pane = page.getByRole("main");
+    const overview = pane.getByRole("region", { name: "Walkthrough overview" });
+    const constants = overview.getByRole("button", { name: "the constants" });
+    const peek = overview.locator("[data-peek]");
+    const closedTo = async (close: () => Promise<void>) => {
+      await waitFor(async () => (await focusedText(page)) === "Expand", "Expand focused");
+      await close();
+      await peek.waitFor({ state: "detached" });
+      await waitFor(
+        async () => (await focusedText(page)) === "the constants",
+        "the reference focused",
+      );
+    };
+    const escape = () => page.keyboard.press("Escape");
+    const closeButton = () => peek.getByRole("button", { name: "Close reference" }).click();
+    // Closing the peek, by Esc or Close, gives focus back to the reference it was followed from.
+    await constants.click();
+    await closedTo(escape);
+    await constants.click();
+    await closedTo(closeButton);
+
+    await constants.click();
+    await peek.waitFor();
+    await peek.locator("[data-peek-preview] [data-target]").first().waitFor();
+    expect(await spacerOf(page).count()).toBe(0);
+    expect(await peek.locator("[data-target]").count()).toBe(3);
+    const before = await panelTop(page);
+    await peek.getByRole("button", { name: "Expand" }).click();
+    await headingsAre(page, ["src/long.ts"]);
+    await says(page, "long.ts:10 · new");
+    await keys(page, "Backspace");
+    await headingsAre(page, ["walk/a.ts", "walk/b.ts", "walk/c.ts"]);
+    await peek.waitFor();
+    await waitFor(async () => (await focusedText(page)) === "Expand", "Expand focused");
+    expect(await panelTop(page)).toBe(before);
+    // Back rebuilt the overview: closing still finds the reference, by Esc or Close.
+    await closedTo(escape);
+    await constants.click();
+    await peek.getByRole("button", { name: "Expand" }).click();
+    await headingsAre(page, ["src/long.ts"]);
+    await keys(page, "Backspace");
+    await headingsAre(page, ["walk/a.ts", "walk/b.ts", "walk/c.ts"]);
+    await closedTo(closeButton);
+  }, 30_000);
+
+  it("keeps an old-side whole file on the old side when stacked, unfolds a folded target, restores folds on Back and returns focus when a peek closes", async () => {
+    const walk = await openWalk();
+    await publishWalk(walk);
+    await walk.publish(1, "refs", [
+      ...referenceOps.slice(0, 2),
+      {
+        type: "walkthrough.update",
+        overview: "Two independent edits over [the old constants](gyst:old/src/long.ts#L20-L22).",
+      },
+    ]);
+    const page = await newPage();
+    await page.setViewportSize({ width: 1280, height: 1200 });
+    await page.goto(`${one.origin}/session/${walk.id}`);
+    const pane = page.getByRole("main");
+    const side = page.getByRole("navigation", { name: "gyst" });
+    await headingsAre(page, ["walk/a.ts", "walk/b.ts", "walk/c.ts"]);
+    await page.getByRole("radio", { name: "Stacked", exact: true }).check();
+
+    // An old-side reference to an unchanged file walks and selects its old side, even stacked.
+    const overview = pane.getByRole("region", { name: "Walkthrough overview" });
+    await overview.getByRole("button", { name: "the old constants" }).click();
+    await overview.locator("[data-peek]").getByRole("button", { name: "Expand" }).click();
+    await headingsAre(page, ["src/long.ts"]);
+    expect(await pane.getByRole("region", { name: "Captured file" }).textContent()).toContain(
+      "old side",
+    );
+    await says(page, "long.ts:20");
+    await keys(page, "j", "Shift+V", "j");
+    await says(page, "long.ts:22");
+    await says(page, "2 lines selected");
+    await page.getByRole("radio", { name: "Split", exact: true }).check();
+    await says(page, "long.ts:22 · old");
+    await keys(page, "Escape", "k");
+    await says(page, "long.ts:21 · old");
+    await keys(page, "Backspace");
+    await headingsAre(page, ["walk/a.ts", "walk/b.ts", "walk/c.ts"]);
+
+    // Closing a note's peek, by Esc or Close, gives focus back to the reference it was followed from.
+    await side.getByRole("button", { name: /^Parse the config/ }).click();
+    await headingsAre(page, ["walk/b.ts", "walk/a.ts"]);
+    const five = pane.locator("[data-note=span]").getByRole("button", { name: "the five" });
+    await five.click();
+    await waitFor(async () => (await focusedText(page)) === "Expand", "Expand focused");
+    await page.keyboard.press("Escape");
+    await peekOf(page).waitFor({ state: "detached" });
+    await waitFor(async () => (await focusedText(page)) === "the five", "the reference focused");
+    await five.click();
+    await peekOf(page).getByRole("button", { name: "Close reference" }).click();
+    await peekOf(page).waitFor({ state: "detached" });
+    await waitFor(async () => (await focusedText(page)) === "the five", "the reference focused");
+
+    // Viewed folds b.ts; expanding a reference into it still shows its target.
+    await viewedBox(page, "walk/b.ts").check();
+    await waitFor(
+      async () => (await foldToggle(page, "walk/b.ts").getAttribute("aria-expanded")) === "false",
+      "b.ts folded",
+    );
+    await five.click();
+    await peekOf(page).getByRole("button", { name: "Expand" }).click();
+    await headingsAre(page, ["walk/b.ts"]);
+    await pane.locator("[data-range]").waitFor();
+    await pane.getByText("export const b5 = 5 * 2;", { exact: true }).waitFor();
+    // Folding the expanded file is its own: Back finds the group's folds as they were.
+    await foldToggle(page, "walk/b.ts").click();
+    await waitFor(
+      async () => (await pane.getByText("export const b5 = 5 * 2;", { exact: true }).count()) === 0,
+      "the expanded b.ts folded",
+    );
+    await keys(page, "Backspace");
+    await headingsAre(page, ["walk/b.ts", "walk/a.ts"]);
+    expect(await foldToggle(page, "walk/b.ts").getAttribute("aria-expanded")).toBe("false");
+    expect(await foldToggle(page, "walk/a.ts").getAttribute("aria-expanded")).toBe("true");
+    await pane.getByText("export const a20 = 20 * 2;", { exact: true }).waitFor();
+  }, 30_000);
+
+  it("walks notes that share a line one by one, and opens and closes the note at the cursor", async () => {
+    const walk = await openWalk();
+    await publishWalk(walk);
+    await walk.publish(1, "twin", [
+      {
+        type: "note.create",
+        id: "twin",
+        group: "core",
+        anchor: { path: "walk/b.ts", side: "new", startLine: 5, endLine: 5 },
+        markdown: "Same line, another thought.",
+      },
+    ]);
+    const page = await newPage();
+    await page.setViewportSize({ width: 1280, height: 1200 });
+    await page.goto(`${one.origin}/session/${walk.id}`);
+    const pane = page.getByRole("main");
+    const side = page.getByRole("navigation", { name: "gyst" });
+    await side.getByRole("button", { name: /^Parse the config/ }).click();
+    await headingsAre(page, ["walk/b.ts", "walk/a.ts"]);
+    const notes = pane.locator("[data-note]");
+    await waitFor(async () => (await notes.count()) === 3, "the group's three notes");
+    const open = (id: string) =>
+      pane
+        .locator(`[data-note=${id}]`)
+        .getByRole("button", { name: "L5 · new", exact: true })
+        .getAttribute("aria-expanded");
+    const opens = (id: string, expanded: "true" | "false") =>
+      waitFor(async () => (await open(id)) === expanded, `${id} expanded ${expanded}`);
+
+    await keys(page, "g", "g", "]", "n");
+    await says(page, "b.ts:5 · new");
+    // z c closes the note the cursor went to, and only that one.
+    await keys(page, "z", "c");
+    await waitFor(
+      async () => new Set([await open("b-note"), await open("twin")]).size === 2,
+      "one of the line's notes closed",
+    );
+    const [first, second] =
+      (await open("b-note")) === "false" ? ["b-note", "twin"] : ["twin", "b-note"];
+    // The next note shares the line: the cursor goes to it, not back to the first.
+    await keys(page, "]", "n");
+    await says(page, "b.ts:5 · new");
+    await keys(page, "z", "c");
+    await opens(second, "false");
+    await keys(page, "Enter");
+    await opens(second, "true");
+    expect(await open(first)).toBe("false");
+    await keys(page, "]", "n");
+    await says(page, "a.ts:20 · new");
+    await keys(page, "[", "n");
+    await says(page, "b.ts:5 · new");
+    await keys(page, "z", "a");
+    await opens(second, "false");
+    await keys(page, "[", "n", "z", "o");
+    await opens(first, "true");
+    expect(await open(second)).toBe("false");
+  }, 30_000);
+
+  it("says why a reference pinned to an earlier snapshot is unavailable after a refresh, without reading anything for it", async () => {
+    git("branch", "-f", "peek", "walk");
+    const id = await openRange("walk~1...peek");
+    onTestFinished(() =>
+      gyst("session", "delete", "--session", id, "--request-id", randomBytes(16).toString("hex")),
+    );
+    const { snapshotId } = await gyst("session", "diff", "--session", id);
+    await applyBatch(id, {
+      revision: 0,
+      snapshotId,
+      idempotencyKey: "pinned",
+      ops: [referenceOps[2]],
+    });
+    git("branch", "-f", "peek", "walk-next");
+    await gyst("session", "refresh", "--session", id);
+    const page = await newPage();
+    await page.setViewportSize({ width: 1280, height: 1200 });
+    const reads: any[] = [];
+    page.on("request", (request) => {
+      if (operationOf(request)?.command === "code") reads.push(operationOf(request));
+    });
+    await page.goto(`${one.origin}/session/${id}`);
+    const pane = page.getByRole("main");
+    await headingsAre(page, ["walk/a.ts", "walk/b.ts", "walk/c.ts", "walk/d.ts"]);
+    const overview = pane.getByRole("region", { name: "Walkthrough overview" });
+    await overview.getByRole("button", { name: "the constants" }).click();
+    const peek = overview.locator("[data-peek]");
+    await peek
+      .getByText("Unavailable: captured in an earlier snapshot this session no longer keeps.")
+      .waitFor();
+    expect(await peek.getByRole("button", { name: "Expand" }).count()).toBe(0);
+    expect(await peek.textContent()).toContain("(earlier)");
+    await settled(page);
+    expect(reads.filter((read) => read.file === "src/long.ts")).toEqual([]);
+    expect(reads.every((read) => read.snapshotId !== snapshotId)).toBe(true);
+  }, 30_000);
+
+  it("keeps hostile prose inert, opens a web link only on a click, and leaves the view unchanged when the CLI refuses unsafe Markdown", async () => {
+    const walk = await openWalk();
+    const overview = [
+      `Raw ${hostile} stays text.`,
+      "",
+      "<script>window.injected = 2</script>",
+      "",
+      "Read [the guide](https://example.com/guide).",
+    ].join("\n");
+    await walk.publish(0, "hostile", [{ type: "walkthrough.update", overview }]);
+    // The link's page is answered here, so following it never leaves the sandbox.
+    const fetched: string[] = [];
+    const guide = "https://example.com/**";
+    const answer = (route: Route) => {
+      fetched.push(route.request().url());
+      return route.fulfill({ contentType: "text/html", body: "<title>Guide</title>" });
+    };
+    await context.route(guide, answer);
+    onTestFinished(() => context.unroute(guide, answer));
+    const page = await newPage();
+    await page.setViewportSize({ width: 1280, height: 1200 });
+    await page.goto(`${one.origin}/session/${walk.id}`);
+    const card = page.getByRole("main").getByRole("region", { name: "Walkthrough overview" });
+    const inert = async () => {
+      await card.getByText(`Raw ${hostile} stays text.`, { exact: true }).waitFor();
+      await card.getByText("<script>window.injected = 2</script>", { exact: true }).waitFor();
+      expect(await card.locator("img, script").count()).toBe(0);
+      expect(await page.evaluate(() => "injected" in window)).toBe(false);
+    };
+    await inert();
+    const link = card.getByRole("link", { name: "the guide" });
+    expect(
+      await link.evaluate((anchor) =>
+        ["href", "target", "rel"].map((at) => anchor.getAttribute(at)),
+      ),
+    ).toEqual(["https://example.com/guide", "_blank", "noopener noreferrer nofollow"]);
+    await settled(page);
+    expect(fetched).toEqual([]);
+    const opening = page.waitForEvent("popup");
+    await link.click();
+    const opened = await opening;
+    await opened.waitForLoadState();
+    expect(opened.url()).toBe("https://example.com/guide");
+    expect(await opened.evaluate(() => [window.opener, document.referrer])).toEqual([null, ""]);
+    await opened.close();
+    expect(fetched).toEqual(["https://example.com/guide"]);
+
+    // Each unsafe text fails its whole batch at the CLI; nothing it carried reaches the reader.
+    const refused: Array<[string, string]> = [
+      ["[run](javascript:alert(1))", 'link "javascript:alert(1)" must be an absolute http(s) URL'],
+      ["[run](JaVaScRiPt:alert(1))", 'link "JaVaScRiPt:alert(1)" must be an absolute http(s) URL'],
+      [
+        "[run](&#106;avascript:alert(1))",
+        'link "javascript:alert(1)" must be an absolute http(s) URL',
+      ],
+      [
+        "[run]\n\n[run]: data:text/html,hi",
+        'link "data:text/html,hi" must be an absolute http(s) URL',
+      ],
+      ["![logo](https://example.com/logo.png)", "images are not allowed"],
+      [
+        '```mermaid\n%%{init: {"securityLevel": "loose"}}%%\nflowchart LR\n  a --> b\n```',
+        "Mermaid diagrams may not carry %%{ }%% directives",
+      ],
+      [
+        "```mermaid\n\n---\nconfig:\n  securityLevel: loose\n---\nflowchart LR\n  a --> b\n```",
+        "Mermaid diagrams may not carry --- frontmatter",
+      ],
+      [
+        '```mermaid\nflowchart LR\n  a@{ img: "https://example.com/probe.png" } --> b\n```',
+        "Mermaid diagrams may not carry @{ } shape data",
+      ],
+      [
+        "```mermaid\nflowchart LR\n  a --> b\n  style a fill:#ff0000\n```",
+        'Mermaid diagrams may not carry author styling: "style"',
+      ],
+    ];
+    for (const [index, [markdown, problem]] of refused.entries())
+      expect(
+        failed(
+          await walk.attempt(1, `refused-${index}`, [
+            { type: "walkthrough.update", overview: `${markdown}\n\nworth it` },
+            coreGroup(walk),
+          ]),
+        ),
+      ).toMatchObject({
+        code: "validation_failed",
+        detail: [{ opIndex: 0, message: expect.stringContaining(problem) }],
+      });
+    expect(await gyst("session", "status", "--session", walk.id)).toMatchObject({
+      revision: 1,
+      overview: { markdown: overview },
+      groups: [],
+    });
+    await settled(page);
+    await page.reload();
+    await inert();
+    expect(await page.getByText("worth it").count()).toBe(0);
+    expect(
+      await page
+        .getByRole("navigation", { name: "gyst" })
+        .getByText(/Parse the config/)
+        .count(),
+    ).toBe(0);
+  }, 30_000);
+
+  it("renders strict app-themed Mermaid only where it is still shown after a held load, shows a broken diagram's error and source, and highlights known fence languages only", async () => {
+    const walk = await openWalk();
+    await walk.publish(0, "rich", [
+      {
+        ...coreGroup(walk),
+        overview: [
+          "Reads every value once.",
+          "",
+          "```mermaid",
+          "flowchart LR",
+          "  parse --> check",
+          "```",
+          "",
+          "```ts",
+          "const parsed = parse(input);",
+          "```",
+          "",
+          "```nosuchlang",
+          "plain words here",
+          "```",
+        ].join("\n"),
+      },
+      {
+        ...edgeGroup(walk),
+        overview: [
+          "Drops the unused c3.",
+          "",
+          "```mermaid",
+          "this is not a diagram",
+          "```",
+          "",
+          "Still reads after the diagram.",
+        ].join("\n"),
+      },
+    ]);
+    const page = await newPage();
+    await page.setViewportSize({ width: 1280, height: 1200 });
+    // Mermaid's chunks stay held until the reader has left the diagram's group and come back.
+    const mermaidChunk = /\/assets\/mermaid[^/]*\.js$/;
+    let release = () => {};
+    const held = new Promise<void>((resolve) => (release = resolve));
+    const chunks: string[] = [];
+    await page.route(mermaidChunk, async (route) => {
+      chunks.push(route.request().url());
+      await held;
+      await route.continue();
+    });
+    await page.goto(`${one.origin}/session/${walk.id}`);
+    const pane = page.getByRole("main");
+    const side = page.getByRole("navigation", { name: "gyst" });
+    const core = side.getByRole("button", { name: /^Parse the config/ });
+    const edge = side.getByRole("button", { name: /^Handle the edge/ });
+    const card = pane.getByRole("region", { name: "Group overview" });
+    await core.click();
+    // The source reads while Mermaid loads.
+    await card.getByText("flowchart LR parse --> check", { exact: true }).waitFor();
+    await waitFor(() => chunks.length > 0, "Mermaid's chunk requested");
+    await edge.click();
+    await card.getByText("this is not a diagram", { exact: true }).waitFor();
+    await core.click();
+    await card.getByText("Reads every value once.", { exact: true }).waitFor();
+    release();
+    const diagram = card.getByRole("img", { name: "Diagram" });
+    await diagram.locator("svg").waitFor();
+    await diagram.getByText("parse", { exact: true }).waitFor();
+    await diagram.getByText("check", { exact: true }).waitFor();
+    expect(await card.getByText("flowchart LR", { exact: false }).count()).toBe(0);
+    await settled(page);
+    // One diagram in the document: none for the group left behind, no copy and no scratch render.
+    expect(await page.locator("svg[id^='gyst-mermaid']").count()).toBe(1);
+    expect(await page.locator("[id^='dgyst-mermaid']").count()).toBe(0);
+    expect(await diagram.locator("foreignObject, a, script, image, use").count()).toBe(0);
+    // Drawn in the app's palette, not one of Mermaid's own themes.
+    const style = (await diagram.locator("svg style").allTextContents()).join("\n");
+    expect(style).not.toMatch(/#ececff|#fff4dd/i);
+    // A known fence language is highlighted; an unknown one stays plain code.
+    await card.locator("pre code span[style*='color']").first().waitFor();
+    const plain = card.locator("pre").filter({ hasText: "plain words here" });
+    expect(await plain.locator("code").textContent()).toBe("plain words here");
+    expect(await plain.locator("[style]").count()).toBe(0);
+
+    // A broken diagram says why and keeps its source; the text around it still reads.
+    await edge.click();
+    const failure = card.locator("details");
+    await failure.getByText(/^Diagram failed: /).waitFor();
+    await failure.getByText("this is not a diagram", { exact: true }).waitFor();
+    await card.getByText("Still reads after the diagram.", { exact: true }).waitFor();
+    await card.getByText("Drops the unused c3.", { exact: true }).waitFor();
+    expect(await page.locator("svg[id^='gyst-mermaid']").count()).toBe(0);
+  }, 30_000);
+
+  it("shows a diagram's source and the reason when Mermaid can't load, around readable guidance", async () => {
+    const walk = await openWalk();
+    await walk.publish(0, "unloadable", [
+      {
+        type: "walkthrough.update",
+        overview: "Before.\n\n```mermaid\nflowchart LR\n  a --> b\n```\n\nAfter.",
+      },
+    ]);
+    const page = await newPage(context, {
+      problems: [expect.stringMatching(/^requestfailed \/assets\/mermaid/)],
+    });
+    await page.setViewportSize({ width: 1280, height: 1200 });
+    await page.route(/\/assets\/mermaid[^/]*\.js$/, (route) => route.abort());
+    await page.goto(`${one.origin}/session/${walk.id}`);
+    const card = page.getByRole("main").getByRole("region", { name: "Walkthrough overview" });
+    const failure = card.locator("details");
+    await failure.getByText(/^Diagram failed: Mermaid could not load: /).waitFor();
+    await failure.getByText("flowchart LR a --> b", { exact: true }).waitFor();
+    await card.getByText("Before.", { exact: true }).waitFor();
+    await card.getByText("After.", { exact: true }).waitFor();
+    await settled(page);
+  }, 30_000);
+
+  it("makes no request for a diagram's images while rendering: the CLI and the renderer refuse Mermaid participant data and math, and the viewer's policy blocks any other fetch", async () => {
+    // Any host an author names; this one records what reaches it.
+    const requested: string[] = [];
+    const host = createHttpServer((request, response) => {
+      requested.push(request.url ?? "");
+      response.end();
+    });
+    await new Promise<void>((resolve) => host.listen(0, "127.0.0.1", resolve));
+    onTestFinished(() => new Promise<void>((resolve) => host.close(() => resolve())));
+    const probe = `http://127.0.0.1:${(host.address() as AddressInfo).port}`;
+    const fetching: Array<[string, string]> = [
+      [
+        `sequenceDiagram\n  participant A\n  properties A: {"icon":"${probe}/icon.svg"}`,
+        'Mermaid diagrams may not carry participant links or properties, which can load images: "properties"',
+      ],
+      [
+        `sequenceDiagram\n  participant A as <img src="${probe}/math.png"> $$x$$`,
+        "Mermaid diagrams may not carry $$ math, which can load images",
+      ],
+    ];
+    const fence = (diagram: string) => `\`\`\`mermaid\n${diagram}\n\`\`\``;
+    const walk = await openWalk();
+    for (const [index, [diagram, problem]] of fetching.entries())
+      expect(
+        failed(
+          await walk.attempt(0, `fetching-${index}`, [
+            { type: "walkthrough.update", overview: fence(diagram) },
+          ]),
+        ),
+      ).toMatchObject({
+        code: "validation_failed",
+        detail: [{ opIndex: 0, message: expect.stringContaining(problem) }],
+      });
+    await walk.publish(0, "fetching", [{ type: "walkthrough.update", overview: "Diagrams." }]);
+
+    // Guidance that reaches the reader anyway still never reaches Mermaid.
+    const slipped = `${probe}/slipped.png`;
+    const page = await newPage(context, {
+      problems: [blockedImage(slipped), "requestfailed /slipped.png"],
+    });
+    await page.setViewportSize({ width: 1280, height: 1200 });
+    await page.route(isOperationUrl, async (route) => {
+      if (route.request().postDataJSON()?.command !== "status") return route.fallback();
+      const response = await route.fetch();
+      const reply = await response.json();
+      reply.value.overview.markdown = fetching.map(([diagram]) => fence(diagram)).join("\n\n");
+      await route.fulfill({ response, json: reply });
+    });
+    await page.goto(`${one.origin}/session/${walk.id}`);
+    const card = page.getByRole("main").getByRole("region", { name: "Walkthrough overview" });
+    for (const [, problem] of fetching)
+      await card.getByText(`Diagram failed: ${problem}.`, { exact: true }).waitFor();
+    await settled(page);
+    expect(await page.locator("svg[id^='gyst-mermaid'], [id^='dgyst-mermaid']").count()).toBe(0);
+
+    // Whatever a renderer might still let through, the viewer's policy refuses to fetch.
+    const refused = page.waitForEvent("console", (message) => message.text().includes(slipped));
+    await page.evaluate((src) => {
+      const image = document.createElement("img");
+      image.src = src;
+      document.body.append(image);
+    }, slipped);
+    await refused;
+    await settled(page);
+    expect(requested).toEqual([]);
+  }, 30_000);
+
+  it("rolls a mixed invalid batch back, replays a retried batch byte for byte and refuses a stale batch without touching the human's Viewed", async () => {
+    const walk = await openWalk();
+    const page = await newPage();
+    await page.setViewportSize({ width: 1280, height: 1200 });
+    const writes = viewedOf(page);
+    await page.goto(`${one.origin}/session/${walk.id}`);
+    const side = page.getByRole("navigation", { name: "gyst" });
+    const reload = async () => {
+      await settled(page);
+      await page.reload();
+      await headingsAre(page, ["walk/a.ts", "walk/b.ts", "walk/c.ts"]);
+    };
+    const status = () => gyst("session", "status", "--session", walk.id);
+    await side.getByText("No walkthrough for this session yet.", { exact: true }).waitFor();
+
+    const [span, bNote] = [walkNotes.slice(0, 1), walkNotes.slice(1, 2)];
+    const valid = [
+      { type: "walkthrough.update", overview: walkOverview },
+      coreGroup(walk),
+      ...span,
+    ];
+    // The last op names a group that does not exist; nothing before it lands either.
+    const mixed = failed(
+      await walk.attempt(0, "mixed", [
+        ...valid,
+        ...bNote.map((note) => ({ ...note, group: "edge" })),
+      ]),
+    );
+    expect(mixed.code).toBe("validation_failed");
+    expect(mixed.detail.map(({ opIndex }: { opIndex: number }) => opIndex)).toEqual([3]);
+    expect(await status()).toMatchObject({ revision: 0, overview: null, groups: [] });
+    await reload();
+    await side.getByText("No walkthrough for this session yet.", { exact: true }).waitFor();
+    expect(await page.getByRole("main").getByRole("region").count()).toBe(0);
+
+    const corrected = await walk.attempt(0, "corrected", valid);
+    expect(json(corrected).revision).toBe(1);
+    await reload();
+    expect(await walkthroughRows(page)).toEqual([
+      "Overview",
+      "Parse the config, 0 of 3 hunks viewed",
+    ]);
+    await side.getByRole("button", { name: /^Parse the config/ }).click();
+    await headingsAre(page, ["walk/b.ts", "walk/a.ts"]);
+    await page.getByRole("main").locator("[data-note=span]").waitFor();
+    // The human marks b.ts Viewed, which moves the review on to revision 2.
+    await viewedBox(page, "walk/b.ts").check();
+    await says(page, "1/3 hunks viewed in 2 files");
+    expect(writes).toEqual([expect.objectContaining({ hunkIds: [walk.b5], viewed: true })]);
+
+    // A retry of the recorded batch answers exactly as it first did; a changed one under its key fails.
+    expect((await walk.attempt(0, "corrected", valid)).stdout).toBe(corrected.stdout);
+    expect(failed(await walk.attempt(0, "corrected", [...valid, ...bNote])).message).toBe(
+      "idempotency key reused with a different batch",
+    );
+    // A batch written before the Viewed write would unview b.ts; it is refused instead.
+    expect(failed(await walk.attempt(1, "stale", bNote))).toMatchObject({
+      code: "stale_revision",
+      message: expect.stringContaining("apply revision 1 is stale"),
+    });
+    expect(await status()).toMatchObject({ revision: 2, viewedHunkIds: [walk.b5] });
+    await reload();
+    await side
+      .getByRole("button", { name: "Parse the config, 1 of 3 hunks viewed", exact: true })
+      .waitFor();
+    await says(page, "1/5 hunks viewed in 3 files");
+    expect(await viewedBox(page, "walk/b.ts").isChecked()).toBe(true);
+    expect(await page.getByRole("main").locator("[data-note=b-note]").count()).toBe(0);
+    expect(writes).toHaveLength(1);
+  }, 30_000);
+
+  it("keeps a note over two own hunks once, refuses a cross-group note at the CLI, and moves a re-anchored note, unviewing its old and new hunks", async () => {
+    const walk = await openWalk();
+    await publishWalk(walk);
+    const page = await newPage();
+    await page.setViewportSize({ width: 1280, height: 1200 });
+    await page.goto(`${one.origin}/session/${walk.id}`);
+    const pane = page.getByRole("main");
+    const side = page.getByRole("navigation", { name: "gyst" });
+    const notes = pane.locator("[data-note]");
+    const noteIds = () =>
+      notes.evaluateAll((all) => all.map((note) => note.getAttribute("data-note")));
+    const openCore = async () => {
+      await side.getByRole("button", { name: /^Parse the config/ }).click();
+      await headingsAre(page, ["walk/b.ts", "walk/a.ts"]);
+      await waitFor(async () => (await notes.count()) === 2, "core's two notes");
+    };
+    await openCore();
+    expect(await pane.getByText("Both doublings share").count()).toBe(1);
+    expect(await noteIds()).toEqual(["b-note", "span"]);
+
+    // Lines 20 to 40 reach edge's change at line 40: the whole batch fails.
+    const crossing = failed(
+      await walk.attempt(1, "crossing", [
+        {
+          type: "note.create",
+          id: "wide",
+          group: "core",
+          anchor: { path: "walk/a.ts", side: "new", startLine: 20, endLine: 40 },
+          markdown: "Too wide.",
+        },
+      ]),
+    );
+    expect(crossing).toMatchObject({
+      code: "validation_failed",
+      detail: [
+        {
+          opIndex: 0,
+          message: `note wide covers changed lines of hunk ${walk.a40}, which is in group edge, not group core`,
+        },
+      ],
+    });
+
+    // Every hunk Viewed, from the snapshot view.
+    await side.getByRole("button", { name: "All changes", exact: true }).click();
+    for (const path of ["walk/a.ts", "walk/b.ts", "walk/c.ts"]) await viewedBox(page, path).check();
+    await says(page, "5/5 hunks viewed in 3 files");
+    // span moves from a.ts 10–20 to b.ts 4–6: a.ts's two core hunks and b.ts's are unviewed.
+    const moved = await walk.publish(4, "move", [
+      {
+        type: "note.update",
+        id: "span",
+        anchor: { path: "walk/b.ts", side: "new", startLine: 4, endLine: 6 },
+      },
+    ]);
+    expect(moved.viewedHunkIds).toHaveLength(2);
+    expect(moved.viewedHunkIds).toEqual(expect.arrayContaining([walk.a40, walk.c3]));
+    await settled(page);
+    await page.reload();
+    await openCore();
+    expect(await noteIds()).toEqual(["span", "b-note"]);
+    await pane.getByRole("button", { name: "L4–6 · new", exact: true }).waitFor();
+    const [note, aTs] = await Promise.all([
+      pane.locator("[data-note=span]").boundingBox(),
+      pane.getByRole("heading", { name: "walk/a.ts" }).boundingBox(),
+    ]);
+    expect(note!.y).toBeLessThan(aTs!.y);
+    await says(page, "0/3 hunks viewed in 2 files");
+    await side
+      .getByRole("button", { name: "Handle the edge, all 2 of 2 hunks viewed", exact: true })
+      .waitFor();
   }, 30_000);
 
   it("stops each viewer with 130 on SIGINT and keeps the daemon and saved sessions", async () => {

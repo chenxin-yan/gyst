@@ -5,7 +5,7 @@ description: Use when the user requests a gyst walkthrough of a diff, range or P
 
 # Compose a walkthrough
 
-A **group** is one review question covering one or more hunks, with a short title and optional member-hunk notes. Ungrouped hunks stay readable under their files. Leave Viewed progress to the human; it means read, not approved.
+A **walkthrough** is an overall overview and an ordered list of **groups**. A group is one review question covering one or more hunks, with a short title, an overview, an order for its files and optional notes. Ungrouped hunks stay readable under their files. Leave Viewed progress to the human; it means read, not approved.
 
 ## 1. Select the snapshot
 
@@ -27,57 +27,69 @@ Before publishing, assign **every snapshot hunk to exactly one planned group** a
 
 Order concepts before consequences, and members along the explanation: entry point → behavior → tests. Keep the plan in agent context; publish only finished groups.
 
-## 3. Author self-contained groups
+## 3. Author self-contained guidance
 
-A reader should understand each group without reconstructing another group or the chat.
+A reader should understand each group without reconstructing another group or the chat. Write for a reviewer who knows the language but not the subsystem.
 
-**Title**: name the change in a few words (`Reject expired credentials`), not a sentence explaining it. The 120-code-point limit is a bound, not a target.
+**Walkthrough overview**: the purpose of the whole change and the mental model that connects its groups. **Group overview**: what this group contributes and how to read it. The two complement each other; do not repeat one in the other.
 
-**Notes**: attach one or two concise sentences to a member hunk when intent, a non-obvious consequence, a caveat or a connection needs explanation. Notes appear above their hunks only while the sidebar is hidden. Let obvious mechanical changes speak for themselves; an empty notes array is valid.
+**Title**: name the change in a few words (`Reject expired credentials`), not a sentence explaining it. Titles are single-line plain text, 1–120 Unicode code points, without terminal controls.
 
-Each note is `{ "hunkId": "member-id", "text": "Brief explanation." }`. Use at most one per member, anchored within its own group. Display order follows member order. Text is nonempty, single-paragraph plain text, at most 400 Unicode code points, without terminal controls. Use stable symbols and paths rather than line numbers. Keep Markdown blocks, source excerpts and diagrams out of notes; the diff supplies the code. Distinguish tests run from tests inspected and snapshot evidence from later working-tree code. Keep the walkthrough in groups, not in chat.
+**Notes**: explain a logical step, a non-obvious consequence, a caveat or a connection; let obvious mechanical changes speak for themselves. A note has a stable `id` and anchors to one contiguous line range on one side (`old` or `new`) of one file, as numbered in the snapshot's captured content. The range must cover a changed line of its own group and no changed line of another group or of an ungrouped hunk; it may span unchanged lines and several of its group's hunks. Notes display in code order beside the code, so do not restate it.
 
-Titles are single-line plain text, 1–120 Unicode code points, without terminal controls.
+Overviews and notes are ordinary Markdown: inline code, emphasis, lists, compact tables, fenced code and Mermaid diagrams. No raw HTML, images or terminal controls. Concise overviews and one- or two-sentence notes are defaults, not caps. Use stable symbols and paths. Distinguish tests run from tests inspected and snapshot evidence from later working-tree code. Keep the walkthrough in the session, not in chat.
+
+**References**: point at exact captured code with a `gyst:<side>/<path>#L<start>-L<end>` link, such as `[the retry loop](gyst:new/src/retry.ts#L40-L52)`; write `%20` or wrap the target in `<…>` for spaces. The file may be an unchanged supporting one, but it must be in the snapshot: a file created after capture is rejected. Each changed text's references are checked and pinned to the batch's snapshot, and a later refresh never moves them. Other links must be absolute `http(s)` URLs; relative, fragment, `mailto:` and other schemes are rejected, and so are Mermaid `%%{…}%%` directives, `---` frontmatter, `@{…}` shape data, `$$…$$` math, sequence `properties`/`details`/`links`/`link` statements and styling statements (`style`, `classDef`, `linkStyle`, `cssClass`, C4 `Update…Style`, sequence `rect`/`box`): the viewer owns diagram colours.
 
 ## 4. Publish atomically
 
 Read the current revision. Pipe a batch to `gyst session apply --session <id>`. Publish one complete group or a small consecutive batch. Append planned groups in order.
 
-Example first batch; replace the revision, key and hunk ids:
+Example first batch; replace the revision, snapshot id, key, hunk ids and ranges:
 
 ```json
 {
   "revision": 0,
+  "snapshotId": "snapshot-id-from-status",
   "idempotencyKey": "fresh-uuid",
   "ops": [
+    {
+      "type": "walkthrough.update",
+      "overview": "Expired credentials could still load an account. This change rejects them at the boundary and pins the edge case with a test."
+    },
     {
       "type": "group.create",
       "id": "expiry",
       "title": "Reject expired credentials",
-      "notes": [
-        {
-          "hunkId": "guard-hunk",
-          "text": "Check expiry before loading the account so an expired credential cannot trigger a database read."
-        },
-        {
-          "hunkId": "test-hunk",
-          "text": "The boundary case treats a credential expiring at request time as expired. Test inspected, not run."
-        }
-      ],
+      "overview": "The guard runs before the account lookup, so an expired credential never reaches the database.",
       "memberHunkIds": ["guard-hunk", "test-hunk"]
+    },
+    {
+      "type": "note.create",
+      "id": "expiry-boundary",
+      "group": "expiry",
+      "anchor": { "path": "src/auth.test.ts", "side": "new", "startLine": 40, "endLine": 46 },
+      "markdown": "A credential expiring exactly at request time counts as expired. Test inspected, not run."
     }
   ]
 }
 ```
 
-Creation requires `notes`, including `[]` when no explanation is needed. An update may omit notes to retain them, replace the complete array, or clear it with `[]`. Validate retained anchors against any new membership; replace notes when an anchor would become invalid.
+`snapshotId` and `revision` come from status; a batch for an older snapshot or revision is stale. Ops:
+
+- `walkthrough.update`: `overview` (`null` removes it) and/or `groupOrder` (every group id once).
+- `group.create`: `id`, `title`, `overview`, `memberHunkIds`, optional `files` (defaults to the members' files in snapshot order). Groups append in order.
+- `group.update`: `id` with any of `title`, `overview` (`null` removes it), `memberHunkIds`, `files`. `group.dissolve`: `id`; its hunks become ungrouped and its notes go.
+- `note.create`: `id`, `group`, `anchor`, `markdown`. `note.update`: `id` with `anchor` (re-anchors) and/or `markdown`. `note.remove`: `id`.
+
+The batch is validated as a whole: a hunk belongs to at most one group, `files` lists exactly the members' files, and every note still fits its group after membership changes. Edit guidance in place by id rather than recreating it. Adding, editing or removing a note, and editing or removing an overview, unviews the affected hunks; reordering does not, so avoid no-op rewrites.
 
 - Successful batch: use its returned revision for the next batch.
 - `stale_revision`: reread status and reconcile concurrent human work before rebuilding.
 - Identical retry: reuse the key, but its receipt is historical; reread status before continuing.
 - Changed content or corrected `validation_failed`: use a fresh key.
 
-As soon as groups are published, tell the human they can run `gyst`; leave launching it to them. Continue at complete-group boundaries. Finish when every current hunk belongs to a group; otherwise report remaining work.
+As soon as groups are published, tell the human they can run `gyst`; leave launching it to them. Continue at complete-group boundaries. Finish when status reports `preparation.state` as `complete`: a walkthrough overview, every group's overview and every current hunk in a group. Otherwise report remaining work.
 
 ## Source changes
 

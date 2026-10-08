@@ -1,5 +1,5 @@
 import type {
-  ContentSide,
+  CapturedRange,
   DaemonError,
   FilesPayload,
   Hunk,
@@ -9,6 +9,7 @@ import type {
 import {
   type CodeViewItem,
   type CodeViewLineSelection,
+  type DiffLineAnnotation,
   FileDiff,
   type FileDiffContentsLoader,
   type FileDiffMetadata,
@@ -55,6 +56,15 @@ import {
   useMounted,
 } from "../components.tsx";
 import {
+  type CodeRead,
+  linesOf,
+  notCaptured,
+  type RangeRead,
+  readRange,
+  referenceAvailability,
+} from "../captured.ts";
+import {
+  capturedRows,
   change,
   type Cursor,
   edge,
@@ -70,6 +80,7 @@ import {
   stopsOf,
   switched,
 } from "../cursor.ts";
+import { CapturedHeader, useWholeSides } from "../expanded.tsx";
 import { contentLoader, hydrationConcurrency, hydrationWindow, nearbyItems } from "../hydration.ts";
 import { type Command, type CommandId, commandsFor, type InputMode, typed } from "../keymap.ts";
 import {
@@ -82,16 +93,28 @@ import {
   synchronizing,
 } from "../live.ts";
 import {
+  type BackStack,
+  type Peek,
+  type PeekOrigin,
+  type Place,
+  popped,
+  pushed,
+  type ReadingPosition,
+  type Restore,
+  restoreFor,
+} from "../navigation.ts";
+import { type Extent, InlinePeek, type PeekHandle, PeekSpacer } from "../peek.tsx";
+import {
   capturedFiles,
   changedFiles,
   PagingStopped,
   fileDiffOf,
-  isUnder,
   lateWholeFiles,
   type LayoutMode,
   layoutOf,
   lineStats,
   type ReaderFile,
+  splitMinWidth,
   statusOf,
   type TreeNode,
   treeKey,
@@ -112,6 +135,17 @@ import {
   viewedReducer,
   type ViewedState,
 } from "../viewed.ts";
+import {
+  annotationsOf,
+  type DiffAnnotation,
+  type NoteFrom,
+  noteSequence,
+  noteStep,
+  type ReviewView,
+  viewFiles,
+  type ViewFiles,
+} from "../walkthrough.ts";
+import { ForeignHunkLabel, NoteCard, OverviewCard, WalkthroughNav } from "../walkthrough.tsx";
 
 export const Route = createFileRoute("/session/$sessionId")({
   loader: async ({ params: { sessionId } }) => {
@@ -157,14 +191,15 @@ function SessionPage() {
 /** A file's captured sides being read for its first expansion, or why that read failed. */
 type FileLoad = "loading" | { failure: unknown };
 
-/** Where the reader is: a file and, inside its diff, the side and line at the top of the panel. */
-type ReadingPosition = { file: string; side: Side | undefined; line: number | undefined };
-
 /**
  * What the cursor overlay marks: a line on one split column or across the diff, a hidden range
  * (by its first hidden line, across the diff), or with no line a file header.
  */
 type Mark = { file: string; side: Side; line?: number; full?: boolean };
+
+/** What of a status the reader draws as guidance, compared as one value. */
+const guidanceOf = ({ overview, groups, preparation }: StatusPayload) =>
+  JSON.stringify({ overview, groups, preparation });
 
 const statusRead = (status: StatusPayload): StatusRead => ({
   snapshotId: status.session.snapshotId,
@@ -267,6 +302,19 @@ function useViewedProgress(
 ) {
   const [state, setState] = useState(() => initialViewed(statusRead(status)));
   const latest = useRef<ViewedState>(state);
+  // The newest status read for this snapshot: guidance an agent publishes while the reader is
+  // open arrives with the read its announcement causes, not only with a session reload. Loader
+  // and live reads are ordered by the newest revision accepted, which moves even when the
+  // guidance object is kept, so a late answer never brings back older guidance. Only a change of
+  // guidance replaces it: a read for Viewed alone keeps the views and the renderer's items, and
+  // so the reading position, as they were.
+  const [shown, setShown] = useState(status);
+  const accepted = useRef(status.revision);
+  const show = (next: StatusPayload) => {
+    if (next.session.snapshotId !== snapshotId || next.revision < accepted.current) return;
+    accepted.current = next.revision;
+    setShown((before) => (guidanceOf(next) === guidanceOf(before) ? before : next));
+  };
   const linked = useRef(live);
   linked.current = live;
   const mounted = useMounted();
@@ -282,6 +330,7 @@ function useViewedProgress(
   useEffect(() => {
     if (loaded.current === status) return;
     loaded.current = status;
+    show(status);
     if (latest.current.busy === undefined) apply({ type: "status", status: statusRead(status) });
   });
   // The connection the write on the wire was sent over, and how many writes were sent: a status
@@ -345,8 +394,9 @@ function useViewedProgress(
         // again once this read settles.
         (answer) => {
           const { busy } = latest.current;
+          if (!current()) return;
+          show(answer);
           if (
-            current() &&
             sends.current === since &&
             (busy === undefined || (required && busy.kind === "rereading"))
           )
@@ -391,7 +441,7 @@ function useViewedProgress(
     if (behind(now, current) === "read") read(generation, false);
   };
   useEffect(sync, [live.state, state]);
-  return { state, write };
+  return { state, write, status: shown };
 }
 
 /** Keydowns that type text rather than command the reader. */
@@ -406,6 +456,8 @@ const isTextEntry = (target: Element | null) =>
 /** Lines a Mouse-mode j or k scrolls. */
 const lineStep = 57;
 
+const noWholeFiles: ReadonlyMap<string, string> = new Map();
+
 function SessionReader(props: {
   session: SessionSummary;
   hunks: readonly Hunk[];
@@ -417,7 +469,7 @@ function SessionReader(props: {
   const navigate = useNavigate();
   const router = useRouter();
   const [pages, setPages] = useState([props.firstPage]);
-  const [selection, setSelection] = useState("");
+  const [review, setReview] = useState<ReviewView>({ kind: "files", path: "" });
   const [mode, setMode] = useState<LayoutMode>("auto");
   const [width, setWidth] = useState(0);
   const [loads, setLoads] = useState<ReadonlyMap<string, FileLoad>>(new Map());
@@ -433,7 +485,34 @@ function SessionReader(props: {
   const viewer = useRef<Viewer>(null);
   const live = useLiveSession(session.id);
   const progress = useViewedProgress(session.id, snapshotId, props.status, live);
+  const status = progress.status;
   const mounted = useMounted();
+  // Captured-code navigation: the reference expanded in the main panel, the open peek, the places
+  // Back returns to, and the panel's restart key with where it starts. Never Viewed.
+  const [captured, setCaptured] = useState<CapturedRange>();
+  const [peek, setPeek] = useState<Peek>();
+  const [back, setBack] = useState<BackStack>([]);
+  const [panel, setPanel] = useState<{ key: number; restore: Restore | undefined }>({
+    key: 0,
+    restore: undefined,
+  });
+  const [spacer, setSpacer] = useState<HTMLDivElement | null>(null);
+  const peekHandle = useRef<PeekHandle>(null);
+  // The control a peek was followed from, focused again when the peek closes. The renderer
+  // remounts a note as its annotations change, and Back rebuilds an overview, so a reference no
+  // longer on the page is found again by identity.
+  const peekOpener = useRef<HTMLElement | null>(null);
+  const [refocus, setRefocus] = useState<{ origin: PeekOrigin; target: CapturedRange }>();
+  // An expanded file opens its hidden lines in its own map, so Back finds the origin's as it was.
+  const expandedOpened = useRef(new Map<string, Map<number, Opened>>());
+  const [notice, setNotice] = useState<string>();
+  const readCode = useCallback<CodeRead>(
+    (request) => operation({ ...request, session: session.id }),
+    [session.id],
+  );
+  const wholeSides = useWholeSides(readCode);
+  // A peek's lines, read once per target and kept for the session (#108).
+  const rangeReads = useRef(new Map<string, Promise<RangeRead>>());
 
   // A later page answers the cursor it was asked with; one already appended is dropped.
   const addPage = useCallback((after: string, page: FilesPayload) => {
@@ -459,13 +538,55 @@ function SessionReader(props: {
   }, [nextPage, pageFailure, session.id, snapshotId, addPage]);
 
   const manifest = useMemo(() => pages.flatMap((page) => page.files), [pages]);
+  const manifestByPath = useMemo(
+    () => new Map(manifest.map((file) => [file.path, file])),
+    [manifest],
+  );
   const files = useMemo(() => changedFiles(hunks, manifest), [hunks, manifest]);
   const byPath = useMemo(() => new Map(files.map((file) => [file.path, file])), [files]);
   // Memoized: a new list makes the renderer reconcile its items and restore the reading position.
-  const shown = useMemo(
-    () => files.filter((file) => isUnder(file.path, selection)),
-    [files, selection],
+  // An expanded reference shows its one file: every hunk of a changed one, with no Viewed section.
+  const capturedFile = captured && byPath.get(captured.path);
+  const capturedEntry = captured && manifestByPath.get(captured.path);
+  const inView = useMemo(
+    (): ViewFiles =>
+      captured
+        ? {
+            files: [capturedFile ?? { path: captured.path, hunks: [], manifest: capturedEntry }],
+            hunkIds: new Map(),
+            group: undefined,
+          }
+        : viewFiles(review, files, status),
+    [captured, capturedFile, capturedEntry, review, files, status],
   );
+  const shown = inView.files;
+  const shownByPath = useMemo(() => new Map(shown.map((file) => [file.path, file])), [shown]);
+  const notes = useMemo(() => noteSequence(inView, status), [inView, status]);
+  const noteAnnotations = useMemo(
+    () => annotationsOf(inView, notes, status),
+    [inView, notes, status],
+  );
+  // A peek under a note reserves its row after the note.
+  const peekNote = peek?.origin.kind === "note" ? peek.origin.noteId : undefined;
+  const peekPlace =
+    peekNote === undefined ? undefined : notes.find(({ note }) => note.id === peekNote);
+  const annotations = useMemo(() => {
+    if (peekPlace === undefined) return noteAnnotations;
+    const spacerRow: DiffLineAnnotation<DiffAnnotation> = {
+      side: peekPlace.side,
+      lineNumber: peekPlace.line,
+      metadata: { kind: "peek" },
+    };
+    return new Map(noteAnnotations).set(peekPlace.file, [
+      ...(noteAnnotations.get(peekPlace.file) ?? []),
+      spacerRow,
+    ]);
+  }, [noteAnnotations, peekPlace]);
+  const [collapsedNotes, setCollapsedNotes] = useState<ReadonlySet<string>>(new Set());
+  // The note Mouse mode last scrolled to, which its scrolled-to place no longer names.
+  const lastNote = useRef<number>(undefined);
+  // The note `]n`/`[n` last put the Vim cursor on: notes can share a line, which the cursor can't.
+  const cursorNote = useRef<string>(undefined);
   const layout = layoutOf(mode, width);
 
   // The metadata each file shows, and the one place its full contents are kept: its partial
@@ -609,24 +730,49 @@ function SessionReader(props: {
     () => treeOf([...manifest.map((file) => file.path), ...files.map((file) => file.path)]),
     [manifest, files],
   );
-  const hunkCount = shown.reduce((count, file) => count + file.hunks.length, 0);
+  // A view's Viewed sections: a file's hunks in a files view, the group's own in a group view.
+  const hunkIdsOf = (path: string) => inView.hunkIds.get(path) ?? [];
+  const hunkCount = shown.reduce((count, file) => count + hunkIdsOf(file.path).length, 0);
   const viewedCount = shown.reduce(
-    (count, file) => count + file.hunks.filter((hunk) => progress.state.viewed.has(hunk.id)).length,
+    (count, file) =>
+      count + hunkIdsOf(file.path).filter((id) => progress.state.viewed.has(id)).length,
     0,
   );
+
+  // An expanded file without a diff reads as its whole captured side.
+  const whole = captured && !diffs.has(captured.path) ? wholeSides.of(captured) : undefined;
+  const loadWhole = wholeSides.load;
+  // Read once; a failed read waits for the header's Retry.
+  const wholeUnread = captured !== undefined && !diffs.has(captured.path) && whole === undefined;
+  useEffect(() => {
+    if (captured && wholeUnread) loadWhole(captured);
+  }, [captured, wholeUnread, loadWhole]);
+  const wholeFiles = useMemo(
+    (): ReadonlyMap<string, string> =>
+      captured && typeof whole === "object" && "text" in whole
+        ? new Map([[captured.path, whole.text]])
+        : noWholeFiles,
+    [captured, whole],
+  );
+  const openedNow = captured ? expandedOpened.current : opened;
 
   // ─── the cursor's model: rows and stops of the shown files, read from logical state ───
   const model = useMemo((): Model => {
     const rows = (file: string) => {
+      if (folded.has(file)) return [];
       const diff = diffs.get(file);
-      return diff && !folded.has(file) ? rowsOf(diff, opened.get(file) ?? new Map()) : [];
+      if (diff) return rowsOf(diff, openedNow.get(file) ?? new Map());
+      const text = wholeFiles.get(file);
+      return text === undefined || captured === undefined
+        ? []
+        : capturedRows(linesOf(text).length, captured.side === "old" ? "deletions" : "additions");
     };
     return {
       files: shown.map((file) => file.path),
       rows,
       stops: (file, side) => stopsOf(file, rows(file), layout, side),
     };
-  }, [shown, folded, diffs, layout, opened]);
+  }, [shown, folded, diffs, layout, openedNow, wholeFiles, captured]);
   const first = model.files[0];
   const current: Cursor | undefined =
     cursor && model.files.includes(cursor.file)
@@ -688,9 +834,9 @@ function SessionReader(props: {
     viewer.current?.expand(target.file, range.index, range.size);
     // A partial diff opens once its sides load; the renderer reports it back after hydration.
     if (diff.isPartial || row?.line === undefined) return;
-    const byRange = opened.get(target.file) ?? new Map<number, Opened>();
+    const byRange = openedNow.get(target.file) ?? new Map<number, Opened>();
     byRange.set(range.index, { fromStart: range.size, fromEnd: 0 });
-    opened.set(target.file, byRange);
+    openedNow.set(target.file, byRange);
     const offset = row.line - range.new;
     const side = layout === "split" ? target.side : "additions";
     go({
@@ -700,8 +846,6 @@ function SessionReader(props: {
       line: (side === "deletions" ? range.old : range.new) + offset,
     });
   };
-
-  const hunkIdsOf = (path: string) => byPath.get(path)?.hunks.map((hunk) => hunk.id) ?? [];
 
   /**
    * Checks or unchecks a file section's Viewed box. Checking folds the file and goes to the next
@@ -733,9 +877,217 @@ function SessionReader(props: {
   /** The file a Mouse-mode command acts on: the one at the top of the panel. */
   const fileInView = () => viewer.current?.fileInView() ?? first;
 
+  /** Where a cursor stands, to step from to a note: header lines count as before the file's code. */
+  const noteFrom = (target: Cursor): NoteFrom => ({
+    fileIndex: model.files.indexOf(target.file),
+    side: target.side,
+    line: markOf(target)?.line ?? 0,
+  });
+
+  /** The note the Vim cursor stands on: the one `]n`/`[n` went to, else the first on its line. */
+  const noteAt = (target: Cursor | undefined) => {
+    if (target?.kind !== "line") return undefined;
+    const from = noteFrom(target);
+    const onLine = notes.filter(
+      (at) => at.fileIndex === from.fileIndex && at.side === from.side && at.line === from.line,
+    );
+    return onLine.find((at) => at.note.id === cursorNote.current) ?? onLine[0];
+  };
+
+  const setNoteCollapsed = (id: string, collapse: boolean) =>
+    setCollapsedNotes((before) => {
+      const after = new Set(before);
+      if (collapse) after.add(id);
+      else after.delete(id);
+      return after;
+    });
+
+  /** Goes to the next or previous note: the Vim cursor moves to its line, Mouse mode scrolls to it. */
+  const stepNote = (direction: 1 | -1) => {
+    if (vim) {
+      if (here === undefined || selecting) return;
+      const on = noteAt(here);
+      const index = noteStep(notes, noteFrom(here), direction, on && notes.indexOf(on));
+      const at = index === undefined ? undefined : notes[index]!;
+      if (at === undefined) return;
+      cursorNote.current = at.note.id;
+      if (folded.has(at.file)) setFolds([at.file], false);
+      return go({ file: at.file, kind: "line", side: at.side, line: at.line });
+    }
+    const top = viewer.current?.visibleAt("top");
+    const index = noteStep(notes, top && noteFrom(top), direction, lastNote.current);
+    const at = index === undefined ? undefined : notes[index]!;
+    if (at === undefined) return;
+    lastNote.current = index;
+    if (folded.has(at.file)) setFolds([at.file], false);
+    viewer.current?.reveal(
+      { file: at.file, side: at.side, line: at.line, full: layout !== "split" },
+      "top",
+    );
+  };
+
+  // ─── captured-code navigation ───
+  /** A view the reader picks: it leaves any expanded reference, and Back starts over. */
+  const chooseView = (view: ReviewView) => {
+    setReview(view);
+    setPeek(undefined);
+    setBack([]);
+    if (captured === undefined) return;
+    if (back[0]) setFolded(back[0].folded);
+    setCaptured(undefined);
+    setPanel(({ key }) => ({ key: key + 1, restore: undefined }));
+  };
+
+  /** Opens a reference's peek where it was followed, in place of any other. */
+  const follow = (target: CapturedRange, origin: PeekOrigin) => {
+    peekOpener.current =
+      document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    setRefocus(undefined);
+    setPeek({ target, origin });
+  };
+
+  /** Closes the peek and gives focus back to the reference it was followed from. */
+  const closePeek = () => {
+    if (peek === undefined) return;
+    const opener = peekOpener.current;
+    peekOpener.current = null;
+    flushSync(() => setPeek(undefined));
+    if (peek.origin.kind === "overview" && opener?.isConnected)
+      opener.focus({ preventScroll: true });
+    else setRefocus({ origin: peek.origin, target: peek.target });
+  };
+
+  /** Shows a peek's target in the main panel; Back returns to this place and this peek. */
+  const expand = (target: CapturedRange) => {
+    const at = viewer.current?.position() ?? { position: undefined, scrollTop: 0 };
+    const origin: Place = {
+      review,
+      captured,
+      cursor: current,
+      lines,
+      folded,
+      restore: restoreFor(peek, at),
+      peek,
+    };
+    setBack((stack) => pushed(stack, origin));
+    expandedOpened.current = new Map();
+    setFolded(new Set());
+    setCaptured(target);
+    setPeek(undefined);
+    setLines(null);
+    setCursor({
+      file: target.path,
+      kind: "line",
+      side: target.side === "old" ? "deletions" : "additions",
+      line: target.startLine,
+    });
+    setPanel(({ key }) => ({ key: key + 1, restore: undefined }));
+  };
+
+  /** Returns to the place the last Expand left: its view, position, cursor, selection and peek. */
+  const goBack = () => {
+    const step = popped(back);
+    if (step === undefined) return;
+    const to = step.place;
+    setBack(step.stack);
+    expandedOpened.current = new Map();
+    setReview(to.review);
+    setCaptured(to.captured);
+    setCursor(to.cursor);
+    setLines(to.lines);
+    setFolded(to.folded);
+    setPeek(to.peek);
+    setPanel(({ key }) => ({ key: key + 1, restore: to.restore }));
+  };
+
+  // An expanded target scrolls into view once its file's lines are there to show; a place Back
+  // returns to restores its own position instead.
+  const revealed = useRef(0);
+  useEffect(() => {
+    if (captured === undefined || panel.restore !== undefined || revealed.current === panel.key)
+      return;
+    const diff = diffs.get(captured.path);
+    if (diff ? diff.isPartial : !wholeFiles.has(captured.path)) return;
+    revealed.current = panel.key;
+    viewer.current?.reveal(
+      {
+        file: captured.path,
+        side: captured.side === "old" ? "deletions" : "additions",
+        line: Math.max(1, captured.startLine - 3),
+        full: true,
+      },
+      "top",
+    );
+  });
+
+  const peekAvailability =
+    peek &&
+    referenceAvailability(peek.target, {
+      snapshotId,
+      file: manifestByPath.get(peek.target.path),
+      complete: pages.at(-1)!.next === null,
+    });
+  const peekRead = useMemo(() => {
+    if (peek === undefined) return undefined;
+    const { target } = peek;
+    return () => {
+      const key = JSON.stringify(target);
+      let read = rangeReads.current.get(key);
+      if (read === undefined) {
+        read = readRange(target, readCode);
+        // A failed read is read again when the peek opens again.
+        read.catch(() => rangeReads.current.delete(key));
+        rangeReads.current.set(key, read);
+      }
+      return read;
+    };
+  }, [peek, readCode]);
+  const peekOf = (overlay?: { spacer: HTMLDivElement | null; extent: () => Extent | undefined }) =>
+    peek &&
+    peekAvailability &&
+    peekRead && (
+      <InlinePeek
+        // Keyed: another target is another peek, focused anew.
+        key={JSON.stringify(peek)}
+        peek={peek}
+        availability={peekAvailability}
+        read={peekRead}
+        narrow={width < splitMinWidth}
+        snapshotId={snapshotId}
+        onExpand={() => expand(peek.target)}
+        onClose={closePeek}
+        {...(overlay && { overlay, handle: peekHandle })}
+      />
+    );
+
   const run = (id: CommandId) => {
     const view = viewer.current;
+    if (id !== "nextNote" && id !== "previousNote") lastNote.current = undefined;
+    setRefocus(undefined);
+    setNotice(undefined);
     if (id === "menu" || id === "help") return setDialog(id);
+    if (id === "back") return goBack();
+    if (id === "viewed" && captured)
+      return setNotice("Viewed doesn't change while a captured file is expanded.");
+    if (id === "nextNote" || id === "previousNote") return stepNote(id === "nextNote" ? 1 : -1);
+    if (id === "nextGroup" || id === "previousGroup") {
+      const { groups } = status;
+      const at = inView.group ? groups.indexOf(inView.group) : -1;
+      const next = groups[id === "nextGroup" ? at + 1 : at === -1 ? groups.length - 1 : at - 1];
+      return next && chooseView({ kind: "group", id: next.id });
+    }
+    if (id === "toggleNotes") {
+      const ids = notes.map(({ note }) => note.id);
+      const collapse = ids.some((note) => !collapsedNotes.has(note));
+      return setCollapsedNotes((before) => {
+        const after = new Set(before);
+        for (const note of ids) {
+          if (collapse) after.add(note);
+          else after.delete(note);
+        }
+        return after;
+      });
+    }
     if (id === "mode") {
       setLines(null);
       return setInputMode(vim ? "mouse" : "vim");
@@ -745,7 +1097,8 @@ function SessionReader(props: {
       const fold = id === "foldAll";
       return setFolds(model.files, fold, fold && here ? { ...here, kind: "header" } : undefined);
     }
-    if (id === "cancel") return setLines(null);
+    // Esc ends a selection first, then closes the peek.
+    if (id === "cancel") return lines === null ? closePeek() : setLines(null);
     if (!vim) {
       // Mouse mode: movement scrolls; folds and Viewed act on the file at the top of the panel.
       const height = view?.height() ?? 0;
@@ -785,6 +1138,7 @@ function SessionReader(props: {
       }
     }
     if (here === undefined) return;
+    const noteHere = noteAt(here);
     switch (id) {
       case "down":
       case "up":
@@ -815,7 +1169,8 @@ function SessionReader(props: {
         return go(edge(model, id === "top" ? "first" : "last", here.side));
       case "oldSide":
       case "newSide":
-        if (layout !== "split" || selecting) return;
+        // A file shown whole has one column.
+        if (layout !== "split" || selecting || !diffs.has(here.file)) return;
         return go(switched(model, here, id === "oldSide" ? "deletions" : "additions"));
       case "select":
         if (lines !== null) return setLines(null);
@@ -836,16 +1191,21 @@ function SessionReader(props: {
         if (here.kind === "range") return openRange(here);
         if (here.kind === "header" && diffs.has(here.file))
           return setFolds([here.file], !folded.has(here.file));
-        return;
+        return noteHere && setNoteCollapsed(noteHere.note.id, false);
       case "unfold":
         if (here.kind === "range") return openRange(here);
         if (here.kind === "header" && folded.has(here.file)) return setFolds([here.file], false);
-        return;
+        return noteHere && setNoteCollapsed(noteHere.note.id, false);
       case "fold":
+        // One level at a time: an open note at the cursor closes before its file folds.
+        if (noteHere && !collapsedNotes.has(noteHere.note.id))
+          return setNoteCollapsed(noteHere.note.id, true);
         if (!diffs.has(here.file) || folded.has(here.file)) return;
         return setFolds([here.file], true, { ...here, kind: "header" });
       case "toggleFold":
         if (here.kind === "range") return openRange(here);
+        if (noteHere)
+          return setNoteCollapsed(noteHere.note.id, !collapsedNotes.has(noteHere.note.id));
         if (!diffs.has(here.file)) return;
         if (folded.has(here.file)) return setFolds([here.file], false);
         return setFolds([here.file], true, { ...here, kind: "header" });
@@ -901,6 +1261,8 @@ function SessionReader(props: {
 
   /** Scrolling by hand pulls a cursor that left the panel back onto its first or last line. */
   const pullBack = () => {
+    lastNote.current = undefined;
+    setRefocus(undefined);
     if (!vim || here === undefined || selecting) return;
     const mark = markOf(here);
     const where = mark ? viewer.current?.where(mark) : undefined;
@@ -947,12 +1309,21 @@ function SessionReader(props: {
       }
       side={
         <>
-          <p {...stylex.props(styles.sideHead)}>Walkthrough</p>
-          <p {...stylex.props(styles.sideNote)}>No walkthrough for this session yet.</p>
+          <WalkthroughNav
+            status={status}
+            viewed={progress.state.viewed}
+            view={review}
+            onView={chooseView}
+          />
           <p {...stylex.props(styles.sideHead, styles.filesHead)}>
             Files <span {...stylex.props(styles.muted)}>{files.length} changed</span>
           </p>
-          <FileTree nodes={tree} files={byPath} selection={selection} onSelect={setSelection} />
+          <FileTree
+            nodes={tree}
+            files={byPath}
+            selection={review.kind === "files" ? review.path : undefined}
+            onSelect={(path) => chooseView({ kind: "files", path })}
+          />
           <MoreFiles
             sessionId={session.id}
             snapshotId={snapshotId}
@@ -997,10 +1368,19 @@ function SessionReader(props: {
             ]}
             onChange={setMode}
           />
-          <span>
-            {viewedCount}/{hunkCount} {hunkCount === 1 ? "hunk" : "hunks"} viewed in {shown.length}{" "}
-            {shown.length === 1 ? "file" : "files"}
-          </span>
+          {captured ? (
+            <span>Captured file</span>
+          ) : (
+            <span>
+              {viewedCount}/{hunkCount} {hunkCount === 1 ? "hunk" : "hunks"} viewed in{" "}
+              {shown.length} {shown.length === 1 ? "file" : "files"}
+            </span>
+          )}
+          {notice && (
+            <span role="status" {...stylex.props(styles.ink)}>
+              {notice}
+            </span>
+          )}
           <LiveStatus
             live={live.state}
             replaced={behind(live.state, progress.state) === "replaced"}
@@ -1024,29 +1404,122 @@ function SessionReader(props: {
         <p {...stylex.props(styles.empty)}>
           {files.length === 0 ? (
             "This session's snapshot has no changes."
-          ) : (
+          ) : review.kind === "files" ? (
             <>
-              No captured changes under <code>{selection}</code>.
+              No captured changes under <code>{review.path}</code>.
             </>
+          ) : (
+            "This group has no changes in this snapshot."
           )}
         </p>
       ) : (
         <ContinuousDiff
+          // Expand and Back start the panel again, at their own place.
+          key={panel.key}
           ref={viewer}
           files={shown}
           diffs={diffs}
           layout={layout}
           inputMode={inputMode}
           folded={folded}
-          opened={opened}
+          opened={openedNow}
           mark={vim && here ? markOf(here) : undefined}
           lines={lines}
+          header={
+            <>
+              {captured ? (
+                <CapturedHeader
+                  target={captured}
+                  current={captured.snapshotId === snapshotId}
+                  load={whole}
+                  onBack={goBack}
+                  onRetry={() => wholeSides.load(captured)}
+                />
+              ) : inView.group ? (
+                <OverviewCard
+                  label="Group overview"
+                  title={inView.group.title}
+                  overview={inView.group.overview}
+                  onReference={(target) => follow(target, { kind: "overview" })}
+                  peek={peek?.origin.kind === "overview" && peekOf()}
+                  refocus={refocus?.origin.kind === "overview" ? refocus.target : undefined}
+                />
+              ) : (
+                review.kind === "files" &&
+                review.path === "" &&
+                status.overview && (
+                  <OverviewCard
+                    label="Walkthrough overview"
+                    overview={status.overview}
+                    onReference={(target) => follow(target, { kind: "overview" })}
+                    peek={peek?.origin.kind === "overview" && peekOf()}
+                    refocus={refocus?.origin.kind === "overview" ? refocus.target : undefined}
+                  />
+                )
+              )}
+              {peekPlace &&
+                peekOf({ spacer, extent: () => viewer.current?.extentOf(peekPlace.file) })}
+            </>
+          }
+          annotations={annotations}
+          wholeFiles={wholeFiles}
+          expandUnchanged={captured !== undefined}
+          target={captured}
+          restore={panel.restore}
+          onPaint={() => peekHandle.current?.place()}
+          renderAnnotation={(annotation) =>
+            annotation.kind === "peek" ? (
+              <PeekSpacer ref={setSpacer} />
+            ) : annotation.kind === "foreign" ? (
+              <ForeignHunkLabel owner={annotation.owner} />
+            ) : (
+              <NoteCard
+                note={annotation.note}
+                collapsed={collapsedNotes.has(annotation.note.id)}
+                onToggle={() =>
+                  setCollapsedNotes((before) => {
+                    const after = new Set(before);
+                    if (!after.delete(annotation.note.id)) after.add(annotation.note.id);
+                    return after;
+                  })
+                }
+                onHighlight={(range) => viewer.current?.highlight(range)}
+                onReference={(target) =>
+                  follow(target, { kind: "note", noteId: annotation.note.id })
+                }
+                refocus={
+                  refocus?.origin.kind === "note" && refocus.origin.noteId === annotation.note.id
+                    ? refocus.target
+                    : undefined
+                }
+              />
+            )
+          }
           loadDiffFiles={loadDiffFiles}
           onWindow={onWindow}
           onWidth={setWidth}
           onOpened={() => setOpenedVersion((version) => version + 1)}
-          onLineClick={(target) => vim && setCursor(target)}
-          onLines={(next) => {
+          onLineClick={(target) =>
+            vim &&
+            setCursor(
+              // A file shown whole has one column, on the expanded reference's side.
+              captured && !diffs.has(target.file)
+                ? { ...target, side: captured.side === "old" ? "deletions" : "additions" }
+                : target,
+            )
+          }
+          onLines={(picked) => {
+            // A file shown whole has one column, on the expanded reference's side.
+            const wholeSide: Side | undefined =
+              picked && captured && !diffs.has(picked.id)
+                ? captured.side === "old"
+                  ? "deletions"
+                  : "additions"
+                : undefined;
+            const next =
+              picked && wholeSide
+                ? { ...picked, range: { ...picked.range, side: wholeSide, endSide: wholeSide } }
+                : picked;
             const single =
               next !== null &&
               next.range.start === next.range.end &&
@@ -1059,8 +1532,8 @@ function SessionReader(props: {
           }}
           onManualScroll={pullBack}
           renderHeader={(path) => {
-            const file = byPath.get(path)!;
-            const hunkIds = file.hunks.map((hunk) => hunk.id);
+            const file = shownByPath.get(path) ?? byPath.get(path)!;
+            const hunkIds = hunkIdsOf(path);
             const box = checkboxOf(progress.state, path, hunkIds);
             return (
               <FileHeader
@@ -1118,7 +1591,6 @@ const styles = stylex.create({
     color: theme.muted,
   },
   filesHead: { marginTop: "14px" },
-  sideNote: { padding: "0 10px", fontSize: "12px", color: theme.faint },
   empty: { padding: { default: "24px 32px", [media.narrow]: "16px 12px" }, color: theme.muted },
   kbd: {
     display: "inline-grid",
@@ -1200,6 +1672,9 @@ const liveStyles = stylex.create({
 
 // ─── continuous diff ─────────────────────────────────────────────────────
 
+/** A rendered box in the panel's scroll coordinates. */
+type Box = { top: number; height: number; left: number; width: number };
+
 /** What the reader asks of the diff view: geometry and scrolling, by logical place. */
 type Viewer = {
   /** Keeps a mark in view with a margin, or puts it at the top of the panel. */
@@ -1218,6 +1693,12 @@ type Viewer = {
   scrollToEdge(end: "top" | "bottom"): void;
   /** Opens `count` hidden lines of a rendered file's range from both ends. */
   expand(file: string, range: number, count: number): void;
+  /** Highlights a captured range of a shown file, as a note's hover does, or clears it. */
+  highlight(range: CapturedRange | undefined): void;
+  /** The reading position at the panel's top and its pixel offset, for Back to return to. */
+  position(): { position: ReadingPosition | undefined; scrollTop: number };
+  /** A rendered file's horizontal extent, across both split columns. */
+  extentOf(file: string): Extent | undefined;
 };
 
 /** How far the cursor stays from the panel's edges, and how far in a pulled-back cursor lands. */
@@ -1244,6 +1725,21 @@ function ContinuousDiff(props: {
   opened: Map<string, Map<number, Opened>>;
   mark: Mark | undefined;
   lines: CodeViewLineSelection | null;
+  /** Above the first file: the view's overview. */
+  header: ReactNode;
+  /** Each file's notes and labels; a file without any has no entry. */
+  annotations: ReadonlyMap<string, DiffLineAnnotation<DiffAnnotation>[]>;
+  renderAnnotation: (annotation: DiffAnnotation) => ReactNode;
+  /** Whole captured sides shown as files without a diff, by path. */
+  wholeFiles: ReadonlyMap<string, string>;
+  /** Shows every file's unchanged lines, as an expanded captured file reads. */
+  expandUnchanged: boolean;
+  /** A range kept highlighted, the expanded reference's; a note's hover shows over it. */
+  target: CapturedRange | undefined;
+  /** Where the panel starts, read once when it mounts. */
+  restore: Restore | undefined;
+  /** After each repaint of the overlays: the diff may have moved under them. */
+  onPaint: () => void;
   loadDiffFiles: FileDiffContentsLoader;
   /** The files the panel shows now, after each render and scroll. */
   onWindow: (visible: readonly string[]) => void;
@@ -1255,9 +1751,14 @@ function ContinuousDiff(props: {
   renderHeader: (path: string) => ReactNode;
 }) {
   const { diffs, layout, onWidth } = props;
-  const view = useRef<CodeViewHandle<undefined, undefined>>(null);
+  const view = useRef<CodeViewHandle<DiffAnnotation, undefined>>(null);
   const root = useRef<HTMLDivElement>(null);
-  const position = useRef<ReadingPosition>(undefined);
+  const position = useRef<ReadingPosition | undefined>(
+    props.restore && "position" in props.restore ? props.restore.position : undefined,
+  );
+  const restoreTop = useRef(
+    props.restore && "scrollTop" in props.restore ? props.restore.scrollTop : undefined,
+  );
   // While a restoration is in flight, and while the reader stays where it put them, the renderer's
   // own scrolls and re-renders must not replace the position being restored.
   const restoring = useRef(false);
@@ -1275,10 +1776,10 @@ function ContinuousDiff(props: {
     restoredTop.current = undefined;
     // The first line below the sticky file header is the one a reader sees at the top.
     const seen = scrollTop + headerHeight;
-    for (const { id, type, instance } of viewer.getRenderedItems()) {
+    for (const { id, instance } of viewer.getRenderedItems()) {
       const top = viewer.getTopForItem(id);
       if (top === undefined || seen < top || seen >= top + instance.height) continue;
-      const anchor = type === "diff" ? instance.getNumericScrollAnchor(seen - top) : undefined;
+      const anchor = instance.getNumericScrollAnchor(seen - top);
       position.current = { file: id, side: anchor?.side, line: anchor?.lineNumber };
       return;
     }
@@ -1305,7 +1806,7 @@ function ContinuousDiff(props: {
   }, []);
 
   /** A mark's box in the panel's scroll coordinates, while its file is rendered. */
-  const boxOf = useCallback((mark: Mark) => {
+  const boxOf = useCallback((mark: Mark): Box | undefined => {
     const viewer = view.current?.getInstance();
     const node = root.current;
     const rendered = viewer?.getRenderedItems().find((item) => item.id === mark.file);
@@ -1317,31 +1818,63 @@ function ContinuousDiff(props: {
     const rect = rendered.element.getBoundingClientRect();
     const left = rect.left - outer.left + node.scrollLeft;
     if (mark.line === undefined) return { top, height: headerHeight, left, width: rect.width };
-    if (rendered.type !== "diff") return undefined;
-    const at = rendered.instance.getLinePosition(mark.line, mark.side);
+    // A file shown whole has one column.
+    const whole = rendered.type === "file";
+    const at = whole
+      ? rendered.instance.getLinePosition(mark.line)
+      : rendered.instance.getLinePosition(mark.line, mark.side);
     if (at === undefined) return undefined;
+    // A line's position includes the annotations under it; its own rows end where one begins.
+    let height = at.height;
+    for (const annotation of rendered.element.querySelectorAll("[data-annotation]")) {
+      const below =
+        annotation.getBoundingClientRect().top - outer.top + node.scrollTop - (top + at.top);
+      if (below > 0 && below < height) height = below;
+    }
     const half = rect.width / 2;
+    const full = mark.full || whole;
     return {
       top: top + at.top,
-      height: at.height,
-      left: mark.full || mark.side === "deletions" ? left : left + half,
-      width: mark.full ? rect.width : half,
+      height,
+      left: full || mark.side === "deletions" ? left : left + half,
+      width: full ? rect.width : half,
     };
   }, []);
 
-  // ─── the Vim cursor bar ───
+  // ─── the Vim cursor bar and the highlighted range ───
   const bar = useRef<HTMLDivElement>(null);
+  const rangeBox = useRef<HTMLDivElement>(null);
+  const highlighted = useRef<CapturedRange>(undefined);
   const paint = useCallback(() => {
-    const element = bar.current;
-    if (element === null) return;
-    const { mark } = latest.current;
-    const box = mark?.line === undefined ? undefined : boxOf(mark);
-    element.hidden = box === undefined;
-    if (box === undefined) return;
-    element.style.top = `${box.top}px`;
-    element.style.left = `${box.left}px`;
-    element.style.width = `${box.width}px`;
-    element.style.height = `${box.height}px`;
+    const show = (element: HTMLElement | null, box: Box | undefined) => {
+      if (element === null) return;
+      element.hidden = box === undefined;
+      if (box === undefined) return;
+      element.style.top = `${box.top}px`;
+      element.style.left = `${box.left}px`;
+      element.style.width = `${box.width}px`;
+      element.style.height = `${box.height}px`;
+    };
+    const { mark, layout: shape } = latest.current;
+    show(bar.current, mark?.line === undefined ? undefined : boxOf(mark));
+    // The range's rendered lines; its hidden ones have no box.
+    const range = highlighted.current ?? latest.current.target;
+    let union: Box | undefined;
+    if (range)
+      for (let line = range.startLine; line <= range.endLine; line++) {
+        const box = boxOf({
+          file: range.path,
+          side: range.side === "old" ? "deletions" : "additions",
+          line,
+          full: shape !== "split",
+        });
+        if (box === undefined) continue;
+        const bottom = Math.max(box.top + box.height, union ? union.top + union.height : 0);
+        const top = Math.min(box.top, union?.top ?? box.top);
+        union = { ...box, top, height: bottom - top };
+      }
+    show(rangeBox.current, union);
+    latest.current.onPaint();
   }, [boxOf]);
 
   // ─── scrolling ───
@@ -1420,13 +1953,11 @@ function ContinuousDiff(props: {
           end === "top"
             ? top + headerHeight + pullMargin
             : top + clientHeight - pullMargin - lineHeight;
-        for (const { id, type, instance } of viewer.getRenderedItems()) {
+        for (const { id, instance } of viewer.getRenderedItems()) {
           const itemTop = viewer.getTopForItem(id);
           if (itemTop === undefined || y < itemTop || y >= itemTop + instance.height) continue;
           const anchor =
-            type === "diff" && y >= itemTop + headerHeight
-              ? instance.getNumericScrollAnchor(y - itemTop)
-              : undefined;
+            y >= itemTop + headerHeight ? instance.getNumericScrollAnchor(y - itemTop) : undefined;
           return anchor
             ? { file: id, kind: "line", side: anchor.side ?? "additions", line: anchor.lineNumber }
             : { file: id, kind: "header", side: "additions" };
@@ -1448,6 +1979,21 @@ function ContinuousDiff(props: {
           .find((item) => item.id === file);
         if (rendered?.type === "diff") rendered.instance.expandHunk(range, "both", count);
       },
+      highlight(range) {
+        highlighted.current = range;
+        paint();
+      },
+      position: () => ({ position: position.current, scrollTop: node().scrollTop }),
+      extentOf(file) {
+        const rendered = view.current
+          ?.getInstance()
+          ?.getRenderedItems()
+          .find((item) => item.id === file);
+        if (rendered === undefined) return undefined;
+        const outer = node().getBoundingClientRect();
+        const rect = rendered.element.getBoundingClientRect();
+        return { left: rect.left - outer.left + node().scrollLeft, width: rect.width };
+      },
     };
   });
 
@@ -1456,7 +2002,7 @@ function ContinuousDiff(props: {
    * the renderer opened (a click) are recorded, and lines it forgot (it dropped and rebuilt the
    * item) are opened again. Loaded sides only: a partial diff opens nothing yet.
    */
-  const syncOpened = useCallback((file: string, instance: FileDiff) => {
+  const syncOpened = useCallback((file: string, instance: FileDiff<DiffAnnotation>) => {
     const diff = instance.fileDiff;
     if (diff === undefined || diff.isPartial) return;
     const { opened, onOpened } = latest.current;
@@ -1489,47 +2035,60 @@ function ContinuousDiff(props: {
   // One item per file, reused while its fold and metadata are unchanged so the renderer keeps its
   // state. A replaced item carries a new version: the renderer reads an item again only then. Only
   // the shown files' items stay cached, so an unselected file's contents are not kept here.
-  const itemCache = useRef(new Map<string, CodeViewItem<undefined>>());
+  const itemCache = useRef(new Map<string, CodeViewItem<DiffAnnotation>>());
   const itemVersion = useRef(0);
   const items = useMemo(() => {
     const cache = itemCache.current;
     itemCache.current = new Map();
-    return props.files.map((file): CodeViewItem<undefined> => {
+    return props.files.map((file): CodeViewItem<DiffAnnotation> => {
       const fileDiff = diffs.get(file.path);
-      const collapsed = fileDiff === undefined || props.folded.has(file.path);
+      const whole = fileDiff ? undefined : props.wholeFiles.get(file.path);
+      const collapsed =
+        (fileDiff === undefined && whole === undefined) || props.folded.has(file.path);
+      const annotations = props.annotations.get(file.path);
       const cached = cache.get(file.path);
       if (
         cached &&
         cached.collapsed === collapsed &&
-        (cached.type !== "diff" || cached.fileDiff === fileDiff)
+        (cached.type === "diff"
+          ? cached.fileDiff === fileDiff && cached.annotations === annotations
+          : fileDiff === undefined && cached.file.contents === (whole ?? ""))
       ) {
         itemCache.current.set(file.path, cached);
         return cached;
       }
       const version = ++itemVersion.current;
-      const item: CodeViewItem<undefined> = fileDiff
-        ? { id: file.path, type: "diff", fileDiff, collapsed, version }
-        : // No captured text to show: the header alone says why.
+      const item: CodeViewItem<DiffAnnotation> = fileDiff
+        ? {
+            id: file.path,
+            type: "diff",
+            fileDiff,
+            collapsed,
+            version,
+            ...(annotations && { annotations }),
+          }
+        : // A captured side shown whole, or no captured text to show: the header alone says why.
           {
             id: file.path,
             type: "file",
-            file: { name: file.path, contents: "" },
-            collapsed: true,
+            file: { name: file.path, contents: whole ?? "" },
+            collapsed,
             version,
           };
       itemCache.current.set(file.path, item);
       return item;
     });
-  }, [props.files, diffs, props.folded]);
+  }, [props.files, diffs, props.folded, props.annotations, props.wholeFiles]);
 
   const options = useMemo(
-    (): CodeViewReactOptions<undefined, undefined> => ({
+    (): CodeViewReactOptions<DiffAnnotation, undefined> => ({
       theme: "catppuccin-mocha",
       themeType: "dark",
       diffStyle: layout === "split" ? "split" : "unified",
       overflow: "wrap",
       diffIndicators: "bars",
       lineDiffType: "word",
+      expandUnchanged: props.expandUnchanged,
       hunkSeparators: "line-info",
       expansionLineCount: 20,
       loadDiffFiles: props.loadDiffFiles,
@@ -1543,11 +2102,11 @@ function ContinuousDiff(props: {
       onGutterUtilityClick: (range, context) =>
         latest.current.onLines({ id: context.item.id, range }),
       onLineClick: (line, context) => {
-        if (!("annotationSide" in line)) return;
         latest.current.onLineClick({
           file: context.item.id,
           kind: "line",
-          side: line.annotationSide,
+          // A file shown whole has one column; the reader keeps its cursor's side there.
+          side: "annotationSide" in line ? line.annotationSide : "additions",
           line: line.lineNumber,
         });
       },
@@ -1561,7 +2120,16 @@ function ContinuousDiff(props: {
         queueMicrotask(reportWindow);
       },
     }),
-    [layout, props.loadDiffFiles, props.inputMode, capture, paint, syncOpened, reportWindow],
+    [
+      layout,
+      props.loadDiffFiles,
+      props.inputMode,
+      props.expandUnchanged,
+      capture,
+      paint,
+      syncOpened,
+      reportWindow,
+    ],
   );
 
   // The panel's content width decides auto layout; the viewport's never does. Scrolling by hand
@@ -1613,6 +2181,12 @@ function ContinuousDiff(props: {
     const at = position.current;
     pendingTop.current = undefined;
     manualAt.current = -Infinity;
+    const top = restoreTop.current;
+    restoreTop.current = undefined;
+    if (top !== undefined) {
+      view.current?.scrollTo({ type: "position", position: top });
+      return;
+    }
     if (at === undefined || !props.files.some((file) => file.path === at.file)) {
       // Nothing to restore: the new selection's own top becomes the position.
       position.current = undefined;
@@ -1641,6 +2215,10 @@ function ContinuousDiff(props: {
     });
     return () => cancelAnimationFrame(frame);
   }, [layout, props.files]);
+  // A note that leaves with its view never reports the pointer leaving it.
+  useLayoutEffect(() => {
+    highlighted.current = undefined;
+  }, [props.files]);
   useLayoutEffect(paint);
 
   return (
@@ -1658,8 +2236,15 @@ function ContinuousDiff(props: {
         reportWindow();
         if (performance.now() - manualAt.current < 1000) latest.current.onManualScroll();
       }}
-      renderCodeViewHeader={() => <CursorOverlay ref={bar} />}
+      renderCodeViewHeader={() => (
+        <>
+          {props.header}
+          <CursorOverlay ref={bar} />
+          <RangeOverlay ref={rangeBox} />
+        </>
+      )}
       renderCustomHeader={(item) => props.renderHeader(item.id)}
+      renderAnnotation={(annotation) => props.renderAnnotation(annotation.metadata)}
     />
   );
 }
@@ -1674,6 +2259,16 @@ function CursorOverlay(props: { ref: Ref<HTMLDivElement> }) {
   return <div ref={props.ref} hidden data-cursor aria-hidden {...stylex.props(cursorStyles.bar)} />;
 }
 
+/**
+ * A highlighted note range over its rendered lines, placed like the cursor overlay from the
+ * renderer's public geometry.
+ */
+function RangeOverlay(props: { ref: Ref<HTMLDivElement> }) {
+  return (
+    <div ref={props.ref} hidden data-range aria-hidden {...stylex.props(cursorStyles.range)} />
+  );
+}
+
 const cursorStyles = stylex.create({
   bar: {
     position: "absolute",
@@ -1681,6 +2276,13 @@ const cursorStyles = stylex.create({
     pointerEvents: "none",
     backgroundColor: `color-mix(in srgb, ${theme["--accent"]} 14%, transparent)`,
     boxShadow: `inset 2px 0 0 ${theme["--accent"]}`,
+  },
+  range: {
+    position: "absolute",
+    zIndex: 1,
+    pointerEvents: "none",
+    backgroundColor: `color-mix(in srgb, ${theme["--accent"]} 8%, transparent)`,
+    boxShadow: `inset 0 0 0 1px color-mix(in srgb, ${theme["--accent"]} 60%, transparent)`,
   },
 });
 /** The file header bar's height, which FileHeader's style repeats. */
@@ -1723,14 +2325,6 @@ const diffStyles = stylex.create({
     "--diffs-bg-selection-override": theme.select,
   },
 });
-
-// Short, so the reason fits the header bar even at narrow widths.
-const notCaptured = {
-  binary: "binary",
-  "unsupported-encoding": "not UTF-8 text",
-  symlink: "symbolic link",
-  submodule: "submodule",
-} satisfies Record<Extract<ContentSide, { kind: "unavailable" }>["reason"], string>;
 
 /** What a file's header says besides its name: sides without text, renames and mode changes. */
 function fileNotes({ manifest }: ReaderFile): string[] {
@@ -2021,7 +2615,8 @@ const statusNames = { A: "added", D: "deleted", M: "modified", R: "renamed" } as
 function FileTree(props: {
   nodes: readonly TreeNode[];
   files: ReadonlyMap<string, ReaderFile>;
-  selection: string;
+  /** The selected path; undefined while a walkthrough group is shown. */
+  selection: string | undefined;
   onSelect: (path: string) => void;
 }) {
   const [toggled, setToggled] = useState<ReadonlySet<string>>(new Set());

@@ -17,6 +17,11 @@ export type CommandId =
   | "previousChange"
   | "nextFile"
   | "previousFile"
+  | "nextNote"
+  | "previousNote"
+  | "nextGroup"
+  | "previousGroup"
+  | "toggleNotes"
   | "open"
   | "unfold"
   | "cancel"
@@ -25,6 +30,7 @@ export type CommandId =
   | "unfoldAll"
   | "foldAll"
   | "viewed"
+  | "back"
   | "split"
   | "stacked"
   | "auto"
@@ -65,20 +71,26 @@ export const commands: readonly Command[] = [
   { id: "previousChange", keys: [["[", "C"]], label: "Previous change" },
   { id: "nextFile", keys: [["]", "F"]], label: "Next file" },
   { id: "previousFile", keys: [["[", "F"]], label: "Previous file" },
+  { id: "nextNote", keys: [["]", "N"]], label: "Next note" },
+  { id: "previousNote", keys: [["[", "N"]], label: "Previous note" },
+  { id: "nextGroup", keys: [["Shift+J"]], label: "Next walkthrough group" },
+  { id: "previousGroup", keys: [["Shift+K"]], label: "Previous walkthrough group" },
+  { id: "toggleNotes", keys: [["I"]], label: "Show or collapse every note" },
   {
     id: "open",
     keys: [["Enter"]],
-    label: "Open the hidden lines at the cursor; on a file header, fold or unfold the file",
+    label:
+      "Open the hidden lines or the note at the cursor; on a file header, fold or unfold the file",
     vimOnly: true,
   },
   {
     id: "unfold",
     keys: [["Z", "O"]],
-    label: "Open the hidden lines or the folded file at the cursor",
+    label: "Open the hidden lines, the note or the folded file at the cursor",
   },
   { id: "cancel", keys: [["Escape"]], label: "Cancel the selection" },
-  { id: "fold", keys: [["Z", "C"]], label: "Fold the cursor's file" },
-  { id: "toggleFold", keys: [["Z", "A"]], label: "Toggle the fold at the cursor" },
+  { id: "fold", keys: [["Z", "C"]], label: "Close the note at the cursor, or fold its file" },
+  { id: "toggleFold", keys: [["Z", "A"]], label: "Toggle the note or the fold at the cursor" },
   { id: "unfoldAll", keys: [["Z", "Shift+R"]], label: "Unfold every file" },
   { id: "foldAll", keys: [["Z", "Shift+M"]], label: "Fold every file" },
   {
@@ -86,6 +98,7 @@ export const commands: readonly Command[] = [
     keys: [["M"]],
     label: "Mark the cursor's file Viewed and go to the next unviewed one, or unmark it",
   },
+  { id: "back", keys: [["Backspace"]], label: "Back from captured code" },
   { id: "split", keys: [["1"]], label: "Split diff" },
   { id: "stacked", keys: [["2"]], label: "Stacked diff" },
   { id: "auto", keys: [["0"]], label: "Auto diff layout, by width" },
@@ -98,10 +111,11 @@ export const commands: readonly Command[] = [
 export const commandsFor = (mode: InputMode) =>
   mode === "vim" ? commands : commands.filter((command) => !command.vimOnly);
 
-/** Letters print as typed, Vim-style: `j`, `g g`, `Shift+g`. */
-export const keyLabels = Object.fromEntries(
-  [...LETTER_KEYS].map((key) => [key, key.toLowerCase()]),
-);
+/** Letters print as typed, Vim-style: `j`, `g g`, `Shift+g`; Backspace as `⌫`. */
+export const keyLabels = {
+  ...Object.fromEntries([...LETTER_KEYS].map((key) => [key, key.toLowerCase()])),
+  Backspace: "⌫",
+};
 
 /**
  * Whether the event typed the character the step names. The library matches letters in either case

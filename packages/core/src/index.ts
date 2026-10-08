@@ -5,10 +5,18 @@ export {
   type ApplyOp,
   ApplyOpSchema,
   type ApplyOutcome,
+  type CapturedIndex,
+  type CapturedSide,
+  capturedSideKey,
+  capturedTargetsOf,
   GroupCreateSchema,
   GroupDissolveSchema,
   GroupUpdateSchema,
+  NoteCreateSchema,
+  NoteRemoveSchema,
+  NoteUpdateSchema,
   type ValidationDetail,
+  WalkthroughUpdateSchema,
 } from "./apply.ts";
 export {
   BlobIdSchema,
@@ -41,6 +49,23 @@ export {
   StaleRevision,
   ValidationFailed,
 } from "./errors.ts";
+export {
+  anchoredHunkIds,
+  type CapturedRange,
+  CapturedRangeSchema,
+  changedLinesOf,
+  type CodeRange,
+  CodeRangeSchema,
+  type CodeSide,
+  CodeSideSchema,
+  type GuidanceText,
+  GuidanceTextSchema,
+  LineNumberSchema,
+  MarkdownSchema,
+  type Note,
+  NoteSchema,
+  parseReferenceHref,
+} from "./guidance.ts";
 export { setViewed, type ViewedOutcome, type ViewedRequest } from "./human-action.ts";
 export { refreshSession } from "./refresh.ts";
 export {
@@ -48,6 +73,8 @@ export {
   GroupSchema,
   type Hunk,
   HunkSchema,
+  type Preparation,
+  PreparationSchema,
   type Session,
   SessionSchema,
   type Scope,
@@ -59,13 +86,7 @@ export {
   type ViewedPayload,
   ViewedPayloadSchema,
 } from "./session.ts";
-export {
-  sanitizeTerminalText,
-  TitleSchema,
-  NoteTextSchema,
-  NoteSchema,
-  NotesSchema,
-} from "./metadata.ts";
+export { sanitizeTerminalText, TitleSchema } from "./metadata.ts";
 export { parseFilePatch, parseSnapshot } from "./snapshot.ts";
 export { statusOf, summaryOf } from "./status.ts";
 export {

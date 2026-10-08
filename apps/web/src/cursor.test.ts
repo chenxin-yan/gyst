@@ -2,6 +2,7 @@ import type { Hunk } from "@gyst/core/wire";
 import { hydratePartialDiff } from "@pierre/diffs";
 import { describe, expect, it } from "vite-plus/test";
 import {
+  capturedRows,
   change,
   type Cursor,
   edge,
@@ -243,5 +244,43 @@ describe("change and file jumps", () => {
     expect(fileStep(stacked, line("b.ts", "additions", 2), -1)).toEqual(header("b.ts"));
     expect(fileStep(stacked, header("b.ts"), -1)).toEqual(header("a.ts"));
     expect(fileStep(stacked, header("b.ts"), 1)).toBeUndefined();
+  });
+});
+
+describe("a captured file shown whole", () => {
+  const whole = (layout: "split" | "stacked", side: "deletions" | "additions"): Model => ({
+    files: ["src/long.ts"],
+    rows: () => capturedRows(5, side),
+    stops: (file, at) => stopsOf(file, capturedRows(5, side), layout, at),
+  });
+
+  it("walks lines 1 to the end on the side it was opened on, with no changes to jump to", () => {
+    const split = whole("split", "deletions");
+    const old = line("src/long.ts", "deletions", 2);
+    expect(moved(split, old, 1)).toEqual(line("src/long.ts", "deletions", 3));
+    expect(moved(split, header("src/long.ts", "deletions"), 2)).toEqual(old);
+    expect(edge(split, "last", "deletions")).toEqual(line("src/long.ts", "deletions", 5));
+    expect(change(split, old, 1)).toBeUndefined();
+    expect(capturedRows(0, "additions")).toEqual([]);
+  });
+
+  it("keeps an old side's cursor and selection on the old side when stacked", () => {
+    const stacked = whole("stacked", "deletions");
+    const from = line("src/long.ts", "deletions", 4);
+    expect(moved(stacked, from, 1)).toEqual(line("src/long.ts", "deletions", 5));
+    expect(moved(stacked, from, 5, true)).toEqual(line("src/long.ts", "deletions", 5));
+    expect(moved(stacked, from, -9, true)).toEqual(line("src/long.ts", "deletions", 1));
+    expect(edge(stacked, "last", "additions")).toEqual(line("src/long.ts", "deletions", 5));
+    const stops = stacked.stops("src/long.ts", "deletions");
+    expect(
+      stops[locate(stops, capturedRows(5, "deletions"), line("src/long.ts", "deletions", 3))],
+    ).toMatchObject({ kind: "line", side: "deletions", line: 3 });
+  });
+
+  it("keeps a new side's cursor on the new side when stacked", () => {
+    const stacked = whole("stacked", "additions");
+    expect(moved(stacked, line("src/long.ts", "additions", 4), 5, true)).toEqual(
+      line("src/long.ts", "additions", 5),
+    );
   });
 });

@@ -31,24 +31,26 @@ async function withClaude() {
 }
 
 describe("installed gyst skills", () => {
-  it("ships schema-valid note examples and authored skills unchanged", async () => {
+  it("ships a schema-valid walkthrough example and authored skills unchanged", async () => {
     for (const name of ["gyst", "gyst-refresh", "gyst-ask"]) {
       const authored = await readFile(join(authoredDir, name, "SKILL.md"), "utf8");
       expect(await readFile(join(skills, name, "SKILL.md"), "utf8")).toBe(authored);
-      expect(authored).not.toMatch(/overview|mermaid/i);
+      // The superseded plain-text note rules are gone.
+      expect(authored).not.toMatch(/400|hunkId"|plain text, at most/);
       if (name === "gyst") {
         const example = authored.match(/```json\n([\s\S]*?)\n```/)![1]!;
         const batch = Schema.decodeUnknownSync(ApplyEnvelopeSchema, { onExcessProperty: "error" })(
           JSON.parse(example),
         );
-        const create = batch.ops[0]!;
-        expect(create.type).toBe("group.create");
-        if (create.type === "group.create") {
-          expect(create.notes).toHaveLength(2);
-          expect(create.notes.every(({ hunkId }) => create.memberHunkIds.includes(hunkId))).toBe(
-            true,
-          );
-        }
+        expect(batch.ops.map(({ type }) => type)).toEqual([
+          "walkthrough.update",
+          "group.create",
+          "note.create",
+        ]);
+        const [, create, note] = batch.ops;
+        if (create?.type === "group.create" && note?.type === "note.create")
+          expect(note.group).toBe(create.id);
+        else throw new Error("the example must create a group and then its note");
       }
       if (name === "gyst-ask") expect(authored).toContain("disable-model-invocation: true");
     }

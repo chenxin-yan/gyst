@@ -73,6 +73,41 @@ describe("commands", () => {
     ]);
   });
 
+  // Shift+J walks groups while j moves the cursor; ]n and [n walk notes, and i shows them all.
+  it("binds walkthrough groups and notes apart from movement", () => {
+    const label = (id: string) =>
+      keysOf(id).map((keys) =>
+        keys.map((key) => formatForDisplay(key, { platform: "linux", keyLabels })).join(" "),
+      );
+    expect(
+      ["nextGroup", "previousGroup", "nextNote", "previousNote", "toggleNotes"].map(label),
+    ).toEqual([["Shift+j"], ["Shift+k"], ["] n"], ["[ n"], ["i"]]);
+    expect(areHotkeysEqual("Shift+J", "J")).toBe(false);
+    expect(typed("Shift+J", { key: "J" })).toBe(true);
+    expect(typed("J", { key: "J" })).toBe(false);
+    expect(typed("Shift+J", { key: "j" })).toBe(false);
+    expect(commandsFor("mouse").map(({ id }) => id)).toEqual(
+      expect.arrayContaining([
+        "nextGroup",
+        "previousGroup",
+        "nextNote",
+        "previousNote",
+        "toggleNotes",
+      ]),
+    );
+  });
+
+  // Back leaves captured code in either input mode.
+  it("binds Back to Backspace, printed as ⌫", () => {
+    for (const platform of ["linux", "mac"] as const)
+      expect(
+        keysOf("back").map((keys) =>
+          keys.map((key) => formatForDisplay(key, { platform, keyLabels })).join(" "),
+        ),
+      ).toEqual(["⌫"]);
+    expect(commandsFor("mouse").map(({ id }) => id)).toContain("back");
+  });
+
   // Mouse mode has no cursor: a command that acts at it is neither bound, listed nor offered there.
   it("leaves cursor-only commands, such as Open, to Vim mode", () => {
     const ids = (mode: "vim" | "mouse") => commandsFor(mode).map(({ id }) => id);

@@ -20,9 +20,9 @@ A source-change notice alone calls for informing the user and asking whether to 
 
 ## 2. Reconcile and publish
 
-Reread status and `gyst session diff --session <id>`. Reassess affected code and tests. Refresh preserves a group's notes only when every member survives confident matching, and a hunk's Viewed only when it matches exactly. Losing any member clears the surviving group's notes; reauthor that group's context rather than reattaching old notes by proximity. Plan coverage for every current hunk while preserving unrelated groups and their order.
+Reread status and `gyst session diff --session <id>`. Reassess affected code and tests. Refresh keeps surviving groups, their overviews and order, and a hunk's Viewed only when it matches exactly. A new snapshot drops every note; reauthor notes against the new snapshot rather than reattaching old ones by proximity. Plan coverage for every current hunk while preserving unrelated groups and their order.
 
-Revise affected groups with `group.update` (optional title, notes, memberHunkIds), or dissolve/create groups to split or merge them. Omitting notes retains them; supplying notes replaces the complete array, and `[]` clears it. Replace notes when new membership would invalidate an anchor. Follow `gyst`'s atomic publication and retry rules. Explain restructuring; avoid no-op updates.
+Revise affected groups with `group.update` (optional title, overview, memberHunkIds, files) and their notes with `note.create`, `note.update` and `note.remove` by id, or dissolve/create groups to split or merge them. Follow `gyst`'s atomic publication and retry rules. Explain restructuring; avoid no-op updates.
 
 ## 3. Hand back
 

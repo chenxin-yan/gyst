@@ -119,6 +119,18 @@ export function rowsOf(diff: FileDiffMetadata, opened: ReadonlyMap<number, Opene
   return rows;
 }
 
+/**
+ * The rows of a captured file shown whole, without a diff: lines 1 to `count` of its one `side`,
+ * so the cursor and a selection on them stay on that side in every layout.
+ */
+export function capturedRows(count: number, side: Side): Row[] {
+  return Array.from({ length: count }, (_, index) => ({
+    kind: "line",
+    [side === "deletions" ? "old" : "new"]: index + 1,
+    split: index,
+  }));
+}
+
 /** A place the cursor can stop, with the row it stands on (-1 for the header). */
 export type Stop = Cursor & { row: number };
 

@@ -2,6 +2,10 @@ import {
   applyBatch,
   ApplyEnvelopeSchema,
   BadArgs,
+  type CapturedIndex,
+  type CapturedSide,
+  capturedSideKey,
+  capturedTargetsOf,
   type CaptureProgress,
   type CodePayload,
   type DeletePayload,
@@ -125,7 +129,7 @@ export class Sessions extends Context.Service<
     /** One schema-validated `request.batch`: all ops or none, replays answered by receipt. */
     apply(
       request: Input<"apply">,
-    ): Effect.Effect<StatusPayload, NoSession | StaleRevision | ValidationFailed>;
+    ): Effect.Effect<StatusPayload, NoSession | StaleRevision | ValidationFailed | InternalError>;
     /**
      * Marks exactly `request.hunkIds` Viewed or not, all or none, against the observed snapshot and
      * revision. The receipt is saved with the effect, so a retry with the same `requestId` returns
@@ -249,9 +253,10 @@ export class Sessions extends Context.Service<
               updatedAt: now,
               revision: 0,
               hunks: manifest.hunks,
+              overview: null,
               groups: [],
               viewedHunkIds: [],
-              receiptNoteTexts: [],
+              receiptTexts: [],
               applyReceipts: [],
               viewedReceipts: [],
             };
@@ -342,6 +347,31 @@ export class Sessions extends Context.Service<
       // Manifests are immutable, so the last one read serves every page of a browsing session.
       // ponytail: one entry; key more if several sessions are read at once and reloads show up.
       let lastManifest: { readonly id: string; readonly manifest: SnapshotManifest } | undefined;
+      const manifestOf = Effect.fn("Sessions.manifestOf")(function* (snapshotId: string) {
+        if (lastManifest?.id === snapshotId) return lastManifest.manifest;
+        const manifest = yield* content.loadManifest(snapshotId).pipe(
+          Effect.mapError((error) =>
+            error._tag === "internal_error"
+              ? error
+              : new InternalError({
+                  message: "the session's captured snapshot is unreadable",
+                  detail: error.message,
+                }),
+          ),
+        );
+        lastManifest = { id: snapshotId, manifest };
+        return manifest;
+      });
+      const blobOf = (blob: string, size: number) =>
+        content.readBlob(blob, { offset: 0, length: size }).pipe(
+          Stream.mapError(
+            (error) =>
+              new InternalError({
+                message: "the snapshot's captured content is unreadable",
+                detail: error.message,
+              }),
+          ),
+        );
       /** The named current snapshot, selected once: nothing after this reads the session again. */
       const currentSnapshot = Effect.fn("Sessions.currentSnapshot")(function* (request: {
         readonly session: string;
@@ -353,20 +383,7 @@ export class Sessions extends Context.Service<
             message: `snapshot ${request.snapshotId} is not the current snapshot of session ${session.id}; read the session again`,
             detail: { snapshotId: session.snapshotId },
           });
-        let manifest = lastManifest?.id === session.snapshotId ? lastManifest.manifest : undefined;
-        if (!manifest) {
-          manifest = yield* content.loadManifest(session.snapshotId).pipe(
-            Effect.mapError((error) =>
-              error._tag === "internal_error"
-                ? error
-                : new InternalError({
-                    message: "the session's captured snapshot is unreadable",
-                    detail: error.message,
-                  }),
-            ),
-          );
-          lastManifest = { id: session.snapshotId, manifest };
-        }
+        const manifest = yield* manifestOf(session.snapshotId);
         return { sessionId: session.id, snapshotId: session.snapshotId, manifest };
       });
 
@@ -412,16 +429,7 @@ export class Sessions extends Context.Service<
         const side = file[request.side];
         const identity = { sessionId, snapshotId, file: file.path, side: request.side };
         if (side.kind !== "text") return { ...identity, content: side } satisfies CodePayload;
-        const bytes = content.readBlob(side.blob, { offset: 0, length: side.size }).pipe(
-          Stream.mapError(
-            (error) =>
-              new InternalError({
-                message: "the snapshot's captured content is unreadable",
-                detail: error.message,
-              }),
-          ),
-        );
-        const page = yield* codePage(bytes, side.size, request);
+        const page = yield* codePage(blobOf(side.blob, side.size), side.size, request);
         return {
           ...identity,
           content: { kind: "text", size: side.size, ...page },
@@ -443,8 +451,37 @@ export class Sessions extends Context.Service<
         }
       }).pipe(Semaphore.withPermit(lock), Effect.withSpan("Sessions.load"));
 
+      /** The line counts of the named sides of a snapshot, counted like `code` pages count them. */
+      const capturedIndexOf = Effect.fn("Sessions.capturedIndexOf")(function* (
+        snapshotId: string,
+        targets: ReturnType<typeof capturedTargetsOf>,
+      ) {
+        const sides = new Map<string, CapturedSide>();
+        if (targets.length === 0) return { snapshotId, sides } satisfies CapturedIndex;
+        const manifest = yield* manifestOf(snapshotId);
+        for (const { path, side: name } of targets) {
+          const side = manifest.files.find((file) => file.path === path)?.[name];
+          if (side?.kind !== "text") {
+            sides.set(capturedSideKey(name, path), side ?? { kind: "missing" });
+            continue;
+          }
+          const { lfs, last } = yield* Stream.runFold(
+            blobOf(side.blob, side.size),
+            () => ({ lfs: 0, last: undefined as number | undefined }),
+            (state, chunk) => ({
+              lfs: chunk.reduce((count, byte) => (byte === 10 ? count + 1 : count), state.lfs),
+              last: chunk.at(-1) ?? state.last,
+            }),
+          );
+          // A final LF ends the last line rather than starting another.
+          const lines = lfs + (last !== undefined && last !== 10 ? 1 : 0);
+          sides.set(capturedSideKey(name, path), { kind: "text", lines });
+        }
+        return { snapshotId, sides } satisfies CapturedIndex;
+      });
+
       const apply = Effect.fn("Sessions.apply")(function* (request: Input<"apply">) {
-        const session = yield* selected(request);
+        const before = yield* underLock(selected(request));
         const envelope = yield* decodeEnvelope(request.batch).pipe(
           Effect.mapError(
             (error) =>
@@ -454,15 +491,27 @@ export class Sessions extends Context.Service<
               }),
           ),
         );
-        const now = DateTime.formatIso(yield* DateTime.now);
-        const outcome = yield* Effect.fromResult(applyBatch(session, envelope, now));
-        if (outcome.session) {
-          yield* store.save(outcome.session).pipe(Effect.orDie);
-          sessions.set(session.id, outcome.session);
-          announce(session.id, { kind: "changed", ...versionOf(outcome.session) });
-        }
-        return outcome.status;
-      }, Semaphore.withPermit(lock));
+        // Content is read outside the review-state lock. A replay or a stale batch needs none, and
+        // `applyBatch` rejects an index of a snapshot the session has since left.
+        const captured =
+          before.snapshotId !== envelope.snapshotId ||
+          before.applyReceipts.some(({ key }) => key === envelope.idempotencyKey)
+            ? ({ snapshotId: before.snapshotId, sides: new Map() } satisfies CapturedIndex)
+            : yield* capturedIndexOf(before.snapshotId, capturedTargetsOf(envelope));
+        return yield* underLock(
+          Effect.gen(function* () {
+            const session = yield* selected(request);
+            const now = DateTime.formatIso(yield* DateTime.now);
+            const outcome = yield* Effect.fromResult(applyBatch(session, envelope, captured, now));
+            if (outcome.session) {
+              yield* store.save(outcome.session).pipe(Effect.orDie);
+              sessions.set(session.id, outcome.session);
+              announce(session.id, { kind: "changed", ...versionOf(outcome.session) });
+            }
+            return outcome.status;
+          }),
+        );
+      });
 
       const viewed = Effect.fn("Sessions.viewed")(function* (request: Input<"viewed">) {
         const session = yield* selected(request);
