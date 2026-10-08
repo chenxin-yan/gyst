@@ -31,7 +31,7 @@ export class BadArgs extends Schema.TaggedError<BadArgs>()("bad_args", errorFiel
 /**
  * Why a source could not be captured: the host's `gh` is missing, unauthenticated or denied, GitHub
  * failed, the checkout has no matching remote, required Git objects could not be fetched, the PR
- * head moved while it was being read (retry), the changed files exceed the configured snapshot
+ * head moved while it was being read (retry), the reviewed files exceed the configured snapshot
  * quota, or gyst's data directory ran out of space.
  */
 export const SourceUnavailableReasonSchema = Schema.Literals([
