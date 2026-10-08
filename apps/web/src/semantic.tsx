@@ -424,8 +424,8 @@ export function SemanticPeekView(props: {
       selector={selector || undefined}
       footer={footer || undefined}
       narrow={props.narrow}
-      // An answer that arrives later takes focus only while the reader hasn't moved it elsewhere;
-      // while waiting the keys stay with the review.
+      // An answer that arrives later never takes focus from typing or a dialog; while waiting the
+      // keys stay with the review.
       focus={stage.kind === "waiting" ? "never" : "free"}
       onKeyDown={onKeyDown}
       overlay={props.overlay}
