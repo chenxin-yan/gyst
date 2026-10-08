@@ -273,6 +273,9 @@ export class CapturedContent extends Context.Service<
               })
             : error,
         );
+      /** One write: its staging scoped to it, out of space reported as such, and held throughout. */
+      const writing = <A, E, R>(effect: Effect.Effect<A, E | PlatformError.PlatformError, R>) =>
+        hold(spaceFailure(Effect.scoped(effect)));
       // A committed name must survive a crash once a session names it: the bytes are synced before
       // they are linked, and the directories holding the links before `putManifest` returns.
       const synced = (file: string) =>
@@ -323,7 +326,7 @@ export class CapturedContent extends Context.Service<
           yield* synced(staged);
           yield* commit(staged, blobFile(blob), size);
           return { blob, size };
-        }).pipe(Effect.scoped, spaceFailure, hold, Effect.withSpan("CapturedContent.putBlob"));
+        }).pipe(writing, Effect.withSpan("CapturedContent.putBlob"));
 
       const readBlob = (blob: string, range: ByteRange) =>
         Effect.gen(function* () {
@@ -353,42 +356,37 @@ export class CapturedContent extends Context.Service<
           return copy;
         }).pipe(spaceFailure, Effect.withSpan("CapturedContent.materialize"));
 
-      const putManifest = Effect.fn("CapturedContent.putManifest")(
-        function* (manifest: SnapshotManifest) {
-          const valid = yield* decodeManifest(manifest);
-          const sizes = new Map<string, number>();
-          for (const side of valid.files.flatMap((file) => [file.old, file.new])) {
-            if (side.kind !== "text") continue;
-            let size = sizes.get(side.blob);
-            if (size === undefined) {
-              const info = yield* fs
-                .stat(blobFile(side.blob))
-                .pipe(
-                  missingAs("snapshot manifest references missing captured content", side.blob),
-                );
-              size = Number(info.size);
-              sizes.set(side.blob, size);
-            }
-            if (size !== side.size)
-              return yield* new BadArgs({
-                message: "snapshot manifest references inconsistent captured content",
-                detail: { blob: side.blob, size: side.size, stored: size },
-              });
+      const putManifest = Effect.fn("CapturedContent.putManifest")(function* (
+        manifest: SnapshotManifest,
+      ) {
+        const valid = yield* decodeManifest(manifest);
+        const sizes = new Map<string, number>();
+        for (const side of valid.files.flatMap((file) => [file.old, file.new])) {
+          if (side.kind !== "text") continue;
+          let size = sizes.get(side.blob);
+          if (size === undefined) {
+            const info = yield* fs
+              .stat(blobFile(side.blob))
+              .pipe(missingAs("snapshot manifest references missing captured content", side.blob));
+            size = Number(info.size);
+            sizes.set(side.blob, size);
           }
-          const content = new TextEncoder().encode(canonicalManifestJson(valid));
-          const id = snapshotIdOf(valid);
-          const staged = yield* stage;
-          yield* fs.writeFile(staged, content, privateFile);
-          yield* synced(staged);
-          yield* commit(staged, manifestFile(id), content.byteLength);
-          yield* synced(blobs);
-          yield* synced(snapshots);
-          return id;
-        },
-        Effect.scoped,
-        spaceFailure,
-        hold,
-      );
+          if (size !== side.size)
+            return yield* new BadArgs({
+              message: "snapshot manifest references inconsistent captured content",
+              detail: { blob: side.blob, size: side.size, stored: size },
+            });
+        }
+        const content = new TextEncoder().encode(canonicalManifestJson(valid));
+        const id = snapshotIdOf(valid);
+        const staged = yield* stage;
+        yield* fs.writeFile(staged, content, privateFile);
+        yield* synced(staged);
+        yield* commit(staged, manifestFile(id), content.byteLength);
+        yield* synced(blobs);
+        yield* synced(snapshots);
+        return id;
+      }, writing);
 
       const loadManifest = Effect.fn("CapturedContent.loadManifest")(function* (
         snapshotId: string,
