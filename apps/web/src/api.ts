@@ -23,12 +23,12 @@ import {
 import { Schema } from "effect";
 
 /**
- * The HTTP hop to the launcher failed before a daemon Reply existed. Domain failures are not
+ * The HTTP hop to the daemon failed before a Reply existed. Domain failures are not
  * TransportErrors: they arrive as the canonical Reply and are thrown as its DaemonError.
  */
 export class TransportError extends Error {
   constructor(
-    readonly reason: "unauthorized" | "forbidden" | "unavailable" | "unexpected",
+    readonly reason: "forbidden" | "unavailable" | "unexpected",
     message: string,
     options?: ErrorOptions,
   ) {
@@ -39,7 +39,7 @@ export class TransportError extends Error {
 const isDaemonError = Schema.is(DaemonError);
 
 /**
- * Failures the viewer explains in place and that say nothing about a gyst defect: sign-in, host,
+ * Failures the viewer explains in place and that say nothing about a gyst defect: host,
  * outage, a missing session, a snapshot a refresh replaced and a PR source the host cannot read. Everything else (an unreadable
  * reply, internal_error, rejected input, render exceptions) also deserves a console diagnostic.
  */
@@ -58,16 +58,13 @@ export const isExpectedFailure = (error: unknown) =>
  */
 export const isUncertain = (error: unknown) =>
   error instanceof TransportError
-    ? error.reason !== "unauthorized" && error.reason !== "forbidden"
+    ? error.reason !== "forbidden"
     : isDaemonError(error) && error._tag === "daemon_unreachable";
-
-// Whether this page's launch link was refused, which decides what a later 401 means.
-let linkRefused = false;
 
 const unavailable = () =>
   new TransportError(
     "unavailable",
-    "Can't reach gyst. The launcher may have stopped; run gyst again to reopen this review.",
+    "Can't reach gyst. Its daemon may have stopped; run gyst again to reopen this review.",
   );
 
 const post = (path: string, init: RequestInit) =>
@@ -80,24 +77,6 @@ const post = (path: string, init: RequestInit) =>
   }).catch(() => {
     throw unavailable();
   });
-
-/**
- * Exchanges the launch URL's bootstrap secret for this launch's cookie. Resolves false when the
- * launcher rejects the secret (for example, it expired): a cookie from an earlier exchange may
- * still authorize this browser, so the first operation decides.
- */
-export async function bootstrap(secret: string): Promise<boolean> {
-  const response = await post(webPaths.bootstrap, {
-    headers: { authorization: `Bearer ${secret}` },
-  });
-  await drain(response);
-  if (response.status === 204) return true;
-  if (response.status === 401) {
-    linkRefused = true;
-    return false;
-  }
-  throw failureOf(response.status);
-}
 
 const payloadSchemas = {
   list: ListPayloadSchema,
@@ -145,7 +124,7 @@ const decodeEvent = Schema.decodeUnknownSync(Schema.fromJsonString(SubscriptionE
 });
 
 /**
- * The session's committed-state invalidations as the launcher streams them, `ready` first, until
+ * The session's committed-state invalidations as the daemon streams them, `ready` first, until
  * the stream ends or `signal` aborts. Throws a TransportError when it can't be opened or read.
  */
 export async function* events(
@@ -204,7 +183,7 @@ export async function* events(
 // 503 (daemon_unreachable) may carry an error Reply or nothing at all.
 async function replyOf(response: Response): Promise<Reply> {
   const body = await drain(response);
-  if (response.status === 401 || response.status === 403) throw failureOf(response.status);
+  if (response.status === 403) throw failureOf(response.status);
   let reply: Reply | undefined;
   try {
     reply = decodeReply(body);
@@ -221,17 +200,10 @@ const drain = (response: Response) => response.text().catch(() => "");
 
 function failureOf(status: number): TransportError {
   switch (status) {
-    case 401:
-      return new TransportError(
-        "unauthorized",
-        linkRefused
-          ? "This link's sign-in has expired or belongs to another gyst launch."
-          : "This browser is not signed in to this gyst launch.",
-      );
     case 403:
       return new TransportError(
         "forbidden",
-        "gyst refused this address. Open the exact link gyst printed, including its host name.",
+        "gyst refused this address. Open the link gyst printed, on localhost or 127.0.0.1.",
       );
     case 503:
       return unavailable();

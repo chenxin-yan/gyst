@@ -1,11 +1,12 @@
 import { Crust, defineArg } from "@crustjs/core";
 import { handler } from "@crustjs/effect";
 import { help, version } from "@crustjs/extensions";
-import { BadArgs } from "@gyst/core";
+import { BadArgs, type OpenPayload } from "@gyst/core";
+import { Effect } from "effect";
 import packageJson from "../../package.json" with { type: "json" };
 
-import { browserOpener, serveViewer, type ViewerOpen } from "../web/launcher.ts";
-import { installedWebUiDir } from "../web/server.ts";
+import { DaemonClient } from "../daemon/client.ts";
+import { browserOpener, openBrowser } from "./browser.ts";
 import { daemon } from "./commands/daemon.ts";
 import {
   daemonClient,
@@ -18,15 +19,6 @@ import {
 import { coReviewSkill } from "./extensions/co-review-skill.ts";
 import { jsonErrors } from "./extensions/json-errors.ts";
 
-const launch = (request: ViewerOpen, stdout: (line: string) => void) =>
-  serveViewer(request, {
-    webUiDir: installedWebUiDir,
-    opener: browserOpener(process.platform, process.env, process.stdout.isTTY),
-    stdout,
-    launchPath: process.env.PATH,
-    progress: terminalProgress(process.stderr),
-  });
-
 export const app = new Crust("gyst", {
   description: "Keyboard-centric agent/human co-review",
   version: packageJson.version,
@@ -38,7 +30,7 @@ export const app = new Crust("gyst", {
     {
       name: "session",
       type: "string",
-      description: "View this exact saved session id instead of selecting by scope",
+      description: "Open this exact saved session id instead of selecting by scope",
     },
     prFlag,
   )
@@ -47,10 +39,20 @@ export const app = new Crust("gyst", {
     handler(function* ({ args, flags, rawArgs, stdout }) {
       if (rawArgs.length > 0)
         return yield* new BadArgs({ message: "gyst takes at most one Git range" });
-      yield* launch(
-        yield* openRequestOf({ range: args.range, pr: flags.pr, session: flags.session }),
-        stdout,
-      );
+      const request = yield* openRequestOf({
+        range: args.range,
+        pr: flags.pr,
+        session: flags.session,
+      });
+      const progress = terminalProgress(process.stderr);
+      const client = yield* DaemonClient;
+      // The client decoded this reply with `OpenPayloadSchema`.
+      const { link } = (yield* client
+        .request(request, progress?.report)
+        .pipe(Effect.ensuring(progress?.clear ?? Effect.void))) as OpenPayload;
+      const opener = browserOpener(process.platform, process.env, process.stdout.isTTY);
+      const shown = opener !== undefined && (yield* openBrowser(opener, link));
+      stdout(shown ? `Opened ${link} in your browser.` : link);
     }),
   )
   .add(session)

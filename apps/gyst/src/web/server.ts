@@ -1,37 +1,56 @@
+import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
 import * as NodeHttpServerRequest from "@effect/platform-node/NodeHttpServerRequest";
 import {
   BadArgs,
   type BrowserRequest,
   BrowserRequestSchema,
   type DaemonError,
+  DaemonUnreachable,
   InternalError,
   ReplySchema,
-  type Request,
+  type SubscribeRequest,
   SubscribeRequestSchema,
   type SubscriptionEvent,
   SubscriptionEventSchema,
 } from "@gyst/core";
-import { ByteSize, Clock, Effect, Schema, Stream } from "effect";
+import { ByteSize, Config, Context, Effect, Exit, Schema, Scope, Stream } from "effect";
 import * as HttpIncomingMessage from "effect/http/HttpIncomingMessage";
 import { HttpServerRequest } from "effect/http/HttpServerRequest";
 import * as HttpServerResponse from "effect/http/HttpServerResponse";
 import { readdir, readFile } from "node:fs/promises";
+import { createServer } from "node:http";
+import type { AddressInfo } from "node:net";
 import { extname, join, relative, sep } from "node:path";
 import { fileURLToPath } from "node:url";
-import { DaemonClient } from "../daemon/client.ts";
-import {
-  authCookie,
-  hasAuthCookie,
-  isBootstrap,
-  isLaunchHost,
-  isSameOrigin,
-  type Launch,
-} from "./auth.ts";
-import type { NavigationAddon } from "./navigation-addon.ts";
 import { webPaths } from "@gyst/core/web";
 
 /** The packaged SPA (`dist/web-ui`) beside the bundled `bin/gyst.js`; never the cwd or checkout. */
 export const installedWebUiDir = fileURLToPath(new URL("../dist/web-ui", import.meta.url));
+
+/** Where the daemon reads the SPA it serves: the packaged one, unless a test supplies its own. */
+export const WebUiDir = Context.Reference<string>("gyst/web/WebUiDir", {
+  defaultValue: () => installedWebUiDir,
+});
+
+/** The first port the viewer tries ("gyst" on a phone keypad); `GYST_PORT` moves the range. */
+export const defaultViewerPort = 4978;
+/** How many consecutive ports the viewer tries, from the first. */
+export const viewerPortCount = 10;
+/** Read when the daemon starts; an invalid value fails each open, which names the problem. */
+export const firstViewerPort = Config.Port("GYST_PORT").pipe(
+  Config.withDefault(defaultViewerPort),
+  Effect.mapError(
+    (error) =>
+      new DaemonUnreachable({
+        message: "GYST_PORT must be a port number from 1 to 65535",
+        detail: error.message,
+      }),
+  ),
+);
+
+/** A session's viewer link; `localhost`, which browsers and SSH forwards resolve to loopback. */
+export const viewerLink = (port: number, sessionId: string) =>
+  `http://localhost:${port}/session/${encodeURIComponent(sessionId)}`;
 
 type WebAsset = { readonly body: Uint8Array; readonly contentType: string };
 /** Packaged files by exact URL path; nothing else on disk is reachable from a request. */
@@ -81,6 +100,27 @@ export const loadWebAssets = (dir: string) =>
       }),
   });
 
+/**
+ * The packaged SPA, or when it is missing a shell that says so: the daemon still serves the CLI and
+ * the browser operations, and a link opened meanwhile explains itself.
+ */
+export const webAssetsOrNotice = (dir: string) =>
+  loadWebAssets(dir).pipe(
+    Effect.catch((error) =>
+      Effect.succeed<WebAssets>(
+        new Map([
+          [
+            "/index.html",
+            {
+              body: new TextEncoder().encode(`<!doctype html><p>${error.message}.</p>\n`),
+              contentType: contentTypes[".html"]!,
+            },
+          ],
+        ]),
+      ),
+    ),
+  );
+
 // Bounds a hostile body, not a review: a Viewed request names its hunk ids explicitly (~19 bytes
 // each in JSON), so 16 MiB admits roughly 800,000 hunks in one atomic write.
 const maxOperationBytes = ByteSize.mebibytes(16);
@@ -94,7 +134,7 @@ const decodeSubscribe = Schema.decodeUnknownEffect(Schema.fromJsonString(Subscri
 const encodeEvent = Schema.encodeSync(SubscriptionEventSchema);
 const eventFrame = (event: SubscriptionEvent) => `data: ${JSON.stringify(encodeEvent(event))}\n\n`;
 
-// The viewer loads only its own scripts and talks only to this bridge; nothing an agent wrote can
+// The viewer loads only its own scripts and talks only to the daemon; nothing an agent wrote can
 // make the page fetch, however a renderer handles it. Styles stay inline-capable because Mermaid's
 // SVG carries its theme in a <style>, and the diff renderer styles its shadow roots with <style>
 // elements; images are only the `data:` favicon.
@@ -127,34 +167,37 @@ const isForwarding = (name: string) => name === "forwarded" || name.startsWith("
 const under = (path: string, prefix: string) => path === prefix || path.startsWith(`${prefix}/`);
 
 /**
- * The daemon request for a browser operation: navigation gets this launcher's add-on discovery
- * (discovered again first for Check again), and every other operation is forwarded as decoded.
+ * `Host` must be a loopback name, on any valid port: behind an SSH forward the browser-visible port
+ * is the forward's, not the daemon's. Any other name, including one an attacker's DNS resolves to
+ * 127.0.0.1, is refused, which stops DNS rebinding.
  */
-const trusted = (input: BrowserRequest, addon: NavigationAddon): Effect.Effect<Request> => {
-  switch (input.command) {
-    case "navigation": {
-      const { recheck, ...readiness } = input;
-      return Effect.map(recheck ? addon.recheck : addon.current, (discovery) => ({
-        ...readiness,
-        addon: discovery,
-      }));
-    }
-    case "definition":
-    case "references":
-    case "identifiers":
-      return Effect.map(addon.current, (discovery) => ({ ...input, addon: discovery }));
-    default:
-      return Effect.succeed(input);
-  }
+export const isLoopbackHost = (host: string | undefined): host is string => {
+  const match = /^(?:localhost|127\.0\.0\.1|\[::1\])(?::([1-9]\d{0,4}))?$/.exec(host ?? "");
+  return match !== null && Number(match[1] ?? 80) <= 65_535;
 };
 
-const operation = (addon: NavigationAddon) =>
+/** A browser POST's serialized `Origin` must be exactly this request's already-validated `Host`. */
+export const isSameOrigin = (host: string, origin: string | undefined) =>
+  origin === `http://${host}`;
+
+/** What the browser's operations and subscriptions reach: the daemon's own review operations. */
+export type ViewerOperations = {
+  readonly operation: (request: BrowserRequest) => Effect.Effect<unknown, DaemonError>;
+  /** `ready` first, then committed changes; the stream ends when the subscription does. */
+  readonly subscribe: (request: SubscribeRequest) => Stream.Stream<SubscriptionEvent, DaemonError>;
+};
+
+const readBody = Effect.gen(function* () {
+  const request = yield* HttpServerRequest;
+  return yield* request.text.pipe(
+    Effect.provideService(HttpIncomingMessage.MaxBodySize, maxOperationBytes),
+    Effect.option,
+  );
+});
+
+const operation = (operations: ViewerOperations) =>
   Effect.gen(function* () {
-    const request = yield* HttpServerRequest;
-    const text = yield* request.text.pipe(
-      Effect.provideService(HttpIncomingMessage.MaxBodySize, maxOperationBytes),
-      Effect.option,
-    );
+    const text = yield* readBody;
     if (text._tag === "None")
       return reply(400, { ok: false, error: new BadArgs({ message: "unreadable request body" }) });
     const input = yield* decodeOperation(text.value).pipe(Effect.option);
@@ -163,8 +206,7 @@ const operation = (addon: NavigationAddon) =>
         ok: false,
         error: new BadArgs({ message: "expected one browser operation as JSON" }),
       });
-    const client = yield* DaemonClient;
-    return yield* client.request(yield* trusted(input.value, addon)).pipe(
+    return yield* operations.operation(input.value).pipe(
       Effect.map((value) => reply(200, { ok: true, value })),
       Effect.catch((error: DaemonError) =>
         Effect.succeed(
@@ -175,46 +217,39 @@ const operation = (addon: NavigationAddon) =>
   });
 
 /**
- * One session's daemon subscription as SSE frames, forwarded unchanged until the daemon ends it.
- * A refusal or broken daemon stream becomes one final `failed` frame, since the status is already
- * sent. The bridge keeps no state: the client closing interrupts this and closes the daemon
- * subscription, and the browser resubscribes on any end.
+ * One session's subscription as SSE frames until it ends. A refusal or failure becomes one final
+ * `failed` frame, since the status is already sent. The client closing interrupts this and closes
+ * the subscription, and the browser resubscribes on any end.
  */
-const events = Effect.gen(function* () {
-  const request = yield* HttpServerRequest;
-  const text = yield* request.text.pipe(
-    Effect.provideService(HttpIncomingMessage.MaxBodySize, maxOperationBytes),
-    Effect.option,
-  );
-  if (text._tag === "None")
-    return reply(400, { ok: false, error: new BadArgs({ message: "unreadable request body" }) });
-  const input = yield* decodeSubscribe(text.value).pipe(Effect.option);
-  if (input._tag === "None")
-    return reply(400, {
-      ok: false,
-      error: new BadArgs({ message: "expected one session subscription as JSON" }),
-    });
-  const client = yield* DaemonClient;
-  return HttpServerResponse.stream(
-    client.subscribe(input.value).pipe(
-      Stream.catch((error) => Stream.succeed({ kind: "failed", error } as const)),
-      Stream.map(eventFrame),
-      Stream.encodeText,
-    ),
-    { contentType: "text/event-stream", headers: securityHeaders },
-  );
-});
+const events = (operations: ViewerOperations) =>
+  Effect.gen(function* () {
+    const text = yield* readBody;
+    if (text._tag === "None")
+      return reply(400, { ok: false, error: new BadArgs({ message: "unreadable request body" }) });
+    const input = yield* decodeSubscribe(text.value).pipe(Effect.option);
+    if (input._tag === "None")
+      return reply(400, {
+        ok: false,
+        error: new BadArgs({ message: "expected one session subscription as JSON" }),
+      });
+    return HttpServerResponse.stream(
+      operations.subscribe(input.value).pipe(
+        Stream.catch((error) => Stream.succeed({ kind: "failed", error } as const)),
+        Stream.map(eventFrame),
+        Stream.encodeText,
+      ),
+      { contentType: "text/event-stream", headers: securityHeaders },
+    );
+  });
 
 /**
- * One launch's HTTP surface. Every request needs this launch's exact `Host`; POSTs also need a
- * matching `Origin`. The bootstrap exchanges the fragment secret for the host-only auth cookie,
- * operations are strict `BrowserRequest`s forwarded unchanged to the daemon, except that
- * navigation carries this launcher's `addon` discovery, and the daemon's `Reply` is returned as is;
- * events stream one session's daemon subscription under the same checks. Everything else is the
- * packaged SPA: exact files, then the shell for client routes, while `/api`, `/bootstrap` and
- * `/assets` misses stay real errors.
+ * The daemon's HTTP surface. Every request needs a loopback `Host` and no forwarding headers;
+ * POSTs also need a matching `Origin`. Operations are strict `BrowserRequest`s answered with the
+ * daemon's `Reply`; events stream one session's committed changes. Everything else is the packaged
+ * SPA: exact files, then the shell for client routes, while `/api` and `/assets` misses stay real
+ * errors.
  */
-export const browserApp = (launch: Launch, assets: WebAssets, addon: NavigationAddon) =>
+export const browserApp = (assets: WebAssets, operations: ViewerOperations) =>
   Effect.gen(function* () {
     const request = yield* HttpServerRequest;
     const raw = NodeHttpServerRequest.toIncomingMessage(request).rawHeaders;
@@ -226,7 +261,7 @@ export const browserApp = (launch: Launch, assets: WebAssets, addon: NavigationA
     };
 
     const host = single("host");
-    if (!isLaunchHost(launch, host) || names.some(isForwarding)) return status(403);
+    if (!isLoopbackHost(host) || names.some(isForwarding)) return status(403);
     // The raw target is checked, not a URL-normalized one: normalization would silently resolve
     // dot segments and backslashes. Only origin-form paths without them are routed.
     const path = request.url.split("?", 1)[0]!;
@@ -241,22 +276,51 @@ export const browserApp = (launch: Launch, assets: WebAssets, addon: NavigationA
     if (decoded.split("/").some((segment) => segment === "." || segment === ".."))
       return status(400);
 
-    if (path === webPaths.bootstrap || path === webPaths.operation || path === webPaths.events) {
+    if (path === webPaths.operation || path === webPaths.events) {
       if (request.method !== "POST") return status(405, { allow: "POST" });
       if (!isSameOrigin(host, single("origin"))) return status(403);
-      if (path === webPaths.bootstrap)
-        return isBootstrap(launch, single("authorization"), yield* Clock.currentTimeMillis)
-          ? status(204, { "set-cookie": authCookie(launch) })
-          : status(401);
-      // Authenticate before reading the body.
-      if (!hasAuthCookie(launch, request.headers.cookie)) return status(401);
-      return yield* path === webPaths.events ? events : operation(addon);
+      return yield* path === webPaths.events ? events(operations) : operation(operations);
     }
-    if (under(decoded, "/api") || under(decoded, "/bootstrap")) return status(404);
+    if (under(decoded, "/api")) return status(404);
     if (request.method !== "GET" && request.method !== "HEAD")
       return status(405, { allow: "GET, HEAD" });
     const file = assets.get(path);
     if (file !== undefined) return asset(file);
     if (under(decoded, "/assets")) return status(404);
     return asset(assets.get("/index.html")!);
+  });
+
+/**
+ * Serves `app` on 127.0.0.1 at the first free port from `first` through the next nine, within the
+ * caller's scope, and returns that port. Closing the scope drops every open connection first, so a
+ * browser's open event stream cannot hold the daemon's exit.
+ */
+export const serveViewer = <E, R>(
+  first: number,
+  app: Effect.Effect<HttpServerResponse.HttpServerResponse, E, R>,
+) =>
+  Effect.gen(function* () {
+    const last = Math.min(first + viewerPortCount - 1, 65_535);
+    const scope = yield* Effect.scope;
+    for (let port = first; port <= last; port++) {
+      const attempt = yield* Scope.fork(scope);
+      const server = createServer();
+      const bound = yield* NodeHttpServer.make(() => server, { host: "127.0.0.1", port }).pipe(
+        Effect.tap((http) => http.serve(app)),
+        Scope.provide(attempt),
+        Effect.as(true),
+        // Taken, or otherwise unusable: the next port may still be free.
+        Effect.catchTag("ServeError", () => Effect.as(Scope.close(attempt, Exit.void), false)),
+      );
+      if (!bound) continue;
+      // Registered after the server's own close, so it runs first.
+      yield* Scope.addFinalizer(
+        attempt,
+        Effect.sync(() => server.closeAllConnections()),
+      );
+      return (server.address() as AddressInfo).port;
+    }
+    return yield* new DaemonUnreachable({
+      message: `no free port for the gyst viewer on 127.0.0.1:${first}-${last}; free one, or set GYST_PORT to start elsewhere`,
+    });
   });
