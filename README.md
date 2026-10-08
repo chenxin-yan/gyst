@@ -36,7 +36,7 @@ npm install -g @gyst/cli
    progressively into the session.
 
 This version ships the headless session CLI, background daemon, agent skills and a
-browser viewer that shows each saved session's captured diff. The terminal review viewer
+browser viewer, served by the daemon, that shows each saved session's captured diff. The terminal review viewer
 has been removed; the browser viewer does not show agent guidance yet.
 
 ## Review in the browser
@@ -47,39 +47,46 @@ gyst main...feature    # a Git range
 gyst --session <id>    # a saved session
 ```
 
-`gyst` opens the saved session for that scope (creating it only if there is none), starts a
-private viewer on this machine and opens it in your browser. When it cannot open a browser, it
-prints a private link instead; open that link yourself. It stays in the foreground: stop it
-with Ctrl-C when you are done. Closing the browser or stopping `gyst` keeps every saved session.
+`gyst` opens the saved session for that scope (creating it only if there is none), prints its
+link, `http://localhost:4978/session/<id>`, opens it in your browser when there is one on this
+machine, and exits. The background daemon serves the viewer for as long as it runs, so the link
+keeps working after `gyst` exits; closing the browser keeps every saved session. The viewer's
+home page lists saved sessions; deleting one there asks for confirmation and removes only that
+session.
 
-The link is for you only. Do not paste it into an agent chat or share it. Its secret part
-expires 10 minutes after launch; once opened, that browser stays signed in (reloads, new tabs)
-until `gyst` stops. If the viewer says this browser is not signed in, run `gyst` again and open the
-new link. The viewer's home page lists saved sessions; deleting one there asks for confirmation
-and removes only that session.
+The daemon listens on `127.0.0.1` only, at port 4978. If another program holds it, the daemon
+tries each next port up to 4987 and keeps the port it got until it exits; every link names the
+actual port. Set `GYST_PORT` to start from another port (for development and tests). When every
+port in the range is taken, `gyst` fails with an error naming the range.
 
-The viewer runs on a new `*.localhost` host name for each launch and has been tested with
-Chromium on Linux, directly and through a local-port SSH forward to the same machine; other
-browsers, platforms and a separate remote machine are untested.
+There is no login. The viewer accepts only loopback host names (`localhost`, `127.0.0.1`), on any
+port, and refuses requests from other web origins, so a web page you visit cannot use it. Gyst
+assumes a single-user machine: any user logged in to it can reach the port, and programs you run,
+including your agent, can act as you in the viewer. Do not run gyst on a machine you share with
+other users.
+
+The viewer has been tested with Chromium on Linux, directly and through a local SSH forward to the
+same machine; other browsers, platforms and a separate remote machine are untested.
 
 ### Over SSH
 
-Run `gyst` on the remote machine and forward its port from your computer:
+Run `gyst` on the remote machine and forward the viewer's port from your computer once:
 
 ```sh
-ssh -N -o ExitOnForwardFailure=yes -L 127.0.0.1:LOCAL:127.0.0.1:REMOTE user@remote
+ssh -N -o ExitOnForwardFailure=yes -L 127.0.0.1:4978:127.0.0.1:4978 user@remote
 ```
 
-`REMOTE` is the port in the printed link and `LOCAL` is any free port on your computer. Open
-the printed link in your local browser with its port replaced by `LOCAL`, keeping the host name
-and the rest of the link unchanged. The viewer only listens on the remote machine's loopback
-address; there is no LAN or reverse-proxy mode.
+Then open the printed links in your local browser. One forward serves every session for as long
+as the remote daemon runs. If the link names another port than 4978, forward that port instead;
+if your local 4978 is taken, forward another local port (`-L 127.0.0.1:LOCAL:127.0.0.1:4978`) and
+use it in the link. The viewer only listens on the remote machine's loopback address; there is no
+LAN or reverse-proxy mode.
 
 ## Sessions
 
 Agents open a session with `gyst session open` for uncommitted changes (including
 untracked files) or `gyst session open <range>` for a Git range such as `main...feature`.
-It prints the session id and snapshot identity as JSON without launching anything.
+It prints the session id, snapshot identity and viewer link as JSON, without opening a browser.
 Every other session command names that exact session with `--session <id>`.
 
 Snapshots stay fixed when files change. Refresh explicitly with
