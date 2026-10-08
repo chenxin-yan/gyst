@@ -3569,11 +3569,16 @@ describe("Sessions captured reads over real captures", () => {
             markdown: "Why?",
             kind: "question",
           });
+          const listed = yield* sessions.conversations({
+            command: "conversations",
+            session: session.id,
+          });
           yield* act({
             command: "resolve",
             session: session.id,
             requestId: "resolve",
             thread: sent.thread!,
+            seen: listed.threads[0]!.version,
             resolved: true,
           });
           const live = yield* act({
