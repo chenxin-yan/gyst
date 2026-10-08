@@ -234,6 +234,17 @@ const drained = (connection: NetSocket) =>
   });
 
 /**
+ * Whether `ws` would complete this upgrade: it answers any other handshake itself and never resumes
+ * the adapter's uninterruptible acquisition, which would then hold the request, and with it the
+ * viewer's and the daemon's shutdown, forever. The viewer asks for no subprotocol.
+ */
+const isWebSocketHandshake = (request: HttpServerRequest) =>
+  request.headers["upgrade"]?.toLowerCase() === "websocket" &&
+  /^[+/0-9A-Za-z]{22}==$/.test(request.headers["sec-websocket-key"] ?? "") &&
+  request.headers["sec-websocket-version"] === "13" &&
+  request.headers["sec-websocket-protocol"] === undefined;
+
+/**
  * One session's subscription, named by the query, as WebSocket messages until it ends. Not an SSE
  * response: a browser opens at most six HTTP/1.1 connections per host across all its tabs, so six
  * open readers would hold them all and queue every other load, read and write. Browsers pool
@@ -253,6 +264,7 @@ const events = (operations: ViewerOperations, query: string) =>
     const request = yield* HttpServerRequest;
     const socket = yield* request.upgrade.pipe(Effect.option);
     if (socket._tag === "None") return status(426, { upgrade: "websocket" });
+    if (!isWebSocketHandshake(request)) return status(400);
     // The upgraded WebSocket writes straight to the request's connection.
     const connection = NodeHttpServerRequest.toIncomingMessage(request).socket;
     yield* Effect.gen(function* () {

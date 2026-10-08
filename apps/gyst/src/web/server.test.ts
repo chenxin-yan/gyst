@@ -115,7 +115,8 @@ async function serve() {
   const allowed = [["host", host], origin] as const;
   const events = (session: string) =>
     openStream(port, { target: `/api/events?session=${session}`, headers: allowed });
-  return { port, host, origin, allowed, operation, get, events };
+  const close = () => Effect.runPromise(Scope.close(scope, Exit.void));
+  return { port, host, origin, allowed, operation, get, events, close };
 }
 
 beforeAll(() => {
@@ -516,6 +517,37 @@ describe("browserApp events", () => {
     });
     const plain = await send(port, { target: "/api/events?session=s1", headers: allowed });
     expect([plain.status, plain.header("upgrade")]).toEqual([426, "websocket"]);
+    expect(subscribed).toEqual([]);
+  });
+
+  it("refuses a handshake the WebSocket server would reject and still closes the viewer", async () => {
+    subscribed = [];
+    const handshake: ReadonlyArray<readonly [string, string]> = [
+      ["connection", "upgrade"],
+      ["upgrade", "websocket"],
+      ["sec-websocket-version", "13"],
+      ["sec-websocket-key", "dGhlIHNhbXBsZSBub25jZQ=="],
+    ];
+    const without = (name: string) => handshake.filter(([header]) => header !== name);
+    for (const headers of [
+      [...without("sec-websocket-key"), ["sec-websocket-key", "invalid"]],
+      without("sec-websocket-key"),
+      [...without("sec-websocket-version"), ["sec-websocket-version", "12"]],
+      [...without("upgrade"), ["upgrade", "h2c"]],
+      [...handshake, ["sec-websocket-protocol", "a,a"]],
+    ] satisfies ReadonlyArray<readonly [string, string]>[]) {
+      const { port, allowed, close } = await serve();
+      const refused = await send(port, {
+        target: "/api/events?session=s1",
+        headers: [...allowed, ...headers],
+      });
+      expect([headers, refused.status]).toEqual([headers, 400]);
+      const closed = await Promise.race([
+        close().then(() => "closed"),
+        new Promise((resolve) => setTimeout(resolve, 3000, "pending")),
+      ]);
+      expect([headers, closed]).toEqual([headers, "closed"]);
+    }
     expect(subscribed).toEqual([]);
   });
 
