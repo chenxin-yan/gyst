@@ -2246,27 +2246,32 @@ describe("installed gyst in a sandboxed browser", () => {
   }, 30_000);
 
   it("refuses to be framed by another page, which could overlay its controls", async () => {
-    const page = await newPage(context, {
-      problems: [expect.stringMatching(/^console Refused to frame .*"frame-ancestors 'none'"/)],
-    });
     const viewer = `${one.origin}/session/${one.id}`;
+    // Another local origin: Chromium refuses a public page's frame of localhost by itself, but the
+    // viewer's own policy must hold in every browser and for every page that can reach loopback.
+    const attacker = createHttpServer((_, response) => {
+      response.setHeader("content-type", "text/html");
+      response.end(`<iframe src="${viewer}"></iframe>`);
+    });
+    await new Promise<void>((resolve) => attacker.listen(0, "127.0.0.1", resolve));
+    onTestFinished(() => new Promise<void>((resolve) => attacker.close(() => resolve())));
+    const page = await newPage(context, {
+      problems: [
+        `requestfailed /session/${one.id}`,
+        expect.stringMatching(/^console Framing .* violates .*"frame-ancestors 'none'"/),
+      ],
+    });
     const requested: string[] = [];
     page.on("request", (request) => requested.push(request.url()));
-    await page.route("http://attacker.example/", (route) =>
-      route.fulfill({ contentType: "text/html", body: `<iframe src="${viewer}"></iframe>` }),
-    );
-    const [shell] = await Promise.all([
-      page.waitForResponse(viewer),
-      page.goto("http://attacker.example/"),
+    const origin = `http://127.0.0.1:${(attacker.address() as AddressInfo).port}/`;
+    const [refused] = await Promise.all([page.waitForEvent("requestfailed"), page.goto(origin)]);
+    expect([refused.url(), refused.failure()?.errorText]).toEqual([
+      viewer,
+      "net::ERR_BLOCKED_BY_RESPONSE",
     ]);
-    // The daemon answered, but the browser showed its error page instead: no viewer script ran.
-    expect(shell.status()).toBe(200);
-    await waitFor(
-      () => page.frames()[1]?.url() === "chrome-error://chromewebdata/",
-      "the frame to be refused",
-    );
+    // Nothing of the viewer ran in the frame.
     await page.waitForTimeout(500);
-    expect(requested).toEqual(["http://attacker.example/", viewer]);
+    expect(requested).toEqual([origin, viewer]);
   });
 
   it("deletes from the list only after confirmation, and replays the same request id", async () => {
