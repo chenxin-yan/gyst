@@ -9,6 +9,7 @@ import type {
   MessageKind,
   StatusPayload,
   Thread,
+  ThreadEntry,
 } from "@gyst/core/wire";
 import { sameRange } from "./rich.ts";
 import type { NotePlace, StatusNote } from "./walkthrough.ts";
@@ -29,7 +30,7 @@ export const liveNote = (
  * at the last line of its range, when that range is on the snapshot and a file the panel shows.
  */
 export type ThreadPlace = {
-  thread: Thread;
+  thread: ThreadEntry;
   /** The note it shows under, or undefined for a code thread (its note's removal included). */
   note: string | undefined;
   file: string;
@@ -45,7 +46,7 @@ const sideOf = (range: CapturedRange) => (range.side === "old" ? "deletions" : "
  * `snapshotId` the snapshot their code is read from; `notes` are the view's placed notes.
  */
 export function threadPlaces(
-  threads: readonly Thread[],
+  threads: readonly ThreadEntry[],
   files: readonly string[],
   snapshotId: string,
   notes: readonly NotePlace[],
@@ -133,7 +134,7 @@ export const replyOutdated = (
  */
 export function draftChange(
   draft: Draft,
-  threads: readonly Thread[],
+  threads: readonly ThreadEntry[],
   notes: ReadonlyMap<string, StatusNote>,
   snapshotId: string,
 ): { message: string; blocks: boolean } | undefined {
@@ -171,12 +172,8 @@ export const threadLocation = (anchor: CapturedRange, snapshotId: string) => {
   return `${anchor.path}:${lines} · ${anchor.side}${anchor.snapshotId === snapshotId ? "" : " · earlier code"}`;
 };
 
-/** How many human messages of a thread are still Pending. */
-export const pendingCount = (thread: Thread) =>
-  thread.messages.filter((message) => message.author === "human" && message.pending).length;
-
 /** Comments in list order: open threads first, then resolved, each in the order they began. */
-export const commentsOrder = (threads: readonly Thread[]) => [
+export const commentsOrder = (threads: readonly ThreadEntry[]) => [
   ...threads.filter(({ resolved }) => !resolved),
   ...threads.filter(({ resolved }) => resolved),
 ];

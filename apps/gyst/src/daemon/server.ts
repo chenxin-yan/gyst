@@ -218,6 +218,8 @@ export class DaemonServer extends Context.Service<
             return sessions.viewed(request);
           case "conversations":
             return sessions.conversations(request);
+          case "messages":
+            return sessions.messages(request);
           case "draft":
           case "send":
           case "edit":

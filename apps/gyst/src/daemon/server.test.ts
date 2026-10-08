@@ -449,6 +449,7 @@ describe("DaemonServer", () => {
           { command: "layer", session: "x", number: 1 },
           // Agents cannot read Pending bodies, write human messages or resolve threads.
           { command: "conversations", session: "x" },
+          { command: "messages", session: "x", thread: "t" },
           {
             command: "draft",
             session: "x",

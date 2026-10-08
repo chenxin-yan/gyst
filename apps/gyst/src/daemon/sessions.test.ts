@@ -1634,14 +1634,29 @@ describe("Sessions conversations", () => {
     const counted = await run(status(session.id));
     expect(counted.threads).toEqual({ open: 1, resolved: 0, pending: 1 });
     expect(JSON.stringify(counted)).not.toContain("Why keep");
-    // The author's own read returns the body and freezes nothing.
+    // The author's listing names the thread and its counts, without bodies; reading the thread's
+    // messages returns the body at the listed version. Neither freezes anything.
     const read = await run(
       Sessions.use((s) => s.conversations({ command: "conversations", session: session.id })),
     );
-    expect(read.threads[0]!.messages[0]).toMatchObject({
-      markdown: "Why keep *n2*?",
-      pending: true,
-    });
+    const [listed] = read.threads;
+    expect(listed).toMatchObject({ id: sent.thread, anchor, messageCount: 1, pendingCount: 1 });
+    expect(JSON.stringify(read)).not.toContain("Why keep");
+    const body = await run(
+      Sessions.use((s) =>
+        s.messages({ command: "messages", session: session.id, thread: listed!.id }),
+      ),
+    );
+    expect(body).toMatchObject({ thread: sent.thread, version: listed!.version });
+    expect(body.messages[0]).toMatchObject({ markdown: "Why keep *n2*?", pending: true });
+    const gone = await run(
+      Effect.flip(
+        Sessions.use((s) =>
+          s.messages({ command: "messages", session: session.id, thread: "gone" }),
+        ),
+      ),
+    );
+    expect(gone._tag).toBe("validation_failed");
     expect((await run(status(session.id))).threads.pending).toBe(1);
 
     const bundle = await run(pickup(session.id, "p1"));
@@ -1660,6 +1675,13 @@ describe("Sessions conversations", () => {
         },
       ],
     });
+    // The pickup froze the message, so the listing names another version of that thread only.
+    const after = await run(
+      Sessions.use((s) => s.conversations({ command: "conversations", session: session.id })),
+    );
+    expect(after.threads).toEqual([
+      { ...listed, version: expect.not.stringMatching(listed!.version), pendingCount: 0 },
+    ]);
     // Saved with its receipt: a fresh daemon replays the same bundle after a later arrival.
     const thread = sent.thread!;
     const drafted = await run(

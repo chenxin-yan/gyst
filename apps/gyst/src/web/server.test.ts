@@ -348,6 +348,7 @@ describe("browserApp operations", () => {
       { command: "delete", session: "s1", requestId: "r1" },
       { command: "refresh", session: "s1", snapshotId, requestId: "r1" },
       { command: "conversations", session: "s1" },
+      { command: "messages", session: "s1", thread: "t1" },
       {
         command: "draft",
         session: "s1",

@@ -4756,6 +4756,12 @@ describe("installed gyst in a sandboxed browser", () => {
     const page = await newPage(context, { problems: ["requestfailed /api/operation"] });
     await page.setViewportSize({ width: 1280, height: 1200 });
     const writes = viewedOf(page);
+    // The threads whose messages the page reads: only open ones, and again only once changed.
+    const messageReads: string[] = [];
+    page.on("request", (request) => {
+      if (operationOf(request)?.command === "messages")
+        messageReads.push(operationOf(request).thread);
+    });
     // Armed later: the next conversations read fails as if the connection dropped.
     let failRead = false;
     let failed = 0;
@@ -4818,6 +4824,7 @@ describe("installed gyst in a sandboxed browser", () => {
     await waitFor(() => failed === 1, "the failed conversations read");
     await pane.locator("[data-thread]").getByText("2 messages").waitFor();
     await says(page, "Live");
+    expect(messageReads).toEqual([]);
 
     // ]t steps through both threads on line 19 before line 20; Enter opens the one reached.
     const expanded = async () =>
@@ -4886,6 +4893,9 @@ describe("installed gyst in a sandboxed browser", () => {
     await says(page, "long.ts:40 · new");
     await keys(page, "Backspace");
     await headingsAre(page, ["walk/b.ts", "walk/a.ts"]);
+    // First and second were each read once, when opened; third again for its new reply.
+    const thirdId = idOf("Third?");
+    expect(messageReads).toEqual([first, idOf("Second?"), thirdId, thirdId]);
     expect(writes).toEqual([]);
   }, 60_000);
 

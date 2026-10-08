@@ -1,4 +1,4 @@
-import type { CapturedRange, Draft, HumanMessage, Thread } from "@gyst/core/wire";
+import type { CapturedRange, Draft, HumanMessage, ThreadEntry } from "@gyst/core/wire";
 import { describe, expect, it } from "vite-plus/test";
 import {
   commentDraftOn,
@@ -26,11 +26,17 @@ const asked = (id: string, extra: Partial<HumanMessage> = {}): HumanMessage => (
   createdAt: "2026-01-01T00:00:00.000Z",
   ...extra,
 });
-const thread = (id: string, anchor: CapturedRange, extra: Partial<Thread> = {}): Thread => ({
+const thread = (
+  id: string,
+  anchor: CapturedRange,
+  extra: Partial<ThreadEntry> = {},
+): ThreadEntry => ({
   id,
   anchor,
   resolved: false,
-  messages: [asked(`${id}-1`)],
+  version: `${id}-v`,
+  messageCount: 1,
+  pendingCount: 1,
   ...extra,
 });
 const note: StatusNote = { id: "n1", anchor: range("a.ts", 4), markdown: "Now.", references: [] };

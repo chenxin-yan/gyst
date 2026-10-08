@@ -91,18 +91,49 @@ export const ThreadCountsSchema = Schema.Struct({
 });
 export type ThreadCounts = typeof ThreadCountsSchema.Type;
 
-/** A browser's read of every conversation and draft pin, Pending bodies included; it freezes nothing. */
+/**
+ * A thread as the browser's listing names it, without its messages: where it is, whether it is
+ * resolved, how many messages it has and how many are Pending, and its `version`, an identity of
+ * its messages and resolution that changes whenever they do.
+ */
+export const ThreadEntrySchema = Schema.Struct({
+  id: Schema.String,
+  anchor: CapturedRangeSchema,
+  note: Schema.optional(NoteLinkSchema),
+  resolved: Schema.Boolean,
+  version: Schema.String,
+  messageCount: Schema.Natural,
+  pendingCount: Schema.Natural,
+});
+export type ThreadEntry = typeof ThreadEntrySchema.Type;
+
+/**
+ * A browser's listing of every conversation, and every draft pin. Messages are read per thread
+ * (`MessagesPayload`), when a thread is opened and again when its `version` changes. It freezes
+ * nothing.
+ */
 export const ConversationsPayloadSchema = Schema.Struct({
   sessionId: Schema.String,
   snapshotId: Schema.String,
   revision: Schema.Number,
   /** The `conversations` identity a subscription announces for these threads. */
   version: Schema.String,
-  /** Each thread with its `version`, which a resolution or reopening names as what was read. */
-  threads: Schema.Array(Schema.Struct({ ...ThreadSchema.fields, version: Schema.String })),
+  threads: Schema.Array(ThreadEntrySchema),
   drafts: Schema.Array(DraftSchema),
 });
 export type ConversationsPayload = typeof ConversationsPayloadSchema.Type;
+
+/**
+ * A browser's read of one thread's messages, Pending bodies included, at its `version`, which a
+ * resolution or reopening names as what was read. It freezes nothing.
+ */
+export const MessagesPayloadSchema = Schema.Struct({
+  sessionId: Schema.String,
+  thread: Schema.String,
+  version: Schema.String,
+  messages: Schema.Array(MessageSchema),
+});
+export type MessagesPayload = typeof MessagesPayloadSchema.Type;
 
 /** The recorded answer to a human conversation action: the revision it produced and what it made. */
 export const ConversationResultSchema = Schema.Struct({

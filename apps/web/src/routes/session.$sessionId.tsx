@@ -6,7 +6,7 @@ import {
   pullRequestUrlOf,
   type SessionSummary,
   type StatusPayload,
-  type Thread,
+  type ThreadEntry,
 } from "@gyst/core/wire";
 import {
   type CodeViewItem,
@@ -1763,12 +1763,10 @@ function SessionReader(props: {
     setNotice("Put the cursor on a note or a thread to reply.");
   };
   /**
-   * Resolves an open thread or reopens a resolved one, as it reads now; only the human does
-   * either.
+   * Resolves an open thread or reopens a resolved one, as read at its version `seen`; only the
+   * human does either.
    */
-  const setResolved = async (threadId: string, resolved: boolean) => {
-    const seen = conversationOf(threadId)?.version;
-    if (seen === undefined) return;
+  const setResolved = async (threadId: string, seen: string, resolved: boolean) => {
     try {
       await conversations.act({
         command: "resolve",
@@ -1820,7 +1818,12 @@ function SessionReader(props: {
    * expands them, Back returning. A reply to a thread the panel shows is written there, so Comments
    * closes for it (`onShow`).
    */
-  const threadCard = (thread: Thread, located: boolean, composer: boolean, onShow?: () => void) => {
+  const threadCard = (
+    thread: ThreadEntry,
+    located: boolean,
+    composer: boolean,
+    onShow?: () => void,
+  ) => {
     const draft = composer && draftNow?.thread === thread.id ? draftNow : undefined;
     const shownHere = located && placedThreads.has(thread.id) ? onShow : undefined;
     return (
@@ -1841,7 +1844,8 @@ function SessionReader(props: {
           shownHere?.();
           replyTo({ thread: thread.id });
         }}
-        onResolve={() => void setResolved(thread.id, !thread.resolved)}
+        onResolve={(seen) => void setResolved(thread.id, seen, !thread.resolved)}
+        messages={conversations.messages}
         act={conversations.act}
         onReference={(target) => {
           if (!located) return follow(target, { kind: "thread", threadId: thread.id });
@@ -1935,7 +1939,7 @@ function SessionReader(props: {
         return setNotice(
           vim ? "Put the cursor on an open thread to resolve it." : "Open a thread to resolve it.",
         );
-      return void setResolved(at.thread.id, true);
+      return void setResolved(at.thread.id, at.thread.version, true);
     }
     if (id === "nextThread" || id === "previousThread")
       return stepThread(id === "nextThread" ? 1 : -1);

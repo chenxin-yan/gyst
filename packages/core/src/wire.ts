@@ -118,6 +118,8 @@ export {
   type MessageKind,
   MessageKindSchema,
   MessageSchema,
+  type MessagesPayload,
+  MessagesPayloadSchema,
   type NoteLink,
   NoteLinkSchema,
   type Thread,
@@ -125,6 +127,8 @@ export {
   ThreadCodeSchema,
   type ThreadCounts,
   ThreadCountsSchema,
+  type ThreadEntry,
+  ThreadEntrySchema,
   ThreadSchema,
   type ThreadsPayload,
   ThreadsPayloadSchema,
@@ -533,10 +537,12 @@ export const BrowserRequestSchema = Schema.Union([
     viewed: Schema.Boolean,
   }),
   /**
-   * Every conversation and draft pin of the session, Pending bodies included, for their author.
-   * Reading freezes nothing: only the agent's retrieval (`threads`) reads a message.
+   * Every conversation of the session, listed without its messages, and every draft pin; and one
+   * thread's `messages`, Pending bodies included, for their author. Reading freezes nothing: only
+   * the agent's retrieval (`threads`) reads a message.
    */
   Schema.Struct({ command: Schema.Literal("conversations"), ...exact }),
+  Schema.Struct({ command: Schema.Literal("messages"), ...exact, thread: Schema.String }),
   /**
    * Human conversation actions. Each `requestId` is chosen before sending and reused for every
    * retry, like `delete`; they name their targets, never a revision, so an agent's publication
