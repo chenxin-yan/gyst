@@ -9,7 +9,6 @@ import {
 } from "@gyst/core/wire";
 import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 import {
-  bootstrap,
   events,
   isExpectedFailure,
   isUncertain,
@@ -18,7 +17,7 @@ import {
   TransportError,
 } from "./api.ts";
 
-// Explicitly mocked transport: these tests pin the viewer's HTTP handling, not the launcher.
+// Explicitly mocked transport: these tests pin the viewer's HTTP handling, not the daemon.
 const respond = (status: number, body?: unknown) => {
   const fetch = vi.fn(async (_path: string, _init: RequestInit) =>
     body === undefined
@@ -47,30 +46,6 @@ const reason = (promise: Promise<unknown>) =>
     () => expect.unreachable("expected a failure"),
     (error: unknown) => error,
   );
-
-describe("bootstrap", () => {
-  it("posts the secret as a bearer credential and accepts 204", async () => {
-    const fetch = respond(204);
-    expect(await bootstrap("secret-1")).toBe(true);
-    const [path, init] = fetch.mock.calls[0]!;
-    expect(path).toBe("/bootstrap");
-    expect(init).toMatchObject({ method: "POST", headers: { authorization: "Bearer secret-1" } });
-    expect(init.body).toBeUndefined();
-  });
-
-  it("leaves a rejected secret to the existing cookie", async () => {
-    respond(401);
-    expect(await bootstrap("expired")).toBe(false);
-  });
-
-  it("reports a refused host without echoing the secret", async () => {
-    respond(403);
-    const error = await reason(bootstrap("secret-2"));
-    expect(error).toBeInstanceOf(TransportError);
-    expect(error).toMatchObject({ reason: "forbidden" });
-    expect((error as Error).message).not.toContain("secret-2");
-  });
-});
 
 describe("operation", () => {
   it("posts the raw browser request and decodes its payload", async () => {
@@ -132,8 +107,6 @@ describe("operation", () => {
   });
 
   it.each([
-    [401, undefined, "unauthorized"],
-    [401, { ok: true, value: { sessions: [] } }, "unauthorized"],
     [403, undefined, "forbidden"],
     [503, undefined, "unavailable"],
     [400, undefined, "unexpected"],
@@ -149,7 +122,7 @@ describe("operation", () => {
     expect(error).toMatchObject({ reason: expected });
   });
 
-  it("reports an unreachable launcher", async () => {
+  it("reports an unreachable daemon", async () => {
     vi.stubGlobal("fetch", () => Promise.reject(new TypeError("Failed to fetch")));
     expect(await reason(operation({ command: "list" }))).toMatchObject({ reason: "unavailable" });
   });
@@ -158,64 +131,56 @@ describe("operation", () => {
 describe("events", () => {
   const ready = { kind: "ready", daemon: "d1", sessionId: "s-1", snapshotId: "abc", revision: 2 };
   const changed = { kind: "changed", sessionId: "s-1", snapshotId: "abc", revision: 3 };
-  const frame = (event: unknown) => `data: ${JSON.stringify(event)}\n\n`;
-  // A stream answering with these chunks as they are split on the wire, then ending unless held
-  // open; `seen.cancelled` says whether the reader let go of it.
-  const stream = (
-    chunks: string[],
-    contentType = "text/event-stream; charset=utf-8",
-    held = false,
-  ) => {
-    const seen = { cancelled: false };
-    const encoder = new TextEncoder();
-    const fetch = vi.fn(async (_path: string, _init: RequestInit) => {
-      const body = new ReadableStream<Uint8Array>({
-        start(controller) {
-          for (const chunk of chunks) controller.enqueue(encoder.encode(chunk));
-          if (!held) controller.close();
-        },
-        cancel() {
-          seen.cancelled = true;
-        },
-      });
-      return new Response(body, { status: 200, headers: { "content-type": contentType } });
-    });
-    vi.stubGlobal("fetch", fetch);
-    return Object.assign(fetch, { seen });
-  };
-  const all = async (signal = new AbortController().signal) => {
+  const deleted = { kind: "deleted", sessionId: "s-1" };
+  /** The viewer's WebSocket, driven by the test as the daemon would drive it. */
+  class FakeSocket extends EventTarget {
+    static last: FakeSocket;
+    closedByViewer = false;
+    constructor(readonly url: URL) {
+      super();
+      FakeSocket.last = this;
+    }
+    // A real socket then waits in CLOSING for the daemon's reply, which a stalled one never sends.
+    close() {
+      this.closedByViewer = true;
+    }
+    send(...messages: unknown[]) {
+      for (const data of messages)
+        this.dispatchEvent(
+          new MessageEvent("message", {
+            data: typeof data === "string" ? data : JSON.stringify(data),
+          }),
+        );
+    }
+    end(code: number) {
+      this.dispatchEvent(new CloseEvent("close", { code }));
+    }
+  }
+  const subscribe = (signal = new AbortController().signal) => {
+    vi.stubGlobal("location", new URL("http://localhost:14978/session/s-1"));
+    vi.stubGlobal("WebSocket", FakeSocket);
     const seen: unknown[] = [];
-    for await (const event of events("s-1", signal)) seen.push(event);
-    return seen;
+    const done = (async () => {
+      for await (const event of events("s-1", signal)) seen.push(event);
+    })();
+    return { socket: FakeSocket.last, seen, done };
   };
 
-  it("posts the session with the operation's credentials and the caller's signal", async () => {
-    const fetch = stream([frame(ready)]);
-    const signal = new AbortController().signal;
-    expect(await all(signal)).toEqual([ready]);
-    const [path, init] = fetch.mock.calls[0]!;
-    expect(path).toBe("/api/events");
-    expect(JSON.parse(String(init.body))).toEqual({ session: "s-1" });
-    expect(init).toMatchObject({ method: "POST", credentials: "same-origin", cache: "no-store" });
-    expect(init.signal).toBe(signal);
+  it("subscribes over a WebSocket on the page's own host and ends when the daemon closes cleanly", async () => {
+    const { socket, seen, done } = subscribe();
+    expect(String(socket.url)).toBe("ws://localhost:14978/api/events?session=s-1");
+    socket.send(ready, changed, deleted);
+    socket.end(1000);
+    await done;
+    expect(seen).toEqual([ready, changed, deleted]);
   });
 
-  it("reads frames split across chunks and several in one chunk, and ends with the stream", async () => {
-    const text = frame(ready) + frame(changed) + frame({ kind: "deleted", sessionId: "s-1" });
-    stream([text.slice(0, 7), text.slice(7, 40), text.slice(40, -1), text.slice(-1)]);
-    expect(await all()).toEqual([ready, changed, { kind: "deleted", sessionId: "s-1" }]);
-    stream([frame(ready) + frame(changed)]);
-    expect(await all()).toEqual([ready, changed]);
-  });
-
-  it("drops an event the stream ended before finishing, and skips frames without data", async () => {
-    stream([": comment\n\n", frame(ready), 'data: {"kind":']);
-    expect(await all()).toEqual([ready]);
-  });
-
-  it("decodes a failed frame's error as its DaemonError", async () => {
-    stream([frame({ kind: "failed", error: { code: "no_session", message: "gone" } })]);
-    const [event] = (await all()) as [{ kind: string; error: unknown }];
+  it("decodes a failed message's error as its DaemonError", async () => {
+    const { socket, seen, done } = subscribe();
+    socket.send({ kind: "failed", error: { code: "no_session", message: "gone" } });
+    socket.end(1000);
+    await done;
+    const [event] = seen as [{ kind: string; error: unknown }];
     expect(event.kind).toBe("failed");
     expect(event.error).toBeInstanceOf(NoSession);
   });
@@ -224,45 +189,40 @@ describe("events", () => {
     ["an excess field", { ...ready, extra: 1 }],
     ["an unknown kind", { kind: "other" }],
     ["a missing field", { kind: "changed", sessionId: "s-1", revision: 3 }],
+    ["text that is not JSON", '{"kind":'],
   ])("refuses %s as unreadable", async (_name, event) => {
-    stream([frame(ready), frame(event)]);
-    const seen: unknown[] = [];
-    const error = await reason(
-      (async () => {
-        for await (const next of events("s-1", new AbortController().signal)) seen.push(next);
-      })(),
-    );
+    const { socket, seen, done } = subscribe();
+    socket.send(ready, event);
+    expect(await reason(done)).toMatchObject({ reason: "unexpected" });
     expect(seen).toEqual([ready]);
-    expect(error).toMatchObject({ reason: "unexpected" });
+    expect(socket.closedByViewer).toBe(true);
   });
 
-  it("refuses a reply that is not an event stream", async () => {
-    stream([JSON.stringify({ ok: true, value: {} })], "application/json");
-    expect(await reason(all())).toMatchObject({ reason: "unexpected" });
+  it("reports any other close, a refused handshake included, as an unreachable daemon", async () => {
+    const { socket, seen, done } = subscribe();
+    socket.send(ready);
+    socket.end(1006);
+    expect(await reason(done)).toMatchObject({ reason: "unavailable" });
+    expect(seen).toEqual([ready]);
   });
 
-  it.each([
-    [401, "unauthorized"],
-    [403, "forbidden"],
-    [503, "unavailable"],
-    [400, "unexpected"],
-    [405, "unexpected"],
-  ])("maps HTTP %i to %s", async (status, expected) => {
-    respond(status);
-    const error = await reason(all());
-    expect(error).toBeInstanceOf(TransportError);
-    expect(error).toMatchObject({ reason: expected });
-  });
+  it("lets go of the connection when the reader stops or its signal aborts", async () => {
+    vi.stubGlobal("location", new URL("http://localhost:14978/session/s-1"));
+    vi.stubGlobal("WebSocket", FakeSocket);
+    const reader = events("s-1", new AbortController().signal);
+    const first = reader.next();
+    FakeSocket.last.send(ready);
+    expect((await first).value).toEqual(ready);
+    await reader.return();
+    expect(FakeSocket.last.closedByViewer).toBe(true);
 
-  it("reports an unreachable launcher, and lets go of the stream when the reader stops", async () => {
-    vi.stubGlobal("fetch", () => Promise.reject(new TypeError("Failed to fetch")));
-    expect(await reason(all())).toMatchObject({ reason: "unavailable" });
-    const fetch = stream([frame(ready), frame(changed)], undefined, true);
-    for await (const event of events("s-1", new AbortController().signal)) {
-      expect(event).toEqual(ready);
-      break;
-    }
-    await vi.waitFor(() => expect(fetch.seen.cancelled).toBe(true));
+    const controller = new AbortController();
+    const { socket, seen, done } = subscribe(controller.signal);
+    socket.send(ready);
+    await vi.waitFor(() => expect(seen).toEqual([ready]));
+    controller.abort();
+    await done;
+    expect(socket.closedByViewer).toBe(true);
   });
 });
 
@@ -274,7 +234,6 @@ it("mints distinct 128-bit request ids", () => {
 
 describe("isExpectedFailure", () => {
   it.each([
-    new TransportError("unauthorized", "m"),
     new TransportError("forbidden", "m"),
     new TransportError("unavailable", "m"),
     new NoSession({ message: "m" }),
@@ -302,7 +261,6 @@ describe("isUncertain", () => {
     [new TransportError("unavailable", "m"), true],
     [new TransportError("unexpected", "m"), true],
     [new DaemonUnreachable({ message: "m" }), true],
-    [new TransportError("unauthorized", "m"), false],
     [new TransportError("forbidden", "m"), false],
     [new StaleRevision({ message: "m" }), false],
     [new ValidationFailed({ message: "m" }), false],

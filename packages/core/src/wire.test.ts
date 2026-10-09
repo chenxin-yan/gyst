@@ -34,7 +34,9 @@ describe("daemon wire envelopes", () => {
     for (const valid of [
       { command: "open", cwd: "/repo", scope: { kind: "uncommitted" } },
       { command: "open", cwd: "/repo", scope: { kind: "range", range: "main...feature" } },
+      { command: "open", cwd: "/repo", scope: { kind: "uncommitted" }, path: "/usr/bin:/bin" },
       { command: "open", session: "s1" },
+      { command: "open", session: "s1", path: "" },
       { command: "list" },
       { command: "diff", session: "s1", file: "a.txt" },
       { command: "delete", session: "s1", requestId: "r1" },
@@ -51,8 +53,33 @@ describe("daemon wire envelopes", () => {
       { command: "refresh", session: "s1", patch: "diff" },
       { command: "delete", session: "s1" },
       { command: "apply", session: "s1", stdin: "{}" },
+      { command: "open", session: "s1", path: ["/bin"] },
     ])
       expect(() => decodeRequest(invalid)).toThrow();
+  });
+
+  it("keeps human and browser-only operations off the socket", () => {
+    const target = { session: "s1", snapshotId, side: "new", file: "src/a.ts" };
+    for (const browserOnly of [
+      {
+        command: "viewed",
+        session: "s1",
+        snapshotId,
+        revision: 2,
+        requestId: "r1",
+        hunkIds: ["h1"],
+        viewed: true,
+      },
+      { command: "layer", session: "s1", number: 3 },
+      { command: "navigation", session: "s1", snapshotId },
+      { command: "navigation", session: "s1", snapshotId, recheck: true },
+      { command: "definition", ...target, position: { line: 1, character: 4 } },
+      { command: "references", ...target, position: { line: 1, character: 4 } },
+      { command: "identifiers", ...target, line: 3 },
+    ]) {
+      expect(decodeBrowserRequest(browserOnly)).toEqual(browserOnly);
+      expect(() => decodeRequest(browserOnly)).toThrow();
+    }
   });
 
   it("keeps checkout, Git, executable, authority and agent operations out of browser requests", () => {
@@ -367,7 +394,7 @@ describe("daemon wire envelopes", () => {
       expect(() => decodeGap(gap)).toThrow();
   });
 
-  it("binds the launcher's add-on discovery into trusted navigation requests only", () => {
+  it("lets browsers name a navigation target but never an add-on, executable or PATH", () => {
     const addon = {
       kind: "available",
       entry: "/opt/bin/gyst-navigation-typescript",
@@ -375,38 +402,7 @@ describe("daemon wire envelopes", () => {
     };
     const target = { session: "s1", snapshotId, side: "new", file: "src/a.ts" };
     const position = { line: 1, character: 4 };
-    for (const valid of [
-      { command: "definition", ...target, position, addon },
-      { command: "references", ...target, side: "old", position, addon: { kind: "missing" } },
-      { command: "identifiers", ...target, line: 3, addon: { kind: "mismatched", found: "0.9.0" } },
-    ])
-      expect(decodeRequest(valid)).toEqual(valid);
-    for (const invalid of [
-      // The launcher's discovery is required: the daemon never searches for the add-on itself.
-      { command: "definition", ...target, position },
-      { command: "identifiers", ...target, line: 3 },
-      { command: "definition", ...target, position, addon: { ...addon, entry: "bin/gyst" } },
-      { command: "definition", ...target, position, addon, entry: "/bin/sh" },
-      { command: "definition", ...target, file: "../outside.ts", position, addon },
-      { command: "definition", ...target, side: "working-tree", position, addon },
-      { command: "references", ...target, position: { line: 0, character: 0 }, addon },
-      { command: "identifiers", ...target, line: 0, addon },
-      { command: "identifiers", ...target, line: 1, position, addon },
-      { command: "navigation", session: "s1", snapshotId },
-      { command: "navigation", session: "s1", snapshotId, addon, recheck: true },
-      { command: "navigation", session: "s1", snapshotId, addon, side: "new" },
-    ])
-      expect(() => decodeRequest(invalid)).toThrow();
-    expect(
-      decodeRequest({
-        command: "navigation",
-        session: "s1",
-        snapshotId,
-        addon: { kind: "missing" },
-      }),
-    ).toEqual({ command: "navigation", session: "s1", snapshotId, addon: { kind: "missing" } });
-
-    // Browsers name only the target: the bridge binds the add-on, which they cannot express.
+    // Browsers name only the target: the daemon finds the add-on, which they cannot express.
     const browserValid = [
       { command: "definition", ...target, position },
       { command: "references", ...target, side: "old", position },
@@ -418,12 +414,14 @@ describe("daemon wire envelopes", () => {
     for (const valid of browserValid) {
       expect(() => decodeBrowserRequest({ ...valid, addon })).toThrow();
       expect(() => decodeBrowserRequest({ ...valid, entry: "/bin/sh" })).toThrow();
+      expect(() => decodeBrowserRequest({ ...valid, path: "/tmp" })).toThrow();
     }
     for (const invalid of [
       { command: "definition", ...target, file: "/etc/passwd", position },
       { command: "identifiers", ...target, line: 0 },
       { command: "navigation", session: "s1" },
       { command: "navigation", session: "s1", snapshotId, recheck: "yes" },
+      { command: "open", session: "s1", path: "/tmp" },
     ])
       expect(() => decodeBrowserRequest(invalid)).toThrow();
   });

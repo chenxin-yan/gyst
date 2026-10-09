@@ -19,9 +19,9 @@ const collect = <E>(stdout: Stream.Stream<Uint8Array, E>) =>
 
 /**
  * Runs the add-on script at `entry` (a real path) with gyst's own Node and judges its `--version`
- * handshake against this gyst. The launcher runs it on what it finds on its PATH; the daemon runs
- * it again when an engine from a discovered `entry` fails to start, to tell a replaced or broken
- * install from an engine failure.
+ * handshake against this gyst. Discovery runs it on what it finds on a session's PATH, and again
+ * when an engine from a discovered `entry` fails to start, to tell a replaced or broken install
+ * from an engine failure.
  */
 export const handshakeAddon = Effect.fn("handshakeAddon")(function* (
   entry: string,

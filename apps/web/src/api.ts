@@ -23,12 +23,12 @@ import {
 import { Schema } from "effect";
 
 /**
- * The HTTP hop to the launcher failed before a daemon Reply existed. Domain failures are not
+ * The HTTP hop to the daemon failed before a Reply existed. Domain failures are not
  * TransportErrors: they arrive as the canonical Reply and are thrown as its DaemonError.
  */
 export class TransportError extends Error {
   constructor(
-    readonly reason: "unauthorized" | "forbidden" | "unavailable" | "unexpected",
+    readonly reason: "forbidden" | "unavailable" | "unexpected",
     message: string,
     options?: ErrorOptions,
   ) {
@@ -39,7 +39,7 @@ export class TransportError extends Error {
 const isDaemonError = Schema.is(DaemonError);
 
 /**
- * Failures the viewer explains in place and that say nothing about a gyst defect: sign-in, host,
+ * Failures the viewer explains in place and that say nothing about a gyst defect: host,
  * outage, a missing session, a snapshot a refresh replaced and a PR source the host cannot read. Everything else (an unreadable
  * reply, internal_error, rejected input, render exceptions) also deserves a console diagnostic.
  */
@@ -58,16 +58,13 @@ export const isExpectedFailure = (error: unknown) =>
  */
 export const isUncertain = (error: unknown) =>
   error instanceof TransportError
-    ? error.reason !== "unauthorized" && error.reason !== "forbidden"
+    ? error.reason !== "forbidden"
     : isDaemonError(error) && error._tag === "daemon_unreachable";
-
-// Whether this page's launch link was refused, which decides what a later 401 means.
-let linkRefused = false;
 
 const unavailable = () =>
   new TransportError(
     "unavailable",
-    "Can't reach gyst. The launcher may have stopped; run gyst again to reopen this review.",
+    "Can't reach gyst. Its daemon may have stopped; run gyst again to reopen this review.",
   );
 
 const post = (path: string, init: RequestInit) =>
@@ -80,24 +77,6 @@ const post = (path: string, init: RequestInit) =>
   }).catch(() => {
     throw unavailable();
   });
-
-/**
- * Exchanges the launch URL's bootstrap secret for this launch's cookie. Resolves false when the
- * launcher rejects the secret (for example, it expired): a cookie from an earlier exchange may
- * still authorize this browser, so the first operation decides.
- */
-export async function bootstrap(secret: string): Promise<boolean> {
-  const response = await post(webPaths.bootstrap, {
-    headers: { authorization: `Bearer ${secret}` },
-  });
-  await drain(response);
-  if (response.status === 204) return true;
-  if (response.status === 401) {
-    linkRefused = true;
-    return false;
-  }
-  throw failureOf(response.status);
-}
 
 const payloadSchemas = {
   list: ListPayloadSchema,
@@ -145,47 +124,43 @@ const decodeEvent = Schema.decodeUnknownSync(Schema.fromJsonString(SubscriptionE
 });
 
 /**
- * The session's committed-state invalidations as the launcher streams them, `ready` first, until
- * the stream ends or `signal` aborts. Throws a TransportError when it can't be opened or read.
+ * The session's committed-state invalidations as the daemon sends them over a WebSocket, `ready`
+ * first, until the daemon ends them or `signal` aborts. Throws a TransportError when the connection
+ * fails or breaks, or a message can't be read.
  */
 export async function* events(
   session: string,
   signal: AbortSignal,
 ): AsyncGenerator<SubscriptionEvent, void, undefined> {
-  const response = await post(webPaths.events, {
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ session }),
-    signal,
+  const url = new URL(webPaths.events, location.href);
+  url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
+  url.search = new URLSearchParams({ session }).toString();
+  const socket = new WebSocket(url);
+  const messages: unknown[] = [];
+  let closed: CloseEvent | undefined;
+  let wake = () => {};
+  socket.addEventListener("message", ({ data }) => {
+    messages.push(data);
+    wake();
   });
-  if (response.status !== 200) {
-    await drain(response);
-    throw failureOf(response.status);
-  }
-  if (response.headers.get("content-type")?.split(";")[0]?.trim() !== "text/event-stream") {
-    await drain(response);
-    throw new TransportError("unexpected", "gyst sent a stream this viewer can't read.");
-  }
-  const reader = response.body!.pipeThrough(new TextDecoderStream()).getReader();
+  socket.addEventListener("close", (event) => {
+    closed = event;
+    wake();
+  });
+  // Not waiting for the close event: a stalled connection's closing handshake may never finish.
+  const abort = () => {
+    socket.close();
+    wake();
+  };
+  signal.addEventListener("abort", abort);
   try {
-    let buffered = "";
     for (;;) {
-      const { done, value } = await reader.read().catch(() => {
-        throw unavailable();
-      });
-      // An event cut off by the end was never sent whole, so it is dropped.
-      if (done) return;
-      buffered += value;
-      for (let end = buffered.indexOf("\n\n"); end >= 0; end = buffered.indexOf("\n\n")) {
-        const data = buffered
-          .slice(0, end)
-          .split("\n")
-          .filter((line) => line.startsWith("data:"))
-          .map((line) => line.slice(line.startsWith("data: ") ? 6 : 5))
-          .join("\n");
-        buffered = buffered.slice(end + 2);
-        if (data === "") continue;
+      if (signal.aborted) return;
+      const data = messages.shift();
+      if (data !== undefined) {
         let event: SubscriptionEvent;
         try {
+          if (typeof data !== "string") throw new Error("not a text message");
           event = decodeEvent(data);
         } catch (cause) {
           throw new TransportError("unexpected", "gyst sent an event this viewer can't read.", {
@@ -193,10 +168,15 @@ export async function* events(
           });
         }
         yield event;
-      }
+      } else if (closed !== undefined) {
+        // Only the daemon ends a subscription cleanly; any other close is a lost connection.
+        if (closed.code === 1000) return;
+        throw unavailable();
+      } else await new Promise<void>((resolve) => (wake = resolve));
     }
   } finally {
-    await reader.cancel().catch(() => undefined);
+    signal.removeEventListener("abort", abort);
+    socket.close();
   }
 }
 
@@ -204,7 +184,7 @@ export async function* events(
 // 503 (daemon_unreachable) may carry an error Reply or nothing at all.
 async function replyOf(response: Response): Promise<Reply> {
   const body = await drain(response);
-  if (response.status === 401 || response.status === 403) throw failureOf(response.status);
+  if (response.status === 403) throw failureOf(response.status);
   let reply: Reply | undefined;
   try {
     reply = decodeReply(body);
@@ -221,17 +201,10 @@ const drain = (response: Response) => response.text().catch(() => "");
 
 function failureOf(status: number): TransportError {
   switch (status) {
-    case 401:
-      return new TransportError(
-        "unauthorized",
-        linkRefused
-          ? "This link's sign-in has expired or belongs to another gyst launch."
-          : "This browser is not signed in to this gyst launch.",
-      );
     case 403:
       return new TransportError(
         "forbidden",
-        "gyst refused this address. Open the exact link gyst printed, including its host name.",
+        "gyst refused this address. Open the link gyst printed, on localhost or 127.0.0.1.",
       );
     case 503:
       return unavailable();

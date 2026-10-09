@@ -11,6 +11,7 @@ import {
   pageBytes,
   type PullRequest,
   type PullRequestScope,
+  type BrowserRequest,
   type Request,
   SessionSchema,
   type SnapshotManifest,
@@ -44,7 +45,8 @@ import { Paths } from "./paths.ts";
 import { Sessions } from "./sessions.ts";
 import { type DeleteReceipt, SessionStore } from "./store.ts";
 
-type Input<C extends Request["command"]> = Extract<Request, { readonly command: C }>;
+type Operation = Request | BrowserRequest;
+type Input<C extends Operation["command"]> = Extract<Operation, { readonly command: C }>;
 const root = "/repo";
 const otherRoot = "/other";
 const patch = `diff --git a/a.txt b/a.txt
@@ -226,6 +228,8 @@ const store = Layer.succeed(SessionStore, {
       : Effect.sync(() => {
           deleteReceipts = receipts;
         }),
+  loadLaunchPaths: Effect.succeed({}),
+  saveLaunchPaths: () => Effect.void,
 });
 
 const sessionsLayer = Sessions.layer.pipe(
@@ -607,7 +611,7 @@ describe("Sessions.check", () => {
 });
 
 describe("Sessions.open", () => {
-  it("captures uncommitted changes of the caller's repository and returns identity and launch data", async () => {
+  it("captures uncommitted changes of the caller's repository and returns its identity", async () => {
     const opened = await run(openScope(uncommitted, `${root}/sub`));
     const id = "01010101-0101-4101-8101-010101010101";
     expect(opened).toEqual({
@@ -620,7 +624,6 @@ describe("Sessions.open", () => {
         updatedAt: expect.any(String),
       },
       created: true,
-      launch: { argv: ["gyst", "--session", id] },
     });
     expect(captureCalls).toEqual([{ root, scope: uncommitted }]);
     expect(files.get(id)?.hunks).toHaveLength(2);

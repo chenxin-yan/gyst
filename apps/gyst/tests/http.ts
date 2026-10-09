@@ -1,8 +1,9 @@
-// For the bridge unit tests: a raw HTTP/1.1 client (full control of Host, duplicates and request
-// targets) and a throwaway packaged-SPA fixture.
+// For the viewer's unit tests: a raw HTTP/1.1 client (full control of Host, duplicates and request
+// targets), a throwaway packaged-SPA fixture and free loopback ports.
 import { mkdir, mkdtemp, realpath, symlink, writeFile } from "node:fs/promises";
-import { request as httpRequest } from "node:http";
-import { connect } from "node:net";
+import { randomBytes } from "node:crypto";
+import { type IncomingMessage, request as httpRequest } from "node:http";
+import { type AddressInfo, connect, createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -68,68 +69,98 @@ export function send(
 }
 
 export type RawStream = Omit<RawResponse, "body"> & {
-  /** Each SSE event's `data` payload in arrival order, ending when the response ends or breaks. */
+  /** Each WebSocket text message in arrival order, ending when the server closes or it breaks. */
   frames(): AsyncGenerator<string, void>;
   /** Hangs up, as a closed tab or a stopped browser would. */
   close(): void;
 };
 
 /**
- * A streaming POST that resolves on the response head. Until `frames` is read nothing is taken off
- * the socket, so a reader that stops reading backs the server up as a stalled browser would.
+ * A WebSocket handshake that resolves on the response head: 101 and its messages, or a refusal and
+ * none. Until `frames` is read nothing is taken off the socket, so a reader that stops reading
+ * backs the server up as a stalled browser would.
  */
 export function openStream(
   port: number,
-  request: {
-    readonly target: string;
-    readonly headers: ReadonlyArray<readonly [string, string]>;
-    readonly body: string;
-  },
+  request: { readonly target: string; readonly headers: ReadonlyArray<readonly [string, string]> },
 ): Promise<RawStream> {
   return new Promise((resolve, reject) => {
-    const outgoing = httpRequest(
-      {
-        host: "127.0.0.1",
-        port,
-        method: "POST",
-        path: request.target,
-        agent: false,
-        headers: [
-          ...request.headers.flat(),
-          "content-length",
-          String(Buffer.byteLength(request.body)),
-        ],
-      },
-      (response) => {
-        // A cut connection fails the response; `frames` reports it as the end, read or not.
-        response.on("error", () => {});
-        const { rawHeaders } = response;
-        const headers = rawHeaders.flatMap((name, index) =>
-          index % 2 === 0 ? [[name.toLowerCase(), rawHeaders[index + 1]!] as const] : [],
-        );
-        resolve({
-          status: response.statusCode!,
-          headers,
-          header: (name) => headers.find(([header]) => header === name)?.[1],
-          async *frames() {
-            let text = "";
-            try {
-              for await (const chunk of response.setEncoding("utf8")) {
-                text += chunk;
-                for (let split = text.indexOf("\n\n"); split >= 0; split = text.indexOf("\n\n")) {
-                  for (const line of text.slice(0, split).split("\n"))
-                    if (line.startsWith("data: ")) yield line.slice("data: ".length);
-                  text = text.slice(split + 2);
-                }
+    const outgoing = httpRequest({
+      host: "127.0.0.1",
+      port,
+      path: request.target,
+      agent: false,
+      headers: [
+        ...request.headers.flat(),
+        "connection",
+        "upgrade",
+        "upgrade",
+        "websocket",
+        "sec-websocket-version",
+        "13",
+        "sec-websocket-key",
+        randomBytes(16).toString("base64"),
+      ],
+    });
+    const head = (response: IncomingMessage) => {
+      const { rawHeaders } = response;
+      const headers = rawHeaders.flatMap((name, index) =>
+        index % 2 === 0 ? [[name.toLowerCase(), rawHeaders[index + 1]!] as const] : [],
+      );
+      return {
+        status: response.statusCode!,
+        headers,
+        header: (name: string) => headers.find(([header]) => header === name)?.[1],
+      };
+    };
+    outgoing.once("response", (response) => {
+      response.resume();
+      resolve({ ...head(response), async *frames() {}, close: () => outgoing.destroy() });
+    });
+    outgoing.once("upgrade", (response, socket, first) => {
+      // A cut connection ends the messages, read or not.
+      socket.on("error", () => {});
+      resolve({
+        ...head(response),
+        // Unfragmented, unmasked server messages: what the daemon sends.
+        async *frames() {
+          let bytes = first;
+          const chunks = socket[Symbol.asyncIterator]();
+          const need = async (count: number) => {
+            while (bytes.length < count) {
+              const chunk = await chunks.next();
+              if (chunk.done) return false;
+              bytes = Buffer.concat([bytes, chunk.value]);
+            }
+            return true;
+          };
+          try {
+            for (;;) {
+              if (!(await need(2))) return;
+              const opcode = bytes[0]! & 0x0f;
+              let length = bytes[1]! & 0x7f;
+              let offset = 2;
+              if (length === 126) {
+                if (!(await need(4))) return;
+                length = bytes.readUInt16BE(2);
+                offset = 4;
               }
-            } catch {}
-          },
-          close: () => outgoing.destroy(),
-        });
-      },
-    );
+              if (!(await need(offset + length))) return;
+              const payload = bytes.subarray(offset, offset + length);
+              bytes = bytes.subarray(offset + length);
+              if (opcode === 0x8) return;
+              if (opcode === 0x1) yield payload.toString("utf8");
+            }
+          } catch {
+          } finally {
+            socket.destroy();
+          }
+        },
+        close: () => socket.destroy(),
+      });
+    });
     outgoing.on("error", reject);
-    outgoing.end(request.body);
+    outgoing.end();
   });
 }
 
@@ -150,3 +181,14 @@ export async function webUiFixture() {
   await symlink(join(root, "secret.txt"), join(dir, "assets", "link.txt"));
   return { root, dir };
 }
+
+/** A port the OS just reported free on 127.0.0.1, so a test's viewer never starts at 4978. */
+export const freePort = () =>
+  new Promise<number>((resolve, reject) => {
+    const server = createServer();
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", () => {
+      const { port } = server.address() as AddressInfo;
+      server.close(() => resolve(port));
+    });
+  });

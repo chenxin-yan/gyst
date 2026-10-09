@@ -180,7 +180,9 @@ describe("gyst session CLI seam", () => {
     const failure = async (args: string[]) => failed(await gyst(cwd, ["session", ...args]));
     const opened = json(await gyst(cwd, ["session", "open"]));
     expect(opened.session.scope).toEqual({ kind: "uncommitted" });
-    expect(opened.launch).toEqual({ argv: ["gyst", "--session", opened.session.id] });
+    expect(opened.link).toBe(
+      `http://localhost:${box.env.GYST_PORT}/session/${encodeURIComponent(opened.session.id)}`,
+    );
     const range = json(await gyst(cwd, ["session", "open", "HEAD..HEAD"]));
     expect(range.session.scope).toEqual({ kind: "range", range: "HEAD..HEAD" });
     expect(json(await gyst(cwd, ["session", "open", "--session", range.session.id]))).toEqual(
@@ -435,7 +437,13 @@ describe("gyst session CLI seam", () => {
       () => !isAlive(respawned) && !existsSync(join(data, "daemon.pid")),
       `daemon ${respawned} to exit after the last delete`,
     );
-    expect((await readdir(data)).sort()).toEqual(["content", "corrupt.json", "delete-receipts"]);
+    expect((await readdir(data)).sort()).toEqual([
+      "content",
+      "corrupt.json",
+      "delete-receipts",
+      "launch-paths",
+      "viewer.port",
+    ]);
 
     // A lost acknowledgement retried after that exit starts a daemon that answers from the receipt
     // and, holding no sessions, shuts down again.
@@ -446,7 +454,13 @@ describe("gyst session CLI seam", () => {
       () => installedDaemons().length === 0 && !existsSync(join(data, "daemon.pid")),
       "the replaying daemon to exit with no sessions left",
     );
-    expect((await readdir(data)).sort()).toEqual(["content", "corrupt.json", "delete-receipts"]);
+    expect((await readdir(data)).sort()).toEqual([
+      "content",
+      "corrupt.json",
+      "delete-receipts",
+      "launch-paths",
+      "viewer.port",
+    ]);
   }, 20_000);
 
   it("keeps failed persistence from exposing an opened or hiding a deleted session", async () => {
@@ -629,7 +643,12 @@ describe("gyst session CLI seam", () => {
       `daemon.pid to name ${survivor}`,
     );
     expect(installedDaemons()).toEqual([survivor]);
-    expect((await readdir(data)).sort()).toEqual(["content", "daemon.pid", "daemon.sock"]);
+    expect((await readdir(data)).sort()).toEqual([
+      "content",
+      "daemon.pid",
+      "daemon.sock",
+      "viewer.port",
+    ]);
   }, 20_000);
 
   it("exits 130 on SIGINT through crust's cancellation and releases the socket and pid file", async () => {

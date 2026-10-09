@@ -246,7 +246,6 @@ describe("live progress", () => {
     expect(replayOf(start())).toBeUndefined();
     expect(replayOf(sending)).toBeUndefined();
     for (const error of [
-      new TransportError("unauthorized", "m"),
       new TransportError("forbidden", "m"),
       new StaleRevision({ message: "m" }),
       new ValidationFailed({ message: "m" }),

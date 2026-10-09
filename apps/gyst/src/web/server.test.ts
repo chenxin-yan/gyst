@@ -1,58 +1,33 @@
-import { afterAll, beforeAll, describe, expect, it, onTestFinished } from "vite-plus/test";
+import { afterAll, beforeAll, describe, expect, it, onTestFinished, vi } from "vite-plus/test";
 import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
-import * as NodeServices from "@effect/platform-node/NodeServices";
 import {
   type BrowserRequest,
   DaemonUnreachable,
-  navigationAddon,
   NoSession,
-  type Request,
   type SubscribeRequest,
   type SubscriptionEvent,
 } from "@gyst/core";
-import { Clock, Duration, Effect, Exit, Schedule, Scope, Stream } from "effect";
+import { Effect, Exit, Queue, Schedule, Scope, Stream } from "effect";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
-import { mkdtemp, realpath, rm, symlink } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { fileURLToPath } from "node:url";
-import { DaemonClient } from "../daemon/client.ts";
-import { daemonVersion } from "../daemon/protocol.ts";
-import { bootstrapLifetimeMillis, type Launch, makeLaunch } from "./auth.ts";
-import { makeNavigationAddon, type NavigationAddon } from "./navigation-addon.ts";
-import { browserApp, installedWebUiDir, loadWebAssets, type WebAssets } from "./server.ts";
+import { rm } from "node:fs/promises";
 import {
-  indexHtml,
-  openStream,
-  type RawResponse,
-  secret,
-  send,
-  webUiFixture,
-} from "../../tests/http.ts";
+  browserApp,
+  installedWebUiDir,
+  isLoopbackHost,
+  loadWebAssets,
+  type ViewerOperations,
+  type WebAssets,
+  webAssetsOrNotice,
+} from "./server.ts";
+import { indexHtml, openStream, secret, send, webUiFixture } from "../../tests/http.ts";
 
-const t0 = 1_000_000;
 const snapshotId = "0".repeat(64);
-let now = t0;
-const clock: Clock.Clock = {
-  currentTimeMillisUnsafe: () => now,
-  currentTimeMillis: Effect.sync(() => now),
-  currentTimeNanosUnsafe: () => BigInt(now) * 1_000_000n,
-  currentTimeNanos: Effect.sync(() => BigInt(now) * 1_000_000n),
-  monotonicTimeNanosUnsafe: () => BigInt(now) * 1_000_000n,
-  monotonicTimeNanos: Effect.sync(() => BigInt(now) * 1_000_000n),
-  // Real waits: the add-on handshake's timeout must not fire at once.
-  sleep: (duration) =>
-    Effect.callback<void>((resume) => {
-      const timer = setTimeout(() => resume(Effect.void), Duration.toMillis(duration));
-      return Effect.sync(() => clearTimeout(timer));
-    }),
-};
 
-/** What the fake daemon received; the bridge must forward decoded browser input unchanged. */
-let forwarded: Request[] = [];
-const daemon = DaemonClient.of({
-  request: (request) => {
+/** What the fake daemon operations received; the adapter must pass decoded browser input unchanged. */
+let forwarded: BrowserRequest[] = [];
+const operations: ViewerOperations = {
+  operation: (request) => {
     forwarded.push(request);
     if (request.command === "status" && request.session === "down")
       return Effect.fail(new DaemonUnreachable({ message: "daemon did not become reachable" }));
@@ -76,9 +51,25 @@ const daemon = DaemonClient.of({
       return Stream.concat(Stream.succeed(ready), Stream.never).pipe(
         Stream.ensuring(Effect.sync(() => void released++)),
       );
+    if (request.session === "flooded")
+      return Stream.unwrap(
+        Effect.gen(function* () {
+          const changes = yield* Queue.sliding<SubscriptionEvent>(1);
+          const subscription = { changes, taken: 0 };
+          flooded = subscription;
+          return Stream.concat(
+            Stream.succeed(ready),
+            Stream.fromQueue(changes).pipe(
+              Stream.tap(() => Effect.sync(() => subscription.taken++)),
+            ),
+          ).pipe(Stream.ensuring(Effect.sync(() => void released++)));
+        }),
+      );
     return Stream.make(...liveEvents);
   },
-});
+};
+/** The open "flooded" subscription: the daemon's newest-only queue and how many changes left it. */
+let flooded: { readonly changes: Queue.Queue<SubscriptionEvent>; taken: number } | undefined;
 /** What the fake daemon was asked to subscribe to, and how many subscriptions it closed. */
 let subscribed: SubscribeRequest[] = [];
 let released = 0;
@@ -98,77 +89,38 @@ beforeAll(async () => {
 });
 afterAll(() => rm(fixture.root, { recursive: true, force: true }));
 
-/** A launcher's add-on holder over `launchPath`, as `serveViewer` builds it. */
-const holder = (launchPath: string | undefined) =>
-  Effect.runPromise(
-    makeNavigationAddon(launchPath, daemonVersion).pipe(Effect.provide(NodeServices.layer)),
-  );
-
-/** Serves one launch on an ephemeral loopback port for the current test. */
-async function serve(launch: Launch = makeLaunch(t0), addon?: NavigationAddon) {
-  const navigation = addon ?? (await holder(undefined));
+/** Serves the viewer on an ephemeral loopback port for the current test, as the link names it. */
+async function serve() {
   const scope = Effect.runSync(Scope.make());
   onTestFinished(() => Effect.runPromise(Scope.close(scope, Exit.void)));
   const server = createServer();
   await Effect.runPromise(
     Effect.gen(function* () {
       const http = yield* NodeHttpServer.make(() => server, { host: "127.0.0.1", port: 0 });
-      yield* http.serve(
-        browserApp(launch, assets, navigation).pipe(
-          Effect.provideService(DaemonClient, daemon),
-          Effect.provideService(Clock.Clock, clock),
-        ),
-      );
+      yield* http.serve(browserApp(assets, operations));
     }).pipe(Scope.provide(scope)),
   );
   const { port } = server.address() as AddressInfo;
-  const host = `${launch.hostname}:${port}`;
+  const host = `localhost:${port}`;
   const origin = ["origin", `http://${host}`] as const;
-  const bootstrap = (token = launch.bootstrap, extra: Array<readonly [string, string]> = []) =>
-    send(port, {
-      method: "POST",
-      target: "/bootstrap",
-      headers: [["host", host], origin, ["authorization", `Bearer ${token}`], ...extra],
-    });
-  const operation = (body: unknown, cookie = `gyst_auth=${launch.cookie}`) =>
+  const operation = (body: unknown) =>
     send(port, {
       method: "POST",
       target: "/api/operation",
-      headers: [["host", host], origin, ["cookie", cookie], ["content-type", "application/json"]],
+      headers: [["host", host], origin, ["content-type", "application/json"]],
       body: typeof body === "string" ? body : JSON.stringify(body),
     });
   const get = (target: string, method = "GET") =>
     send(port, { method, target, headers: [["host", host]] });
-  const authed = [["host", host], origin, ["cookie", `gyst_auth=${launch.cookie}`]] as const;
+  const allowed = [["host", host], origin] as const;
   const events = (session: string) =>
-    openStream(port, { target: "/api/events", headers: authed, body: JSON.stringify({ session }) });
-  return { launch, port, host, origin, authed, bootstrap, operation, get, events };
+    openStream(port, { target: `/api/events?session=${session}`, headers: allowed });
+  const close = () => Effect.runPromise(Scope.close(scope, Exit.void));
+  return { port, host, origin, allowed, operation, get, events, close };
 }
-
-// Secrets never go into assertion messages, so a failing run cannot print them.
-const hasSecret = (response: RawResponse, launch: Launch) =>
-  [launch.bootstrap, launch.cookie].some((value) =>
-    [response.body, ...response.headers.map(([, header]) => header)].some((text) =>
-      text.includes(value),
-    ),
-  );
 
 beforeAll(() => {
   forwarded = [];
-});
-
-describe("makeLaunch", () => {
-  it("mints a fresh random .localhost name and independent 256-bit secrets per launch", () => {
-    const [a, b] = [makeLaunch(t0), makeLaunch(t0)];
-    for (const launch of [a, b]) {
-      expect(launch.hostname).toMatch(/^g-[0-9a-f]{32}\.localhost$/);
-      expect(Buffer.from(launch.bootstrap, "base64url")).toHaveLength(32);
-      expect(Buffer.from(launch.cookie, "base64url")).toHaveLength(32);
-      expect(launch.bootstrapExpiresAt).toBe(t0 + 10 * 60_000);
-    }
-    const values = [a.hostname, b.hostname, a.bootstrap, b.bootstrap, a.cookie, b.cookie];
-    expect(new Set(values).size).toBe(values.length);
-  });
 });
 
 describe("loadWebAssets", () => {
@@ -176,6 +128,15 @@ describe("loadWebAssets", () => {
     const exit = await Effect.runPromiseExit(loadWebAssets(`${fixture.root}/absent`));
     expect(exit).toMatchObject({ _tag: "Failure" });
     expect(JSON.stringify(exit)).toContain("internal_error");
+  });
+
+  it("stands in a shell that names the missing SPA, so the daemon still serves", async () => {
+    const notice = await Effect.runPromise(webAssetsOrNotice(`${fixture.root}/absent`));
+    expect([...notice.keys()]).toEqual(["/index.html"]);
+    expect(new TextDecoder().decode(notice.get("/index.html")!.body)).toContain(
+      "the gyst web UI is not installed; reinstall @gyst/cli",
+    );
+    expect(await Effect.runPromise(webAssetsOrNotice(fixture.dir))).toEqual(assets);
   });
 
   it("keeps regular packaged files only, never symlinks", () => {
@@ -205,7 +166,7 @@ describe("browserApp static routes", () => {
       expect(response.header("referrer-policy")).toBe("no-referrer");
       expect(response.header("cache-control")).toBe("no-store");
       expect(response.header("content-security-policy")).toBe(
-        "default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src data:; connect-src 'self'",
+        "default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src data:; connect-src 'self'; frame-ancestors 'none'",
       );
       expect(response.header("access-control-allow-origin")).toBeUndefined();
       expect(response.header("set-cookie")).toBeUndefined();
@@ -231,7 +192,6 @@ describe("browserApp static routes", () => {
       "/api",
       "/api/nope",
       "/%61pi/operation",
-      "/bootstrap/x",
     ]) {
       const response = await get(target);
       expect([target, response.status]).toEqual([target, 404]);
@@ -272,34 +232,54 @@ describe("browserApp static routes", () => {
     expect(await get("/", "POST")).toMatchObject({ status: 405 });
     expect((await get("/assets/app.js", "PUT")).header("allow")).toBe("GET, HEAD");
     expect((await get("/api/operation")).header("allow")).toBe("POST");
-    expect((await get("/bootstrap")).status).toBe(405);
     expect((await get("/api/operation", "OPTIONS")).status).toBe(405);
   });
 });
 
+describe("isLoopbackHost", () => {
+  it("accepts loopback names on any valid port and nothing else", () => {
+    for (const host of [
+      "localhost",
+      "localhost:4978",
+      "localhost:48809",
+      "127.0.0.1:4987",
+      "[::1]:4978",
+      "localhost:65535",
+    ])
+      expect([host, isLoopbackHost(host)]).toEqual([host, true]);
+    for (const host of [
+      undefined,
+      "",
+      "localhost:0",
+      "localhost:065535",
+      "localhost:65536",
+      "localhost:80x",
+      "localhost:",
+      "LOCALHOST:4978",
+      "user@localhost:4978",
+      "g-0123.localhost:4978",
+      "localhost.attacker.example:4978",
+      "attacker.example:4978",
+      "127.0.0.2:4978",
+      "0.0.0.0:4978",
+      "[::ffff:127.0.0.1]:4978",
+      "192.168.1.5:4978",
+    ])
+      expect([host, isLoopbackHost(host)]).toEqual([host, false]);
+  });
+});
+
 describe("browserApp authority", () => {
-  it("accepts only this launch's hostname with a valid port, which may differ for SSH", async () => {
-    const { launch, port } = await serve();
+  it("accepts only a loopback Host, on any port so an SSH forward's local port works", async () => {
+    const { port } = await serve();
     const hostOnly = (headers: Array<readonly [string, string]>) =>
       send(port, { target: "/", headers }).then((response) => response.status);
-    expect(await hostOnly([["host", `${launch.hostname}:48809`]])).toBe(200);
-    for (const host of [
-      `127.0.0.1:${port}`,
-      `localhost:${port}`,
-      launch.hostname,
-      `${launch.hostname}:0`,
-      `${launch.hostname}:065535`,
-      `${launch.hostname}:65536`,
-      `${launch.hostname}:80x`,
-      `user@${launch.hostname}:${port}`,
-      `${makeLaunch(t0).hostname}:${port}`,
-      `evil.${launch.hostname}:${port}`,
-      `${launch.hostname}.evil:${port}`,
-    ])
-      expect([host.replace(launch.hostname, "<launch>"), await hostOnly([["host", host]])]).toEqual(
-        [host.replace(launch.hostname, "<launch>"), 403],
-      );
-    const valid = ["host", `${launch.hostname}:${port}`] as const;
+    for (const host of [`localhost:${port}`, "localhost:48809", `127.0.0.1:${port}`])
+      expect([host, await hostOnly([["host", host]])]).toEqual([host, 200]);
+    // A DNS-rebinding page names its own host, which resolves to loopback but is not loopback's.
+    for (const host of [`attacker.example:${port}`, `localhost.attacker.example:${port}`])
+      expect([host, await hostOnly([["host", host]])]).toEqual([host, 403]);
+    const valid = ["host", `localhost:${port}`] as const;
     expect(await hostOnly([valid, valid])).toBe(403);
     for (const name of ["forwarded", "x-forwarded-host", "x-forwarded-for", "x-forwarded-proto"])
       expect([name, await hostOnly([valid, [name, "attacker.example"]])]).toEqual([name, 403]);
@@ -311,136 +291,40 @@ describe("browserApp authority", () => {
     expect(response.status).toBe(400);
   });
 
-  it("requires a POST Origin serialized exactly as the request Host", async () => {
-    const { launch, port, host } = await serve();
+  it("requires a mutation's Origin serialized exactly as the request Host", async () => {
+    forwarded = [];
+    const { port, host } = await serve();
     const withOrigin = (origins: string[], requestHost = host) =>
       send(port, {
         method: "POST",
-        target: "/bootstrap",
+        target: "/api/operation",
         headers: [
           ["host", requestHost],
           ...origins.map((origin) => ["origin", origin] as const),
-          ["authorization", `Bearer ${launch.bootstrap}`],
+          ["content-type", "application/json"],
         ],
+        body: JSON.stringify({ command: "list" }),
       });
     for (const origins of [
       [],
       ["null"],
+      ["http://attacker.example"],
       [`https://${host}`],
       [`http://${host}/`],
-      [`http://${launch.hostname}`],
       [`http://127.0.0.1:${port}`],
       [`http://${host}`, `http://${host}`],
     ])
-      expect((await withOrigin(origins)).status).toBe(403);
+      expect([origins, (await withOrigin(origins)).status]).toEqual([origins, 403]);
+    expect(forwarded).toEqual([]);
     // Behind an SSH forward the browser-visible port, not the listener's, is the origin's port.
-    const forwardedHost = `${launch.hostname}:48809`;
+    const forwardedHost = "localhost:48809";
     expect((await withOrigin([`http://${host}`], forwardedHost)).status).toBe(403);
-    expect((await withOrigin([`http://${forwardedHost}`], forwardedHost)).status).toBe(204);
-  });
-});
-
-describe("browserApp bootstrap", () => {
-  it("sets the host-only launch cookie idempotently, rejecting other credentials", async () => {
-    now = t0;
-    const { launch, bootstrap } = await serve();
-    const first = await bootstrap();
-    expect(first.status).toBe(204);
-    const cookie = first.header("set-cookie")!;
-    const [pair = "", ...attributes] = cookie.split(";");
-    expect(pair === `gyst_auth=${launch.cookie}`).toBe(true);
-    // Attributes only: the value is a credential and must never reach an assertion message.
-    expect(attributes.map((attribute) => attribute.trim())).toEqual([
-      "Path=/",
-      "HttpOnly",
-      "SameSite=Strict",
-    ]);
-    expect(first.header("cache-control")).toBe("no-store");
-    // Replay (another tab, a retried exchange) yields the same cookie rather than rotating it.
-    expect((await bootstrap()).header("set-cookie") === cookie).toBe(true);
-
-    for (const response of [
-      await bootstrap("wrong"),
-      await bootstrap(""),
-      await bootstrap(launch.cookie),
-      await bootstrap(makeLaunch(t0).bootstrap),
-    ]) {
-      expect(response.status).toBe(401);
-      expect(response.header("set-cookie")).toBeUndefined();
-      expect(hasSecret(response, launch)).toBe(false);
-    }
-    const { port, host, origin } = await serve(launch);
-    const basic = await send(port, {
-      method: "POST",
-      target: "/bootstrap",
-      headers: [["host", host], origin, ["authorization", `Basic ${launch.bootstrap}`]],
-    });
-    const twice = await send(port, {
-      method: "POST",
-      target: "/bootstrap",
-      headers: [
-        ["host", host],
-        origin,
-        ["authorization", `Bearer ${launch.bootstrap}`],
-        ["authorization", `Bearer ${launch.bootstrap}`],
-      ],
-    });
-    const none = await send(port, {
-      method: "POST",
-      target: "/bootstrap",
-      headers: [["host", host], origin],
-    });
-    expect([basic.status, twice.status, none.status]).toEqual([401, 401, 401]);
-  });
-
-  it("checks cookie attributes, not a value that happens to contain attribute words", async () => {
-    // A nonsecret fixture value; random base64url values can contain these words too.
-    const launch = { ...makeLaunch(t0), cookie: "Domain-Secure-Expires-Max-Age" };
-    const { bootstrap } = await serve(launch);
-    const [pair = "", ...attributes] = (await bootstrap()).header("set-cookie")!.split(";");
-    expect(pair).toBe("gyst_auth=Domain-Secure-Expires-Max-Age");
-    expect(attributes.some((attribute) => /domain|secure|max-age|expires/i.test(attribute))).toBe(
-      false,
-    );
-  });
-
-  it("expires ten minutes after launch however often it was exchanged, while the cookie lasts", async () => {
-    now = t0;
-    const { bootstrap, operation } = await serve();
-    now = t0 + bootstrapLifetimeMillis - 1;
-    expect((await bootstrap()).status).toBe(204);
-    now = t0 + bootstrapLifetimeMillis;
-    const expired = await bootstrap();
-    expect([expired.status, expired.header("set-cookie")]).toEqual([401, undefined]);
-    now = t0 + 10 * bootstrapLifetimeMillis;
-    expect((await operation({ command: "list" })).status).toBe(200);
-    now = t0;
+    expect((await withOrigin([`http://${forwardedHost}`], forwardedHost)).status).toBe(200);
   });
 });
 
 describe("browserApp operations", () => {
-  it("authenticates before the body and never reaches the daemon without the launch cookie", async () => {
-    forwarded = [];
-    const { launch, operation } = await serve();
-    for (const cookie of [
-      "",
-      "gyst_auth=",
-      "gyst_auth=wrong",
-      `gyst_auth=${launch.bootstrap}`,
-      `other=${launch.cookie}`,
-      `gyst_auth=${makeLaunch(t0).cookie}`,
-    ])
-      expect((await operation({ command: "list" }, cookie)).status).toBe(401);
-    expect(forwarded).toEqual([]);
-    // A planted same-name cookie cannot shadow the real one.
-    const planted = await operation(
-      { command: "list" },
-      `gyst_auth=planted; gyst_auth=${launch.cookie}`,
-    );
-    expect(planted.status).toBe(200);
-  });
-
-  it("forwards strict browser operations unchanged and returns the canonical Reply", async () => {
+  it("passes strict browser operations unchanged and returns the canonical Reply", async () => {
     forwarded = [];
     const { operation } = await serve();
     const requests: BrowserRequest[] = [
@@ -475,7 +359,7 @@ describe("browserApp operations", () => {
     ]);
   });
 
-  it("rejects malformed and non-browser operations with bad_args before the daemon", async () => {
+  it("rejects malformed, agent and CLI operations with bad_args before the daemon", async () => {
     forwarded = [];
     const { operation } = await serve();
     for (const body of [
@@ -535,7 +419,7 @@ describe("browserApp operations", () => {
 });
 
 describe("browserApp operation size", () => {
-  it("forwards a Viewed request naming thousands of hunks, well over 64 KiB", async () => {
+  it("passes a Viewed request naming thousands of hunks, well over 64 KiB", async () => {
     forwarded = [];
     const { operation } = await serve();
     const request: BrowserRequest = {
@@ -585,107 +469,103 @@ describe("browserApp events", () => {
     return frames;
   };
 
-  it("applies the operation route's Host, Origin and cookie rules before the daemon", async () => {
+  it("applies the operation route's Host, Origin and forwarding rules before the daemon", async () => {
     subscribed = [];
-    const { launch, port, host, origin, authed } = await serve();
-    const cookie = ["cookie", `gyst_auth=${launch.cookie}`] as const;
-    const attempt = (method: string, headers: ReadonlyArray<readonly [string, string]>) =>
-      send(port, { method, target: "/api/events", headers, body: '{"session":"s1"}' });
+    const { port, host, origin, allowed } = await serve();
+    const attempt = async (headers: ReadonlyArray<readonly [string, string]>) => {
+      const stream = await openStream(port, { target: "/api/events?session=s1", headers });
+      stream.close();
+      return stream.status;
+    };
 
-    const get = await attempt("GET", authed);
-    expect([get.status, get.header("allow")]).toEqual([405, "POST"]);
-    expect((await attempt("PUT", authed)).status).toBe(405);
-    expect((await attempt("POST", [["host", `127.0.0.1:${port}`], origin, cookie])).status).toBe(
-      403,
-    );
+    const post = await send(port, { method: "POST", target: "/api/events", headers: allowed });
+    expect([post.status, post.header("allow")]).toEqual([405, "GET"]);
+    expect(await attempt([["host", `attacker.example:${port}`], origin])).toBe(403);
     for (const name of ["forwarded", "x-forwarded-host", "x-forwarded-for"])
-      expect([
-        name,
-        (await attempt("POST", [...authed, [name, "attacker.example"]])).status,
-      ]).toEqual([name, 403]);
+      expect([name, await attempt([...allowed, [name, "attacker.example"]])]).toEqual([name, 403]);
     for (const origins of [[], ["null"], ["http://attacker.example"], [`https://${host}`]])
       expect(
-        (
-          await attempt("POST", [
-            ["host", host],
-            ...origins.map((value) => ["origin", value] as const),
-            cookie,
-          ])
-        ).status,
+        await attempt([["host", host], ...origins.map((value) => ["origin", value] as const)]),
       ).toBe(403);
-    for (const value of [
-      "",
-      "gyst_auth=wrong",
-      `gyst_auth=${launch.bootstrap}`,
-      `gyst_auth=${makeLaunch(t0).cookie}`,
-    ]) {
-      const response = await attempt("POST", [["host", host], origin, ["cookie", value]]);
-      expect(response.status).toBe(401);
-      expect(hasSecret(response, launch)).toBe(false);
-    }
     expect(subscribed).toEqual([]);
 
     // Behind an SSH forward the browser-visible port differs from the listener's.
-    const sshHost = `${launch.hostname}:48809`;
+    const sshHost = "localhost:48809";
     const forwarded = await openStream(port, {
-      target: "/api/events",
-      headers: [["host", sshHost], ["origin", `http://${sshHost}`], cookie],
-      body: '{"session":"s1"}',
+      target: "/api/events?session=s1",
+      headers: [
+        ["host", sshHost],
+        ["origin", `http://${sshHost}`],
+      ],
     });
-    expect(forwarded.status).toBe(200);
+    expect(forwarded.status).toBe(101);
     expect(await collect(forwarded)).toEqual(liveEvents);
     expect(subscribed).toEqual([{ session: "s1" }]);
   });
 
-  it("rejects an unreadable, malformed or non-subscription body with bad_args before the daemon", async () => {
+  it("rejects a malformed or non-subscription query with bad_args, and a plain GET, before the daemon", async () => {
     subscribed = [];
-    const { port, authed } = await serve();
-    for (const body of [
-      "",
-      "{",
-      "[]",
-      "{}",
-      JSON.stringify({ session: 1 }),
-      JSON.stringify({ session: "s1", daemon: "d0" }),
-      JSON.stringify({ command: "status", session: "s1" }),
-    ]) {
-      const response = await send(port, {
-        method: "POST",
-        target: "/api/events",
-        headers: authed,
-        body,
+    const { port, allowed } = await serve();
+    for (const query of ["", "?", "?sessions=s1", "?session=s1&daemon=d0", "?x=1"]) {
+      const stream = await openStream(port, { target: `/api/events${query}`, headers: allowed });
+      expect([query, stream.status]).toEqual([query, 400]);
+    }
+    const response = await send(port, { target: "/api/events?x=1", headers: allowed });
+    expect(JSON.parse(response.body)).toEqual({
+      ok: false,
+      error: { code: "bad_args", message: "expected one session subscription" },
+    });
+    const plain = await send(port, { target: "/api/events?session=s1", headers: allowed });
+    expect([plain.status, plain.header("upgrade")]).toEqual([426, "websocket"]);
+    expect(subscribed).toEqual([]);
+  });
+
+  it("refuses a handshake the WebSocket server would reject and still closes the viewer", async () => {
+    subscribed = [];
+    const handshake: ReadonlyArray<readonly [string, string]> = [
+      ["connection", "upgrade"],
+      ["upgrade", "websocket"],
+      ["sec-websocket-version", "13"],
+      ["sec-websocket-key", "dGhlIHNhbXBsZSBub25jZQ=="],
+    ];
+    const without = (name: string) => handshake.filter(([header]) => header !== name);
+    for (const headers of [
+      [...without("sec-websocket-key"), ["sec-websocket-key", "invalid"]],
+      without("sec-websocket-key"),
+      [...without("sec-websocket-version"), ["sec-websocket-version", "12"]],
+      [...without("upgrade"), ["upgrade", "h2c"]],
+      [...handshake, ["sec-websocket-protocol", "a,a"]],
+    ] satisfies ReadonlyArray<readonly [string, string]>[]) {
+      const { port, allowed, close } = await serve();
+      const refused = await send(port, {
+        target: "/api/events?session=s1",
+        headers: [...allowed, ...headers],
       });
-      expect([body, response.status]).toEqual([body, 400]);
-      expect(JSON.parse(response.body)).toEqual({
-        ok: false,
-        error: { code: "bad_args", message: "expected one session subscription as JSON" },
-      });
+      expect([headers, refused.status]).toEqual([headers, 400]);
+      const closed = await Promise.race([
+        close().then(() => "closed"),
+        new Promise((resolve) => setTimeout(resolve, 3000, "pending")),
+      ]);
+      expect([headers, closed]).toEqual([headers, "closed"]);
     }
     expect(subscribed).toEqual([]);
   });
 
-  it("streams the daemon's frames verbatim and in order with safe headers and no secrets", async () => {
+  it("sends the subscription's events verbatim and in order, one message each", async () => {
     subscribed = [];
-    const { launch, events } = await serve();
+    const { events } = await serve();
     const stream = await events("s1");
-    expect(stream.status).toBe(200);
-    expect(stream.header("content-type")).toBe("text/event-stream");
-    expect(stream.header("cache-control")).toBe("no-store");
-    expect(stream.header("referrer-policy")).toBe("no-referrer");
-    expect(stream.header("x-content-type-options")).toBe("nosniff");
+    expect(stream.status).toBe(101);
+    expect(stream.header("upgrade")).toBe("websocket");
     expect(stream.header("access-control-allow-origin")).toBeUndefined();
     expect(stream.header("set-cookie")).toBeUndefined();
     const raw: string[] = [];
     for await (const frame of stream.frames()) raw.push(frame);
     expect(raw.map((frame) => JSON.parse(frame))).toEqual(liveEvents);
-    const texts = [...raw, ...stream.headers.map(([, value]) => value)];
-    expect(
-      texts.some((text) => text.includes(launch.cookie) || text.includes(launch.bootstrap)),
-    ).toBe(false);
     expect(subscribed).toEqual([{ session: "s1" }]);
   });
 
-  it("ends a refused or broken daemon subscription with exactly one failed frame", async () => {
+  it("ends a refused or broken subscription with exactly one failed frame", async () => {
     const { events } = await serve();
     expect(await collect(await events("gone"))).toEqual([
       { kind: "failed", error: { code: "no_session", message: "no session with id gone" } },
@@ -705,7 +585,7 @@ describe("browserApp events", () => {
     ]);
   });
 
-  it("closes the daemon subscription when the browser hangs up", async () => {
+  it("closes the subscription when the browser hangs up", async () => {
     released = 0;
     const { events } = await serve();
     const stream = await events("held");
@@ -721,133 +601,65 @@ describe("browserApp events", () => {
     );
     expect(released).toBe(1);
   });
-});
 
-describe("cross-launch isolation", () => {
-  it("rejects one launch's hostname, bootstrap and cookie at another", async () => {
-    const a = await serve();
-    const b = await serve();
-    expect((await a.bootstrap()).status).toBe(204);
-    // A's hostname aimed at B's port: B only answers its own hostname.
-    const aHostAtB = await send(b.port, {
-      target: "/",
-      headers: [["host", `${a.launch.hostname}:${b.port}`]],
-    });
-    expect(aHostAtB.status).toBe(403);
-    expect((await b.bootstrap(a.launch.bootstrap)).status).toBe(401);
-    expect((await b.operation({ command: "list" }, `gyst_auth=${a.launch.cookie}`)).status).toBe(
-      401,
-    );
-    expect((await a.operation({ command: "list" })).status).toBe(200);
-  });
+  /** A "flooded" stream fed far more than the kernel's loopback buffers hold while nothing is read. */
+  const flood = async () => {
+    flooded = undefined;
+    released = 0;
+    const { events } = await serve();
+    const stream = await events("flooded");
+    onTestFinished(() => stream.close());
+    await vi.waitFor(() => expect(flooded).toBeDefined());
+    const context = "c".repeat(32 * 1024);
+    const offered = 1500;
+    for (let revision = 1; revision <= offered; revision++) {
+      Queue.offerUnsafe(flooded!.changes, { kind: "changed", ...version(revision), context });
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+    // What left the queue is all the daemon buffers for this reader.
+    expect(flooded!.taken).toBeLessThan(offered / 3);
+    return { stream, latest: { kind: "changed", ...version(offered), context }, offered };
+  };
+
+  it("holds a reader that stops reading to its newest change, which it reads on resuming", async () => {
+    const { stream, latest, offered } = await flood();
+    const read: { revision: number }[] = [];
+    for await (const frame of stream.frames()) {
+      read.push(JSON.parse(frame));
+      if (read.at(-1)!.revision === offered) break;
+    }
+    expect(read.length).toBeLessThan(offered / 3);
+    expect(read.at(-1)).toEqual(latest);
+  }, 30_000);
+
+  it("closes a stalled reader's subscription when it hangs up", async () => {
+    const { stream } = await flood();
+    expect(released).toBe(0);
+    stream.close();
+    await vi.waitFor(() => expect(released).toBe(1));
+  }, 30_000);
 });
 
 describe("browserApp navigation", () => {
-  const addonCli = fileURLToPath(
-    new URL("../../../../packages/navigation-typescript/src/cli.ts", import.meta.url),
-  );
-  const target = { session: "s1", snapshotId, side: "new", file: "src/a.ts" } as const;
-  const position = { line: 2, character: 4 };
-  const tempDir = async () => {
-    const dir = await mkdtemp(join(tmpdir(), "gyst-bridge-addon-"));
-    onTestFinished(() => rm(dir, { recursive: true, force: true }));
-    return dir;
-  };
-  /** Installs the workspace add-on into `bin` as npm's global bin link would. */
-  const install = (bin: string) => symlink(addonCli, join(bin, navigationAddon.bin));
-
-  it("binds the launcher's discovery into navigation and forwards everything else unchanged", async () => {
-    forwarded = [];
-    const bin = await tempDir();
-    await install(bin);
-    const { operation } = await serve(makeLaunch(t0), await holder(bin));
-    const available = {
-      kind: "available",
-      entry: await realpath(addonCli),
-      version: daemonVersion,
-    };
-    const requests: BrowserRequest[] = [
-      { command: "definition", ...target, position },
-      { command: "references", ...target, side: "old", position },
-      { command: "identifiers", ...target, line: 2 },
-      { command: "navigation", session: "s1", snapshotId },
-      { command: "status", session: "s1" },
-      { command: "code", session: "s1", snapshotId, file: "src/a.ts", side: "new" },
-    ];
-    for (const request of requests) expect((await operation(request)).status).not.toBe(400);
-    expect(forwarded).toEqual([
-      { command: "definition", ...target, position, addon: available },
-      { command: "references", ...target, side: "old", position, addon: available },
-      { command: "identifiers", ...target, line: 2, addon: available },
-      { command: "navigation", session: "s1", snapshotId, addon: available },
-      { command: "status", session: "s1" },
-      { command: "code", session: "s1", snapshotId, file: "src/a.ts", side: "new" },
-    ]);
-  });
-
-  it("refuses a browser-supplied add-on or executable with bad_args before the daemon", async () => {
+  it("refuses a browser-supplied add-on, executable or PATH with bad_args before the daemon", async () => {
     forwarded = [];
     const { operation } = await serve();
-    const addon = { kind: "available", entry: "/bin/sh", version: daemonVersion };
+    const target = { session: "s1", snapshotId, side: "new", file: "src/a.ts" } as const;
+    const position = { line: 2, character: 4 };
+    const addon = { kind: "available", entry: "/bin/sh", version: "1.0.0" };
     for (const body of [
       { command: "definition", ...target, position, addon },
       { command: "references", ...target, position, entry: "/bin/sh" },
       { command: "identifiers", ...target, line: 1, addon: { kind: "missing" } },
       { command: "navigation", session: "s1", snapshotId, addon },
       { command: "navigation", session: "s1", snapshotId, recheck: true, entry: "/bin/sh" },
-      { command: "navigation", session: "s1", snapshotId, launchPath: "/tmp" },
+      { command: "navigation", session: "s1", snapshotId, path: "/tmp" },
+      { command: "open", session: "s1", path: "/tmp" },
     ]) {
       const response = await operation(body);
       expect(response.status).toBe(400);
       expect(JSON.parse(response.body)).toMatchObject({ ok: false, error: { code: "bad_args" } });
     }
     expect(forwarded).toEqual([]);
-  });
-
-  it("sees an install into an existing launch PATH directory only on Check again", async () => {
-    forwarded = [];
-    const bin = await tempDir();
-    const { operation } = await serve(makeLaunch(t0), await holder(`/nonexistent:${bin}`));
-    const addonOf = () => (forwarded.at(-1) as { addon?: unknown } | undefined)?.addon;
-    await operation({ command: "navigation", session: "s1", snapshotId });
-    expect(addonOf()).toEqual({ kind: "missing" });
-    await install(bin);
-    // The launcher keeps its discovery until asked to look again.
-    await operation({ command: "navigation", session: "s1", snapshotId });
-    expect(addonOf()).toEqual({ kind: "missing" });
-    await operation({ command: "definition", ...target, position });
-    expect(addonOf()).toEqual({ kind: "missing" });
-    await operation({ command: "navigation", session: "s1", snapshotId, recheck: true });
-    const available = {
-      kind: "available",
-      entry: await realpath(addonCli),
-      version: daemonVersion,
-    };
-    // `recheck` is the launcher's instruction, not part of the daemon request.
-    expect(forwarded.at(-1)).toEqual({
-      command: "navigation",
-      session: "s1",
-      snapshotId,
-      addon: available,
-    });
-    await operation({ command: "definition", ...target, position });
-    expect(addonOf()).toEqual(available);
-  });
-
-  it("looks only on the PATH it was launched with, never one changed later", async () => {
-    forwarded = [];
-    const launchBin = await tempDir();
-    const laterBin = await tempDir();
-    await install(laterBin);
-    const { operation } = await serve(makeLaunch(t0), await holder(launchBin));
-    const launchPath = process.env.PATH;
-    process.env.PATH = `${laterBin}:${launchPath ?? ""}`;
-    onTestFinished(() => {
-      process.env.PATH = launchPath;
-    });
-    await operation({ command: "navigation", session: "s1", snapshotId, recheck: true });
-    expect(forwarded).toEqual([
-      { command: "navigation", session: "s1", snapshotId, addon: { kind: "missing" } },
-    ]);
   });
 });
