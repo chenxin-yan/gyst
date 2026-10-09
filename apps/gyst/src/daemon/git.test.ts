@@ -569,10 +569,37 @@ describe("Git.capture", () => {
       mergeBase: null,
     });
     expect(hunkFiles(twoDot)).toEqual(["feature.txt", "tracked.txt"]);
+    // Both forms contain the head's commits the base lacks, never the base's own later commit.
+    expect(threeDot.commits).toEqual([{ id: feature, message: "feature" }]);
+    expect(twoDot.commits).toEqual(threeDot.commits);
     // An omitted endpoint is HEAD, as in Git.
-    expect(hunkFiles(await capture(cwd, { kind: "range", range: "feature..." }))).toEqual([
-      "tracked.txt",
+    const fromHead = await capture(cwd, { kind: "range", range: "feature..." });
+    expect(hunkFiles(fromHead)).toEqual(["tracked.txt"]);
+    expect(fromHead.commits).toEqual([{ id: main, message: "main" }]);
+  });
+
+  it("captures a range's whole commit messages oldest first, and none for other scopes", async () => {
+    const cwd = await repo("range-messages");
+    const initial = git(cwd, "rev-parse", "HEAD").trim();
+    // Signatures, notes, a configured format and output encoding never reach a captured message.
+    git(cwd, "config", "log.showSignature", "true");
+    git(cwd, "config", "format.pretty", "oneline");
+    git(cwd, "config", "i18n.logOutputEncoding", "ISO-8859-1");
+    const first = "Add the café helper ✓\n\nWhy: callers repeat it.\n\n- one\n- two";
+    await writeFile(join(cwd, "tracked.txt"), "two\n");
+    git(cwd, "commit", "-qam", first);
+    git(cwd, "notes", "add", "-m", "a note");
+    await writeFile(join(cwd, "tracked.txt"), "three\n");
+    git(cwd, "commit", "-qam", "Second, naïve");
+    const [one, two] = ["HEAD~1", "HEAD"].map((ref) => git(cwd, "rev-parse", ref).trim());
+    const manifest = await capture(cwd, { kind: "range", range: `${initial}..HEAD` });
+    expect(manifest.commits).toEqual([
+      { id: one, message: first },
+      { id: two, message: "Second, naïve" },
     ]);
+    // A range without commits captures an explicit empty list.
+    expect((await capture(cwd, { kind: "range", range: "HEAD..HEAD" })).commits).toEqual([]);
+    expect(await capture(cwd)).not.toHaveProperty("commits");
   });
 
   it("keeps the endpoints it resolved when a ref moves mid-capture", async () => {
@@ -1285,6 +1312,8 @@ describe("Git.capturePullRequest", () => {
       mergeBase: github.a1,
     });
     expect(hunkFiles(manifest)).toEqual(["b.txt"]);
+    // A PR's description is stack metadata; its snapshot captures no commit messages.
+    expect(manifest).not.toHaveProperty("commits");
     // Layer A's file is the selected snapshot's unchanged supporting source.
     const inherited = fileOf(manifest, "a.txt");
     expect(inherited?.old).toEqual(inherited?.new);

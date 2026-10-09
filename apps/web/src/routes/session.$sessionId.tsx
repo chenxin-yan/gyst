@@ -1,10 +1,10 @@
-import type {
-  CapturedRange,
-  DaemonError,
-  FilesPayload,
-  Hunk,
-  SessionSummary,
-  StatusPayload,
+import {
+  type CapturedRange,
+  type FilesPayload,
+  type Hunk,
+  pullRequestUrlOf,
+  type SessionSummary,
+  type StatusPayload,
 } from "@gyst/core/wire";
 import {
   type CodeViewItem,
@@ -36,6 +36,7 @@ import {
   type Ref,
   useCallback,
   useEffect,
+  useId,
   useImperativeHandle,
   useLayoutEffect,
   useMemo,
@@ -45,12 +46,14 @@ import {
 import { flushSync } from "react-dom";
 import {
   events,
+  isDaemonError,
   isExpectedFailure,
   isUncertain,
   newRequestId,
   operation,
   TransportError,
 } from "../api.ts";
+import { AuthorEntry, CommitsCard, DescriptionCard, useRangeCommits } from "../author.tsx";
 import { CommandMenu, KeyHelp } from "../commands.tsx";
 import {
   AllSessionsLink,
@@ -193,9 +196,6 @@ export const Route = createFileRoute("/session/$sessionId")({
   component: SessionPage,
   notFoundComponent: SessionNotFound,
 });
-
-const isDaemonError = (error: unknown, tag: DaemonError["_tag"]) =>
-  typeof error === "object" && error !== null && "_tag" in error && error._tag === tag;
 
 function SessionPage() {
   const { session, hunks, snapshotId, files, status } = Route.useLoaderData();
@@ -533,9 +533,20 @@ function SessionReader(props: {
   const [opened] = useState(() => recalled?.opened ?? new Map<string, Map<number, Opened>>());
   const [, setOpenedVersion] = useState(0);
   const viewer = useRef<Viewer>(null);
+  // The main panel's scroller while the view has no changes to show, so no viewer.
+  const alone = useRef<HTMLDivElement>(null);
   const live = useLiveSession(session.id);
   const progress = useViewedProgress(session.id, snapshotId, props.status, live);
   const status = progress.status;
+  // The change author's explanation above the diff: a PR's description or a range's commits.
+  const [authorShown, setAuthorShown] = useState(recalled?.author.shown ?? false);
+  const authorId = useId();
+  const rangeCommits = useRangeCommits(
+    session.id,
+    snapshotId,
+    authorShown && session.scope.kind === "range",
+    recalled?.author.commits,
+  );
   const mounted = useMounted();
   // Captured-code navigation: the reference expanded in the main panel, the open peek, the places
   // Back returns to, and the panel's restart key with where it starts. Never Viewed. A return from
@@ -807,6 +818,7 @@ function SessionReader(props: {
     cursor,
     opened,
     folded,
+    author: { shown: authorShown, commits: rangeCommits.read },
     top: recalled?.top,
   });
   readingPlace.current = {
@@ -819,6 +831,7 @@ function SessionReader(props: {
     inputMode,
     cursor,
     folded,
+    author: { shown: authorShown, commits: rangeCommits.read },
   };
   useEffect(() => remember(session.id, snapshotId, hunks, readingPlace.current));
   const returning = useRef(recalled !== undefined);
@@ -1085,6 +1098,15 @@ function SessionReader(props: {
       { file: at.file, side: at.side, line: at.line, full: layout !== "split" },
       "top",
     );
+  };
+
+  /** Shows the author's explanation at the top of the main panel, or hides it. */
+  const toggleAuthor = () => {
+    const showing = !authorShown;
+    flushSync(() => setAuthorShown(showing));
+    if (!showing) return;
+    viewer.current?.scrollToEdge("top");
+    alone.current?.scrollTo({ top: 0 });
   };
 
   // ─── captured-code navigation ───
@@ -1579,6 +1601,16 @@ function SessionReader(props: {
           ? `${name(here.file)} · hidden lines`
           : `${name(here.file)}:${here.line}${layout === "split" ? ` · ${here.side === "deletions" ? "old" : "new"}` : ""}`;
 
+  const { scope } = session;
+  const pullRequest = scope.kind === "pr" ? progress.pullRequest?.pullRequest : undefined;
+  const authorCard = !authorShown ? undefined : scope.kind === "pr" ? (
+    pullRequest && (
+      <DescriptionCard id={authorId} pullRequest={pullRequest} href={pullRequestUrlOf(scope)} />
+    )
+  ) : scope.kind === "range" ? (
+    <CommitsCard id={authorId} range={scope.range} commits={rangeCommits} />
+  ) : undefined;
+
   return (
     <Frame
       fill
@@ -1608,6 +1640,25 @@ function SessionReader(props: {
       }
       side={
         <>
+          {scope.kind === "pr" && pullRequest ? (
+            <AuthorEntry
+              label="Description"
+              pullRequest={{ href: pullRequestUrlOf(scope), number: scope.number }}
+              open={authorShown}
+              controls={authorId}
+              onToggle={toggleAuthor}
+            />
+          ) : (
+            scope.kind === "range" && (
+              <AuthorEntry
+                label="Commits"
+                count={rangeCommits.read?.total}
+                open={authorShown}
+                controls={authorId}
+                onToggle={toggleAuthor}
+              />
+            )
+          )}
           <WalkthroughNav
             status={status}
             viewed={progress.state.viewed}
@@ -1700,7 +1751,8 @@ function SessionReader(props: {
       }
     >
       {shown.length === 0 ? (
-        <>
+        <div ref={alone} {...stylex.props(styles.alone)}>
+          {authorCard && <div {...stylex.props(styles.emptyHeader)}>{authorCard}</div>}
           {inView.group && <div {...stylex.props(styles.emptyHeader)}>{overviewHeader}</div>}
           <p {...stylex.props(styles.empty)}>
             {files.length === 0 ? (
@@ -1713,7 +1765,7 @@ function SessionReader(props: {
               "This group has no changes in this snapshot."
             )}
           </p>
-        </>
+        </div>
       ) : (
         <ContinuousDiff
           // Expand and Back start the panel again, at their own place.
@@ -1729,6 +1781,7 @@ function SessionReader(props: {
           lines={lines}
           header={
             <>
+              {authorCard}
               {captured ? (
                 <CapturedHeader
                   target={captured}
@@ -1882,6 +1935,7 @@ const styles = stylex.create({
   empty: { padding: { default: "24px 32px", [media.narrow]: "16px 12px" }, color: theme.muted },
   emptyHeader: { paddingInline: { default: "32px", [media.narrow]: "12px" } },
   earlierNotes: { display: "grid", gap: "8px", marginTop: "10px" },
+  alone: { height: "100%", overflow: "auto" },
   kbd: {
     display: "inline-grid",
     placeItems: "center",

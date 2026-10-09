@@ -124,6 +124,7 @@ describe("SnapshotManifestSchema", () => {
         ...manifest,
         scope: { kind: "range", range: recorded },
         provenance: { kind: "range", base: commit, head: commit, mergeBase },
+        commits: [],
       });
     expect(Result.isSuccess(range("main...feature", commit))).toBe(true);
     expect(Result.isSuccess(range("main..feature", null))).toBe(true);
@@ -153,6 +154,31 @@ describe("SnapshotManifestSchema", () => {
       { ...manifest, provenance: pullRequest.provenance },
     ])
       expect(Result.isFailure(decode(invalid))).toBe(true);
+  });
+
+  it("captures commit messages exactly for a recorded range", () => {
+    const commit = "d".repeat(40);
+    const range: SnapshotManifest = {
+      ...manifest,
+      scope: { kind: "range", range: "main..feature" },
+      provenance: { kind: "range", base: commit, head: commit, mergeBase: null },
+      commits: [{ id: commit, message: "Add a\n\nWhy it matters.\n" }],
+    };
+    expect(Result.getOrThrow(decode(range))).toEqual(range);
+    expect(Result.isSuccess(decode({ ...range, commits: [] }))).toBe(true);
+    const pullRequest = {
+      ...manifest,
+      scope: { kind: "pr", repository: "acme/widgets", number: 2 },
+      provenance: { kind: "pr", base: commit, head: commit, mergeBase: commit },
+    };
+    for (const invalid of [
+      { ...range, commits: undefined },
+      { ...range, commits: [{ id: "HEAD", message: "" }] },
+      { ...manifest, commits: [] },
+      { ...pullRequest, commits: range.commits },
+    ])
+      expect(Result.isFailure(decode(invalid))).toBe(true);
+    expect(snapshotIdOf({ ...range, commits: [] })).not.toBe(snapshotIdOf(range));
   });
 });
 

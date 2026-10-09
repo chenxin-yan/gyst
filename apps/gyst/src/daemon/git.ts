@@ -1,6 +1,7 @@
 import {
   BadArgs,
   type CaptureProgress,
+  type Commit,
   type ContentSide,
   InternalError,
   LogicalPathSchema,
@@ -969,14 +970,57 @@ export class Git extends Context.Service<
         return { scope, provenance, files, hunks } satisfies SnapshotManifest;
       });
 
+      /**
+       * The commits a resolved range contains, oldest first: those reachable from its head and not
+       * from its base, for `..` and `...` alike. `base...head` would add the base's own commits.
+       */
+      const rangeCommits = Effect.fn("Git.rangeCommits")(function* (
+        root: string,
+        { base, head: tip }: CommitProvenance,
+      ) {
+        const commits: Commit[] = [];
+        yield* records(
+          root,
+          [
+            "log",
+            "-z",
+            "--reverse",
+            "--topo-order",
+            "--no-show-signature",
+            "--encoding=UTF-8",
+            "--format=%H%n%B",
+            "--end-of-options",
+            tip,
+            `^${base}`,
+          ],
+          (record) => {
+            const [, id, message] =
+              /^([0-9a-f]{40}|[0-9a-f]{64})\n([\s\S]*)$/u.exec(text(record)) ?? [];
+            if (id === undefined)
+              return Effect.fail(
+                new BadArgs({ message: "git log printed a commit it could not frame" }),
+              );
+            commits.push({ id, message: message!.replace(/\n+$/u, "") });
+            return Effect.void;
+          },
+        );
+        return commits;
+      });
+
       const capture = Effect.fn("Git.capture")(function* (
         root: string,
         scope: LocalScope,
         onProgress: (progress: CaptureProgress) => Effect.Effect<void> = () => Effect.void,
         generated?: Generated,
       ) {
-        const commits = scope.kind === "range" ? yield* range(root, scope.range) : undefined;
-        return yield* snapshot(root, scope, commits, onProgress, generated);
+        if (scope.kind !== "range")
+          return yield* snapshot(root, scope, undefined, onProgress, generated);
+        const commits = yield* range(root, scope.range);
+        const messages = yield* rangeCommits(root, commits);
+        return {
+          ...(yield* snapshot(root, scope, commits, onProgress, generated)),
+          commits: messages,
+        };
       });
 
       const capturePullRequest = Effect.fn("Git.capturePullRequest")(function* (

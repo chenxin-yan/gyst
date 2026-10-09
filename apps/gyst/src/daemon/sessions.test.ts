@@ -1019,7 +1019,11 @@ describe("Sessions PR stacks", () => {
     const before = files.get(b.id)!;
     const captures = captureCalls.length;
     const commitsBefore = commits.length;
-    pullRequestEdit = { state: "merged", title: "Renamed layer" };
+    pullRequestEdit = {
+      state: "merged",
+      title: "Renamed layer",
+      description: "<img src=x onerror=alert(1)> Rewritten.",
+    };
     discovery = stacked(3, 2, 1);
     const result = await run(recheck(b.id));
     const after = files.get(b.id)!;
@@ -1042,6 +1046,10 @@ describe("Sessions PR stacks", () => {
     expect(result.pullRequest.sessions).toEqual([
       { number: 2, sessionId: b.id, hunkCount: 2, viewedCount: 1 },
     ]);
+    // The description follows the recheck like the title, as untrusted text stored verbatim.
+    expect(result.pullRequest.pullRequest.description).toBe(
+      "<img src=x onerror=alert(1)> Rewritten.",
+    );
     // No capture, no publication: one session save only.
     expect(captureCalls).toHaveLength(captures);
     expect(commits.slice(commitsBefore)).toEqual([`session ${b.id}`]);
@@ -2831,6 +2839,85 @@ describe("Sessions captured reads over real captures", () => {
           }),
         });
         expect(reanchored.viewedHunkIds).toEqual([]);
+      }),
+    );
+  });
+
+  it("reads a range's captured commit messages in pages; refresh recaptures them, a check does not", async () => {
+    const cwd = await repo("commits", { "a.txt": "base\n" });
+    git(cwd, "branch", "-M", "main");
+    git(cwd, "switch", "-qc", "feature");
+    // Big enough that the two commits take two pages.
+    const long = `Explain the change\n\n${"Why it matters. ".repeat(4500)}`;
+    await writeFile(join(cwd, "a.txt"), "one\n");
+    git(cwd, "commit", "-qam", long);
+    await writeFile(join(cwd, "a.txt"), "two\n");
+    git(cwd, "commit", "-qam", "Second step");
+    const one = git(cwd, "rev-parse", "HEAD~1").trim();
+    const two = git(cwd, "rev-parse", "HEAD").trim();
+    await runReal(
+      Effect.gen(function* () {
+        const sessions = yield* Sessions;
+        const scope = { kind: "range", range: "main..feature" } as const;
+        const { session } = yield* sessions.open({ command: "open", cwd, scope });
+        const read = (snapshotId: string, after?: string) =>
+          sessions.commits({ command: "commits", session: session.id, snapshotId, after });
+        const first = yield* read(session.snapshotId);
+        expect(first).toEqual({
+          sessionId: session.id,
+          snapshotId: session.snapshotId,
+          total: 2,
+          commits: [{ id: one, message: long.trimEnd() }],
+          next: one,
+        });
+        expect(yield* read(session.snapshotId, one)).toMatchObject({
+          commits: [{ id: two, message: "Second step" }],
+          next: null,
+        });
+        // A well-formed id of no captured commit: two's with its first digit changed, whatever it is.
+        const unknown = two.replace(/./u, (digit) => (digit === "0" ? "1" : "0"));
+        expect(yield* Effect.flip(read(session.snapshotId, unknown))).toMatchObject({
+          _tag: "validation_failed",
+        });
+
+        // A reworded commit changes no code; a check reports the change and replaces nothing.
+        git(cwd, "commit", "-q", "--amend", "-m", "Second step, reworded");
+        expect(yield* sessions.check({ command: "check", session: session.id })).toMatchObject({
+          state: "changed",
+        });
+        expect(yield* read(session.snapshotId, one)).toMatchObject({
+          commits: [{ id: two, message: "Second step" }],
+        });
+        const refreshed = yield* refreshNow(session.id);
+        expect(refreshed).toMatchObject({ replaced: true, previousSnapshotId: session.snapshotId });
+        const reworded = git(cwd, "rev-parse", "HEAD").trim();
+        expect(yield* read(refreshed.snapshotId, one)).toMatchObject({
+          commits: [{ id: reworded, message: "Second step, reworded" }],
+        });
+        expect(yield* Effect.flip(read(session.snapshotId))).toMatchObject({
+          _tag: "stale_revision",
+          detail: { snapshotId: refreshed.snapshotId },
+        });
+
+        // Uncommitted work captures none, so its one page is empty.
+        const { session: local } = yield* sessions.open({
+          command: "open",
+          cwd,
+          scope: uncommitted,
+        });
+        expect(
+          yield* sessions.commits({
+            command: "commits",
+            session: local.id,
+            snapshotId: local.snapshotId,
+          }),
+        ).toEqual({
+          sessionId: local.id,
+          snapshotId: local.snapshotId,
+          total: 0,
+          commits: [],
+          next: null,
+        });
       }),
     );
   });

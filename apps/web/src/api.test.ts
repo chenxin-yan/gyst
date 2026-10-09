@@ -10,6 +10,7 @@ import {
 import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 import {
   events,
+  isDaemonError,
   isExpectedFailure,
   isUncertain,
   newRequestId,
@@ -253,6 +254,18 @@ describe("isExpectedFailure", () => {
     "thrown string",
   ])("keeps a diagnostic for %s", (error) => {
     expect(isExpectedFailure(error)).toBe(false);
+  });
+});
+
+describe("isDaemonError", () => {
+  it("matches the daemon's domain errors, by tag when one is given", () => {
+    const stale = new StaleRevision({ message: "m" });
+    expect(isDaemonError(stale)).toBe(true);
+    expect(isDaemonError(stale, "stale_revision")).toBe(true);
+    expect(isDaemonError(stale, "no_session")).toBe(false);
+    expect(isDaemonError(new TransportError("unavailable", "m"))).toBe(false);
+    expect(isDaemonError({ _tag: "stale_revision" }, "stale_revision")).toBe(false);
+    expect(isDaemonError(undefined, "stale_revision")).toBe(false);
   });
 });
 
