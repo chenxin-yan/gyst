@@ -140,6 +140,20 @@ import {
   wholeFileType,
 } from "../reader.ts";
 import { type ReadingPlace, recall, remember } from "../reading-memory.ts";
+import {
+  diffText,
+  type Hit,
+  hitsOf,
+  indexOf,
+  type MatchAt,
+  orderOf,
+  readingOrder,
+  type SearchPlace,
+  type SearchResult,
+  searchStep,
+  wholeText,
+} from "../search.ts";
+import { SearchField, type SearchSource, useSearchScan } from "../search.tsx";
 import { StackSwitcher } from "../stack.tsx";
 import { media, theme } from "../tokens.stylex.ts";
 import {
@@ -531,7 +545,7 @@ function SessionReader(props: {
   // Hidden lines opened per file. They live here, not in the renderer, which forgets them with
   // an item it drops; bumping the version re-reads the cursor model after the renderer opened some.
   const [opened] = useState(() => recalled?.opened ?? new Map<string, Map<number, Opened>>());
-  const [, setOpenedVersion] = useState(0);
+  const [openedVersion, setOpenedVersion] = useState(0);
   const viewer = useRef<Viewer>(null);
   // The main panel's scroller while the view has no changes to show, so no viewer.
   const alone = useRef<HTMLDivElement>(null);
@@ -568,6 +582,15 @@ function SessionReader(props: {
   // An expanded file opens its hidden lines in its own map, so Back finds the origin's as it was.
   const expandedOpened = useRef(recalled?.expandedOpened ?? new Map<string, Map<number, Opened>>());
   const [notice, setNotice] = useState<string>();
+  // Search over the current view: the query, kept while its highlight is cleared; whether the
+  // highlight and the field show; the match last gone to or, while typing, the one Enter goes to;
+  // a request to focus the field; and a step waiting for the scan of a new query or view.
+  const [query, setQuery] = useState("");
+  const [searchShown, setSearchShown] = useState(false);
+  const [match, setMatch] = useState<{ file: string; hit: Hit; reached: boolean }>();
+  const [searchFocus, setSearchFocus] = useState(0);
+  const searchInput = useRef<HTMLInputElement>(null);
+  const searchPending = useRef<1 | -1>(undefined);
   const readCode = useCallback<CodeRead>(
     (request) => operation({ ...request, session: session.id }),
     [session.id],
@@ -629,6 +652,7 @@ function SessionReader(props: {
     [captured, capturedFile, capturedEntry, review, files, status],
   );
   const shown = inView.files;
+  const shownPaths = useMemo(() => shown.map((file) => file.path), [shown]);
   const shownByPath = useMemo(() => new Map(shown.map((file) => [file.path, file])), [shown]);
   // Current notes explain current lines, which an earlier snapshot's file does not show.
   const notes = useMemo(
@@ -874,23 +898,28 @@ function SessionReader(props: {
   );
   const openedNow = captured ? expandedOpened.current : opened;
 
-  // ─── the cursor's model: rows and stops of the shown files, read from logical state ───
-  const model = useMemo((): Model => {
-    const rows = (file: string) => {
-      if (folded.has(file)) return [];
+  /** A shown file's rows whatever its fold: its diff's, or a captured side shown whole. */
+  const unfoldedRows = useCallback(
+    (file: string): Row[] => {
       const diff = diffs.get(file);
       if (diff) return rowsOf(diff, openedNow.get(file) ?? new Map());
       const text = wholeFiles.get(file);
       return text === undefined || captured === undefined
         ? []
         : capturedRows(linesOf(text).length, captured.side === "old" ? "deletions" : "additions");
-    };
+    },
+    [diffs, openedNow, wholeFiles, captured],
+  );
+
+  // ─── the cursor's model: rows and stops of the shown files, read from logical state ───
+  const model = useMemo((): Model => {
+    const rows = (file: string) => (folded.has(file) ? [] : unfoldedRows(file));
     return {
-      files: shown.map((file) => file.path),
+      files: shownPaths,
       rows,
       stops: (file, side) => stopsOf(file, rows(file), layout, side),
     };
-  }, [shown, folded, diffs, layout, openedNow, wholeFiles, captured]);
+  }, [shownPaths, folded, layout, unfoldedRows]);
   const first = model.files[0];
   const current: Cursor | undefined =
     cursor && model.files.includes(cursor.file)
@@ -914,6 +943,60 @@ function SessionReader(props: {
           candidate.kind === "range" && candidate.range === target.range,
       );
     return row && { file: target.file, side: "additions", line: row.new, full: true };
+  };
+
+  // ─── search over the current view ───
+  // A fold hides no match: search reads every shown file's rows unfolded. The opened lines change
+  // in place, so their version is what tells the scan they changed.
+  const searchSource = useCallback(
+    (file: string): SearchSource | undefined => {
+      const diff = diffs.get(file);
+      const fileOpened = openedNow.get(file);
+      if (diff)
+        return {
+          key: [diff, diff.isPartial, fileOpened && JSON.stringify([...fileOpened]), layout],
+          hits: (test) => hitsOf(readingOrder(unfoldedRows(file), layout), diffText(diff), test),
+        };
+      const text = wholeFiles.get(file);
+      if (text === undefined) return undefined;
+      return {
+        key: [text, captured?.side],
+        hits: (test) => hitsOf(unfoldedRows(file), wholeText(linesOf(text)), test),
+      };
+    },
+    [diffs, openedNow, openedVersion, wholeFiles, captured, layout, unfoldedRows],
+  );
+  const scan = useSearchScan(query, shownPaths, searchSource);
+  const searchResult = scan.result;
+  // The match gone to, found again in the latest result by its file and lines.
+  const matchHere = ((): MatchAt | undefined => {
+    if (match === undefined || searchResult === undefined) return undefined;
+    const fileIndex = searchResult.files.indexOf(match.file);
+    const hit = (searchResult.hits[fileIndex] ?? []).findIndex(
+      (candidate) => candidate.old === match.hit.old && candidate.new === match.hit.new,
+    );
+    return hit < 0 ? undefined : { fileIndex, hit };
+  })();
+  /** Where a cursor stands among the view's matches. */
+  const searchPlace = (target: Cursor): SearchPlace => ({
+    fileIndex: shownPaths.indexOf(target.file),
+    order: orderOf(readingOrder(unfoldedRows(target.file), layout), target),
+  });
+  /**
+   * The next or previous match from where the reader is: the Vim cursor, or in Mouse mode the match
+   * gone to, else the panel's top. A preview steps from the cursor or the top alone.
+   */
+  const searchFrom = (result: SearchResult, direction: 1 | -1, preview = false) => {
+    const start = { fileIndex: 0, order: -1 };
+    if (vim) return searchStep(result, here ? searchPlace(here) : start, direction);
+    if (matchHere && !preview) {
+      const order = result.hits[matchHere.fileIndex]![matchHere.hit]!.order;
+      // A match previewed while typing is gone to first.
+      const inclusive = direction === 1 && match?.reached === false;
+      return searchStep(result, { fileIndex: matchHere.fileIndex, order }, direction, inclusive);
+    }
+    const top = viewer.current?.visibleAt("top");
+    return searchStep(result, top ? searchPlace(top) : start, direction, direction === 1);
   };
 
   // A return to this session puts the position it showed back at the top (an overview's offset, or
@@ -1011,6 +1094,7 @@ function SessionReader(props: {
     const byRange = openedNow.get(target.file) ?? new Map<number, Opened>();
     byRange.set(range.index, { fromStart: range.size, fromEnd: 0 });
     openedNow.set(target.file, byRange);
+    setOpenedVersion((version) => version + 1);
     const offset = row.line - range.new;
     const side = layout === "split" ? target.side : "additions";
     go({
@@ -1108,6 +1192,91 @@ function SessionReader(props: {
     viewer.current?.scrollToEdge("top");
     alone.current?.scrollTo({ top: 0 });
   };
+
+  /** Goes to a match: the Vim cursor lands on it, Mouse mode scrolls to it; its file unfolds. */
+  const goToMatch = (result: SearchResult, at: MatchAt) => {
+    const file = result.files[at.fileIndex]!;
+    const hit = result.hits[at.fileIndex]![at.hit]!;
+    const { old, new: added } = hit;
+    setMatch({ file, hit, reached: true });
+    // A line on both sides keeps a split cursor's column.
+    const side: Side =
+      added === undefined || (old !== undefined && layout === "split" && here?.side === "deletions")
+        ? "deletions"
+        : "additions";
+    const line = side === "deletions" ? old! : added!;
+    if (folded.has(file)) setFolds([file], false);
+    if (vim) return go({ file, kind: "line", side, line });
+    viewer.current?.reveal(
+      { file, side, line, full: layout !== "split" || (old !== undefined && added !== undefined) },
+      "nearest",
+    );
+  };
+
+  /**
+   * Goes to the next or previous match and shows the highlight again. A step taken before the scan
+   * of a new query or view has finished waits for it. Selecting lines keeps the cursor in place.
+   */
+  const stepSearch = (direction: 1 | -1) => {
+    if (query === "") return;
+    setSearchShown(true);
+    if (selecting) return;
+    if (!scan.current || searchResult === undefined) {
+      searchPending.current = direction;
+      return;
+    }
+    const at = searchFrom(searchResult, direction);
+    if (at) goToMatch(searchResult, at);
+  };
+  useEffect(() => {
+    const direction = searchPending.current;
+    if (direction === undefined || !scan.current) return;
+    searchPending.current = undefined;
+    stepSearch(direction);
+  });
+  // While typing, the match Enter goes to is the current one, unvisited: once per result, from
+  // where the reader is then.
+  useEffect(() => {
+    if (!scan.current || searchResult === undefined) return;
+    if (document.activeElement === null || document.activeElement !== searchInput.current) return;
+    const at = searchFrom(searchResult, 1, true);
+    const hit = at && searchResult.hits[at.fileIndex]![at.hit]!;
+    setMatch(hit && { file: searchResult.files[at.fileIndex]!, hit, reached: false });
+  }, [searchResult]);
+
+  /** Enter in the field: the query typed so far, then the next or previous match. */
+  const enterSearch = (text: string, direction: 1 | -1) => {
+    searchInput.current?.blur();
+    if (text !== query) {
+      setQuery(text);
+      searchPending.current = direction;
+      return;
+    }
+    stepSearch(direction);
+  };
+  /**
+   * Clears the highlight; the query stays for n and N. A step still waiting for the scan is dropped,
+   * or it would show the highlight again and move once the scan ends.
+   */
+  const closeSearch = () => {
+    if (document.activeElement === searchInput.current) searchInput.current?.blur();
+    searchPending.current = undefined;
+    setSearchShown(false);
+  };
+  // `/` focuses the field once it shows, after a dialog it was run from gave focus back.
+  useEffect(() => {
+    if (searchFocus === 0) return;
+    searchInput.current?.focus();
+    searchInput.current?.select();
+  }, [searchFocus]);
+  const searchStatus =
+    query === ""
+      ? ""
+      : scan.searching || searchResult === undefined
+        ? "Searching…"
+        : searchResult.total === 0
+          ? "No matches"
+          : `${matchHere ? indexOf(searchResult, matchHere) + 1 : "–"}/${searchResult.total}`;
 
   // ─── captured-code navigation ───
   /** A view the reader picks: it leaves any expanded reference, and Back starts over. */
@@ -1359,6 +1528,12 @@ function SessionReader(props: {
     if (id === "menu" || id === "help") return setDialog(id);
     if (id === "refresh") return void refresh();
     if (id === "check") return void checkSource();
+    if (id === "search") {
+      setSearchShown(true);
+      return setSearchFocus((count) => count + 1);
+    }
+    if (id === "nextMatch" || id === "previousMatch")
+      return stepSearch(id === "nextMatch" ? 1 : -1);
     if (id === "back") return goBack();
     if (id === "viewed" && captured)
       return setNotice("Viewed doesn't change while a captured file is expanded.");
@@ -1390,8 +1565,11 @@ function SessionReader(props: {
       const fold = id === "foldAll";
       return setFolds(model.files, fold, fold && here ? { ...here, kind: "header" } : undefined);
     }
-    // Esc ends a selection first, then closes the peek.
-    if (id === "cancel") return lines === null ? closePeek() : setLines(null);
+    // Esc ends a selection first, then clears the search highlight, then closes the peek.
+    if (id === "cancel") {
+      if (lines !== null) return setLines(null);
+      return searchShown ? closeSearch() : closePeek();
+    }
     if (!vim) {
       // Mouse mode: movement scrolls; folds and Viewed act on the file at the top of the panel.
       const height = view?.height() ?? 0;
@@ -1737,6 +1915,17 @@ function SessionReader(props: {
             catchingUp={synchronizing(live.state, progress.state)}
           />
           <span {...stylex.props(styles.grow)} />
+          {searchShown && (
+            <SearchField
+              ref={searchInput}
+              query={query}
+              status={searchStatus}
+              onQuery={setQuery}
+              onEnter={enterSearch}
+              onStep={stepSearch}
+              onClose={closeSearch}
+            />
+          )}
           <button
             type="button"
             {...stylex.props(styles.keysButton)}
@@ -1778,6 +1967,9 @@ function SessionReader(props: {
           folded={folded}
           opened={openedNow}
           mark={vim && here ? markOf(here) : undefined}
+          search={
+            searchShown && searchResult ? { result: searchResult, current: matchHere } : undefined
+          }
           lines={lines}
           header={
             <>
@@ -2072,6 +2264,8 @@ function ContinuousDiff(props: {
   folded: ReadonlySet<string>;
   opened: Map<string, Map<number, Opened>>;
   mark: Mark | undefined;
+  /** The search's matches to highlight, and the one gone to. */
+  search: { result: SearchResult; current: MatchAt | undefined } | undefined;
   lines: CodeViewLineSelection | null;
   /** Above the first file: the view's overview. */
   header: ReactNode;
@@ -2167,41 +2361,131 @@ function ContinuousDiff(props: {
     latest.current.onWindow(visible);
   }, []);
 
-  /** A mark's box in the panel's scroll coordinates, while its file is rendered. */
-  const boxOf = useCallback((mark: Mark): Box | undefined => {
+  /** A rendered file's marks' boxes in the panel's scroll coordinates: its header's or a line's. */
+  const itemBoxes = useCallback((file: string) => {
     const viewer = view.current?.getInstance();
     const node = root.current;
-    const rendered = viewer?.getRenderedItems().find((item) => item.id === mark.file);
+    const rendered = viewer?.getRenderedItems().find((item) => item.id === file);
     // Rows come from the item's top; its element holds only the rendered window of rows, so it
     // gives the horizontal extent alone.
-    const top = viewer?.getTopForItem(mark.file);
+    const top = viewer?.getTopForItem(file);
     if (node === null || rendered === undefined || top === undefined) return undefined;
     const outer = node.getBoundingClientRect();
     const rect = rendered.element.getBoundingClientRect();
     const left = rect.left - outer.left + node.scrollLeft;
-    if (mark.line === undefined) return { top, height: headerHeight, left, width: rect.width };
-    // A file shown whole has one column.
-    const whole = rendered.type === "file";
-    const at = whole
-      ? rendered.instance.getLinePosition(mark.line)
-      : rendered.instance.getLinePosition(mark.line, mark.side);
-    if (at === undefined) return undefined;
-    // A line's position includes the annotations under it; its own rows end where one begins.
-    let height = at.height;
-    for (const annotation of rendered.element.querySelectorAll("[data-annotation]")) {
-      const below =
-        annotation.getBoundingClientRect().top - outer.top + node.scrollTop - (top + at.top);
-      if (below > 0 && below < height) height = below;
-    }
-    const half = rect.width / 2;
-    const full = mark.full || whole;
-    return {
-      top: top + at.top,
-      height,
-      left: full || mark.side === "deletions" ? left : left + half,
-      width: full ? rect.width : half,
+    let annotations: number[] | undefined;
+    return (mark: Omit<Mark, "file">): Box | undefined => {
+      if (mark.line === undefined) return { top, height: headerHeight, left, width: rect.width };
+      // A file shown whole has one column.
+      const whole = rendered.type === "file";
+      const at = whole
+        ? rendered.instance.getLinePosition(mark.line)
+        : rendered.instance.getLinePosition(mark.line, mark.side);
+      if (at === undefined) return undefined;
+      // A line's position includes the annotations under it; its own rows end where one begins.
+      annotations ??= [...rendered.element.querySelectorAll("[data-annotation]")].map(
+        (annotation) => annotation.getBoundingClientRect().top - outer.top + node.scrollTop,
+      );
+      let height = at.height;
+      for (const annotationTop of annotations) {
+        const below = annotationTop - (top + at.top);
+        if (below > 0 && below < height) height = below;
+      }
+      const half = rect.width / 2;
+      // Split view lays an added or deleted file out in its one side's column, full width.
+      const full =
+        mark.full ||
+        whole ||
+        rendered.item.fileDiff.type === "new" ||
+        rendered.item.fileDiff.type === "deleted";
+      return {
+        top: top + at.top,
+        height,
+        left: full || mark.side === "deletions" ? left : left + half,
+        width: full ? rect.width : half,
+      };
     };
   }, []);
+  /** A mark's box in the panel's scroll coordinates, while its file is rendered. */
+  const boxOf = useCallback((mark: Mark) => itemBoxes(mark.file)?.(mark), [itemBoxes]);
+
+  // ─── search matches ───
+  const hitLayer = useRef<HTMLDivElement>(null);
+  const hitFiles = useRef<{ result: SearchResult; index: Map<string, number> }>(undefined);
+  /**
+   * Highlights the matched lines in the panel's viewport, the one gone to apart: one box per line,
+   * as the renderer offers no public decoration of a line's text.
+   */
+  const paintHits = useCallback(() => {
+    const layer = hitLayer.current;
+    const node = root.current;
+    const viewer = view.current?.getInstance();
+    if (layer === null || node === null) return;
+    const { search, layout: shape, folded } = latest.current;
+    const boxes: { box: Box; current: boolean }[] = [];
+    if (search && viewer) {
+      const { result, current } = search;
+      if (hitFiles.current?.result !== result)
+        hitFiles.current = { result, index: new Map(result.files.map((file, at) => [file, at])) };
+      const { index } = hitFiles.current;
+      const top = node.scrollTop;
+      const bottom = top + node.clientHeight;
+      for (const { id } of viewer.getRenderedItems()) {
+        const fileIndex = index.get(id);
+        const hits = fileIndex === undefined ? undefined : result.hits[fileIndex];
+        const boxIn = itemBoxes(id);
+        if (hits === undefined || hits.length === 0 || folded.has(id) || boxIn === undefined)
+          continue;
+        const boxAt = (at: number) => {
+          const { old, new: added } = hits[at]!;
+          return boxIn({
+            side: added === undefined ? "deletions" : "additions",
+            line: (added ?? old)!,
+            full: shape !== "split" || (old !== undefined && added !== undefined),
+          });
+        };
+        // Hits run down the file in reading order: the first one reaching into the viewport, then
+        // each until one starts below it.
+        let low = 0;
+        let high = hits.length;
+        while (low < high) {
+          const middle = (low + high) >> 1;
+          const box = boxAt(middle);
+          if (box !== undefined && box.top + box.height > top) high = middle;
+          else low = middle + 1;
+        }
+        for (let at = low; at < hits.length; at++) {
+          const box = boxAt(at);
+          if (box === undefined) continue;
+          if (box.top >= bottom || box.height === 0) break;
+          boxes.push({
+            box,
+            current: current !== undefined && current.fileIndex === fileIndex && current.hit === at,
+          });
+        }
+      }
+    }
+    const shown = [...layer.children] as HTMLElement[];
+    for (const [at, { box, current }] of boxes.entries()) {
+      let element = shown[at];
+      if (element === undefined) {
+        element = document.createElement("div");
+        element.dataset.searchHit = "";
+        layer.append(element);
+      }
+      element.hidden = false;
+      element.className = stylex.props(
+        cursorStyles.hit,
+        current && cursorStyles.currentHit,
+      ).className!;
+      element.toggleAttribute("data-current", current);
+      element.style.top = `${box.top}px`;
+      element.style.left = `${box.left}px`;
+      element.style.width = `${box.width}px`;
+      element.style.height = `${box.height}px`;
+    }
+    for (const element of shown.slice(boxes.length)) element.hidden = true;
+  }, [itemBoxes]);
 
   // ─── the Vim cursor bar and the highlighted range ───
   const bar = useRef<HTMLDivElement>(null);
@@ -2236,8 +2520,9 @@ function ContinuousDiff(props: {
         union = { ...box, top, height: bottom - top };
       }
     show(rangeBox.current, union);
+    paintHits();
     latest.current.onPaint();
-  }, [boxOf]);
+  }, [boxOf, paintHits]);
 
   // ─── scrolling ───
   // Where the reader's own smooth scroll is heading, so a held key retargets it rather than
@@ -2340,7 +2625,15 @@ function ContinuousDiff(props: {
       },
       scrollTo: scrollTop,
       scrollToEdge(end) {
-        scrollTop(end === "top" ? 0 : node().scrollHeight);
+        // The renderer drives it: its layout corrections over files it has not measured yet would
+        // stop a native smooth scroll partway (Chrome 154).
+        pendingTop.current = undefined;
+        manualAt.current = -Infinity;
+        view.current?.scrollTo({
+          type: "position",
+          position: end === "top" ? 0 : Infinity,
+          behavior: "smooth-auto",
+        });
       },
       expand(file, range, count) {
         const rendered = view.current
@@ -2611,6 +2904,7 @@ function ContinuousDiff(props: {
       renderCodeViewHeader={() => (
         <>
           {props.header}
+          <div ref={hitLayer} data-search-hits aria-hidden />
           <CursorOverlay ref={bar} />
           <RangeOverlay ref={rangeBox} />
         </>
@@ -2655,6 +2949,18 @@ const cursorStyles = stylex.create({
     pointerEvents: "none",
     backgroundColor: `color-mix(in srgb, ${theme["--accent"]} 8%, transparent)`,
     boxShadow: `inset 0 0 0 1px color-mix(in srgb, ${theme["--accent"]} 60%, transparent)`,
+  },
+  // A search match: tinted apart from the cursor; the one gone to is outlined as well, so it shows
+  // without colour.
+  hit: {
+    position: "absolute",
+    zIndex: 1,
+    pointerEvents: "none",
+    backgroundColor: `color-mix(in srgb, ${theme.match} 16%, transparent)`,
+  },
+  currentHit: {
+    backgroundColor: `color-mix(in srgb, ${theme.match} 30%, transparent)`,
+    boxShadow: `inset 0 0 0 1px ${theme.match}`,
   },
 });
 /** The file header bar's height, which FileHeader's style repeats. */

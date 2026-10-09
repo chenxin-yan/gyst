@@ -49,7 +49,7 @@ describe("commands", () => {
   });
 
   it("has no keys of later tickets yet", () => {
-    for (const later of ["C", "R", "X", "N"] satisfies Hotkey[])
+    for (const later of ["C", "R", "X"] satisfies Hotkey[])
       expect(
         singles.some((single) => areHotkeysEqual(single, later)),
         later,
@@ -129,6 +129,35 @@ describe("commands", () => {
       "select",
       "open",
     ]);
+  });
+
+  // `/` searches the current view in either mode; n and N step through its matches, while ]n and
+  // [n keep walking notes.
+  it("binds search and its matches apart from notes, in both modes", () => {
+    const label = (id: string) =>
+      keysOf(id).map((keys) =>
+        keys.map((key) => formatForDisplay(key, { platform: "linux", keyLabels })).join(" "),
+      );
+    expect(["search", "nextMatch", "previousMatch"].map(label)).toEqual([
+      ["/"],
+      ["n"],
+      ["Shift+n"],
+    ]);
+    expect(commandsFor("mouse").map(({ id }) => id)).toEqual(
+      expect.arrayContaining(["search", "nextMatch", "previousMatch"]),
+    );
+    expect(areHotkeysEqual("/", "?")).toBe(false);
+    expect(typed("/", { key: "?" })).toBe(false);
+    expect(typed("N", { key: "n" })).toBe(true);
+    expect(typed("Shift+N", { key: "N" })).toBe(true);
+  });
+
+  it("gives n to a note sequence ] or [ just began, and N to search", () => {
+    expect(completesSequence({ key: "n" }, { key: "]", at: 1000 }, 1500)).toBe(true);
+    expect(completesSequence({ key: "n" }, { key: "[", at: 1000 }, 1500)).toBe(true);
+    expect(completesSequence({ key: "N" }, { key: "]", at: 1000 }, 1500)).toBe(false);
+    expect(completesSequence({ key: "n" }, { key: "j", at: 1000 }, 1500)).toBe(false);
+    expect(completesSequence({ key: "n" }, { key: "]", at: 1000 }, 2500)).toBe(false);
   });
 
   // Caps Lock types `M` without Shift, and another layout types `ь` on the M key.
