@@ -601,6 +601,46 @@ describe("Navigation over real captures and the workspace add-on", () => {
     );
   }, 120_000);
 
+  // The engine percent-encodes every character of a file URI but the unreserved ones, and answers
+  // document highlights only for a document opened under exactly that URI.
+  it("offers a line's identifiers in files whose names the engine percent-encodes", async () => {
+    const dataDir = join(dir, "data-encoded");
+    const source = "export const one = 1;\nexport const two = one + 1;\n";
+    const files = [
+      "src/routes/session.$sessionId.ts",
+      "app/(marketing)/[slug]/page.ts",
+      "src/@scope/a+b,c;d=e&f!g'h*i~j.ts",
+    ];
+    const cwd = await repo("encoded", { "tsconfig.json": tsconfig });
+    await write(cwd, Object.fromEntries(files.map((file) => [file, source])));
+    await runReal(
+      dataDir,
+      Effect.gen(function* () {
+        const { session } = yield* (yield* Sessions).open({
+          command: "open",
+          cwd,
+          scope: { kind: "uncommitted" },
+        });
+        for (const file of files) {
+          const target = {
+            session: session.id,
+            snapshotId: session.snapshotId,
+            file,
+            side: "new" as const,
+          };
+          const { outcome } = yield* identifiers(target, 2);
+          expect(
+            outcome.kind === "identifiers" && outcome.identifiers.map(({ text }) => text),
+            file,
+          ).toEqual(["two", "one"]);
+          expect(located(yield* definition(target, at(source, 2, "one"))).locations).toEqual([
+            { file, range: span(source, 1, "one") },
+          ]);
+        }
+      }),
+    );
+  }, 120_000);
+
   it("refuses a historical snapshot, before and during a query, and keeps no engine for it", async () => {
     const dataDir = join(dir, "data-historical");
     const cwd = await repo("historical", { "src/math.ts": oldMath, "src/use.ts": oldUse });

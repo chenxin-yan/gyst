@@ -1,15 +1,20 @@
-// Captured-code navigation: the open reference peek, and the places Back returns to after Expand.
-// Navigation never reads or writes Viewed. No React or DOM here, so the stack is unit tested.
+// Captured-code navigation: the open peek, a followed reference or a semantic query, and the
+// places Back returns to after Expand. Navigation never reads or writes Viewed. No React or DOM
+// here, so the stack is unit tested.
 import type { CapturedRange } from "@gyst/core/wire";
 import type { CodeViewLineSelection } from "@pierre/diffs";
 import type { Cursor, Side } from "./cursor.ts";
+import type { SemanticPeek } from "./semantic.ts";
 import type { ReviewView } from "./walkthrough.ts";
 
 /** Where a reference was followed from: under a note in the diff, or in the shown overview. */
 export type PeekOrigin = { kind: "note"; noteId: string } | { kind: "overview" };
 
 /** An open reference peek: its pinned target and where it opened. */
-export type Peek = { target: CapturedRange; origin: PeekOrigin };
+export type ReferencePeek = { kind: "reference"; target: CapturedRange; origin: PeekOrigin };
+
+/** The open peek: a followed reference, or a semantic query under the code line it was asked on. */
+export type Peek = ReferencePeek | SemanticPeek;
 
 /** Where the reader is: a file and, inside its diff, the side and line at the top of the panel. */
 export type ReadingPosition = { file: string; side: Side | undefined; line: number | undefined };
@@ -42,6 +47,18 @@ export function restoreFor(
   return peek?.origin.kind === "overview" || at.position === undefined
     ? { scrollTop: at.scrollTop }
     : { position: at.position };
+}
+
+/**
+ * A peek as it can be shown again after the reader was away: a semantic answer that can no longer
+ * arrive is dropped, and a Check again in flight forgotten.
+ */
+export function resumable(peek: Peek | undefined): Peek | undefined {
+  if (peek?.kind !== "semantic") return peek;
+  const { stage } = peek;
+  if (stage.kind === "waiting") return undefined;
+  if (stage.kind !== "unavailable" || stage.checking === undefined) return peek;
+  return { ...peek, stage: { kind: "unavailable", ask: stage.ask, reason: stage.reason } };
 }
 
 /** The places Back returns to, the latest last. */

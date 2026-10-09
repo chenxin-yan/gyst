@@ -120,8 +120,15 @@ import {
   type ReadingPosition,
   type Restore,
   restoreFor,
+  resumable,
 } from "../navigation.ts";
-import { type Extent, InlinePeek, type PeekHandle, PeekSpacer } from "../peek.tsx";
+import {
+  type Extent,
+  type PeekHandle,
+  type PeekOverlay,
+  PeekSpacer,
+  ReferencePeek,
+} from "../peek.tsx";
 import {
   capturedFiles,
   changedFiles,
@@ -154,6 +161,8 @@ import {
   wholeText,
 } from "../search.ts";
 import { SearchField, type SearchSource, useSearchScan } from "../search.tsx";
+import type { CodeSide, SemanticAsk } from "../semantic.ts";
+import { SemanticPeekView, semanticKey, useSemanticNavigation } from "../semantic.tsx";
 import { StackSwitcher } from "../stack.tsx";
 import { media, theme } from "../tokens.stylex.ts";
 import {
@@ -566,7 +575,7 @@ function SessionReader(props: {
   // Back returns to, and the panel's restart key with where it starts. Never Viewed. A return from
   // another session starts them as they were left.
   const [captured, setCaptured] = useState<CapturedRange | undefined>(recalled?.captured);
-  const [peek, setPeek] = useState<Peek | undefined>(recalled?.peek);
+  const [peek, setPeek] = useState<Peek | undefined>(() => resumable(recalled?.peek));
   const [back, setBack] = useState<BackStack>(recalled?.back ?? []);
   const [panel, setPanel] = useState<{ key: number; restore: Restore | undefined }>({
     key: 0,
@@ -591,6 +600,10 @@ function SessionReader(props: {
   const [searchFocus, setSearchFocus] = useState(0);
   const searchInput = useRef<HTMLInputElement>(null);
   const searchPending = useRef<1 | -1>(undefined);
+  const semantic = useSemanticNavigation({ sessionId: session.id, snapshotId, peek, setPeek });
+  // Continue without navigation: a right-click shows the browser's own menu again; gd and gr,
+  // asked explicitly, still ask.
+  const [withoutNavigation, setWithoutNavigation] = useState(false);
   const readCode = useCallback<CodeRead>(
     (request) => operation({ ...request, session: session.id }),
     [session.id],
@@ -663,10 +676,20 @@ function SessionReader(props: {
     () => annotationsOf(inView, notes, status),
     [inView, notes, status],
   );
-  // A peek under a note reserves its row after the note.
-  const peekNote = peek?.origin.kind === "note" ? peek.origin.noteId : undefined;
-  const peekPlace =
-    peekNote === undefined ? undefined : notes.find(({ note }) => note.id === peekNote);
+  // A peek under a note reserves its row after the note; one asked on a code line, under that line.
+  const peekNote =
+    peek?.kind === "reference" && peek.origin.kind === "note" ? peek.origin.noteId : undefined;
+  const peekLine = peek?.kind === "semantic" ? peek.origin : undefined;
+  const [lineFile, lineSide, lineNumber] = [peekLine?.file, peekLine?.side, peekLine?.line];
+  const peekPlace = useMemo((): { file: string; side: Side; line: number } | undefined => {
+    if (lineFile !== undefined && lineNumber !== undefined)
+      return {
+        file: lineFile,
+        side: lineSide === "old" ? "deletions" : "additions",
+        line: lineNumber,
+      };
+    return peekNote === undefined ? undefined : notes.find(({ note }) => note.id === peekNote);
+  }, [lineFile, lineSide, lineNumber, peekNote, notes]);
   const annotations = useMemo(() => {
     if (peekPlace === undefined) return noteAnnotations;
     const spacerRow: DiffLineAnnotation<DiffAnnotation> = {
@@ -1295,7 +1318,7 @@ function SessionReader(props: {
     peekOpener.current =
       document.activeElement instanceof HTMLElement ? document.activeElement : null;
     setRefocus(undefined);
-    setPeek({ target, origin });
+    setPeek({ kind: "reference", target, origin });
   };
 
   /** Closes the peek and gives focus back to the reference it was followed from. */
@@ -1304,6 +1327,8 @@ function SessionReader(props: {
     const opener = peekOpener.current;
     peekOpener.current = null;
     flushSync(() => setPeek(undefined));
+    // A semantic peek leaves focus with the page, whose keys go on from its code line.
+    if (peek.kind === "semantic") return;
     if (peek.origin.kind === "overview" && opener?.isConnected)
       opener.focus({ preventScroll: true });
     else setRefocus({ origin: peek.origin, target: peek.target });
@@ -1373,7 +1398,7 @@ function SessionReader(props: {
   });
 
   const peekAvailability =
-    peek &&
+    peek?.kind === "reference" &&
     referenceAvailability(peek.target, {
       snapshotId,
       file: manifestByPath.get(peek.target.path),
@@ -1395,25 +1420,66 @@ function SessionReader(props: {
     [readCode],
   );
   const peekRead = useMemo(
-    () => (peek === undefined ? undefined : () => readOnce(peek.target)),
+    () => (peek?.kind === "reference" ? () => readOnce(peek.target) : undefined),
     [peek, readOnce],
   );
-  const peekOf = (overlay?: { spacer: HTMLDivElement | null; extent: () => Extent | undefined }) =>
-    peek &&
-    peekAvailability &&
-    peekRead && (
-      <InlinePeek
-        // Keyed: another target is another peek, focused anew.
-        key={JSON.stringify(peek)}
+  /** Asks for a code line's symbols, for one query or (a right-click) at one character of it. */
+  const lookUp = (at: { file: string; side: Side; line: number }, ask: SemanticAsk) => {
+    // A file shown whole has one column, on the expanded reference's side.
+    const side: CodeSide =
+      captured && !diffs.has(at.file) ? captured.side : at.side === "deletions" ? "old" : "new";
+    semantic.ask(
+      {
+        kind: "line",
+        snapshotId: captured?.snapshotId ?? snapshotId,
+        side,
+        file: at.file,
+        line: at.line,
+      },
+      ask,
+    );
+  };
+  const continueWithoutNavigation = () => {
+    closePeek();
+    setWithoutNavigation(true);
+    setNotice("Continuing without navigation; gd and gr still ask when pressed.");
+  };
+  const peekOf = (overlay?: PeekOverlay) =>
+    peek?.kind === "semantic" ? (
+      <SemanticPeekView
+        // Keyed: another ask or answer is another peek, focused anew; a selection is not.
+        key={semanticKey(peek)}
         peek={peek}
-        availability={peekAvailability}
-        read={peekRead}
-        narrow={width < splitMinWidth}
         snapshotId={snapshotId}
-        onExpand={() => expand(peek.target)}
+        read={readOnce}
+        narrow={width < splitMinWidth}
+        onSelect={semantic.select}
+        onChoose={semantic.choose}
+        onExpand={expand}
         onClose={closePeek}
-        {...(overlay && { overlay, handle: peekHandle })}
+        onCheckAgain={semantic.checkAgain}
+        onRetry={semantic.retry}
+        onContinue={continueWithoutNavigation}
+        overlay={overlay}
+        handle={overlay && peekHandle}
       />
+    ) : (
+      peek &&
+      peekAvailability &&
+      peekRead && (
+        <ReferencePeek
+          // Keyed: another target is another peek, focused anew.
+          key={JSON.stringify(peek)}
+          peek={peek}
+          availability={peekAvailability}
+          read={peekRead}
+          narrow={width < splitMinWidth}
+          snapshotId={snapshotId}
+          onExpand={() => expand(peek.target)}
+          onClose={closePeek}
+          {...(overlay && { overlay, handle: peekHandle })}
+        />
+      )
     );
 
   // The view's overview: a group's, with its notes on earlier code, or the walkthrough's above the
@@ -1682,6 +1748,11 @@ function SessionReader(props: {
         return setFolds([here.file], true, { ...here, kind: "header" });
       case "viewed":
         return toggleViewed(here.file);
+      case "definition":
+      case "references":
+        if (here.kind !== "line")
+          return setNotice("Put the cursor on a code line to look up its symbols.");
+        return lookUp(here, { kind: "identifiers", query: id });
       default:
         return;
     }
@@ -2027,6 +2098,23 @@ function SessionReader(props: {
           onWindow={onWindow}
           onWidth={setWidth}
           onOpened={() => setOpenedVersion((version) => version + 1)}
+          onSymbol={
+            withoutNavigation
+              ? undefined
+              : (at) => {
+                  // A file shown whole has one column, on the expanded reference's side.
+                  const side: Side =
+                    at.side ??
+                    (captured && !diffs.has(at.file) && captured.side === "old"
+                      ? "deletions"
+                      : "additions");
+                  if (vim) setCursor({ file: at.file, kind: "line", side, line: at.line });
+                  lookUp(
+                    { file: at.file, side, line: at.line },
+                    { kind: "identifiers", character: at.character },
+                  );
+                }
+          }
           onLineClick={(target) =>
             vim &&
             setCursor(
@@ -2241,6 +2329,44 @@ type Viewer = {
   extentOf(file: string): Extent | undefined;
 };
 
+/**
+ * A right-clicked spot in code: its file, the split column it is on (none in a file shown whole),
+ * its line and the UTF-16 offset in that line of the clicked character, unknown where the browser
+ * can't place the click.
+ */
+type SymbolAt = {
+  file: string;
+  side: Side | undefined;
+  line: number;
+  character: number | undefined;
+};
+
+/**
+ * The UTF-16 offset in a code token's text of the character a pointer event is on. A highlighting
+ * token can hold several identifiers (past the renderer's highlighting limit a whole line is one),
+ * so the token alone never names the symbol clicked.
+ */
+function offsetIn(token: HTMLElement, event: MouseEvent): number | undefined {
+  const root = token.getRootNode();
+  const caret = document.caretPositionFromPoint(event.clientX, event.clientY, {
+    shadowRoots: root instanceof ShadowRoot ? [root] : [],
+  });
+  if (!caret || !token.contains(caret.offsetNode)) return undefined;
+  const { offsetNode } = caret;
+  let { offset } = caret;
+  // The caret falls on the boundary nearest the pointer: after the character on its right half.
+  if (offsetNode instanceof Text && offset > 0) {
+    const previous = document.createRange();
+    previous.setStart(offsetNode, offset - 1);
+    previous.setEnd(offsetNode, offset);
+    if (event.clientX < previous.getBoundingClientRect().right) offset -= 1;
+  }
+  const before = document.createRange();
+  before.setStart(token, 0);
+  before.setEnd(offsetNode, offset);
+  return before.toString().length;
+}
+
 /** How far the cursor stays from the panel's edges, and how far in a pulled-back cursor lands. */
 const scrolloff = 96;
 const pullMargin = 40;
@@ -2293,6 +2419,8 @@ function ContinuousDiff(props: {
   onWidth: (width: number) => void;
   onOpened: () => void;
   onLineClick: (cursor: Cursor) => void;
+  /** A right-click on a code token, which then shows no browser menu; absent, it always does. */
+  onSymbol: ((at: SymbolAt) => void) | undefined;
   onLines: (selection: CodeViewLineSelection | null) => void;
   onManualScroll: () => void;
   renderHeader: (path: string) => ReactNode;
@@ -2715,8 +2843,9 @@ function ContinuousDiff(props: {
       if (
         cached &&
         cached.collapsed === collapsed &&
+        cached.annotations === annotations &&
         (cached.type === "diff"
-          ? cached.fileDiff === fileDiff && cached.annotations === annotations
+          ? cached.fileDiff === fileDiff
           : fileDiff === undefined && cached.file.contents === (whole ?? ""))
       ) {
         itemCache.current.set(file.path, cached);
@@ -2733,18 +2862,23 @@ function ContinuousDiff(props: {
             ...(annotations && { annotations }),
           }
         : // A captured side shown whole, or no captured text to show: the header alone says why.
+          // Its one column takes each annotation by line alone.
           {
             id: file.path,
             type: "file",
             file: { name: file.path, contents: whole ?? "" },
             collapsed,
             version,
+            ...(annotations && { annotations }),
           };
       itemCache.current.set(file.path, item);
       return item;
     });
   }, [props.files, diffs, props.folded, props.annotations, props.wholeFiles]);
 
+  const hovered = useRef<{ element: HTMLElement; start: number; at: Omit<SymbolAt, "character"> }>(
+    undefined,
+  );
   const options = useMemo(
     (): CodeViewReactOptions<DiffAnnotation, undefined> => ({
       theme: "catppuccin-mocha",
@@ -2766,6 +2900,22 @@ function ContinuousDiff(props: {
       enableGutterUtility: props.inputMode === "mouse",
       onGutterUtilityClick: (range, context) =>
         latest.current.onLines({ id: context.item.id, range }),
+      // The token under the pointer, within which a right-click asks about the clicked character.
+      // The renderer reports tokens only to these callbacks; a right-click alone reports nothing.
+      onTokenEnter: (token, _event, context) => {
+        hovered.current = {
+          element: token.tokenElement,
+          start: token.lineCharStart,
+          at: {
+            file: context.item.id,
+            side: "side" in token ? token.side : undefined,
+            line: token.lineNumber,
+          },
+        };
+      },
+      onTokenLeave: () => {
+        hovered.current = undefined;
+      },
       onLineClick: (line, context) => {
         latest.current.onLineClick({
           file: context.item.id,
@@ -2824,12 +2974,27 @@ function ContinuousDiff(props: {
         ["PageUp", "PageDown", "Home", "End", " ", "ArrowUp", "ArrowDown"].includes(event.key) &&
         manual();
       const settled = () => (pendingTop.current = undefined);
+      // Shift keeps the browser's own menu, as does any spot but the hovered token.
+      const onMenu = (event: MouseEvent) => {
+        const token = hovered.current;
+        const onSymbol = latest.current.onSymbol;
+        if (!token || !onSymbol || event.shiftKey || !event.composedPath().includes(token.element))
+          return;
+        event.preventDefault();
+        const offset = offsetIn(token.element, event);
+        onSymbol({
+          ...token.at,
+          character: offset === undefined ? undefined : token.start + offset,
+        });
+      };
+      node.addEventListener("contextmenu", onMenu);
       node.addEventListener("wheel", manual, { passive: true });
       node.addEventListener("touchmove", manual, { passive: true });
       node.addEventListener("pointerdown", onPointer);
       node.addEventListener("scrollend", settled);
       window.addEventListener("keydown", onKey);
       detach.current = () => {
+        node.removeEventListener("contextmenu", onMenu);
         node.removeEventListener("wheel", manual);
         node.removeEventListener("touchmove", manual);
         node.removeEventListener("pointerdown", onPointer);

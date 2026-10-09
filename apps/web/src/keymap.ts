@@ -39,6 +39,8 @@ export type CommandId =
   | "foldAll"
   | "viewed"
   | "back"
+  | "definition"
+  | "references"
   | "split"
   | "stacked"
   | "auto"
@@ -112,6 +114,18 @@ export const commands: readonly Command[] = [
     label: "Mark the cursor's file Viewed and go to the next unviewed one, or unmark it",
   },
   { id: "back", keys: [["Backspace"]], label: "Back from captured code" },
+  {
+    id: "definition",
+    keys: [["G", "D"]],
+    label: "Definition of a symbol on the cursor's line (TS/JS)",
+    vimOnly: true,
+  },
+  {
+    id: "references",
+    keys: [["G", "R"]],
+    label: "Usages of a symbol on the cursor's line (TS/JS)",
+    vimOnly: true,
+  },
   { id: "split", keys: [["1"]], label: "Split diff" },
   { id: "stacked", keys: [["2"]], label: "Stacked diff" },
   { id: "auto", keys: [["0"]], label: "Auto diff layout, by width" },
