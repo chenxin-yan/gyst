@@ -7,6 +7,12 @@
   *::after {
     box-sizing: border-box;
   }
+  /* The reader moves by keys, wheel and trackpad, so no panel shows a scrollbar. Each panel stops
+     its own overscroll: on every element it would also stop a wheel over a clipped header from
+     reaching the panel around it. */
+  * {
+    scrollbar-width: none;
+  }
   html,
   body,
   #app {

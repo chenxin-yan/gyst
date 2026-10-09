@@ -159,6 +159,7 @@ const styles = stylex.create({
     marginTop: "14vh",
     padding: 0,
     overflow: "auto",
+    overscrollBehavior: "none",
     borderWidth: 0,
     borderRadius: "10px",
     backgroundColor: theme.surface,

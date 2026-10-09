@@ -2455,6 +2455,7 @@ const diffStyles = stylex.create({
     position: "relative",
     height: "100%",
     overflow: "auto",
+    overscrollBehavior: "none",
     paddingInline: { default: "32px", [media.narrow]: "12px" },
     "--diffs-font-family": theme["--mono"],
     "--diffs-header-font-family": theme.sans,
