@@ -16,12 +16,17 @@ const run = (...events: LiveEvent[]) => events.reduce(liveReducer, initialLive);
 const ready = (generation: number, revision: number, daemon = "d1"): LiveEvent => ({
   type: "frame",
   generation,
-  event: { kind: "ready", daemon, sessionId: "s1", snapshotId: a, revision },
+  event: { kind: "ready", daemon, sessionId: "s1", snapshotId: a, revision, conversations: "v1" },
 });
-const changed = (generation: number, revision: number, snapshotId = a): LiveEvent => ({
+const changed = (
+  generation: number,
+  revision: number,
+  snapshotId = a,
+  conversations = "v1",
+): LiveEvent => ({
   type: "frame",
   generation,
-  event: { kind: "changed", sessionId: "s1", snapshotId, revision },
+  event: { kind: "changed", sessionId: "s1", snapshotId, revision, conversations },
 });
 const failed = (generation: number, error: DaemonError): LiveEvent => ({
   type: "frame",
@@ -38,17 +43,28 @@ describe("liveReducer", () => {
       generation: 1,
       phase: "live",
       daemon: "d1",
-      known: { snapshotId: a, revision: 4 },
-      ready: { snapshotId: a, revision: 4 },
+      known: { snapshotId: a, revision: 4, conversations: "v1" },
+      ready: { snapshotId: a, revision: 4, conversations: "v1" },
       attempts: 0,
     });
   });
 
   it("keeps the newest announced version when changes arrive out of order", () => {
     const live = run(connect, ready(1, 4), changed(1, 6), changed(1, 5));
-    expect(live.known).toEqual({ snapshotId: a, revision: 6 });
+    expect(live.known).toEqual({ snapshotId: a, revision: 6, conversations: "v1" });
     // A refresh names its new snapshot.
-    expect(liveReducer(live, changed(1, 7, b)).known).toEqual({ snapshotId: b, revision: 7 });
+    expect(liveReducer(live, changed(1, 7, b)).known).toEqual({
+      snapshotId: b,
+      revision: 7,
+      conversations: "v1",
+    });
+  });
+
+  it("carries the announced identity of the session's conversations, apart from the revision", () => {
+    const live = run(connect, ready(1, 4), changed(1, 5, a, "v2"));
+    expect(live.known).toEqual({ snapshotId: a, revision: 5, conversations: "v2" });
+    // A Viewed change moves the revision alone, so conversations are not read again for it.
+    expect(liveReducer(live, changed(1, 6, a, "v2")).known?.conversations).toBe("v2");
   });
 
   it("ignores frames and losses of a connection that is no longer current", () => {
@@ -94,8 +110,8 @@ describe("liveReducer", () => {
       generation: bad.generation + 1,
       phase: "live",
       daemon: "d2",
-      known: { snapshotId: a, revision: 3 },
-      ready: { snapshotId: a, revision: 3 },
+      known: { snapshotId: a, revision: 3, conversations: "v1" },
+      ready: { snapshotId: a, revision: 3, conversations: "v1" },
       attempts: 0,
     });
   });
@@ -141,16 +157,29 @@ describe("behind", () => {
       generation: 1,
       event:
         kind === "ready"
-          ? { kind, daemon: "d1", sessionId: "s1", snapshotId: a, revision: 4, context }
-          : { kind, sessionId: "s1", snapshotId: a, revision: 4, context },
+          ? {
+              kind,
+              daemon: "d1",
+              sessionId: "s1",
+              snapshotId: a,
+              revision: 4,
+              conversations: "v1",
+              context,
+            }
+          : { kind, sessionId: "s1", snapshotId: a, revision: 4, conversations: "v1", context },
     });
     const live = run(connect, at("c1", "ready"));
-    expect(live.known).toEqual({ snapshotId: a, revision: 4, context: "c1" });
+    expect(live.known).toEqual({ snapshotId: a, revision: 4, context: "c1", conversations: "v1" });
     // Status not yet read at any context, then read at the announced one.
     expect(behind(live, { snapshotId: a, revision: 4 })).toBe("read");
     expect(behind(live, { snapshotId: a, revision: 4, context: "c1" })).toBe("current");
     const rechecked = liveReducer(live, at("c2"));
-    expect(rechecked.known).toEqual({ snapshotId: a, revision: 4, context: "c2" });
+    expect(rechecked.known).toEqual({
+      snapshotId: a,
+      revision: 4,
+      context: "c2",
+      conversations: "v1",
+    });
     expect(behind(rechecked, { snapshotId: a, revision: 4, context: "c1" })).toBe("read");
     expect(behind(rechecked, { snapshotId: a, revision: 5, context: "c1" })).toBe("read");
     // Its context never pauses Viewed changes: only the revision a ready names does.

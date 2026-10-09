@@ -216,6 +216,19 @@ export class DaemonServer extends Context.Service<
             return sessions.apply(request);
           case "viewed":
             return sessions.viewed(request);
+          case "conversations":
+            return sessions.conversations(request);
+          case "messages":
+            return sessions.messages(request);
+          case "draft":
+          case "send":
+          case "edit":
+          case "retract":
+          case "resolve":
+          case "discard":
+            return sessions.converse(request);
+          case "threads":
+            return sessions.threads(request);
           // A replaced or deleted snapshot's analysis stops with it, before the reply.
           case "refresh":
             return sessions

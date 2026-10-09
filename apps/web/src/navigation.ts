@@ -7,8 +7,14 @@ import type { Cursor, Side } from "./cursor.ts";
 import type { SemanticPeek } from "./semantic.ts";
 import type { ReviewView } from "./walkthrough.ts";
 
-/** Where a reference was followed from: under a note in the diff, or in the shown overview. */
-export type PeekOrigin = { kind: "note"; noteId: string } | { kind: "overview" };
+/**
+ * Where a reference was followed from: under a note or in a thread in the diff, or in the shown
+ * overview.
+ */
+export type PeekOrigin =
+  | { kind: "note"; noteId: string }
+  | { kind: "thread"; threadId: string }
+  | { kind: "overview" };
 
 /** An open reference peek: its pinned target and where it opened. */
 export type ReferencePeek = { kind: "reference"; target: CapturedRange; origin: PeekOrigin };

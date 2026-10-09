@@ -9,9 +9,15 @@ import {
 } from "./content.ts";
 import { ErrorPayloadSchema } from "./errors.ts";
 import { PullRequestNumberSchema, PullRequestStatusSchema } from "./github.ts";
-import { CodeSideSchema, LineNumberSchema } from "./guidance.ts";
+import {
+  CapturedRangeSchema,
+  CodeSideSchema,
+  LineNumberSchema,
+  MarkdownSchema,
+} from "./guidance.ts";
 import { AddonStateSchema } from "./navigation.ts";
 import { HunkSchema, ScopeSchema, SessionSummarySchema } from "./session.ts";
+import { MessageKindSchema, WordingSchema } from "./thread.ts";
 
 // `@gyst/core/wire` is the browser-safe entry: every contract the browser needs, without the
 // Node-only snapshot parsing and hashing the root `@gyst/core` export pulls in.
@@ -97,6 +103,38 @@ export {
   type ViewedPayload,
   ViewedPayloadSchema,
 } from "./session.ts";
+export {
+  type AgentMessage,
+  AgentMessageSchema,
+  type ConversationResult,
+  ConversationResultSchema,
+  type ConversationsPayload,
+  ConversationsPayloadSchema,
+  type Draft,
+  DraftSchema,
+  type HumanMessage,
+  HumanMessageSchema,
+  type Message,
+  type MessageKind,
+  MessageKindSchema,
+  MessageSchema,
+  type MessagesPayload,
+  MessagesPayloadSchema,
+  type NoteLink,
+  NoteLinkSchema,
+  type Thread,
+  type ThreadCode,
+  ThreadCodeSchema,
+  type ThreadCounts,
+  ThreadCountsSchema,
+  type ThreadEntry,
+  ThreadEntrySchema,
+  ThreadSchema,
+  type ThreadsPayload,
+  ThreadsPayloadSchema,
+  type Wording,
+  WordingSchema,
+} from "./thread.ts";
 
 export const DiffPayloadSchema = Schema.Struct({
   sessionId: Schema.String,
@@ -458,6 +496,9 @@ const reviewRequests = [
   }),
 ] as const;
 
+/** A Pending human message as its author last read it, which an edit or deletion must still find. */
+const SeenMessageSchema = Schema.Struct({ markdown: MarkdownSchema, kind: MessageKindSchema });
+
 /**
  * The operations a browser may request: exact saved-session ids and read filters only. Checkout
  * paths, Git input, PATHs, executables, add-on locations and caller roles are not expressible.
@@ -494,6 +535,92 @@ export const BrowserRequestSchema = Schema.Union([
     requestId: Schema.String,
     hunkIds: Schema.Array(Schema.String),
     viewed: Schema.Boolean,
+  }),
+  /**
+   * Every conversation of the session, listed without its messages, and every draft pin; and one
+   * thread's `messages`, Pending bodies included, for their author. Reading freezes nothing: only
+   * the agent's retrieval (`threads`) reads a message.
+   */
+  Schema.Struct({ command: Schema.Literal("conversations"), ...exact }),
+  Schema.Struct({ command: Schema.Literal("messages"), ...exact, thread: Schema.String }),
+  /**
+   * Human conversation actions. Each `requestId` is chosen before sending and reused for every
+   * retry, like `delete`; they name their targets, never a revision, so an agent's publication
+   * meanwhile does not refuse them. The socket cannot carry any of them.
+   *
+   * `draft` pins what a message is composed against before it is written: a new comment on a
+   * captured range of the current or a retained snapshot, a reply in a thread, or a reply to a
+   * note. A reply to a note, or in its thread, names the note `wording` the human sees, its text,
+   * links and code; it must still be the note's, so a reply never begins on a note moved unseen.
+   */
+  Schema.Struct({
+    command: Schema.Literal("draft"),
+    ...exact,
+    requestId: Schema.String,
+    target: Schema.Union([
+      Schema.Struct({ kind: Schema.Literal("comment"), anchor: CapturedRangeSchema }),
+      Schema.Struct({ kind: Schema.Literal("thread"), thread: Schema.String }),
+      Schema.Struct({ kind: Schema.Literal("note"), note: Schema.String }),
+    ]),
+    wording: Schema.optional(WordingSchema),
+  }),
+  /** Posts the message composed in `draft`, Pending, and releases the draft's pin. */
+  Schema.Struct({
+    command: Schema.Literal("send"),
+    ...exact,
+    requestId: Schema.String,
+    draft: Schema.String,
+    markdown: MarkdownSchema,
+    kind: MessageKindSchema,
+  }),
+  /**
+   * Edits a Pending human message's text or kind; once read it is frozen. `seen` is the message as
+   * the human last read it, and must still be it, so an edit made elsewhere is never overwritten
+   * unseen. Its unchanged `gyst:` links keep their pins.
+   */
+  Schema.Struct({
+    command: Schema.Literal("edit"),
+    ...exact,
+    requestId: Schema.String,
+    message: Schema.String,
+    seen: SeenMessageSchema,
+    markdown: Schema.optional(MarkdownSchema),
+    kind: Schema.optional(MessageKindSchema),
+  }).check(
+    Schema.makeFilter(
+      ({ markdown, kind }) =>
+        markdown !== undefined || kind !== undefined || "edit needs markdown or kind",
+    ),
+  ),
+  /**
+   * Deletes a Pending human message, still as `seen`; a thread left with no message disappears,
+   * its note stays.
+   */
+  Schema.Struct({
+    command: Schema.Literal("retract"),
+    ...exact,
+    requestId: Schema.String,
+    message: Schema.String,
+    seen: SeenMessageSchema,
+  }),
+  /**
+   * Resolves (or, with `resolved: false`, reopens) a thread. `seen` is the thread's `version` as
+   * the human last read it, and must still be it, so a resolution never hides a message unseen.
+   */
+  Schema.Struct({
+    command: Schema.Literal("resolve"),
+    ...exact,
+    requestId: Schema.String,
+    thread: Schema.String,
+    seen: Schema.String,
+    resolved: Schema.Boolean,
+  }),
+  /** Releases a draft's pin without sending it. */
+  Schema.Struct({
+    command: Schema.Literal("discard"),
+    ...exact,
+    requestId: Schema.String,
+    draft: Schema.String,
   }),
   /**
    * Navigation readiness of the session's current snapshot. `recheck` (Check again) has the daemon
@@ -533,6 +660,18 @@ export const RequestSchema = Schema.Union([
   ...reviewRequests,
   /** `batch` is the JSON apply envelope text; the use case validates it against `ApplyEnvelopeSchema`. */
   Schema.Struct({ command: Schema.Literal("apply"), ...exact, batch: Schema.String }),
+  /**
+   * The agent's retrieval of threads, one atomic mutation: `pending` takes the open threads with a
+   * Pending message as they are now, `open` every open thread. Either reads, and so freezes, exactly
+   * the Pending messages it returns. `requestId` is chosen before sending and reused for every
+   * retry, which returns the recorded bundle however the threads moved on.
+   */
+  Schema.Struct({
+    command: Schema.Literal("threads"),
+    ...exact,
+    mode: Schema.Literals(["pending", "open"]),
+    requestId: Schema.String,
+  }),
 ]);
 export type Request = typeof RequestSchema.Type;
 
@@ -541,6 +680,11 @@ export const SessionVersionSchema = Schema.Struct({
   sessionId: Schema.String,
   snapshotId: Schema.String,
   revision: Schema.Number,
+  /**
+   * An opaque identity of the session's threads and messages: it differs whenever one does, so a
+   * reader rereads its conversations only then, not for every Viewed or guidance change.
+   */
+  conversations: Schema.String,
   /**
    * A PR session's stack context as its status reports it: an opaque identity of its PR and stack
    * metadata and its other layers' sessions, which change without the revision. Differs whenever

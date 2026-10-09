@@ -447,6 +447,47 @@ describe("DaemonServer", () => {
             viewed: true,
           },
           { command: "layer", session: "x", number: 1 },
+          // Agents cannot read Pending bodies, write human messages or resolve threads.
+          { command: "conversations", session: "x" },
+          { command: "messages", session: "x", thread: "t" },
+          {
+            command: "draft",
+            session: "x",
+            requestId: "r",
+            target: { kind: "thread", thread: "t" },
+          },
+          {
+            command: "send",
+            session: "x",
+            requestId: "r",
+            draft: "d",
+            markdown: "As the human.",
+            kind: "question",
+          },
+          {
+            command: "edit",
+            session: "x",
+            requestId: "r",
+            message: "m",
+            seen: { markdown: "m", kind: "question" },
+            kind: "change",
+          },
+          {
+            command: "retract",
+            session: "x",
+            requestId: "r",
+            message: "m",
+            seen: { markdown: "m", kind: "question" },
+          },
+          {
+            command: "resolve",
+            session: "x",
+            requestId: "r",
+            thread: "t",
+            seen: "v",
+            resolved: true,
+          },
+          { command: "discard", session: "x", requestId: "r", draft: "d" },
           { command: "navigation", session: "x", snapshotId: "0".repeat(64) },
           {
             command: "definition",
@@ -808,7 +849,12 @@ const openViewed = Effect.fn("openViewed")(function* (cwd: string) {
 });
 const versionOf = (id: string) => {
   const session = files.get(id)!;
-  return { sessionId: id, snapshotId: session.snapshotId, revision: session.revision };
+  return {
+    sessionId: id,
+    snapshotId: session.snapshotId,
+    revision: session.revision,
+    conversations: expect.any(String),
+  };
 };
 /** The human toggles Viewed on the session's first hunk against its saved revision. */
 const toggle = (browser: ReturnType<typeof browserAt>, id: string, n: number) => {

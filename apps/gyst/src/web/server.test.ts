@@ -73,11 +73,22 @@ let flooded: { readonly changes: Queue.Queue<SubscriptionEvent>; taken: number }
 /** What the fake daemon was asked to subscribe to, and how many subscriptions it closed. */
 let subscribed: SubscribeRequest[] = [];
 let released = 0;
-const version = (revision: number) => ({ sessionId: "s1", snapshotId, revision });
+const version = (revision: number) => ({
+  sessionId: "s1",
+  snapshotId,
+  revision,
+  conversations: "v1",
+});
 const liveEvents: SubscriptionEvent[] = [
   { kind: "ready", daemon: "d1", ...version(0) },
   { kind: "changed", ...version(1) },
-  { kind: "changed", sessionId: "s1", snapshotId: "1".repeat(64), revision: 2 },
+  {
+    kind: "changed",
+    sessionId: "s1",
+    snapshotId: "1".repeat(64),
+    revision: 2,
+    conversations: "v1",
+  },
   { kind: "deleted", sessionId: "s1" },
 ];
 
@@ -336,6 +347,35 @@ describe("browserApp operations", () => {
       { command: "code", session: "s1", snapshotId, file: "src/a.ts", side: "new", offset: 7 },
       { command: "delete", session: "s1", requestId: "r1" },
       { command: "refresh", session: "s1", snapshotId, requestId: "r1" },
+      { command: "conversations", session: "s1" },
+      { command: "messages", session: "s1", thread: "t1" },
+      {
+        command: "draft",
+        session: "s1",
+        requestId: "r2",
+        target: { kind: "note", note: "n1" },
+        wording: {
+          markdown: "The note.",
+          references: [],
+          anchor: { snapshotId, path: "src/a.ts", side: "new", startLine: 2, endLine: 4 },
+        },
+      },
+      {
+        command: "send",
+        session: "s1",
+        requestId: "r3",
+        draft: "d1",
+        markdown: "Why?",
+        kind: "change",
+      },
+      {
+        command: "resolve",
+        session: "s1",
+        requestId: "r4",
+        thread: "t1",
+        seen: "v1",
+        resolved: true,
+      },
     ];
     for (const request of requests) {
       const response = await operation(request);
@@ -375,6 +415,17 @@ describe("browserApp operations", () => {
       JSON.stringify({ command: "apply", session: "s1", batch: "{}" }),
       JSON.stringify({ command: "refresh", session: "s1" }),
       JSON.stringify({ command: "delete", session: "s1" }),
+      // The agent's retrieval and replies never come from a browser, nor does an author role.
+      JSON.stringify({ command: "threads", session: "s1", mode: "pending", requestId: "r1" }),
+      JSON.stringify({
+        command: "send",
+        session: "s1",
+        requestId: "r1",
+        draft: "d1",
+        markdown: "Hi.",
+        kind: "question",
+        author: "agent",
+      }),
       // Captured reads name a logical path in an exact snapshot: no host path, blob or checkout.
       JSON.stringify({
         command: "code",

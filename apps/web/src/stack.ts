@@ -3,7 +3,7 @@ import type { GitHubUnavailableReason, PullRequest, PullRequestStatus } from "@g
 /**
  * One PR in the switcher. `position` is its layer in a known stack, undefined when the selected PR
  * stands alone or its membership is unknown. `session` is its saved session; an unopened layer has
- * none, so it never shows counts.
+ * none, so it never shows counts. `open` counts its unresolved threads, apart from Viewed.
  */
 export type StackRow = {
   position: number | undefined;
@@ -11,8 +11,7 @@ export type StackRow = {
   title: string;
   state: PullRequest["state"];
   current: boolean;
-  // #92 adds the unresolved-thread count here.
-  session: { id: string; viewed: number; total: number } | undefined;
+  session: { id: string; viewed: number; total: number; open: number } | undefined;
 };
 
 /**
@@ -37,6 +36,7 @@ export const stackRows = (status: PullRequestStatus, selectedViewed: number): St
         id: entry.sessionId,
         viewed: current ? selectedViewed : entry.viewedCount,
         total: entry.hunkCount,
+        open: entry.openThreads,
       },
     };
   };

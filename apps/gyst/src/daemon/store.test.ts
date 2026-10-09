@@ -26,6 +26,10 @@ const session = (id: string): Session => ({
   applyReceipts: [],
   viewedReceipts: [],
   refreshReceipts: [],
+  threads: [],
+  drafts: [],
+  conversationReceipts: [],
+  pickupReceipts: [],
 });
 
 const run = <A, E>(effect: Effect.Effect<A, E, SessionStore>) =>
@@ -86,7 +90,7 @@ describe("SessionStore", () => {
     expect(await readFile(join(dataDir, "hunk-notes.json"), "utf8")).toBe(hunkNotes);
   });
 
-  it("round-trips semantic metadata, Viewed and their historical receipts", async () => {
+  it("round-trips semantic metadata, Viewed, conversations and their historical receipts", async () => {
     const prepared: Session = {
       ...session("semantic"),
       hunks: [
@@ -173,6 +177,87 @@ describe("SessionStore", () => {
         },
       ],
     };
+    const anchor = {
+      snapshotId: "earlier",
+      path: "h.ts",
+      side: "new",
+      startLine: 1,
+      endLine: 1,
+    } as const;
+    const thread: Session["threads"][number] = {
+      id: "t",
+      anchor,
+      note: { id: "n", removed: false },
+      resolved: true,
+      messages: [
+        {
+          id: "m1",
+          author: "human",
+          kind: "change",
+          pending: false,
+          markdown: "Rename it?",
+          references: [],
+          wording: {
+            markdown: "Different operations, one behavior.",
+            references: [anchor],
+            anchor,
+          },
+          createdAt: "2026-01-01T00:00:00.000Z",
+        },
+        {
+          id: "m2",
+          author: "agent",
+          markdown: "Renamed.",
+          references: [anchor],
+          createdAt: "2026-01-01T00:00:00.000Z",
+        },
+      ],
+    };
+    const conversing: Session = {
+      ...saved,
+      threads: [thread],
+      drafts: [
+        {
+          id: "d",
+          snapshotId: "snapshot",
+          anchor,
+          thread: "t",
+          note: { id: "n", removed: false },
+        },
+      ],
+      conversationReceipts: [
+        {
+          requestId: "r3",
+          digest: "digest",
+          result: { sessionId: "semantic", revision: 2, thread: "t" },
+        },
+      ],
+      pickupReceipts: [
+        {
+          requestId: "r4",
+          digest: "digest",
+          result: {
+            sessionId: "semantic",
+            snapshotId: "snapshot",
+            revision: 3,
+            progress: { viewed: 1, total: 1 },
+            openThreads: 0,
+            threads: [
+              {
+                ...thread,
+                code: { kind: "text", lines: ["b"] },
+                earlierCode: [],
+                unread: ["m1"],
+              },
+            ],
+          },
+        },
+      ],
+    };
+    await run(SessionStore.use((s) => s.save(conversing)));
+    expect(
+      (await run(SessionStore.use((s) => s.loadAll))).find(({ id }) => id === "semantic"),
+    ).toEqual(conversing);
     await run(SessionStore.use((s) => s.save(saved)));
     const loaded = await run(SessionStore.use((s) => s.loadAll));
     expect(loaded.find(({ id }) => id === "semantic")).toEqual(saved);

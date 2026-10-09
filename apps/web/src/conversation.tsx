@@ -1,0 +1,754 @@
+import type {
+  BrowserRequest,
+  CapturedRange,
+  ConversationResult,
+  ConversationsPayload,
+  Draft,
+  Message,
+  MessageKind,
+  MessagesPayload,
+  ThreadEntry,
+} from "@gyst/core/wire";
+import * as stylex from "@stylexjs/stylex";
+import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { isExpectedFailure, isUncertain, newRequestId, operation } from "./api.ts";
+import { Dialog } from "./commands.tsx";
+import { PillButton, useMounted } from "./components.tsx";
+import {
+  commentsOrder,
+  type DraftText,
+  type draftChange,
+  draftText,
+  forgetDraftText,
+  keepDraftText,
+  liveNote,
+  replyOutdated,
+  threadLocation,
+} from "./conversation.ts";
+import type { RangeRead } from "./captured.ts";
+import { PeekPreview } from "./peek.tsx";
+import { RichText } from "./rich.tsx";
+import { theme } from "./tokens.stylex.ts";
+import type { StatusNote } from "./walkthrough.ts";
+import { useRefocus } from "./walkthrough.tsx";
+
+type HumanAction = Extract<
+  BrowserRequest,
+  { command: "draft" | "send" | "edit" | "retract" | "resolve" | "discard" }
+>;
+/**
+ * A human action as the reader asks for it: the session is the reader's own, and the request id
+ * the intent's (see `useConversations`).
+ */
+export type Act = (
+  request: HumanAction extends infer Request
+    ? Request extends HumanAction
+      ? Omit<Request, "session" | "requestId">
+      : never
+    : never,
+) => Promise<ConversationResult>;
+
+/**
+ * Reads of threads' messages: `read` asks for a thread's at its listed version, at most once per
+ * version; `last` is the last answer for a thread, which a card shows until a newer one lands.
+ */
+export type MessageReads = {
+  read: (thread: Pick<ThreadEntry, "id" | "version">) => Promise<MessagesPayload>;
+  last: (threadId: string) => MessagesPayload | undefined;
+};
+
+/**
+ * The session's threads, listed without their messages, and its draft pins, read again whenever
+ * the live link announces other conversations or connects again, and after each action of this
+ * reader. A late read never replaces a newer one. A failed read is the link's loss, so it
+ * reconnects and reads again rather than leaving the conversations stale. A thread's messages are
+ * read only where it is open, and again only when its version changes. An action whose reply was
+ * lost keeps its request id, so doing the same again is its retry.
+ */
+export function useConversations(
+  sessionId: string,
+  link: {
+    announced: string | undefined;
+    generation: number;
+    lost: (generation: number, error: unknown) => boolean;
+  },
+) {
+  const { announced, generation } = link;
+  const [read, setRead] = useState<ConversationsPayload>();
+  const latest = useRef<ConversationsPayload>(undefined);
+  const known = useRef(link);
+  known.current = link;
+  const mounted = useMounted();
+  // One read at a time, each skipped once a read already shows what was announced, so the first
+  // announcement after the mount's read costs nothing. An action's own read always runs, so its
+  // effect shows before the announcement arrives.
+  const queue = useRef(Promise.resolve());
+  const load = useCallback(
+    (always: boolean) =>
+      (queue.current = queue.current.then(async () => {
+        const now = known.current;
+        // Until the link announces a version, the read already made is as new as any.
+        if (
+          !always &&
+          latest.current !== undefined &&
+          (now.announced === undefined || now.announced === latest.current.version)
+        )
+          return;
+        try {
+          const answer = await operation({ command: "conversations", session: sessionId });
+          if (!mounted.current || (latest.current && answer.revision < latest.current.revision))
+            return;
+          latest.current = answer;
+          setRead(answer);
+        } catch (error) {
+          if (!isExpectedFailure(error)) console.error(error);
+          if (mounted.current) now.lost(now.generation, error);
+        }
+      })),
+    [sessionId, mounted],
+  );
+  useEffect(() => void load(false), [load, announced, generation]);
+  const uncertain = useRef(new Map<string, string>());
+  const act = useCallback<Act>(
+    async (request) => {
+      const intent = JSON.stringify(request);
+      const requestId = uncertain.current.get(intent) ?? newRequestId();
+      uncertain.current.set(intent, requestId);
+      try {
+        const result = await operation({ ...request, requestId, session: sessionId });
+        uncertain.current.delete(intent);
+        await load(true);
+        return result;
+      } catch (error) {
+        if (!isUncertain(error)) uncertain.current.delete(intent);
+        throw error;
+      }
+    },
+    [sessionId, load],
+  );
+  const messageReads = useRef(
+    new Map<string, { version: string; read: Promise<MessagesPayload> }>(),
+  );
+  const lastMessages = useRef(new Map<string, MessagesPayload>());
+  const messages = useMemo<MessageReads>(
+    () => ({
+      read: ({ id, version }) => {
+        const asked = messageReads.current.get(id);
+        if (asked?.version === version) return asked.read;
+        const answer = operation({ command: "messages", session: sessionId, thread: id });
+        messageReads.current.set(id, { version, read: answer });
+        answer.then(
+          // An answer overtaken by a newer read is not shown, so it is not the last either.
+          (payload) =>
+            messageReads.current.get(id)?.read === answer &&
+            void lastMessages.current.set(id, payload),
+          // A failed read is not kept, so the thread's next read asks again.
+          () => messageReads.current.get(id)?.read === answer && messageReads.current.delete(id),
+        );
+        return answer;
+      },
+      last: (threadId) => lastMessages.current.get(threadId),
+    }),
+    [sessionId],
+  );
+  return { threads: read?.threads ?? [], drafts: read?.drafts ?? [], act, messages };
+}
+
+const kindLabel: Record<MessageKind, string> = { question: "Question", change: "Change request" };
+
+/** Why an action failed, in words, for the line under its control. */
+const failureText = (error: unknown) =>
+  isUncertain(error)
+    ? "gyst didn't answer. Try again; it won't be sent twice."
+    : error instanceof Error && error.message
+      ? error.message
+      : "That didn't work.";
+
+/**
+ * A message's text and kind being written: Enter sends, Shift+Enter adds a line, Escape leaves it
+ * as it is. Review keys never fire from inside it.
+ */
+function MessageField(props: {
+  label: string;
+  text: DraftText;
+  onText: (text: DraftText) => void;
+  onSubmit: () => void;
+  onEscape: () => void;
+  submit: string;
+  busy: boolean;
+  disabled?: string | undefined;
+  children?: ReactNode;
+}) {
+  const { text } = props;
+  const empty = text.markdown.trim() === "";
+  return (
+    <div {...stylex.props(styles.field)}>
+      <textarea
+        aria-label={props.label}
+        autoFocus
+        rows={3}
+        value={text.markdown}
+        placeholder="Write in Markdown…"
+        onChange={(event) => props.onText({ ...text, markdown: event.target.value })}
+        onKeyDown={(event) => {
+          if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
+            event.preventDefault();
+            if (!empty && !props.busy && props.disabled === undefined) props.onSubmit();
+          } else if (event.key === "Escape") {
+            event.preventDefault();
+            event.stopPropagation();
+            props.onEscape();
+          }
+        }}
+        {...stylex.props(styles.textarea)}
+      />
+      <div {...stylex.props(styles.row)}>
+        <select
+          aria-label="Kind"
+          value={text.kind}
+          onChange={(event) => props.onText({ ...text, kind: event.target.value as MessageKind })}
+          {...stylex.props(styles.select)}
+        >
+          <option value="question">Question</option>
+          <option value="change">Change request</option>
+        </select>
+        <PillButton
+          disabled={empty || props.busy || props.disabled !== undefined}
+          title={props.disabled}
+          onClick={props.onSubmit}
+        >
+          {props.submit}
+        </PillButton>
+        {props.children}
+      </div>
+    </div>
+  );
+}
+
+/**
+ * The composer of one draft, shown only for a new comment or an explicit reply. Its text is kept
+ * for the page's life, so closing it, switching sessions or losing the connection loses nothing;
+ * nothing is sent while gyst can't be reached, and a send whose reply was lost is sent again under
+ * its own request id.
+ */
+export function Composer(props: {
+  sessionId: string;
+  draft: Draft;
+  /** What changed under the draft since it was begun, said beside it. */
+  change: ReturnType<typeof draftChange>;
+  /** Why nothing can be sent now, such as a lost connection. */
+  offline: string | undefined;
+  act: Act;
+  onClose: () => void;
+}) {
+  const { sessionId, draft } = props;
+  const [text, setText] = useState(() => draftText(sessionId, draft.id));
+  const [busy, setBusy] = useState(false);
+  const [failure, setFailure] = useState<string>();
+  const mounted = useMounted();
+  const write = (next: DraftText) => {
+    setText(next);
+    keepDraftText(sessionId, draft.id, next);
+  };
+  const send = async () => {
+    setBusy(true);
+    setFailure(undefined);
+    try {
+      await props.act({
+        command: "send",
+        draft: draft.id,
+        markdown: text.markdown,
+        kind: text.kind,
+      });
+      forgetDraftText(sessionId, draft.id);
+      if (mounted.current) props.onClose();
+    } catch (error) {
+      if (!isExpectedFailure(error)) console.error(error);
+      if (mounted.current) setFailure(failureText(error));
+    } finally {
+      if (mounted.current) setBusy(false);
+    }
+  };
+  const discard = async () => {
+    setBusy(true);
+    try {
+      await props.act({ command: "discard", draft: draft.id });
+      forgetDraftText(sessionId, draft.id);
+      if (mounted.current) props.onClose();
+    } catch (error) {
+      if (mounted.current) setFailure(failureText(error));
+    } finally {
+      if (mounted.current) setBusy(false);
+    }
+  };
+  const blocked = props.offline ?? (props.change?.blocks ? props.change.message : undefined);
+  return (
+    <div data-composer={draft.id} {...stylex.props(styles.composer)}>
+      <p {...stylex.props(styles.meta)}>
+        {draft.thread !== undefined || draft.note !== undefined ? "Reply" : "Comment"} on{" "}
+        {threadLocation(draft.anchor, draft.anchor.snapshotId)}
+      </p>
+      {props.change && (
+        <p role="note" {...stylex.props(styles.flag)}>
+          {props.change.message}
+        </p>
+      )}
+      <MessageField
+        label={draft.thread !== undefined || draft.note !== undefined ? "Reply" : "Comment"}
+        text={text}
+        onText={write}
+        onSubmit={() => void send()}
+        onEscape={props.onClose}
+        submit="Send"
+        busy={busy}
+        disabled={blocked}
+      >
+        <PillButton onClick={props.onClose}>Close</PillButton>
+        <PillButton disabled={busy} onClick={() => void discard()}>
+          Discard
+        </PillButton>
+      </MessageField>
+      {(failure ?? props.offline) && (
+        <p role="alert" {...stylex.props(styles.alert)}>
+          {failure ?? props.offline}
+        </p>
+      )}
+    </div>
+  );
+}
+
+/** One message of a thread: its author, kind, Pending and Outdated marks, and for its author's Pending ones, edits. */
+function MessageItem(props: {
+  message: Message;
+  thread: Pick<ThreadEntry, "note">;
+  notes: ReadonlyMap<string, StatusNote>;
+  act: Act;
+  onReference: (target: CapturedRange) => void;
+}) {
+  const { message } = props;
+  // `seen` is the message as the edit began; gyst refuses the edit if it changed elsewhere since.
+  const [editing, setEditing] = useState<{ seen: DraftText; text: DraftText }>();
+  const [wording, setWording] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [failure, setFailure] = useState<string>();
+  const mounted = useMounted();
+  const human = message.author === "human" ? message : undefined;
+  const outdated = replyOutdated(message, props.thread, props.notes) ? message.wording : undefined;
+  const run = async (request: Parameters<Act>[0], then?: () => void) => {
+    setBusy(true);
+    setFailure(undefined);
+    try {
+      await props.act(request);
+      if (mounted.current) then?.();
+    } catch (error) {
+      if (!isExpectedFailure(error)) console.error(error);
+      if (mounted.current) setFailure(failureText(error));
+    } finally {
+      if (mounted.current) setBusy(false);
+    }
+  };
+  return (
+    <li data-message={message.id} {...stylex.props(styles.message)}>
+      <p {...stylex.props(styles.meta)}>
+        <span {...stylex.props(styles.author)}>{human ? "You" : "Agent"}</span>
+        {human && <span> · {kindLabel[human.kind]}</span>}
+        {human?.pending && <span {...stylex.props(styles.pending)}>Pending</span>}
+        {outdated && (
+          <button
+            type="button"
+            aria-expanded={wording}
+            onClick={() => setWording(!wording)}
+            {...stylex.props(styles.outdated)}
+          >
+            Outdated
+          </button>
+        )}
+      </p>
+      {outdated && wording && (
+        <blockquote aria-label="The note as this reply read it" {...stylex.props(styles.wording)}>
+          {liveNote(props.thread, props.notes) ? "" : "The note was removed. "}It read:
+          <RichText
+            markdown={outdated.markdown}
+            references={outdated.references}
+            onReference={props.onReference}
+          />
+        </blockquote>
+      )}
+      {editing ? (
+        <MessageField
+          label="Edit message"
+          text={editing.text}
+          onText={(text) => setEditing({ ...editing, text })}
+          onSubmit={() => {
+            const { seen, text } = editing;
+            const markdown = text.markdown !== seen.markdown ? text.markdown : undefined;
+            const kind = text.kind !== seen.kind ? text.kind : undefined;
+            if (markdown === undefined && kind === undefined) return setEditing(undefined);
+            void run(
+              {
+                command: "edit",
+                message: message.id,
+                seen,
+                ...(markdown !== undefined && { markdown }),
+                ...(kind !== undefined && { kind }),
+              },
+              () => setEditing(undefined),
+            );
+          }}
+          onEscape={() => setEditing(undefined)}
+          submit="Save"
+          busy={busy}
+        >
+          <PillButton onClick={() => setEditing(undefined)}>Cancel</PillButton>
+        </MessageField>
+      ) : (
+        <RichText
+          markdown={message.markdown}
+          references={message.references}
+          onReference={props.onReference}
+        />
+      )}
+      {human?.pending && !editing && (
+        <div {...stylex.props(styles.row)}>
+          <PillButton
+            onClick={() => {
+              const seen = { markdown: human.markdown, kind: human.kind };
+              setEditing({ seen, text: seen });
+            }}
+          >
+            Edit
+          </PillButton>
+          <PillButton
+            disabled={busy}
+            onClick={() =>
+              void run({
+                command: "retract",
+                message: message.id,
+                seen: { markdown: human.markdown, kind: human.kind },
+              })
+            }
+          >
+            Delete
+          </PillButton>
+        </div>
+      )}
+      {failure && (
+        <p role="alert" {...stylex.props(styles.alert)}>
+          {failure}
+        </p>
+      )}
+    </li>
+  );
+}
+
+/**
+ * An open thread's messages: read when it opens and again when its version changes, the last
+ * read shown meanwhile. A failed read says so and is retried on request.
+ */
+function useMessages(thread: ThreadEntry, open: boolean, messages: MessageReads) {
+  const { id, version } = thread;
+  const { read } = messages;
+  const [shown, setShown] = useState(() => messages.last(id));
+  const [failure, setFailure] = useState<string>();
+  const [attempt, setAttempt] = useState(0);
+  useEffect(() => {
+    if (!open) return;
+    let current = true;
+    setFailure(undefined);
+    read({ id, version }).then(
+      (payload) => current && setShown(payload),
+      (error: unknown) => {
+        if (!isExpectedFailure(error)) console.error(error);
+        if (current)
+          setFailure(error instanceof Error && error.message ? `: ${error.message}` : "");
+      },
+    );
+    return () => {
+      current = false;
+    };
+  }, [open, id, version, read, attempt]);
+  return { shown, failure, retry: () => setAttempt((count) => count + 1) };
+}
+
+/**
+ * A thread where it is read: collapsed to a chip naming its messages and whether any is Pending,
+ * or open with every message, a composer while a reply is written, and Reply and Resolve, which
+ * names the version of the messages shown.
+ */
+export function ThreadCard(props: {
+  thread: ThreadEntry;
+  snapshotId: string;
+  notes: ReadonlyMap<string, StatusNote>;
+  expanded: boolean;
+  onToggle: () => void;
+  onReply: () => void;
+  onResolve: (seen: string) => void;
+  messages: MessageReads;
+  act: Act;
+  onReference: (target: CapturedRange) => void;
+  /** The open composer of a reply in this thread. */
+  composer?: ReactNode;
+  /** Shows the thread's place, as the Comments list does. */
+  located?: boolean;
+  /** Goes to the thread where the panel shows it. */
+  onShow?: (() => void) | undefined;
+  /** Reads the captured code of a thread left on earlier code, disclosed on request. */
+  readCode: () => Promise<RangeRead>;
+  /** A reference whose peek just closed, focused again. */
+  refocus?: CapturedRange | undefined;
+}) {
+  const { thread } = props;
+  const pending = thread.pendingCount;
+  const read = useMessages(thread, props.expanded, props.messages);
+  const removed = thread.note?.removed === true;
+  const earlier = thread.anchor.snapshotId !== props.snapshotId;
+  const [code, setCode] = useState(false);
+  const slot = useRef<HTMLDivElement>(null);
+  useRefocus(slot, props.refocus);
+  return (
+    <div ref={slot} data-thread={thread.id} data-annotation {...stylex.props(styles.slot)}>
+      <div {...stylex.props(styles.box)}>
+        <button
+          type="button"
+          aria-expanded={props.expanded}
+          onClick={props.onToggle}
+          {...stylex.props(styles.chip)}
+        >
+          <span {...stylex.props(styles.chevron, props.expanded && styles.chevronOpen)} />
+          {props.located ? threadLocation(thread.anchor, props.snapshotId) : "Thread"} ·{" "}
+          {thread.messageCount} {thread.messageCount === 1 ? "message" : "messages"}
+          {pending > 0 && <span {...stylex.props(styles.pending)}>Pending</span>}
+          {thread.resolved && <span {...stylex.props(styles.resolved)}>Resolved</span>}
+        </button>
+        {props.expanded && (
+          <div {...stylex.props(styles.body)}>
+            {removed && (
+              <p role="note" {...stylex.props(styles.flag)}>
+                Its note was removed; the conversation stays on the code it was about.
+              </p>
+            )}
+            {earlier && (
+              <>
+                <p role="note" {...stylex.props(styles.flag)}>
+                  On earlier code a refresh changed; it stays there.
+                </p>
+                <button
+                  type="button"
+                  aria-expanded={code}
+                  onClick={() => setCode(!code)}
+                  {...stylex.props(styles.disclose)}
+                >
+                  {code ? "Hide the earlier code" : "Show the earlier code"}
+                </button>
+                {code && <PeekPreview target={thread.anchor} read={props.readCode} />}
+              </>
+            )}
+            {read.shown === undefined && read.failure === undefined && (
+              <p role="status" {...stylex.props(styles.meta)}>
+                Reading the messages…
+              </p>
+            )}
+            {read.failure !== undefined && (
+              <p role="alert" {...stylex.props(styles.alert)}>
+                Couldn't read the messages{read.failure}.{" "}
+                <PillButton onClick={read.retry}>Try again</PillButton>
+              </p>
+            )}
+            <ol {...stylex.props(styles.messages)}>
+              {read.shown?.messages.map((message) => (
+                <MessageItem
+                  key={message.id}
+                  message={message}
+                  thread={thread}
+                  notes={props.notes}
+                  act={props.act}
+                  onReference={props.onReference}
+                />
+              ))}
+            </ol>
+            {props.composer}
+            {!props.composer && (
+              <div {...stylex.props(styles.row)}>
+                {!thread.resolved && <PillButton onClick={props.onReply}>Reply</PillButton>}
+                <PillButton onClick={() => props.onResolve(read.shown?.version ?? thread.version)}>
+                  {thread.resolved ? "Reopen" : "Resolve"}
+                </PillButton>
+                {props.onShow && <PillButton onClick={props.onShow}>Show in the diff</PillButton>}
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/**
+ * C: every conversation, open ones first and resolved ones after, where resolved threads are
+ * reopened and threads whose code is no longer shown are read; and the drafts not being written.
+ */
+export function CommentsList(props: {
+  threads: readonly ThreadEntry[];
+  drafts: readonly Draft[];
+  snapshotId: string;
+  renderThread: (thread: ThreadEntry) => ReactNode;
+  /** The composer of a draft written here rather than in the panel, or undefined. */
+  renderDraft: (draft: Draft) => ReactNode;
+  onResume: (draft: Draft) => void;
+  onDiscard: (draft: Draft) => void;
+  onClose: () => void;
+}) {
+  const threads = commentsOrder(props.threads);
+  return (
+    <Dialog label="Comments" onClose={props.onClose}>
+      <div {...stylex.props(styles.list)}>
+        <div {...stylex.props(styles.listHead)}>
+          <h2 {...stylex.props(styles.title)}>Comments</h2>
+          <button type="button" autoFocus onClick={props.onClose} {...stylex.props(styles.close)}>
+            Close
+          </button>
+        </div>
+        {threads.length === 0 && props.drafts.length === 0 && (
+          <p {...stylex.props(styles.meta)}>No comments yet. Press c on code to start one.</p>
+        )}
+        {threads.map((thread) => (
+          <div key={thread.id}>{props.renderThread(thread)}</div>
+        ))}
+        {props.drafts.length > 0 && (
+          <>
+            <h3 {...stylex.props(styles.subtitle)}>Drafts</h3>
+            {props.drafts.map(
+              (draft) =>
+                props.renderDraft(draft) ?? (
+                  <div key={draft.id} data-draft={draft.id} {...stylex.props(styles.row)}>
+                    <span {...stylex.props(styles.meta)}>
+                      {draft.thread !== undefined || draft.note !== undefined ? "Reply" : "Comment"}{" "}
+                      on {threadLocation(draft.anchor, props.snapshotId)}
+                    </span>
+                    <PillButton onClick={() => props.onResume(draft)}>Resume</PillButton>
+                    <PillButton onClick={() => props.onDiscard(draft)}>Discard</PillButton>
+                  </div>
+                ),
+            )}
+          </>
+        )}
+      </div>
+    </Dialog>
+  );
+}
+
+// Annotations pad rather than keep a margin, so the element's top is where its row begins.
+const styles = stylex.create({
+  slot: { padding: "4px 10px 6px" },
+  box: {
+    padding: "6px 10px 8px",
+    borderRadius: "6px",
+    backgroundColor: theme.surface,
+    boxShadow: `inset 2px 0 0 ${theme.faint}`,
+    fontFamily: theme.sans,
+    whiteSpace: "normal",
+  },
+  composer: {
+    margin: "4px 10px 6px",
+    padding: "8px 10px",
+    borderRadius: "6px",
+    backgroundColor: theme.surface,
+    boxShadow: `inset 2px 0 0 ${theme["--accent"]}`,
+    fontFamily: theme.sans,
+    whiteSpace: "normal",
+  },
+  chip: {
+    display: "inline-flex",
+    alignItems: "center",
+    gap: "6px",
+    color: { default: theme.muted, ":hover": theme.ink },
+    fontFamily: theme["--mono"],
+    fontSize: "11.5px",
+  },
+  chevron: {
+    width: "5px",
+    height: "5px",
+    borderRightWidth: "1.5px",
+    borderRightStyle: "solid",
+    borderRightColor: theme.faint,
+    borderBottomWidth: "1.5px",
+    borderBottomStyle: "solid",
+    borderBottomColor: theme.faint,
+    transform: "rotate(-45deg)",
+  },
+  chevronOpen: { transform: "rotate(45deg)" },
+  body: { display: "grid", gap: "6px", marginTop: "6px" },
+  messages: { display: "grid", gap: "8px", margin: 0, padding: 0, listStyle: "none" },
+  message: {
+    paddingTop: "6px",
+    borderTopWidth: "1px",
+    borderTopStyle: "solid",
+    borderTopColor: theme.line,
+  },
+  meta: { display: "flex", alignItems: "center", gap: "4px", fontSize: "12px", color: theme.muted },
+  author: { color: theme.ink, fontWeight: 500 },
+  pending: { marginLeft: "6px", fontSize: "12px", color: theme.changed },
+  resolved: { marginLeft: "6px", fontSize: "12px", color: theme.add },
+  outdated: {
+    marginLeft: "6px",
+    fontSize: "12px",
+    color: { default: theme.hunkHeader, ":hover": theme.ink },
+    textDecoration: "underline",
+  },
+  wording: {
+    margin: "4px 0",
+    paddingLeft: "8px",
+    borderLeftWidth: "2px",
+    borderLeftStyle: "solid",
+    borderLeftColor: theme.hunkHeader,
+    fontSize: "12px",
+    color: theme.muted,
+  },
+  flag: { fontSize: "12px", color: theme.hunkHeader },
+  disclose: {
+    justifySelf: "start",
+    fontSize: "12px",
+    color: { default: theme.muted, ":hover": theme.ink },
+  },
+  alert: { fontSize: "12px", color: theme.del },
+  field: { display: "grid", gap: "6px", marginTop: "4px" },
+  textarea: {
+    width: "100%",
+    minHeight: "60px",
+    padding: "6px 8px",
+    borderRadius: "6px",
+    borderWidth: "1px",
+    borderStyle: "solid",
+    borderColor: { default: theme.line, ":focus": theme["--accent"] },
+    outline: "none",
+    backgroundColor: theme.panelBg,
+    color: theme.ink,
+    font: "inherit",
+    fontSize: "13px",
+    resize: "vertical",
+  },
+  select: {
+    height: "28px",
+    padding: "0 6px",
+    borderRadius: "7px",
+    borderWidth: "1px",
+    borderStyle: "solid",
+    borderColor: theme.line,
+    backgroundColor: theme.panelBg,
+    color: theme.ink,
+    font: "inherit",
+    fontSize: "12.5px",
+  },
+  row: { display: "flex", flexWrap: "wrap", alignItems: "center", gap: "6px" },
+  list: { display: "grid", gap: "8px", padding: "20px 22px" },
+  listHead: { display: "flex", alignItems: "center", justifyContent: "space-between" },
+  title: { fontSize: "14px", fontWeight: 500 },
+  subtitle: { marginTop: "6px", fontSize: "13px", fontWeight: 500, color: theme.muted },
+  close: {
+    height: "28px",
+    padding: "0 10px",
+    borderRadius: "7px",
+    color: { default: theme.muted, ":hover": theme.ink },
+    backgroundColor: { default: null, ":hover": theme.select },
+  },
+});

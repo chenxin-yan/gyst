@@ -180,6 +180,10 @@ describe("SessionSchema PR context", () => {
     applyReceipts: [],
     viewedReceipts: [],
     refreshReceipts: [],
+    threads: [],
+    drafts: [],
+    conversationReceipts: [],
+    pickupReceipts: [],
   };
   const context = {
     pullRequest: pullRequest(2),
@@ -226,6 +230,10 @@ describe("pullRequestStatusOf", () => {
     applyReceipts: [],
     viewedReceipts: [],
     refreshReceipts: [],
+    threads: [],
+    drafts: [],
+    conversationReceipts: [],
+    pickupReceipts: [],
     ...extra,
   });
   const pr = (number: number, repository = "acme/widgets") =>
@@ -243,7 +251,34 @@ describe("pullRequestStatusOf", () => {
 
   it("lists saved sessions of the selected PR and its known layers in layer order, never unopened ones", () => {
     const b = prSession("b", 2, { viewedHunkIds: ["b-1"] });
-    const c = prSession("c", 3, { hunks: [hunk("c-1")], viewedHunkIds: ["c-1"] });
+    const thread = (id: string, resolved: boolean): Session["threads"][number] => ({
+      id,
+      anchor: {
+        snapshotId: "a".repeat(64),
+        path: "c-1.txt",
+        side: "new",
+        startLine: 1,
+        endLine: 1,
+      },
+      resolved,
+      messages: [
+        {
+          id: `${id}-m`,
+          author: "human",
+          kind: "question",
+          pending: true,
+          markdown: "Why?",
+          references: [],
+          createdAt: at,
+        },
+      ],
+    });
+    const c = prSession("c", 3, {
+      hunks: [hunk("c-1")],
+      viewedHunkIds: ["c-1"],
+      // All hunks Viewed with a thread still open: the counts stay apart.
+      threads: [thread("t1", false), thread("t2", true)],
+    });
     const others = [
       session("range", { kind: "range", range: "layer-1...layer-2" }),
       session("local", { kind: "uncommitted" }),
@@ -254,8 +289,8 @@ describe("pullRequestStatusOf", () => {
       ...b.pullRequest,
       selected: 2,
       sessions: [
-        { number: 2, sessionId: "b", hunkCount: 2, viewedCount: 1 },
-        { number: 3, sessionId: "c", hunkCount: 1, viewedCount: 1 },
+        { number: 2, sessionId: "b", hunkCount: 2, viewedCount: 1, openThreads: 0 },
+        { number: 3, sessionId: "c", hunkCount: 1, viewedCount: 1, openThreads: 1 },
       ],
     });
     // Layer 1 has no session: it is absent, not 0 of 0.
@@ -282,7 +317,7 @@ describe("pullRequestStatusOf", () => {
       },
     });
     expect(pullRequestStatusOf(removed, [b, removed])!.sessions).toEqual([
-      { number: 3, sessionId: "c", hunkCount: 2, viewedCount: 0 },
+      { number: 3, sessionId: "c", hunkCount: 2, viewedCount: 0, openThreads: 0 },
     ]);
     // Never verified: only the selected PR is known.
     const unknown = prSession("b", 2, {
@@ -323,6 +358,7 @@ describe("pullRequestStatusOf", () => {
         notesOutdated: [],
       },
       viewedHunkIds: [],
+      threads: { open: 0, resolved: 0, pending: 0 },
       files: [],
       pullRequest: pullRequestStatusOf(b, [b]),
     };
