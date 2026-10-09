@@ -2874,4 +2874,76 @@ describe("Sessions captured reads over real captures", () => {
       }),
     );
   });
+
+  it("keeps Generated files from capture: reads and checks never resolve them, refresh does", async () => {
+    const cwd = await repo("generated", {
+      ".gitattributes": "gen.txt linguist-generated\n",
+      "gen.txt": "generated\n",
+      "plain.txt": "plain\n",
+    });
+    await writeFile(join(cwd, "gen.txt"), "generated again\n");
+    await writeFile(join(cwd, "plain.txt"), "plain again\n");
+    await runReal(
+      Effect.gen(function* () {
+        const sessions = yield* Sessions;
+        const { session } = yield* sessions.open({ command: "open", cwd, scope: uncommitted });
+        const status = () => sessions.status({ command: "status", session: session.id });
+        const created = yield* status();
+        expect(created.files).toEqual([
+          { path: "gen.txt", hunkCount: 1, viewed: false, generated: true },
+          { path: "plain.txt", hunkCount: 1, viewed: false },
+        ]);
+        const diff = yield* sessions.diff({ command: "diff", session: session.id });
+        expect(diff.generatedFiles).toEqual(["gen.txt"]);
+        const plainOnly = { command: "diff", session: session.id, file: "plain.txt" } as const;
+        expect(yield* sessions.diff(plainOnly)).not.toHaveProperty("generatedFiles");
+        const files = yield* sessions.files({
+          command: "files",
+          session: session.id,
+          snapshotId: session.snapshotId,
+        });
+        expect(files.files.find(({ path }) => path === "gen.txt")).toMatchObject({
+          generated: true,
+        });
+        yield* viewedNow(
+          session.id,
+          diff.hunks.map(({ id }) => id),
+          "both",
+        );
+
+        // Git's own resolution now unmarks gen.txt without touching captured content: a source
+        // check keeps the snapshot's record, and only a refresh reads attributes again.
+        yield* Effect.promise(() =>
+          writeFile(join(cwd, ".git", "info", "attributes"), "gen.txt -linguist-generated\n"),
+        );
+        expect(yield* sessions.check({ command: "check", session: session.id })).toMatchObject({
+          state: "unchanged",
+        });
+        expect((yield* status()).files[0]).toMatchObject({ generated: true });
+        const unmarked = yield* refreshNow(session.id);
+        expect(unmarked).toMatchObject({ replaced: true, previousSnapshotId: session.snapshotId });
+        expect((yield* status()).files).toEqual([
+          { path: "gen.txt", hunkCount: 1, viewed: true },
+          { path: "plain.txt", hunkCount: 1, viewed: true },
+        ]);
+
+        // A committed attribute edited in the checkout is captured content, so a check sees it.
+        yield* Effect.promise(() =>
+          writeFile(join(cwd, ".gitattributes"), "plain.txt linguist-vendored\n"),
+        );
+        expect(yield* sessions.check({ command: "check", session: session.id })).toMatchObject({
+          state: "changed",
+        });
+        expect((yield* refreshNow(session.id)).replaced).toBe(true);
+        expect((yield* status()).files).toEqual([
+          { path: ".gitattributes", hunkCount: 1, viewed: false },
+          { path: "gen.txt", hunkCount: 1, viewed: true },
+          { path: "plain.txt", hunkCount: 1, viewed: true, generated: true },
+        ]);
+        expect(
+          (yield* sessions.diff({ command: "diff", session: session.id })).generatedFiles,
+        ).toEqual(["plain.txt"]);
+      }),
+    );
+  });
 });

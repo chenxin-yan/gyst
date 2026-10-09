@@ -497,6 +497,9 @@ const lineStep = 57;
 
 const noWholeFiles: ReadonlyMap<string, string> = new Map();
 
+const generatedOf = (status: StatusPayload): ReadonlySet<string> =>
+  new Set(status.files.flatMap(({ path, generated }) => (generated ? [path] : [])));
+
 function SessionReader(props: {
   session: SessionSummary;
   hunks: readonly Hunk[];
@@ -509,7 +512,9 @@ function SessionReader(props: {
   const router = useRouter();
   const [pages, setPages] = useState([props.firstPage]);
   // Where the reader left this session earlier in this page's life, as far as a refresh kept it.
-  const [recalled] = useState(() => recall(session.id, snapshotId, hunks));
+  const [recalled] = useState(() =>
+    recall(session.id, snapshotId, hunks, generatedOf(props.status)),
+  );
   const [review, setReview] = useState<ReviewView>(recalled?.review ?? { kind: "files", path: "" });
   const [mode, setMode] = useState<LayoutMode>("auto");
   const [width, setWidth] = useState(0);
@@ -517,7 +522,11 @@ function SessionReader(props: {
   const [inputMode, setInputMode] = useState<InputMode>(recalled?.inputMode ?? "vim");
   const [cursor, setCursor] = useState<Cursor | undefined>(recalled?.cursor);
   const [lines, setLines] = useState<CodeViewLineSelection | null>(null);
-  const [folded, setFolded] = useState<ReadonlySet<string>>(new Set());
+  // Generated files start folded in every view; the fold state is shared, so they unfold as usual.
+  // A return keeps the folds it left.
+  const [folded, setFolded] = useState<ReadonlySet<string>>(
+    () => recalled?.folded ?? generatedOf(props.status),
+  );
   const [dialog, setDialog] = useState<"menu" | "help">();
   // Hidden lines opened per file. They live here, not in the renderer, which forgets them with
   // an item it drops; bumping the version re-reads the cursor model after the renderer opened some.
@@ -585,6 +594,8 @@ function SessionReader(props: {
     [manifest],
   );
   const files = useMemo(() => changedFiles(hunks, manifest), [hunks, manifest]);
+  // From status as well as pages: it is complete when the reader starts.
+  const generated = useMemo(() => generatedOf(status), [status]);
   const byPath = useMemo(() => new Map(files.map((file) => [file.path, file])), [files]);
   // Memoized: a new list makes the renderer reconcile its items and restore the reading position.
   // An expanded reference shows its one file: every hunk of a changed one, with no Viewed section.
@@ -795,6 +806,7 @@ function SessionReader(props: {
     inputMode,
     cursor,
     opened,
+    folded,
     top: recalled?.top,
   });
   readingPlace.current = {
@@ -806,6 +818,7 @@ function SessionReader(props: {
     back,
     inputMode,
     cursor,
+    folded,
   };
   useEffect(() => remember(session.id, snapshotId, hunks, readingPlace.current));
   const returning = useRef(recalled !== undefined);
@@ -1816,6 +1829,7 @@ function SessionReader(props: {
                 // read that failed after it was rebuilt no longer applies.
                 load={wholeFileType(file.manifest) === undefined ? loads.get(path) : undefined}
                 cursor={vim && here?.kind === "header" && here.file === path}
+                generated={file.manifest?.generated === true || generated.has(path)}
                 folded={diffs.has(path) ? folded.has(path) : undefined}
                 onFold={() => setFolds([path], !folded.has(path))}
                 viewed={
@@ -2660,6 +2674,8 @@ function FileHeader(props: {
   load: FileLoad | undefined;
   /** The Vim cursor is on this header. */
   cursor: boolean;
+  /** The snapshot records the file as Generated. */
+  generated: boolean;
   /** Undefined for a file without a diff to fold. */
   folded: boolean | undefined;
   onFold: () => void;
@@ -2703,6 +2719,14 @@ function FileHeader(props: {
           </button>
         )}
       </h2>
+      {props.generated && (
+        <span
+          {...stylex.props(headerStyles.generated)}
+          title="Marked linguist-generated or linguist-vendored by Git attributes"
+        >
+          Generated
+        </span>
+      )}
       {notes.length > 0 && (
         <span {...stylex.props(headerStyles.note)} title={notes.join(" ")}>
           {notes.join(" ")}
@@ -2862,6 +2886,14 @@ const headerStyles = stylex.create({
     textOverflow: "ellipsis",
     color: theme.muted,
     fontSize: "12px",
+  },
+  generated: {
+    flexShrink: 0,
+    padding: "0 6px",
+    borderRadius: "4px",
+    backgroundColor: theme.line,
+    color: theme.muted,
+    fontSize: "11.5px",
   },
   // Only the words shorten: the alert's button always stays whole and clickable.
   failure: { display: "flex", alignItems: "center", gap: "6px", minWidth: 0, color: theme.del },

@@ -45,6 +45,7 @@ function preparationOf(session: Session): Preparation {
 
 export function statusOf(session: Session): StatusPayload {
   const viewed = new Set(session.viewedHunkIds);
+  const generated = new Set(session.generatedFiles);
   const files = new Map<string, { hunkCount: number; viewed: boolean }>();
   for (const hunk of session.hunks) {
     const file = files.get(hunk.file) ?? { hunkCount: 0, viewed: true };
@@ -60,6 +61,10 @@ export function statusOf(session: Session): StatusPayload {
     groups: session.groups.map((group) => ({ ...group, count: group.hunkIds.length })),
     preparation: preparationOf(session),
     viewedHunkIds: [...session.viewedHunkIds],
-    files: [...files].map(([path, file]) => ({ path, ...file })),
+    files: [...files].map(([path, file]) => ({
+      path,
+      ...file,
+      ...(generated.has(path) && { generated: true as const }),
+    })),
   };
 }

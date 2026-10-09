@@ -883,6 +883,146 @@ describe("Git.capture", () => {
   });
 });
 
+const generatedOf = (manifest: SnapshotManifest) =>
+  manifest.files.filter((file) => file.generated).map(({ path }) => path);
+
+describe("Git.capture Generated files", () => {
+  it("marks changed files Git's attributes set generated or vendored, as Git resolves them", async () => {
+    const cwd = await repo("generated-resolution");
+    await writeFile(
+      join(cwd, ".gitattributes"),
+      [
+        "[attr]bundled linguist-vendored",
+        "*.gen linguist-generated",
+        "on.txt linguist-generated=true",
+        "off.gen linguist-generated=false",
+        "unset.gen -linguist-generated",
+        "lib/** bundled",
+        "",
+      ].join("\n"),
+    );
+    await mkdir(join(cwd, "lib"));
+    await mkdir(join(cwd, "sub"));
+    await writeFile(
+      join(cwd, "sub", ".gitattributes"),
+      "*.out linguist-vendored\nkept.gen -linguist-generated\n",
+    );
+    const edited = [
+      "a.gen",
+      "lib/x.js",
+      "off.gen",
+      "on.txt",
+      "plain.txt",
+      "sub/kept.gen",
+      "sub/y.out",
+      "unset.gen",
+    ];
+    for (const path of [...edited, "mode.gen", "stable.gen"])
+      await writeFile(join(cwd, path), "before\n");
+    git(cwd, "add", ".");
+    git(cwd, "commit", "-qm", "attributes");
+    for (const path of edited) await writeFile(join(cwd, path), "after\n");
+    await chmod(join(cwd, "mode.gen"), 0o755);
+
+    const manifest = await capture(cwd);
+    // Unchanged `stable.gen` is supporting source, not a Generated change.
+    expect(generatedOf(manifest)).toEqual(["a.gen", "lib/x.js", "mode.gen", "on.txt", "sub/y.out"]);
+    expect(fileOf(manifest, "a.gen")).toEqual({
+      path: "a.gen",
+      old: { kind: "text", blob: sha256("before\n"), size: 7 },
+      new: { kind: "text", blob: sha256("after\n"), size: 6 },
+      generated: true,
+    });
+    expect(hunkFiles(manifest)).toEqual([...edited]);
+  });
+
+  it("reads an uncommitted change's attributes from the working tree and a deletion's from HEAD", async () => {
+    const cwd = await repo("generated-uncommitted");
+    await writeFile(join(cwd, ".gitattributes"), "dist/** linguist-generated\n");
+    await mkdir(join(cwd, "dist"));
+    await writeFile(join(cwd, "dist", "old.js"), "old\n");
+    await writeFile(join(cwd, "dist", "kept.js"), "kept\n");
+    git(cwd, "add", ".");
+    git(cwd, "commit", "-qm", "dist");
+    await writeFile(join(cwd, ".gitattributes"), "new/** linguist-generated\n");
+    await rm(join(cwd, "dist", "old.js"));
+    await writeFile(join(cwd, "dist", "kept.js"), "kept, edited\n");
+    await mkdir(join(cwd, "new"));
+    await writeFile(join(cwd, "new", "added.js"), "added\n");
+
+    expect(generatedOf(await capture(cwd))).toEqual(["dist/old.js", "new/added.js"]);
+  });
+
+  it("reads uncommitted attributes from the captured attributes files only, not the index or attr.tree", async () => {
+    const cwd = await repo("generated-captured-attributes");
+    await mkdir(join(cwd, "sub"));
+    await writeFile(join(cwd, ".gitattributes"), "b.js linguist-vendored\n");
+    await writeFile(join(cwd, "sub", ".gitattributes"), "a.js linguist-generated\n");
+    for (const path of ["sub/a.js", "b.js", "c.js"]) await writeFile(join(cwd, path), "before\n");
+    git(cwd, "add", ".");
+    git(cwd, "commit", "-qm", "attributes");
+    // Deleted without staging: Git alone would fall back to the index copy.
+    await rm(join(cwd, "sub", ".gitattributes"));
+    await writeFile(join(cwd, ".gitattributes"), "c.js linguist-vendored\n");
+    await mkdir(join(cwd, "new"));
+    await writeFile(join(cwd, "new", ".gitattributes"), "d.js linguist-generated\n");
+    for (const path of ["sub/a.js", "b.js", "c.js", "new/d.js"])
+      await writeFile(join(cwd, path), "after\n");
+
+    expect(generatedOf(await capture(cwd))).toEqual(["c.js", "new/d.js"]);
+    git(cwd, "config", "attr.tree", "HEAD");
+    // The tree of captured attributes files never writes into the repository.
+    git(cwd, "config", "core.splitIndex", "true");
+    const before = await readdir(join(cwd, ".git"));
+    expect(generatedOf(await capture(cwd))).toEqual(["c.js", "new/d.js"]);
+    expect(await readdir(join(cwd, ".git"))).toEqual(before);
+  });
+
+  it("reads uncommitted attributes from more captured attributes files than one command line holds", async () => {
+    const cwd = await repo("generated-many-attributes");
+    // About 2.7 MB of paths, past Linux's 2 MiB default argument limit.
+    const deep = join(...Array.from({ length: 15 }, (_, at) => `${at}`.padEnd(250, "d")));
+    const dirs = Array.from({ length: 700 }, (_, at) => join(deep, `${at}`));
+    for (const [at, dir] of dirs.entries()) {
+      await mkdir(join(cwd, dir), { recursive: true });
+      // Every other file marks its own x.js, so an attributes file read for another path shows.
+      await writeFile(
+        join(cwd, dir, ".gitattributes"),
+        `${at % 2 ? "y" : "x"}.js linguist-generated\n`,
+      );
+      await writeFile(join(cwd, dir, "x.js"), "x\n");
+    }
+
+    expect(generatedOf(await capture(cwd))).toEqual(
+      dirs.flatMap((dir, at) => (at % 2 ? [] : [join(dir, "x.js")])).sort(),
+    );
+  }, 60_000);
+
+  it("reads a range's attributes from its commits, while uncommitted work reads the checkout's", async () => {
+    const cwd = await repo("generated-range");
+    await writeFile(join(cwd, ".gitattributes"), "gone.js linguist-vendored\n");
+    await writeFile(join(cwd, "gone.js"), "vendored\n");
+    git(cwd, "add", ".");
+    git(cwd, "commit", "-qm", "base");
+    const base = git(cwd, "rev-parse", "HEAD").trim();
+    await writeFile(join(cwd, ".gitattributes"), "gen.js linguist-generated\n");
+    await rm(join(cwd, "gone.js"));
+    await writeFile(join(cwd, "gen.js"), "generated\n");
+    git(cwd, "add", "-A");
+    git(cwd, "commit", "-qm", "head");
+    // The checkout now unmarks everything; committed sides never read it.
+    await writeFile(join(cwd, ".gitattributes"), "* -linguist-generated -linguist-vendored\n");
+    await writeFile(join(cwd, "gen.js"), "generated, edited\n");
+
+    for (const range of [`${base}..HEAD`, `${base}...HEAD`])
+      expect(generatedOf(await capture(cwd, { kind: "range", range }))).toEqual([
+        "gen.js",
+        "gone.js",
+      ]);
+    expect(generatedOf(await capture(cwd))).toEqual([]);
+  });
+});
+
 const pullRequestScope = (number: number) =>
   ({ kind: "pr", repository: githubRepository, number }) as const;
 /**
@@ -1164,6 +1304,19 @@ describe("Git.capturePullRequest", () => {
     const readme = fileOf(manifest, "README.md");
     expect(readme?.old).toEqual(readme?.new);
     expect(await bytesOf(readme?.new)).toEqual(Buffer.from("widgets\n"));
+  });
+
+  it("reads a PR's attributes from its fetched head, not the checkout", async () => {
+    const github = await githubOrigin(join(root, "capture-pr-generated"));
+    const head = await github.commit(
+      "generated",
+      { ".gitattributes": "gen.txt linguist-generated\n", "gen.txt": "generated\n" },
+      { from: "main" },
+    );
+    github.publish("generated", 6);
+    const manifest = await capturePullRequest(github.checkout, 6, "main", head);
+    expect(generatedOf(manifest)).toEqual(["gen.txt"]);
+    expect(existsSync(join(github.checkout, ".gitattributes"))).toBe(false);
   });
 
   it("captures nothing when the PR range cannot be resolved", async () => {
