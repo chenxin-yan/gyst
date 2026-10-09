@@ -62,8 +62,8 @@ export const SessionSummarySchema = Schema.Struct(sessionSummaryFields);
 export type SessionSummary = typeof SessionSummarySchema.Type;
 /**
  * How far an agent has prepared the walkthrough. `plain` has no guidance at all; `complete` puts
- * every current hunk in exactly one group, with the walkthrough and every group overview present.
- * Anything between is `incomplete`: valid and readable, never refused.
+ * every current hunk in exactly one group, with the walkthrough and every group overview present
+ * and no Outdated guidance. Anything between is `incomplete`: valid and readable, never refused.
  */
 export const PreparationSchema = Schema.Struct({
   state: Schema.Literals(["plain", "incomplete", "complete"]),
@@ -71,6 +71,10 @@ export const PreparationSchema = Schema.Struct({
   totalHunks: Schema.Natural,
   overviewMissing: Schema.Boolean,
   groupsMissingOverview: Schema.Array(Schema.String),
+  overviewOutdated: Schema.Boolean,
+  /** Groups a refresh emptied, or whose overview is Outdated. */
+  groupsOutdated: Schema.Array(Schema.String),
+  notesOutdated: Schema.Array(Schema.String),
 });
 export type Preparation = typeof PreparationSchema.Type;
 
@@ -127,6 +131,25 @@ const ViewedReceiptSchema = Schema.Struct({
 });
 export type ViewedReceipt = typeof ViewedReceiptSchema.Type;
 
+/**
+ * The recorded answer to a `refresh` request. `replaced` is false when the capture was identical,
+ * so the snapshot and review state stayed as they were.
+ */
+export const RefreshPayloadSchema = Schema.Struct({
+  sessionId: Schema.String,
+  previousSnapshotId: Schema.String,
+  snapshotId: Schema.String,
+  revision: Schema.Number,
+  replaced: Schema.Boolean,
+});
+export type RefreshPayload = typeof RefreshPayloadSchema.Type;
+const RefreshReceiptSchema = Schema.Struct({
+  requestId: Schema.String,
+  digest: Schema.String,
+  result: RefreshPayloadSchema,
+});
+export type RefreshReceipt = typeof RefreshReceiptSchema.Type;
+
 export const SessionSchema = Schema.Struct({
   ...sessionSummaryFields,
   revision: Schema.Number,
@@ -140,6 +163,7 @@ export const SessionSchema = Schema.Struct({
   receiptTexts: Schema.Array(MarkdownSchema),
   applyReceipts: Schema.Array(ApplyReceiptSchema),
   viewedReceipts: Schema.Array(ViewedReceiptSchema),
+  refreshReceipts: Schema.Array(RefreshReceiptSchema),
   /** A PR session's GitHub context, apart from its snapshot: refresh re-reads only the range. */
   pullRequest: Schema.optional(PullRequestContextSchema),
 }).check(

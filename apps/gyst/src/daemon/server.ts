@@ -218,7 +218,11 @@ export class DaemonServer extends Context.Service<
           case "refresh":
             return sessions
               .refresh(request, onProgress)
-              .pipe(Effect.tap(({ session }) => navigation.retire(session.id, session.snapshotId)));
+              .pipe(
+                Effect.tap(({ sessionId, snapshotId, replaced }) =>
+                  replaced ? navigation.retire(sessionId, snapshotId) : Effect.void,
+                ),
+              );
           case "delete":
             return sessions
               .delete(request)

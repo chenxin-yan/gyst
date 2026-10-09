@@ -43,7 +43,14 @@ import {
   useState,
 } from "react";
 import { flushSync } from "react-dom";
-import { events, isExpectedFailure, newRequestId, operation, TransportError } from "../api.ts";
+import {
+  events,
+  isExpectedFailure,
+  isUncertain,
+  newRequestId,
+  operation,
+  TransportError,
+} from "../api.ts";
 import { CommandMenu, KeyHelp } from "../commands.tsx";
 import {
   AllSessionsLink,
@@ -83,7 +90,14 @@ import {
 } from "../cursor.ts";
 import { CapturedHeader, useWholeSides } from "../expanded.tsx";
 import { contentLoader, hydrationConcurrency, hydrationWindow, nearbyItems } from "../hydration.ts";
-import { type Command, type CommandId, commandsFor, type InputMode, typed } from "../keymap.ts";
+import {
+  type Command,
+  type CommandId,
+  commandsFor,
+  completesSequence,
+  type InputMode,
+  typed,
+} from "../keymap.ts";
 import {
   behind,
   initialLive,
@@ -144,11 +158,18 @@ import {
   type NoteFrom,
   noteSequence,
   noteStep,
+  outdatedReason,
   type ReviewView,
   viewFiles,
   type ViewFiles,
 } from "../walkthrough.ts";
-import { ForeignHunkLabel, NoteCard, OverviewCard, WalkthroughNav } from "../walkthrough.tsx";
+import {
+  EarlierNoteCard,
+  ForeignHunkLabel,
+  NoteCard,
+  OverviewCard,
+  WalkthroughNav,
+} from "../walkthrough.tsx";
 
 export const Route = createFileRoute("/session/$sessionId")({
   loader: async ({ params: { sessionId } }) => {
@@ -487,8 +508,8 @@ function SessionReader(props: {
   const navigate = useNavigate();
   const router = useRouter();
   const [pages, setPages] = useState([props.firstPage]);
-  // Where the reader left this session earlier in this page's life, if in this snapshot.
-  const [recalled] = useState(() => recall(session.id, snapshotId));
+  // Where the reader left this session earlier in this page's life, as far as a refresh kept it.
+  const [recalled] = useState(() => recall(session.id, snapshotId, hunks));
   const [review, setReview] = useState<ReviewView>(recalled?.review ?? { kind: "files", path: "" });
   const [mode, setMode] = useState<LayoutMode>("auto");
   const [width, setWidth] = useState(0);
@@ -567,8 +588,13 @@ function SessionReader(props: {
   const byPath = useMemo(() => new Map(files.map((file) => [file.path, file])), [files]);
   // Memoized: a new list makes the renderer reconcile its items and restore the reading position.
   // An expanded reference shows its one file: every hunk of a changed one, with no Viewed section.
-  const capturedFile = captured && byPath.get(captured.path);
-  const capturedEntry = captured && manifestByPath.get(captured.path);
+  // A reference into an earlier snapshot expands as that snapshot's file, read whole from it, never
+  // as the current files' diff or entry at its path.
+  const earlierPath =
+    captured !== undefined && captured.snapshotId !== snapshotId ? captured.path : undefined;
+  const currentPath = earlierPath === undefined ? captured?.path : undefined;
+  const capturedFile = currentPath === undefined ? undefined : byPath.get(currentPath);
+  const capturedEntry = currentPath === undefined ? undefined : manifestByPath.get(currentPath);
   const inView = useMemo(
     (): ViewFiles =>
       captured
@@ -582,7 +608,11 @@ function SessionReader(props: {
   );
   const shown = inView.files;
   const shownByPath = useMemo(() => new Map(shown.map((file) => [file.path, file])), [shown]);
-  const notes = useMemo(() => noteSequence(inView, status), [inView, status]);
+  // Current notes explain current lines, which an earlier snapshot's file does not show.
+  const notes = useMemo(
+    () => (earlierPath === undefined ? noteSequence(inView, status) : []),
+    [earlierPath, inView, status],
+  );
   const noteAnnotations = useMemo(
     () => annotationsOf(inView, notes, status),
     [inView, notes, status],
@@ -614,12 +644,19 @@ function SessionReader(props: {
   // shape, which the renderer hydrates in place when a range opens before the file loaded eagerly,
   // or an eagerly loaded clone. Kept once loaded: the renderer retains the rendered diffs of the
   // items it recycles, so dropping ours would not bound memory (#108).
-  const [diffs, setDiffs] = useState<ReadonlyMap<string, FileDiffMetadata>>(
+  const [loadedDiffs, setDiffs] = useState<ReadonlyMap<string, FileDiffMetadata>>(
     () =>
       new Map(
         files.flatMap((file) => (file.hunks.length > 0 ? [[file.path, fileDiffOf(file)]] : [])),
       ),
   );
+  // What the panel shows: an expanded earlier snapshot's file has no current diff.
+  const diffs = useMemo(() => {
+    if (earlierPath === undefined) return loadedDiffs;
+    const shownDiffs = new Map(loadedDiffs);
+    shownDiffs.delete(earlierPath);
+    return shownDiffs;
+  }, [loadedDiffs, earlierPath]);
 
   const setLoad = useCallback(
     (path: string, load: FileLoad | undefined) =>
@@ -702,7 +739,7 @@ function SessionReader(props: {
   // A files page can bring a file's entry after its diff was built without one, and only the
   // entry says a whole side has no lines. A load that failed meanwhile no longer applies.
   useEffect(() => {
-    const late = lateWholeFiles(files, diffs);
+    const late = lateWholeFiles(files, loadedDiffs);
     if (late.length === 0) return;
     for (const file of late) setLoad(file.path, undefined);
     setDiffs((before) => {
@@ -710,7 +747,7 @@ function SessionReader(props: {
       for (const file of late) next.set(file.path, fileDiffOf(file));
       return next;
     });
-  }, [files, diffs, setLoad]);
+  }, [files, loadedDiffs, setLoad]);
 
   const hydratable = useMemo(
     () =>
@@ -770,15 +807,15 @@ function SessionReader(props: {
     inputMode,
     cursor,
   };
-  useEffect(() => remember(session.id, snapshotId, readingPlace.current));
+  useEffect(() => remember(session.id, snapshotId, hunks, readingPlace.current));
   const returning = useRef(recalled !== undefined);
   const onPosition = useCallback(
     (top: Restore) => {
       if (returning.current) return;
       readingPlace.current = { ...readingPlace.current, top };
-      remember(session.id, snapshotId, readingPlace.current);
+      remember(session.id, snapshotId, hunks, readingPlace.current);
     },
-    [session.id, snapshotId],
+    [session.id, snapshotId, hunks],
   );
 
   const tree = useMemo(
@@ -1138,21 +1175,25 @@ function SessionReader(props: {
       file: manifestByPath.get(peek.target.path),
       complete: pages.at(-1)!.next === null,
     });
-  const peekRead = useMemo(() => {
-    if (peek === undefined) return undefined;
-    const { target } = peek;
-    return () => {
+  /** A target's lines with their context, read once and kept for the session (#108). */
+  const readOnce = useCallback(
+    (target: CapturedRange) => {
       const key = JSON.stringify(target);
       let read = rangeReads.current.get(key);
       if (read === undefined) {
         read = readRange(target, readCode);
-        // A failed read is read again when the peek opens again.
+        // A failed read is read again when asked again.
         read.catch(() => rangeReads.current.delete(key));
         rangeReads.current.set(key, read);
       }
       return read;
-    };
-  }, [peek, readCode]);
+    },
+    [readCode],
+  );
+  const peekRead = useMemo(
+    () => (peek === undefined ? undefined : () => readOnce(peek.target)),
+    [peek, readOnce],
+  );
   const peekOf = (overlay?: { spacer: HTMLDivElement | null; extent: () => Extent | undefined }) =>
     peek &&
     peekAvailability &&
@@ -1171,12 +1212,118 @@ function SessionReader(props: {
       />
     );
 
+  // The view's overview: a group's, with its notes on earlier code, or the walkthrough's above the
+  // whole snapshot.
+  const earlierNotes =
+    inView.group?.notes.filter(({ anchor }) => anchor.snapshotId !== snapshotId) ?? [];
+  const overviewHeader = inView.group ? (
+    <OverviewCard
+      label="Group overview"
+      title={inView.group.title}
+      overview={inView.group.overview}
+      outdated={outdatedReason(inView.group.overview?.outdated, inView.group.hunkIds.length === 0)}
+      onReference={(target) => follow(target, { kind: "overview" })}
+      earlierNotes={
+        earlierNotes.length > 0 && (
+          <section aria-label="Notes on earlier code" {...stylex.props(styles.earlierNotes)}>
+            {earlierNotes.map((note) => (
+              <EarlierNoteCard
+                key={note.id}
+                note={note}
+                read={() => readOnce(note.anchor)}
+                onReference={(target) => follow(target, { kind: "overview" })}
+              />
+            ))}
+          </section>
+        )
+      }
+      peek={peek?.origin.kind === "overview" && peekOf()}
+      refocus={refocus?.origin.kind === "overview" ? refocus.target : undefined}
+    />
+  ) : (
+    review.kind === "files" &&
+    review.path === "" &&
+    status.overview && (
+      <OverviewCard
+        label="Walkthrough overview"
+        overview={status.overview}
+        outdated={outdatedReason(status.overview.outdated)}
+        onReference={(target) => follow(target, { kind: "overview" })}
+        peek={peek?.origin.kind === "overview" && peekOf()}
+        refocus={refocus?.origin.kind === "overview" ? refocus.target : undefined}
+      />
+    )
+  );
+
+  // A refresh whose reply did not arrive is sent again under its own id, so a lost acknowledgement
+  // gets the recorded result instead of refreshing twice; any reply settles it.
+  const pendingRefresh = useRef<{ snapshotId: string; requestId: string }>(undefined);
+  const refreshing = useRef(false);
+  const refresh = async () => {
+    if (refreshing.current) return;
+    refreshing.current = true;
+    const request =
+      pendingRefresh.current?.snapshotId === snapshotId
+        ? pendingRefresh.current
+        : { snapshotId, requestId: newRequestId() };
+    pendingRefresh.current = request;
+    setNotice("Refreshing from the source…");
+    try {
+      const result = await operation({ command: "refresh", session: session.id, ...request });
+      pendingRefresh.current = undefined;
+      if (!mounted.current) return;
+      if (!result.replaced) return setNotice("Nothing changed since this snapshot.");
+      setNotice(undefined);
+      // The reader starts again on the new snapshot, where what it was reading survives.
+      void router.invalidate();
+    } catch (error) {
+      const uncertain = isUncertain(error);
+      if (!uncertain) pendingRefresh.current = undefined;
+      if (!isExpectedFailure(error)) console.error(error);
+      if (!mounted.current) return;
+      setNotice(
+        isDaemonError(error, "stale_revision")
+          ? "This session was already refreshed; reload it to read the new snapshot."
+          : uncertain
+            ? "The refresh may not have finished. Press R to try again; it won't refresh twice."
+            : `Couldn't refresh; nothing changed.${error instanceof Error && error.message ? ` ${error.message}` : ""}`,
+      );
+    } finally {
+      refreshing.current = false;
+    }
+  };
+
+  /** Says whether the source changed since this snapshot; it never refreshes or changes progress. */
+  const checkSource = async () => {
+    setNotice("Checking the source…");
+    try {
+      const result = await operation({ command: "check", session: session.id });
+      if (!mounted.current) return;
+      setNotice(
+        result.snapshotId !== snapshotId
+          ? "This session was already refreshed; reload it to read the new snapshot."
+          : result.state === "unchanged"
+            ? "The source matches this snapshot."
+            : result.state === "changed"
+              ? "The source changed since this snapshot; press R to refresh."
+              : `Can't tell whether the source changed${result.message ? `: ${result.message}` : ""}.`,
+      );
+    } catch (error) {
+      if (mounted.current)
+        setNotice(
+          `Couldn't check the source${error instanceof Error && error.message ? `: ${error.message}` : ""}.`,
+        );
+    }
+  };
+
   const run = (id: CommandId) => {
     const view = viewer.current;
     if (id !== "nextNote" && id !== "previousNote") lastNote.current = undefined;
     setRefocus(undefined);
     setNotice(undefined);
     if (id === "menu" || id === "help") return setDialog(id);
+    if (id === "refresh") return void refresh();
+    if (id === "check") return void checkSource();
     if (id === "back") return goBack();
     if (id === "viewed" && captured)
       return setNotice("Viewed doesn't change while a captured file is expanded.");
@@ -1332,12 +1479,30 @@ function SessionReader(props: {
   // every binding leaves the event alone and this guard decides. It reads the live DOM and `runRef`,
   // not render state: a dialog closes before React renders it closed, and the library syncs
   // callbacks after the render.
+  // The two most recent key presses, recorded before any binding sees them, so a key that ends a
+  // sequence (`z` then `R`) is left to that sequence rather than run as its own command.
+  const keysSeen = useRef<{
+    previous: { key: string; at: number } | undefined;
+    current: { key: string; at: number } | undefined;
+  }>({ previous: undefined, current: undefined });
+  useEffect(() => {
+    const record = (event: KeyboardEvent) => {
+      if (event.repeat || ["Shift", "Control", "Alt", "Meta"].includes(event.key)) return;
+      keysSeen.current = {
+        previous: keysSeen.current.current,
+        current: { key: event.key, at: event.timeStamp },
+      };
+    };
+    document.addEventListener("keydown", record, { capture: true });
+    return () => document.removeEventListener("keydown", record, { capture: true });
+  }, []);
   const runRef = useRef(run);
   runRef.current = run;
   const reviewKey =
-    (id: CommandId, step: Hotkey): HotkeyCallback =>
+    (id: CommandId, step: Hotkey, single: boolean): HotkeyCallback =>
     (event) => {
       if (event.defaultPrevented || event.isComposing || !typed(step, event)) return;
+      if (single && completesSequence(event, keysSeen.current.previous, event.timeStamp)) return;
       const target = event.target instanceof Element ? event.target : null;
       if (target?.closest("dialog") || isTextEntry(target)) return;
       if (document.querySelector("dialog[open]")) return;
@@ -1358,7 +1523,7 @@ function SessionReader(props: {
   useHotkeys(
     bindings
       .filter(({ keys }) => keys.length === 1)
-      .map(({ id, keys }) => ({ hotkey: keys[0]!, callback: reviewKey(id, keys[0]!) })),
+      .map(({ id, keys }) => ({ hotkey: keys[0]!, callback: reviewKey(id, keys[0]!, true) })),
     bindingOptions,
   );
   // Disabled while a dialog is open, so keys typed in it can't start a sequence. `dialog` lags the
@@ -1366,7 +1531,10 @@ function SessionReader(props: {
   useHotkeySequences(
     bindings
       .filter(({ keys }) => keys.length > 1)
-      .map(({ id, keys }) => ({ sequence: [...keys], callback: reviewKey(id, keys.at(-1)!) })),
+      .map(({ id, keys }) => ({
+        sequence: [...keys],
+        callback: reviewKey(id, keys.at(-1)!, false),
+      })),
     { ...bindingOptions, enabled: dialog === undefined },
   );
 
@@ -1519,17 +1687,20 @@ function SessionReader(props: {
       }
     >
       {shown.length === 0 ? (
-        <p {...stylex.props(styles.empty)}>
-          {files.length === 0 ? (
-            "This session's snapshot has no changes."
-          ) : review.kind === "files" ? (
-            <>
-              No captured changes under <code>{review.path}</code>.
-            </>
-          ) : (
-            "This group has no changes in this snapshot."
-          )}
-        </p>
+        <>
+          {inView.group && <div {...stylex.props(styles.emptyHeader)}>{overviewHeader}</div>}
+          <p {...stylex.props(styles.empty)}>
+            {files.length === 0 ? (
+              "This session's snapshot has no changes."
+            ) : review.kind === "files" ? (
+              <>
+                No captured changes under <code>{review.path}</code>.
+              </>
+            ) : (
+              "This group has no changes in this snapshot."
+            )}
+          </p>
+        </>
       ) : (
         <ContinuousDiff
           // Expand and Back start the panel again, at their own place.
@@ -1553,27 +1724,8 @@ function SessionReader(props: {
                   onBack={goBack}
                   onRetry={() => wholeSides.load(captured)}
                 />
-              ) : inView.group ? (
-                <OverviewCard
-                  label="Group overview"
-                  title={inView.group.title}
-                  overview={inView.group.overview}
-                  onReference={(target) => follow(target, { kind: "overview" })}
-                  peek={peek?.origin.kind === "overview" && peekOf()}
-                  refocus={refocus?.origin.kind === "overview" ? refocus.target : undefined}
-                />
               ) : (
-                review.kind === "files" &&
-                review.path === "" &&
-                status.overview && (
-                  <OverviewCard
-                    label="Walkthrough overview"
-                    overview={status.overview}
-                    onReference={(target) => follow(target, { kind: "overview" })}
-                    peek={peek?.origin.kind === "overview" && peekOf()}
-                    refocus={refocus?.origin.kind === "overview" ? refocus.target : undefined}
-                  />
-                )
+                overviewHeader
               )}
               {peekPlace &&
                 peekOf({ spacer, extent: () => viewer.current?.extentOf(peekPlace.file) })}
@@ -1714,6 +1866,8 @@ const styles = stylex.create({
   },
   filesHead: { marginTop: "14px" },
   empty: { padding: { default: "24px 32px", [media.narrow]: "16px 12px" }, color: theme.muted },
+  emptyHeader: { paddingInline: { default: "32px", [media.narrow]: "12px" } },
+  earlierNotes: { display: "grid", gap: "8px", marginTop: "10px" },
   kbd: {
     display: "inline-grid",
     placeItems: "center",

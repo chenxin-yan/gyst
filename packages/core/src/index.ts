@@ -9,6 +9,7 @@ export {
   type CapturedSide,
   capturedSideKey,
   capturedTargetsOf,
+  earlierAnchorsOf,
   GroupCreateSchema,
   GroupDissolveSchema,
   GroupUpdateSchema,
@@ -90,6 +91,8 @@ export {
   MarkdownSchema,
   type Note,
   NoteSchema,
+  type OutdatedReason,
+  OutdatedReasonSchema,
   parseReferenceHref,
 } from "./guidance.ts";
 export { setViewed, type ViewedOutcome, type ViewedRequest } from "./human-action.ts";
@@ -104,7 +107,16 @@ export {
   navigationAddon,
   navigationInstallCommand,
 } from "./navigation.ts";
-export { refreshSession } from "./refresh.ts";
+export { mapRange, matchHunks, type SnapshotLines } from "./mapping.ts";
+export {
+  type FreshSnapshot,
+  pinnedSnapshotIds,
+  recordedRefresh,
+  refresh,
+  type RefreshOutcome,
+  type RefreshRequest,
+  refreshSession,
+} from "./refresh.ts";
 export {
   type Group,
   GroupSchema,
@@ -112,6 +124,8 @@ export {
   HunkSchema,
   type Preparation,
   PreparationSchema,
+  type RefreshPayload,
+  RefreshPayloadSchema,
   type Session,
   SessionSchema,
   type Scope,

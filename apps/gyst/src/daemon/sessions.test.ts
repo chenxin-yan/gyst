@@ -260,6 +260,21 @@ const viewedNow = (session: string, hunkIds: string[], requestId: string, viewed
     }),
   );
 
+let refreshCount = 0;
+/** A refresh of the session's current snapshot, as a caller that just read its status sends it. */
+const refreshNow = (session: string, requestId = `refresh-${++refreshCount}`) =>
+  Sessions.use((s) =>
+    Effect.gen(function* () {
+      const { session: summary } = yield* s.status({ command: "status", session });
+      return yield* s.refresh({
+        command: "refresh",
+        session,
+        snapshotId: summary.snapshotId,
+        requestId,
+      });
+    }),
+  );
+
 const persistedNote = (id: string, path: string) => ({
   id,
   anchor: {
@@ -326,6 +341,7 @@ const persisted: Session = {
   receiptTexts: [],
   applyReceipts: [],
   viewedReceipts: [],
+  refreshReceipts: [],
 };
 
 const uncommitted = { kind: "uncommitted" } as const;
@@ -422,7 +438,7 @@ describe("Sessions.check", () => {
           expect(yield* sessions.status({ command: "status", session: session.id })).toEqual(
             reviewed,
           );
-          yield* sessions.refresh({ command: "refresh", session: session.id });
+          yield* refreshNow(session.id);
           expect(yield* sessions.check({ command: "check", session: session.id })).toMatchObject({
             revision: 3,
             state: "unchanged",
@@ -500,7 +516,8 @@ describe("Sessions.check", () => {
               created,
             );
             patchEffect = undefined;
-            yield* sessions.refresh({ command: "refresh", session: session.id });
+            // An identical capture replaces nothing, but is newer than the cached check.
+            yield* refreshNow(session.id);
             expect(yield* sessions.check({ command: "check", session: session.id })).toMatchObject({
               state: "unchanged",
             });
@@ -870,7 +887,7 @@ describe("Sessions PR sessions", () => {
           for (const scope of [uncommitted, { kind: "range", range: "main...feature" } as const]) {
             const { session } = yield* openScope(scope);
             yield* sessions.check({ command: "check", session: session.id });
-            yield* sessions.refresh({ command: "refresh", session: session.id });
+            yield* refreshNow(session.id);
           }
         }),
       ),
@@ -917,10 +934,8 @@ describe("Sessions PR sessions", () => {
     headRefOid = "2".repeat(40);
     gitPatch = patch.replace("+two", "+restacked");
     discovery = { ok: false, reason: "github_failed" };
-    const refreshed = await run(
-      Sessions.use((s) => s.refresh({ command: "refresh", session: session.id })),
-    );
-    expect(refreshed.session.snapshotId).not.toBe(session.snapshotId);
+    const refreshed = await run(refreshNow(session.id));
+    expect(refreshed.snapshotId).not.toBe(session.snapshotId);
     expect(captureCalls.at(-1)).toEqual({
       root,
       scope: layer2,
@@ -936,9 +951,7 @@ describe("Sessions PR sessions", () => {
     // A refresh that cannot read the PR changes nothing.
     const saved = JSON.stringify([...files]);
     pullRequestFailure = unavailable("gh_missing");
-    expect(
-      await failure(Sessions.use((s) => s.refresh({ command: "refresh", session: session.id }))),
-    ).toBe(pullRequestFailure);
+    expect(await failure(refreshNow(session.id))).toBe(pullRequestFailure);
     expect(JSON.stringify([...files])).toBe(saved);
   });
 
@@ -951,6 +964,7 @@ describe("Sessions PR sessions", () => {
     pullRequestFailure = unavailable("gh_missing");
     expect(await run(check)).toEqual({
       sessionId: session.id,
+      snapshotId: session.snapshotId,
       revision: 0,
       state: "unavailable",
       message: pullRequestFailure.message,
@@ -1625,11 +1639,28 @@ diff --git a/c.txt b/c.txt
         });
         yield* viewedNow(session.id, [a!, b!], "read-both");
         gitPatch = changed;
-        const refreshed = yield* sessions.refresh({ command: "refresh", session: session.id });
+        const replaced = yield* refreshNow(session.id, "first-refresh");
+        expect(replaced).toEqual({
+          sessionId: session.id,
+          previousSnapshotId: session.snapshotId,
+          snapshotId: expect.any(String),
+          revision: 3,
+          replaced: true,
+        });
         expect(captureCalls[1]).toEqual({ root, scope: uncommitted });
+        const refreshed = yield* sessions.status({ command: "status", session: session.id });
+        expect(refreshed.session.snapshotId).toBe(replaced.snapshotId);
         expect(refreshed.session.snapshotId).not.toBe(session.snapshotId);
         expect(refreshed.revision).toBe(3);
-        expect(refreshed.groups).toEqual([expect.objectContaining({ id: "g", hunkIds: [a] })]);
+        // The emptied group keeps its place, Outdated, until the agent repairs or removes it.
+        expect(refreshed.groups).toEqual([
+          expect.objectContaining({ id: "g", hunkIds: [a] }),
+          expect.objectContaining({
+            id: "changed",
+            hunkIds: [],
+            overview: { markdown: "goes with its hunk", references: [], outdated: ["code"] },
+          }),
+        ]);
         // Only the identical (merely shifted) hunk keeps Viewed; changed and new hunks start unviewed.
         expect(refreshed.viewedHunkIds).toEqual([a]);
         expect(refreshed.files).toEqual([
@@ -1643,13 +1674,11 @@ diff --git a/c.txt b/c.txt
   });
 
   it("re-captures a range session's recorded range, not a resolved commit pair", async () => {
-    const refreshed = await run(
-      Sessions.use((s) => s.refresh({ command: "refresh", session: persisted.id })),
-    );
+    const refreshed = await run(refreshNow(persisted.id));
     expect(captureCalls).toEqual([{ root: otherRoot, scope: persisted.scope }]);
     expect(refreshed.revision).toBe(4);
-    expect(refreshed.session.scope).toEqual(persisted.scope);
-    expect(files.get(persisted.id)?.snapshotId).toBe(refreshed.session.snapshotId);
+    expect(files.get(persisted.id)?.scope).toEqual(persisted.scope);
+    expect(files.get(persisted.id)?.snapshotId).toBe(refreshed.snapshotId);
   });
   it("leaves saved and in-memory state untouched when capture, publication or saving fails", async () => {
     await run(
@@ -1681,7 +1710,7 @@ diff --git a/c.txt b/c.txt
           revision: persisted.revision + 2,
           viewedHunkIds: ["h1", "h3"],
         });
-        const refresh = sessions.refresh({ command: "refresh", session: persisted.id });
+        const refresh = refreshNow(persisted.id, "failing");
         patchEffect = Effect.fail(new BadArgs({ message: "the working tree changed" }));
         expect(yield* Effect.flip(refresh)).toMatchObject({ _tag: "bad_args" });
         expect(yield* sessions.status({ command: "status", session: persisted.id })).toEqual(
@@ -1713,9 +1742,7 @@ diff --git a/c.txt b/c.txt
             ({ id }) => id,
           );
           const held = yield* holdCaptures;
-          const refreshing = yield* Effect.forkChild(
-            sessions.refresh({ command: "refresh", session: session.id }),
-          );
+          const refreshing = yield* Effect.forkChild(refreshNow(session.id));
           yield* Deferred.await(held.started);
           yield* sessions
             .apply({
@@ -1739,9 +1766,11 @@ diff --git a/c.txt b/c.txt
             .pipe(Effect.timeout("1 second"));
           // Human Viewed progress, also written during the capture.
           yield* viewedNow(session.id, ids, "late-read").pipe(Effect.timeout("1 second"));
+          // The capture sees a third file appear.
+          gitPatch = patch + patch.replaceAll("a.txt", "c.txt").split("diff --git a/b.txt")[0];
           yield* Deferred.succeed(held.release, undefined);
-          const refreshed = yield* Fiber.join(refreshing);
-          expect(refreshed.revision).toBe(3);
+          expect((yield* Fiber.join(refreshing)).revision).toBe(3);
+          const refreshed = yield* sessions.status({ command: "status", session: session.id });
           expect(refreshed.groups).toEqual([expect.objectContaining({ id: "late" })]);
           expect(refreshed.viewedHunkIds).toEqual(ids);
           expect(files.get(session.id)?.revision).toBe(3);
@@ -1750,14 +1779,116 @@ diff --git a/c.txt b/c.txt
     );
   });
 
+  it("keeps an identical capture's snapshot, revision and progress, saving only its receipt", async () => {
+    await run(
+      Effect.gen(function* () {
+        const sessions = yield* Sessions;
+        const { session } = yield* openScope();
+        const [a] = (yield* sessions.diff({ command: "diff", session: session.id })).hunks;
+        yield* viewedNow(session.id, [a!.id], "read");
+        const before = yield* sessions.status({ command: "status", session: session.id });
+        commits = [];
+        expect(yield* refreshNow(session.id, "same")).toEqual({
+          sessionId: session.id,
+          previousSnapshotId: session.snapshotId,
+          snapshotId: session.snapshotId,
+          revision: before.revision,
+          replaced: false,
+        });
+        expect(yield* sessions.status({ command: "status", session: session.id })).toEqual(before);
+        // Nothing is published; the receipt alone is saved.
+        expect(commits).toEqual([`session ${session.id}`]);
+        expect(files.get(session.id)?.refreshReceipts).toHaveLength(1);
+      }),
+    );
+  });
+
+  it("answers a retried refresh with its recorded result after a restart, never as a new one", async () => {
+    const { session } = await run(openScope());
+    const request: Input<"refresh"> = {
+      command: "refresh",
+      session: session.id,
+      snapshotId: session.snapshotId,
+      requestId: "lost",
+    };
+    gitPatch = changed;
+    const first = await run(Sessions.use((s) => s.refresh(request)));
+    expect(first).toMatchObject({ previousSnapshotId: session.snapshotId, replaced: true });
+    const [a] = (await run(Sessions.use((s) => s.diff({ command: "diff", session: session.id }))))
+      .hunks;
+    await run(viewedNow(session.id, [a!.id], "later"));
+    captureCalls = [];
+    gitPatch = patch;
+    // A fresh daemon over the same files: the receipt answers, and nothing is captured again.
+    expect(await run(Sessions.use((s) => s.refresh(request)))).toEqual(first);
+    expect(
+      await failure(Sessions.use((s) => s.refresh({ ...request, snapshotId: first.snapshotId }))),
+    ).toMatchObject({ _tag: "validation_failed" });
+    expect(
+      await failure(Sessions.use((s) => s.refresh({ ...request, requestId: "fresh" }))),
+    ).toMatchObject({ _tag: "stale_revision", detail: { snapshotId: first.snapshotId } });
+    expect(captureCalls).toEqual([]);
+    expect(files.get(session.id)?.snapshotId).toBe(first.snapshotId);
+  });
+
+  it("refuses revalidation for a snapshot a newer refresh replaced", async () => {
+    await run(
+      Effect.gen(function* () {
+        const sessions = yield* Sessions;
+        const { session } = yield* openScope();
+        const ids = (yield* sessions.diff({ command: "diff", session: session.id })).hunks.map(
+          ({ id }) => id,
+        );
+        const apply = (snapshotId: string, revision: number, key: string, ops: unknown[]) =>
+          sessions.apply({
+            command: "apply",
+            session: session.id,
+            batch: JSON.stringify({ revision, snapshotId, idempotencyKey: key, ops }),
+          });
+        yield* apply(session.snapshotId, 0, "publish", [
+          { type: "walkthrough.update", overview: "Two edits." },
+          {
+            type: "group.create",
+            id: "g",
+            title: "Both",
+            overview: "Both edits.",
+            memberHunkIds: ids,
+          },
+        ]);
+        yield* viewedNow(session.id, ids, "read");
+        gitPatch = changed;
+        const second = yield* refreshNow(session.id);
+        const outdated = yield* sessions.status({ command: "status", session: session.id });
+        // A new file appeared and b.txt changed: the walkthrough and its group are Outdated.
+        expect(outdated.overview?.outdated).toEqual(["code"]);
+        expect(outdated.groups[0]?.overview?.outdated).toEqual(["code"]);
+        expect(outdated.preparation).toMatchObject({ state: "incomplete", overviewOutdated: true });
+        // The agent checked `second`, but another refresh committed meanwhile.
+        gitPatch = changed.replace("+six", "+seven");
+        const third = yield* refreshNow(session.id);
+        expect(
+          yield* Effect.flip(
+            apply(second.snapshotId, second.revision, "revalidate", [
+              { type: "walkthrough.revalidate" },
+            ]),
+          ),
+        ).toMatchObject({ _tag: "stale_revision" });
+        const revalidated = yield* apply(third.snapshotId, third.revision, "revalidate-third", [
+          { type: "walkthrough.revalidate" },
+        ]);
+        expect(revalidated.overview).toEqual({ markdown: "Two edits.", references: [] });
+        // Revalidation never restores or clears Viewed.
+        expect(revalidated.viewedHunkIds).toEqual(outdated.viewedHunkIds);
+      }),
+    );
+  });
+
   it("does not resurrect a session deleted while its refresh captured", async () => {
     await run(
       Sessions.use((sessions) =>
         Effect.gen(function* () {
           const held = yield* holdCaptures;
-          const refreshing = yield* Effect.forkChild(
-            sessions.refresh({ command: "refresh", session: persisted.id }),
-          );
+          const refreshing = yield* Effect.forkChild(refreshNow(persisted.id));
           yield* Deferred.await(held.started);
           yield* sessions
             .delete({ command: "delete", session: persisted.id, requestId: "gone" })
@@ -1968,7 +2099,7 @@ describe("Sessions.subscribe", () => {
         }),
       }),
     );
-  const refresh = Sessions.use((s) => s.refresh({ command: "refresh", session: persisted.id }));
+  const refresh = refreshNow(persisted.id, "announced");
   const remove = (requestId: string) =>
     Sessions.use((s) => s.delete({ command: "delete", session: persisted.id, requestId }));
 
@@ -2005,10 +2136,10 @@ describe("Sessions.subscribe", () => {
           const after = yield* Queue.take(events);
           expect(after).toEqual({ kind: "changed", ...versionNow() });
           expect(after).toMatchObject({
-            snapshotId: refreshed.session.snapshotId,
+            snapshotId: refreshed.snapshotId,
             revision: refreshed.revision,
           });
-          expect(refreshed.session.snapshotId).not.toBe(persisted.snapshotId);
+          expect(refreshed.snapshotId).not.toBe(persisted.snapshotId);
           expect(yield* nothing).toBe(true);
           yield* remove("gone");
           expect(files.has(persisted.id)).toBe(false);
@@ -2537,6 +2668,173 @@ describe("Sessions captured reads over real captures", () => {
     );
   });
 
+  it("reconciles a real refresh: moved notes stay current, changed references keep their old code", async () => {
+    const numbered = (prefix: string, count: number) =>
+      Array.from({ length: count }, (_, index) => `${prefix}${index + 1}\n`).join("");
+    const cwd = await repo("refresh", {
+      "a.ts": numbered("a", 20),
+      "helper.ts": numbered("h", 4),
+    });
+    await writeFile(join(cwd, "a.ts"), numbered("a", 20).replace("a10\n", "changed\n"));
+    await runReal(
+      Effect.gen(function* () {
+        const sessions = yield* Sessions;
+        const { session } = yield* sessions.open({ command: "open", cwd, scope: uncommitted });
+        const [change] = (yield* sessions.diff({ command: "diff", session: session.id })).hunks;
+        const link = "[the helper](gyst:new/helper.ts#L2-L3)";
+        yield* sessions.apply({
+          command: "apply",
+          session: session.id,
+          batch: JSON.stringify({
+            revision: 0,
+            snapshotId: session.snapshotId,
+            idempotencyKey: "publish",
+            ops: [
+              { type: "walkthrough.update", overview: "One change." },
+              {
+                type: "group.create",
+                id: "g",
+                title: "Change",
+                overview: `Uses ${link}.`,
+                memberHunkIds: [change!.id],
+              },
+              {
+                type: "note.create",
+                id: "n",
+                group: "g",
+                anchor: { path: "a.ts", side: "new", startLine: 10, endLine: 10 },
+                markdown: `Calls ${link}.`,
+              },
+            ],
+          }),
+        });
+        yield* viewedNow(session.id, [change!.id], "read");
+        // Two lines above the change move it; an edit inside the referenced helper lines changes them.
+        yield* Effect.promise(async () => {
+          await writeFile(
+            join(cwd, "a.ts"),
+            `top\nsecond\n${numbered("a", 20).replace("a10\n", "changed\n")}`,
+          );
+          await writeFile(join(cwd, "helper.ts"), numbered("h", 4).replace("h3\n", "H3\n"));
+        });
+        const refreshed = yield* refreshNow(session.id);
+        const status = yield* sessions.status({ command: "status", session: session.id });
+        const current = refreshed.snapshotId;
+        const pinned = { snapshotId: session.snapshotId, path: "helper.ts", side: "new" } as const;
+        expect(status.groups[0]?.hunkIds).toEqual([change!.id]);
+        expect(status.groups[0]?.notes[0]).toEqual({
+          id: "n",
+          anchor: { snapshotId: current, path: "a.ts", side: "new", startLine: 12, endLine: 12 },
+          markdown: `Calls ${link}.`,
+          references: [{ ...pinned, startLine: 2, endLine: 3 }],
+          outdated: ["references"],
+        });
+        expect(status.groups[0]?.overview?.outdated).toEqual(["references"]);
+        expect(status.overview?.outdated).toEqual(["code"]);
+        // The note's changed reference unviews its own anchored hunk.
+        expect(status.viewedHunkIds).toEqual([]);
+        // The earlier snapshot stays readable while guidance pins it.
+        const earlier = {
+          session: session.id,
+          snapshotId: session.snapshotId,
+          file: "helper.ts",
+          side: "new",
+        } as const;
+        expect(yield* code({ ...earlier, startLine: 3, endLine: 3 })).toMatchObject({
+          snapshotId: session.snapshotId,
+          content: { text: "h3\n" },
+        });
+        const revalidated = yield* sessions.apply({
+          command: "apply",
+          session: session.id,
+          batch: JSON.stringify({
+            revision: refreshed.revision,
+            snapshotId: current,
+            idempotencyKey: "revalidate",
+            ops: [
+              { type: "walkthrough.revalidate" },
+              { type: "group.revalidate", id: "g" },
+              { type: "note.revalidate", id: "n" },
+            ],
+          }),
+        });
+        expect(revalidated.groups[0]?.notes[0]?.references).toEqual([
+          { ...pinned, snapshotId: current, startLine: 2, endLine: 3 },
+        ]);
+        expect(revalidated.preparation.state).toBe("incomplete");
+        // Nothing pins it any more.
+        expect(yield* codeError(earlier)).toMatchObject({ _tag: "stale_revision" });
+      }),
+    );
+  });
+
+  it("re-anchoring a note a refresh kept on earlier code unviews its surviving hunks too", async () => {
+    const numbered = Array.from({ length: 40 }, (_, index) => `a${index + 1}\n`).join("");
+    const edited = (twenty: string) =>
+      numbered.replace("a10\n", "x10\n").replace("a20\n", twenty).replace("a30\n", "x30\n");
+    const cwd = await repo("historical", { "a.ts": numbered });
+    await writeFile(join(cwd, "a.ts"), edited("x20\n"));
+    await runReal(
+      Effect.gen(function* () {
+        const sessions = yield* Sessions;
+        const { session } = yield* sessions.open({ command: "open", cwd, scope: uncommitted });
+        const hunkIds = (yield* sessions.diff({ command: "diff", session: session.id })).hunks.map(
+          ({ id }) => id,
+        );
+        const [first, , third] = hunkIds;
+        yield* sessions.apply({
+          command: "apply",
+          session: session.id,
+          batch: JSON.stringify({
+            revision: 0,
+            snapshotId: session.snapshotId,
+            idempotencyKey: "publish",
+            ops: [
+              {
+                type: "group.create",
+                id: "g",
+                title: "Edits",
+                overview: "Three edits.",
+                memberHunkIds: hunkIds,
+              },
+              {
+                type: "note.create",
+                id: "n",
+                group: "g",
+                anchor: { path: "a.ts", side: "new", startLine: 10, endLine: 20 },
+                markdown: "Spans the first two edits.",
+              },
+            ],
+          }),
+        });
+        yield* viewedNow(session.id, hunkIds, "read");
+        // The second edit changes, so the note stays on the first snapshot's code.
+        yield* Effect.promise(() => writeFile(join(cwd, "a.ts"), edited("y20\n")));
+        const refreshed = yield* refreshNow(session.id);
+        const kept = yield* sessions.status({ command: "status", session: session.id });
+        expect(kept.groups[0]?.notes[0]?.anchor.snapshotId).toBe(session.snapshotId);
+        expect(kept.viewedHunkIds).toEqual([first, third]);
+        const reanchored = yield* sessions.apply({
+          command: "apply",
+          session: session.id,
+          batch: JSON.stringify({
+            revision: refreshed.revision,
+            snapshotId: refreshed.snapshotId,
+            idempotencyKey: "re-anchor",
+            ops: [
+              {
+                type: "note.update",
+                id: "n",
+                anchor: { path: "a.ts", side: "new", startLine: 30, endLine: 30 },
+              },
+            ],
+          }),
+        });
+        expect(reanchored.viewedHunkIds).toEqual([]);
+      }),
+    );
+  });
+
   it("rejects a replaced snapshot as stale and finishes an in-flight read against its own", async () => {
     const cwd = await repo("stale", { "a.txt": "before\n" });
     await writeFile(join(cwd, "a.txt"), "during\n");
@@ -2554,8 +2852,7 @@ describe("Sessions captured reads over real captures", () => {
         yield* Deferred.await(held.started);
         readGate = undefined;
         yield* Effect.promise(() => writeFile(join(cwd, "a.txt"), "after\n"));
-        const refreshed = yield* sessions.refresh({ command: "refresh", session: session.id });
-        const current = refreshed.session.snapshotId;
+        const current = (yield* refreshNow(session.id)).snapshotId;
         expect(current).not.toBe(session.snapshotId);
         yield* Deferred.succeed(held.release, undefined);
         expect(yield* Fiber.join(reading)).toMatchObject({

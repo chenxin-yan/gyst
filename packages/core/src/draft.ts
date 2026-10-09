@@ -1,5 +1,12 @@
 import type { Note } from "./guidance.ts";
-import type { ApplyReceipt, Group, Hunk, Session, ViewedReceipt } from "./session.ts";
+import type {
+  ApplyReceipt,
+  Group,
+  Hunk,
+  RefreshReceipt,
+  Session,
+  ViewedReceipt,
+} from "./session.ts";
 
 type Mutable<T> = { -readonly [K in keyof T]: T[K] };
 type MutableHunk = Mutable<Hunk>;
@@ -11,7 +18,13 @@ export type MutableGroup = Mutable<Omit<Group, "hunkIds" | "files" | "notes">> &
 export type MutableSession = Mutable<
   Omit<
     Session,
-    "hunks" | "groups" | "viewedHunkIds" | "receiptTexts" | "applyReceipts" | "viewedReceipts"
+    | "hunks"
+    | "groups"
+    | "viewedHunkIds"
+    | "receiptTexts"
+    | "applyReceipts"
+    | "viewedReceipts"
+    | "refreshReceipts"
   >
 > & {
   hunks: MutableHunk[];
@@ -20,10 +33,11 @@ export type MutableSession = Mutable<
   receiptTexts: string[];
   applyReceipts: ApplyReceipt[];
   viewedReceipts: ViewedReceipt[];
+  refreshReceipts: RefreshReceipt[];
 };
 
 export function draftOf(session: Session): MutableSession {
-  const { receiptTexts, applyReceipts, viewedReceipts, ...live } = session;
+  const { receiptTexts, applyReceipts, viewedReceipts, refreshReceipts, ...live } = session;
   // SAFETY: structuredClone returns a detached copy, so dropping readonly cannot alias the caller's
   // session. Receipt history is append-only and its entries are never mutated, so sharing them is safe.
   return {
@@ -31,5 +45,6 @@ export function draftOf(session: Session): MutableSession {
     receiptTexts: [...receiptTexts],
     applyReceipts: [...applyReceipts],
     viewedReceipts: [...viewedReceipts],
+    refreshReceipts: [...refreshReceipts],
   } as MutableSession;
 }

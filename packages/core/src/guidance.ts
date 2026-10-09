@@ -52,10 +52,22 @@ export const MarkdownSchema = Schema.String.check(
   ),
 );
 
+/**
+ * Why refresh left guidance Outdated: the code it explains changed (a note's anchored hunks or
+ * range, a group's or the walkthrough's hunks), or the code its references pin changed.
+ */
+export const OutdatedReasonSchema = Schema.Literals(["code", "references"]);
+export type OutdatedReason = typeof OutdatedReasonSchema.Type;
+
 // Receipts store the same shapes with each Markdown text replaced by an index.
 export const guidanceTextFields = <Text extends Schema.Top>(markdown: Text) => ({
   markdown,
   references: Schema.Array(CapturedRangeSchema),
+  /**
+   * Present once a refresh changed what this text describes; it stays until the agent edits or
+   * explicitly revalidates the text. Each reason appears once.
+   */
+  outdated: Schema.optional(Schema.Array(OutdatedReasonSchema)),
 });
 export const noteFields = <Text extends Schema.Top>(markdown: Text) => ({
   id: Schema.String,

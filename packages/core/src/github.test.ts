@@ -179,6 +179,7 @@ describe("SessionSchema PR context", () => {
     receiptTexts: [],
     applyReceipts: [],
     viewedReceipts: [],
+    refreshReceipts: [],
   };
   const context = {
     pullRequest: pullRequest(2),
@@ -224,6 +225,7 @@ describe("pullRequestStatusOf", () => {
     receiptTexts: [],
     applyReceipts: [],
     viewedReceipts: [],
+    refreshReceipts: [],
     ...extra,
   });
   const pr = (number: number, repository = "acme/widgets") =>
@@ -316,6 +318,9 @@ describe("pullRequestStatusOf", () => {
         totalHunks: 2,
         overviewMissing: false,
         groupsMissingOverview: [],
+        overviewOutdated: false,
+        groupsOutdated: [],
+        notesOutdated: [],
       },
       viewedHunkIds: [],
       files: [],

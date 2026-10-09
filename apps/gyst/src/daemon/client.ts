@@ -9,6 +9,7 @@ import {
   FilesPayloadSchema,
   ListPayloadSchema,
   OpenPayloadSchema,
+  RefreshPayloadSchema,
   StatusPayloadSchema,
   SourceCheckPayloadSchema,
   StackPayloadSchema,
@@ -282,7 +283,7 @@ export class DaemonClient extends Context.Service<
           files: FilesPayloadSchema,
           code: CodePayloadSchema,
           apply: StatusPayloadSchema,
-          refresh: StatusPayloadSchema,
+          refresh: RefreshPayloadSchema,
           delete: DeletePayloadSchema,
         }[input.command];
         return yield* Schema.decodeUnknownEffect(payload, { onExcessProperty: "error" })(

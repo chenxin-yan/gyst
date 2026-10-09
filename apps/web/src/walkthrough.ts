@@ -6,6 +6,7 @@ import {
   changedLinesOf,
   type CodeSide,
   type Hunk,
+  type OutdatedReason,
   type StatusPayload,
 } from "@gyst/core/wire";
 import type { DiffLineAnnotation } from "@pierre/diffs";
@@ -81,11 +82,34 @@ export function coverageOf(status: StatusPayload): string[] | undefined {
       `${preparation.groupedHunks} of ${preparation.totalHunks} hunks are in groups; the rest are under Files.`,
     );
   if (preparation.overviewMissing) lines.push("The walkthrough has no overview yet.");
-  for (const id of preparation.groupsMissingOverview) {
-    const title = status.groups.find((group) => group.id === id)?.title ?? id;
-    lines.push(`${title} has no overview yet.`);
-  }
+  const titleOf = (id: string) => status.groups.find((group) => group.id === id)?.title ?? id;
+  for (const id of preparation.groupsMissingOverview)
+    lines.push(`${titleOf(id)} has no overview yet.`);
+  if (preparation.overviewOutdated) lines.push("The walkthrough overview is Outdated.");
+  for (const id of preparation.groupsOutdated) lines.push(`${titleOf(id)} is Outdated.`);
+  const notes = preparation.notesOutdated.length;
+  if (notes > 0) lines.push(`${notes} ${notes === 1 ? "note is" : "notes are"} Outdated.`);
   return lines;
+}
+
+const outdatedBecause = {
+  code: "the code it explains changed",
+  references: "code it references changed",
+} satisfies Record<OutdatedReason, string>;
+
+/**
+ * Why guidance is Outdated, in words, or undefined when it is current. A group a refresh emptied is
+ * Outdated by having no changes left, whatever its overview says.
+ */
+export function outdatedReason(
+  outdated: readonly OutdatedReason[] | undefined,
+  emptied = false,
+): string | undefined {
+  const reasons = [
+    ...(emptied ? ["its changes are gone since a refresh"] : []),
+    ...(outdated ?? []).map((reason) => outdatedBecause[reason]),
+  ];
+  return reasons.length === 0 ? undefined : `Outdated: ${reasons.join("; ")}.`;
 }
 
 /**

@@ -13,9 +13,10 @@ import {
   type Note,
 } from "./guidance.ts";
 import { hash } from "./hash.ts";
+import { survivingHunkIds } from "./mapping.ts";
 import { inspectMarkdown } from "./markdown.ts";
 import { TitleSchema } from "./metadata.ts";
-import type { ReceiptStatus, Session, StatusPayload } from "./session.ts";
+import type { Hunk, ReceiptStatus, Session, StatusPayload } from "./session.ts";
 import { statusOf } from "./status.ts";
 
 export const WalkthroughUpdateSchema = Schema.Struct({
@@ -67,13 +68,33 @@ export const NoteRemoveSchema = Schema.Struct({
   type: Schema.Literal("note.remove"),
   id: Schema.String,
 });
+/**
+ * Explicit revalidation of Outdated guidance with its wording unchanged, after checking it against
+ * the batch's snapshot: its references are pinned again to that snapshot, each of which must be
+ * captured text there. A note must already be anchored to that snapshot (re-anchor it with
+ * `note.update` first). Viewed is untouched.
+ */
+export const WalkthroughRevalidateSchema = Schema.Struct({
+  type: Schema.Literal("walkthrough.revalidate"),
+});
+export const GroupRevalidateSchema = Schema.Struct({
+  type: Schema.Literal("group.revalidate"),
+  id: Schema.String,
+});
+export const NoteRevalidateSchema = Schema.Struct({
+  type: Schema.Literal("note.revalidate"),
+  id: Schema.String,
+});
 export const ApplyOpSchema = Schema.Union([
   WalkthroughUpdateSchema,
+  WalkthroughRevalidateSchema,
   GroupCreateSchema,
   GroupUpdateSchema,
+  GroupRevalidateSchema,
   GroupDissolveSchema,
   NoteCreateSchema,
   NoteUpdateSchema,
+  NoteRevalidateSchema,
   NoteRemoveSchema,
 ]);
 export type ApplyOp = typeof ApplyOpSchema.Type;
@@ -95,31 +116,71 @@ export type CapturedSide =
   | Exclude<ContentSide, { readonly kind: "text" }>
   | { readonly kind: "missing" };
 /**
- * The captured line counts a batch's written ranges are checked against, read by the caller
- * from `snapshotId`'s content: apply itself never reads content.
+ * What the caller reads for a batch from captured content, as apply itself never reads content:
+ * the line counts of `snapshotId`'s sides its written ranges are checked against, and the hunks
+ * of each earlier snapshot a note it may change is still anchored on (see `earlierAnchorsOf`).
  */
 export type CapturedIndex = {
   readonly snapshotId: string;
   readonly sides: ReadonlyMap<string, CapturedSide>;
+  readonly earlierHunks: ReadonlyMap<string, readonly Hunk[]>;
 };
 export const capturedSideKey = (side: CodeSide, path: string) => `${side}\0${path}`;
 
 /**
  * The file sides whose captured lines `applyBatch` needs for this envelope's written ranges: note
- * anchors and the references inside every Markdown text it writes.
+ * anchors, the references inside every Markdown text it writes, and those of every stored text it
+ * revalidates in `session`.
  */
 export function capturedTargetsOf(
   envelope: ApplyEnvelope,
+  session: Session,
 ): { readonly path: string; readonly side: CodeSide }[] {
   const targets = new Map<string, { path: string; side: CodeSide }>();
   const target = ({ path, side }: CodeRange) =>
     targets.set(capturedSideKey(side, path), { path, side });
   for (const op of envelope.ops) {
     if ((op.type === "note.create" || op.type === "note.update") && op.anchor) target(op.anchor);
-    const markdown = "markdown" in op ? op.markdown : "overview" in op ? op.overview : null;
+    const markdown =
+      "markdown" in op
+        ? op.markdown
+        : "overview" in op
+          ? op.overview
+          : revalidatedText(session, op)?.markdown;
     if (typeof markdown === "string") inspectMarkdown(markdown).references.forEach(target);
   }
   return [...targets.values()];
+}
+
+/**
+ * The earlier snapshots whose hunks `applyBatch` needs for this envelope: those the notes it may
+ * edit, re-anchor or remove, a dissolved group's included, are still anchored on.
+ */
+export function earlierAnchorsOf(envelope: ApplyEnvelope, session: Session): string[] {
+  const named = new Set(
+    envelope.ops.flatMap((op) =>
+      op.type === "note.update" || op.type === "note.remove"
+        ? [op.id]
+        : op.type === "group.dissolve"
+          ? (session.groups.find(({ id }) => id === op.id)?.notes.map(({ id }) => id) ?? [])
+          : [],
+    ),
+  );
+  const snapshotIds = session.groups
+    .flatMap(({ notes }) => notes)
+    .filter(({ id, anchor }) => named.has(id) && anchor.snapshotId !== session.snapshotId)
+    .map(({ anchor }) => anchor.snapshotId);
+  return [...new Set(snapshotIds)];
+}
+
+/** The stored text a revalidation op names, if it exists. */
+function revalidatedText(session: Session, op: ApplyOp): GuidanceText | null | undefined {
+  if (op.type === "walkthrough.revalidate") return session.overview;
+  if (op.type === "group.revalidate")
+    return session.groups.find(({ id }) => id === op.id)?.overview;
+  if (op.type === "note.revalidate")
+    return session.groups.flatMap(({ notes }) => notes).find(({ id }) => id === op.id);
+  return undefined;
 }
 
 // Receipts intern Markdown while preserving exact historical anchors and status.
@@ -155,6 +216,13 @@ function recordedStatusOf(session: Session, status: ReceiptStatus): StatusPayloa
   };
 }
 
+/** A text's own fields, without the identity and anchor a note carries beside them. */
+const textOf = ({ markdown, references, outdated }: GuidanceText): GuidanceText => ({
+  markdown,
+  references,
+  ...(outdated && { outdated }),
+});
+
 const sameRange = (a: CapturedRange, b: CapturedRange) =>
   a.snapshotId === b.snapshotId &&
   a.path === b.path &&
@@ -175,19 +243,27 @@ function capturedProblem(captured: CapturedIndex, range: CodeRange): string | un
 
 /**
  * Viewed is unset on the hunks whose guidance changed between `before` and `after`: a note added,
- * removed, edited or re-anchored unviews the hunks of both anchors; a group or walkthrough
- * overview edited or removed unviews that group's or every grouped hunk. A first overview,
- * reordering, titles and membership alone change nothing, and agents never set Viewed.
+ * removed, edited or re-anchored unviews the hunks of both anchors (of one kept on earlier code,
+ * those that survived since, read in `earlierHunks`); a group or walkthrough overview edited or
+ * removed unviews that group's or every grouped hunk. A first overview, reordering, titles and
+ * membership alone change nothing, and agents never set Viewed.
  */
-function invalidatedHunkIds(before: Session, after: MutableSession): Set<string> {
+function invalidatedHunkIds(
+  before: Session,
+  after: MutableSession,
+  earlierHunks: CapturedIndex["earlierHunks"],
+): Set<string> {
   const unviewed = new Set<string>();
   const unview = (ids: Iterable<string>) => {
     for (const id of ids) unviewed.add(id);
   };
-  const anchored = (note: Note | undefined) =>
-    note && note.anchor.snapshotId === before.snapshotId
-      ? anchoredHunkIds(before.hunks, note.anchor)
-      : [];
+  const anchored = (note: Note | undefined) => {
+    if (!note) return [];
+    if (note.anchor.snapshotId === before.snapshotId)
+      return anchoredHunkIds(before.hunks, note.anchor);
+    const pinned = earlierHunks.get(note.anchor.snapshotId);
+    return pinned ? survivingHunkIds(pinned, before.hunks, note.anchor) : [];
+  };
   const notesOf = (groups: Session["groups"]) =>
     new Map(groups.flatMap(({ notes }) => notes.map((note) => [note.id, note] as const)));
   const notesBefore = notesOf(before.groups);
@@ -321,7 +397,7 @@ export function applyBatch(
   ): GuidanceText => {
     const { references, problems } = inspectMarkdown(markdown);
     for (const problem of problems) fail(opIndex, problem);
-    if (stored?.markdown === markdown) return { markdown, references: stored.references };
+    if (stored?.markdown === markdown) return textOf(stored);
     for (const reference of references) {
       const problem = capturedProblem(captured, reference);
       if (!problem) continue;
@@ -334,8 +410,51 @@ export function applyBatch(
       references: references.map((reference) => ({ snapshotId: draft.snapshotId, ...reference })),
     };
   };
+  /** The same wording checked again against this snapshot: pins re-derived, Outdated cleared. */
+  const revalidated = (
+    opIndex: number,
+    text: GuidanceText | null | undefined,
+    what: string,
+  ): GuidanceText | undefined => {
+    if (!text) {
+      fail(opIndex, `${what} does not exist`);
+      return undefined;
+    }
+    if (!text.outdated) {
+      fail(opIndex, `${what} is not Outdated`);
+      return undefined;
+    }
+    return guidanceText(opIndex, text.markdown, null);
+  };
 
   for (const [opIndex, op] of envelope.ops.entries()) {
+    if (op.type === "walkthrough.revalidate") {
+      draft.overview = revalidated(opIndex, draft.overview, "the walkthrough overview") ?? null;
+      continue;
+    }
+    if (op.type === "group.revalidate") {
+      const group = groupOf(op.id);
+      const overview = revalidated(
+        opIndex,
+        group ? group.overview : undefined,
+        group ? `the overview of group ${op.id}` : `group ${op.id}`,
+      );
+      if (group && overview) {
+        group.overview = overview;
+        touch("group", op.id, opIndex);
+      }
+      continue;
+    }
+    if (op.type === "note.revalidate") {
+      const found = noteOf(op.id);
+      const note = found?.group.notes[found.index];
+      const text = revalidated(opIndex, note, `note ${op.id}`);
+      if (found && note && text) {
+        found.group.notes[found.index] = { id: note.id, anchor: note.anchor, ...text };
+        touch("note", op.id, opIndex);
+      }
+      continue;
+    }
     if (op.type === "walkthrough.update") {
       if (op.overview !== undefined)
         draft.overview =
@@ -391,9 +510,9 @@ export function applyBatch(
       }
       const note = group.notes[index]!;
       group.notes[index] = {
-        ...note,
-        ...(op.markdown === undefined ? {} : guidanceText(opIndex, op.markdown, note)),
-        ...(op.anchor && { anchor: { snapshotId: draft.snapshotId, ...op.anchor } }),
+        id: note.id,
+        anchor: op.anchor ? { snapshotId: draft.snapshotId, ...op.anchor } : note.anchor,
+        ...(op.markdown === undefined ? textOf(note) : guidanceText(opIndex, op.markdown, note)),
       };
       touch("note", op.id, opIndex);
       if (op.anchor) anchorsWritten.add(op.id);
@@ -491,7 +610,15 @@ export function applyBatch(
           continue;
         }
       }
-      if (note.anchor.snapshotId !== draft.snapshotId) continue;
+      // Outdated guidance is kept as refresh left it until the agent repairs it.
+      if (note.outdated && !anchorsWritten.has(note.id)) continue;
+      if (note.anchor.snapshotId !== draft.snapshotId) {
+        fail(
+          noteOp,
+          `note ${note.id} is anchored to an earlier snapshot; re-anchor it with note.update`,
+        );
+        continue;
+      }
       const anchored = anchoredHunkIds(draft.hunks, note.anchor);
       if (!anchored.some((id) => group.hunkIds.includes(id)))
         fail(noteOp, `note ${note.id} must cover a changed line of its group ${group.id}`);
@@ -509,7 +636,7 @@ export function applyBatch(
       new ValidationFailed({ message: "apply validation failed", detail: errors }),
     );
 
-  const unviewed = invalidatedHunkIds(session, draft);
+  const unviewed = invalidatedHunkIds(session, draft, captured.earlierHunks);
   draft.viewedHunkIds = draft.viewedHunkIds.filter((id) => !unviewed.has(id));
   for (const group of draft.groups) sortNotes(draft, group);
   draft.revision++;

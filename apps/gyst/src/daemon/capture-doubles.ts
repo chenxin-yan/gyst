@@ -1,4 +1,10 @@
-import { parseSnapshot, type Scope, type SnapshotManifest, snapshotIdOf } from "@gyst/core";
+import {
+  BadArgs,
+  parseSnapshot,
+  type Scope,
+  type SnapshotManifest,
+  snapshotIdOf,
+} from "@gyst/core";
 import { Effect, Layer, Result, Stream } from "effect";
 import { createHash } from "node:crypto";
 import { CapturedContent } from "./content.ts";
@@ -56,15 +62,28 @@ export const noGitHub = Layer.succeed(GitHub, {
   stack: () => Effect.die("no GitHub calls in this test"),
 });
 
-/** Publishes manifests by identity alone; the byte operations are unused through `Sessions`. */
+/**
+ * Publishes manifests by identity alone and loads back those it published; the byte operations are
+ * unused through `Sessions`.
+ */
 export const publishingContent = (
   putManifest: (typeof CapturedContent)["Service"]["putManifest"] = (manifest) =>
     Effect.succeed(snapshotIdOf(manifest)),
-) =>
-  Layer.succeed(CapturedContent, {
-    putManifest,
+) => {
+  const published = new Map<string, SnapshotManifest>();
+  return Layer.succeed(CapturedContent, {
+    putManifest: (manifest) =>
+      putManifest(manifest).pipe(
+        Effect.tap((snapshotId) => Effect.sync(() => published.set(snapshotId, manifest))),
+      ),
     putBlob: () => Effect.die("unused by Sessions"),
     readBlob: () => Stream.die("unused by Sessions"),
     materialize: () => Effect.die("unused by Sessions"),
-    loadManifest: () => Effect.die("unused by Sessions"),
+    loadManifest: (snapshotId) => {
+      const manifest = published.get(snapshotId);
+      return manifest
+        ? Effect.succeed(manifest)
+        : Effect.fail(new BadArgs({ message: "snapshot not found", detail: snapshotId }));
+    },
   });
+};

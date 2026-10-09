@@ -324,15 +324,36 @@ const apply = defineCommand(
 );
 const refresh = defineCommand(
   "refresh",
-  { description: "Recapture the recorded scope into a new snapshot" },
+  {
+    description:
+      "Recapture the recorded scope and reconcile the review onto it; an identical capture changes nothing",
+  },
   (command) =>
     command
       .use(daemonClient)
-      .flags(sessionFlag)
+      .flags(
+        sessionFlag,
+        {
+          ...snapshotFlag,
+          description: "The snapshot id this refresh replaces, from `open`, `status` or `diff`",
+        },
+        {
+          name: "request-id",
+          type: "string",
+          required: true,
+          description:
+            "A caller-chosen id for this refresh; reuse it with the same snapshot to retry safely",
+        },
+      )
       .action(
         handler(({ flags, stdout }) =>
           call(
-            { command: "refresh", session: flags.session },
+            {
+              command: "refresh",
+              session: flags.session,
+              snapshotId: flags.snapshot,
+              requestId: flags["request-id"],
+            },
             stdout,
             terminalProgress(process.stderr),
           ),

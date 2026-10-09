@@ -563,8 +563,19 @@ describe("TS/JS navigation through the installed add-on", () => {
     expect(engines(navigation.prefix)).toHaveLength(1);
 
     await write(cwd, { "src/use.ts": newUse.replace(", zero", "").replace("(1, 2)", "(2, 2)") });
-    const refreshed = json(await box.gyst(cwd, ["session", "refresh", "--session", ids.session]));
-    expect(refreshed.session.snapshotId).not.toBe(ids.snapshotId);
+    const refreshed = json(
+      await box.gyst(cwd, [
+        "session",
+        "refresh",
+        "--session",
+        ids.session,
+        "--snapshot",
+        ids.snapshotId,
+        "--request-id",
+        "refresh",
+      ]),
+    );
+    expect(refreshed.snapshotId).not.toBe(ids.snapshotId);
     // The replaced snapshot's engine stops with it.
     await waitFor(
       () => engines(navigation.prefix).length === 0,
@@ -578,7 +589,7 @@ describe("TS/JS navigation through the installed add-on", () => {
     expect(engines(navigation.prefix)).toEqual([]);
     expect(await navigationDirs(box.data)).toEqual([]);
     const current = await queries(viewer);
-    expect(current.ids.snapshotId).toBe(refreshed.session.snapshotId);
+    expect(current.ids.snapshotId).toBe(refreshed.snapshotId);
     expect(
       located(await current.definition("new", "src/use.ts", at(oldUse, 2, "plus"))).locations,
     ).toEqual([{ file: "src/math.ts", range: span(oldMath, 1, "add") }]);

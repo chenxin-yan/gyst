@@ -380,8 +380,8 @@ const applyRun = (session: string, batch: object) =>
 const applyBatch = async (session: string, batch: object) => json(await applyRun(session, batch));
 
 /** A fresh walk~1...walk session, deleted after the test, with its hunk ids by changed line. */
-async function openWalk() {
-  const id = await openRange("walk~1...walk");
+async function openWalk(range = "walk~1...walk") {
+  const id = await openRange(range);
   onTestFinished(() =>
     gyst("session", "delete", "--session", id, "--request-id", randomBytes(16).toString("hex")),
   );
@@ -765,6 +765,21 @@ describe("installed gyst in a sandboxed browser", () => {
     await writeFile(join(repo, "walk", "d.ts"), "export const d1 = 1;\n");
     git("add", ".");
     git("commit", "-qm", "walk next");
+    // walk-fix changes walk/b.ts line 5 again on top of walk and adds a line atop walk/a.ts, so a
+    // walk~1...peek session refreshed from walk to walk-fix loses b.ts's hunk, keeps c.ts's, and
+    // keeps a.ts's a line lower beside a new one.
+    git("switch", "-q", "walk");
+    git("switch", "-qc", "walk-fix");
+    await writeFile(
+      join(repo, "walk", "b.ts"),
+      (await readFile(join(repo, "walk", "b.ts"), "utf8")).replace("b5 = 5 * 2", "b5 = 5 * 3"),
+    );
+    await writeFile(
+      join(repo, "walk", "a.ts"),
+      `// fixed\n${await readFile(join(repo, "walk", "a.ts"), "utf8")}`,
+    );
+    git("add", ".");
+    git("commit", "-qm", "walk fix");
     git("switch", "-q", "main");
     git("switch", "-qc", "feature");
     await writeFile(join(repo, "feature.ts"), "export const feature = 'range-only';\n");
@@ -1945,7 +1960,7 @@ describe("installed gyst in a sandboxed browser", () => {
     await crumbIs(page, "demo/bulk...paged");
     await expect.poll(() => listings.length).toBe(2);
     git("branch", "-f", "paged", "paged~1");
-    await gyst("session", "refresh", "--session", id);
+    await gyst("session", "refresh", "--session", id, "--snapshot", captured, "--request-id", "r");
     const refreshed = await snapshotOf();
     expect(refreshed).not.toBe(captured);
     release();
@@ -3233,7 +3248,7 @@ describe("installed gyst in a sandboxed browser", () => {
     expect(await open(second)).toBe("false");
   }, 30_000);
 
-  it("says why a reference pinned to an earlier snapshot is unavailable after a refresh, without reading anything for it", async () => {
+  it("reads and expands a reference pinned to an earlier snapshot from that snapshot after a refresh", async () => {
     git("branch", "-f", "peek", "walk");
     const id = await openRange("walk~1...peek");
     onTestFinished(() =>
@@ -3247,7 +3262,16 @@ describe("installed gyst in a sandboxed browser", () => {
       ops: [referenceOps[2]],
     });
     git("branch", "-f", "peek", "walk-next");
-    await gyst("session", "refresh", "--session", id);
+    await gyst(
+      "session",
+      "refresh",
+      "--session",
+      id,
+      "--snapshot",
+      snapshotId,
+      "--request-id",
+      "r",
+    );
     const page = await newPage();
     await page.setViewportSize({ width: 1280, height: 1200 });
     const reads: any[] = [];
@@ -3258,16 +3282,135 @@ describe("installed gyst in a sandboxed browser", () => {
     const pane = page.getByRole("main");
     await headingsAre(page, ["walk/a.ts", "walk/b.ts", "walk/c.ts", "walk/d.ts"]);
     const overview = pane.getByRole("region", { name: "Walkthrough overview" });
+    // walk/d.ts is new: the overview no longer covers every change.
+    await overview.getByText("Outdated: the code it explains changed.", { exact: true }).waitFor();
     await overview.getByRole("button", { name: "the constants" }).click();
     const peek = overview.locator("[data-peek]");
-    await peek
-      .getByText("Unavailable: captured in an earlier snapshot this session no longer keeps.")
-      .waitFor();
-    expect(await peek.getByRole("button", { name: "Expand" }).count()).toBe(0);
+    await peek.getByText("export const line10 = 10;").waitFor();
     expect(await peek.textContent()).toContain("(earlier)");
+    await peek.getByRole("button", { name: "Expand" }).click();
+    const identity = pane.getByRole("region", { name: "Captured file" });
+    await identity.waitFor();
+    expect(await identity.textContent()).toContain(
+      `snapshot ${snapshotId.slice(0, 7)} (earlier snapshot)`,
+    );
+    await headingsAre(page, ["src/long.ts"]);
+    await pane.getByText("export const line10 = 10;", { exact: true }).waitFor();
+    await keys(page, "Backspace");
+    await headingsAre(page, ["walk/a.ts", "walk/b.ts", "walk/c.ts", "walk/d.ts"]);
     await settled(page);
-    expect(reads.filter((read) => read.file === "src/long.ts")).toEqual([]);
-    expect(reads.every((read) => read.snapshotId !== snapshotId)).toBe(true);
+    // Read from the snapshot it is pinned to, never the current one: the preview, then the file.
+    const longReads = reads.filter((read) => read.file === "src/long.ts");
+    expect(longReads.length).toBeGreaterThanOrEqual(2);
+    for (const read of longReads)
+      expect(read).toEqual(expect.objectContaining({ snapshotId, side: "new" }));
+  }, 30_000);
+
+  it("refreshes on R, keeping surviving work in place and changed guidance Outdated beside its earlier code", async () => {
+    git("branch", "-f", "peek", "walk");
+    const walk = await openWalk("walk~1...peek");
+    await publishWalk(walk);
+    await walk.publish(1, "references", referenceOps.slice(0, 1));
+    const before = await gyst("session", "status", "--session", walk.id);
+    // The first refresh's reply is lost after gyst committed it.
+    const page = await newPage(context, { problems: ["requestfailed /api/operation"] });
+    await page.setViewportSize({ width: 1280, height: 1200 });
+    const refreshes: any[] = [];
+    let lose = true;
+    await page.route(isOperationUrl, async (route) => {
+      if (route.request().postDataJSON()?.command !== "refresh") return route.fallback();
+      refreshes.push(route.request().postDataJSON());
+      if (!lose) return route.fallback();
+      lose = false;
+      await route.fetch();
+      await route.abort();
+    });
+    await page.goto(`${one.origin}/session/${walk.id}`);
+    const nav = page.getByRole("navigation", { name: "gyst" });
+    await nav.getByRole("button", { name: /^Parse the config/ }).click();
+    await headingsAre(page, ["walk/b.ts", "walk/a.ts"]);
+    // z then R unfolds every file; it never refreshes.
+    await keys(page, "z", "Shift+R");
+    await settled(page);
+    expect(refreshes).toEqual([]);
+    // The reader is deep in a.ts, whose hunks the refresh only moves a line down.
+    await keys(page, "]", "n", "]", "n");
+    await says(page, "a.ts:20 · new");
+    await barOn(page, "export const a20 = 20 * 2;");
+
+    git("branch", "-f", "peek", "walk-fix");
+    await keys(page, "Shift+R");
+    await statusLine(page)
+      .getByText("The refresh may not have finished.", { exact: false })
+      .waitFor();
+    const committed = await gyst("session", "status", "--session", walk.id);
+    expect(committed.session.snapshotId).not.toBe(before.session.snapshotId);
+    // The retry is the same request, answered from its receipt: still one refresh.
+    await keys(page, "Shift+R");
+    expect(refreshes).toEqual([
+      {
+        command: "refresh",
+        session: walk.id,
+        snapshotId: before.session.snapshotId,
+        requestId: expect.any(String),
+      },
+      refreshes[0],
+    ]);
+    // The reader stays in the same group, which lost b.ts's change, on the same code of a.ts.
+    await headingsAre(page, ["walk/a.ts"]);
+    await says(page, "a.ts:21 · new");
+    await barOn(page, "export const a20 = 20 * 2;");
+    expect((await gyst("session", "status", "--session", walk.id)).revision).toBe(
+      committed.revision,
+    );
+    expect(await walkthroughRows(page)).toEqual([
+      "OverviewOutdated",
+      "Parse the config, 0 of 2 hunks viewed, Outdated",
+      "Handle the edge, 0 of 2 hunks viewed",
+    ]);
+    const overview = page.getByRole("main").getByRole("region", { name: "Group overview" });
+    await overview.getByText("Outdated: the code it explains changed.", { exact: true }).waitFor();
+    // b-note's line is gone from the current code: kept in its group with its earlier code.
+    const earlier = overview.getByRole("region", { name: "Notes on earlier code" });
+    await earlier.getByText("Five doubles too.").waitFor();
+    expect(await page.getByRole("main").locator('[data-note="b-note"]').count()).toBe(0);
+    await earlier.getByRole("button", { name: "Show the earlier code" }).click();
+    await earlier.getByText("export const b5 = 5 * 2;").waitFor();
+    // span still explains current code, but the b.ts lines it references changed.
+    const span = page.getByRole("main").locator('[data-note="span"]');
+    await span.getByText("Outdated: code it references changed.").waitFor();
+    await span.getByRole("button", { name: "the five" }).click();
+    const peek = peekOf(page);
+    await peek.getByText("export const b5 = 5 * 2;").waitFor();
+    expect(await peek.textContent()).toContain("(earlier)");
+    // Expanded, it is the earlier b.ts, not the current change at that path.
+    await peek.getByRole("button", { name: "Expand" }).click();
+    const main = page.getByRole("main");
+    const identity = main.getByRole("region", { name: "Captured file" });
+    await identity.waitFor();
+    expect(await identity.textContent()).toContain("(earlier snapshot)");
+    await headingsAre(page, ["walk/b.ts"]);
+    await main.getByText("export const b5 = 5 * 2;", { exact: true }).waitFor();
+    expect(await main.getByText("export const b5 = 5 * 3;", { exact: true }).count()).toBe(0);
+    await keys(page, "Backspace");
+    await headingsAre(page, ["walk/a.ts"]);
+    await peek.getByText("export const b5 = 5 * 2;").waitFor();
+    await keys(page, "Escape");
+    await peek.waitFor({ state: "detached" });
+
+    // An identical capture is a new request that replaces nothing.
+    await keys(page, "Shift+R");
+    await statusLine(page).getByText("Nothing changed since this snapshot.").waitFor();
+    expect(refreshes).toHaveLength(3);
+    expect(refreshes[2].requestId).not.toBe(refreshes[0].requestId);
+    const after = await gyst("session", "status", "--session", walk.id);
+    expect(after.revision).toBe(committed.revision);
+    expect(after.preparation).toMatchObject({
+      state: "incomplete",
+      overviewOutdated: true,
+      groupsOutdated: ["core"],
+      notesOutdated: ["b-note", "span"],
+    });
   }, 30_000);
 
   it("keeps hostile prose inert, opens a web link only on a click, and leaves the view unchanged when the CLI refuses unsafe Markdown", async () => {
