@@ -5,13 +5,13 @@ import { describe, expect, it } from "vite-plus/test";
 
 import {
   type FakePullRequest,
-  fakeGh,
   git,
   githubOrigin,
   githubRepository,
   noGhPath,
   privateRefs,
   refState,
+  stackedRepository,
 } from "../github.ts";
 import { failed, json, sandbox, succeeded } from "./installed-gyst.ts";
 
@@ -31,55 +31,6 @@ const layerOf = (recorded: FakePullRequest, index: number) => {
     },
   };
 };
-
-/**
- * main m1 <- A (#1, layer-a) <- B (#2, layer-b) <- C (#3, layer-c), GitHub's native stack 7, plus
- * #4 (feature) branched from m1 before main moved on to m2 and never restacked. The fake gh is
- * first on the sandbox's PATH before any daemon starts, so the daemon inherits it.
- */
-async function stackedRepository(box: Sandbox) {
-  const github = await githubOrigin(join(box.root, "github"));
-  const fake = await fakeGh(box.root);
-  Object.assign(box.env, fake.env(box.env));
-  const m1 = git(github.author, "rev-parse", "main");
-  const a1 = await github.commit("layer-a", { "a.txt": "layer a\n" }, { from: "main" });
-  github.publish("layer-a", 1);
-  const b1 = await github.commit("layer-b", { "b.txt": "layer b\n" }, { from: "layer-a" });
-  github.publish("layer-b", 2);
-  const c1 = await github.commit("layer-c", { "c.txt": "layer c\n" }, { from: "layer-b" });
-  github.publish("layer-c", 3);
-  const f1 = await github.commit("feature", { "f.txt": "feature\n" }, { from: "main" });
-  github.publish("feature", 4);
-  const m2 = await github.commit("main", { "README.md": "widgets, moved on\n" });
-  github.publish("main");
-  const pr = (
-    number: number,
-    title: string,
-    baseRefName: string,
-    headRefName: string,
-    headRefOid: string,
-  ): FakePullRequest => ({
-    number,
-    title,
-    body: `${title}, for review.`,
-    state: "OPEN",
-    baseRefName,
-    headRefName,
-    headRefOid,
-  });
-  const a = pr(1, "Add layer A", "main", "layer-a", a1);
-  const b = pr(2, "Add layer B", "layer-a", "layer-b", b1);
-  const c = pr(3, "Add layer C", "layer-b", "layer-c", c1);
-  const feature = pr(4, "Add the feature", "main", "feature", f1);
-  for (const layer of [a, b, c, feature]) await fake.pullRequest(layer);
-  const stack = async (...layers: FakePullRequest[]) => {
-    for (const layer of layers)
-      await fake.stack(layer.number, { number: 7, baseRefName: "main", layers });
-  };
-  await stack(a, b, c);
-  await fake.stack(4, null);
-  return { ...github, fake, m1, m2, a, b, c, feature, stack };
-}
 
 const manifestOf = async (box: Sandbox, snapshotId: string) =>
   JSON.parse(await readFile(join(box.data, "content", "snapshots", `${snapshotId}.json`), "utf8"));

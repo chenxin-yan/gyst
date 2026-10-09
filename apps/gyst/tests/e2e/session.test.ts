@@ -7,7 +7,7 @@ import {
   statusOf,
 } from "@gyst/core";
 import { Result, Schema } from "effect";
-import { execFileSync, spawn } from "node:child_process";
+import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
 import { chmod, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
@@ -26,12 +26,14 @@ import {
   commandLine,
   daemonPid,
   failed,
+  git,
   installed,
   installedDaemons,
   isAlive,
   json,
   killDaemon,
   launchViewer,
+  repo,
   sandbox,
   succeeded,
   waitFor,
@@ -40,28 +42,6 @@ import {
 // The installed daemon reports its package version.
 const daemonVersion = packageJson.version;
 const decodeSession = Schema.decodeUnknownSync(Schema.fromJsonString(SessionSchema));
-
-type Sandbox = Awaited<ReturnType<typeof sandbox>>;
-
-const git = (box: Sandbox, cwd: string, ...args: string[]) =>
-  execFileSync("git", args, {
-    cwd,
-    env: box.env,
-    encoding: "utf8",
-    stdio: ["ignore", "pipe", "pipe"],
-  });
-
-async function repo(box: Sandbox, name: string): Promise<string> {
-  const cwd = join(box.root, name);
-  await mkdir(cwd, { recursive: true });
-  git(box, cwd, "init", "-q");
-  git(box, cwd, "config", "user.email", "test@gyst.invalid");
-  git(box, cwd, "config", "user.name", "Gyst Test");
-  await writeFile(join(cwd, "tracked.txt"), "one\n");
-  git(box, cwd, "add", ".");
-  git(box, cwd, "commit", "-qm", "initial");
-  return cwd;
-}
 
 function socketRequest(dataDir: string, message: unknown): Promise<string> {
   return new Promise((resolve, reject) => {

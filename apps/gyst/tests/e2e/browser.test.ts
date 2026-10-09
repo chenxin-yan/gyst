@@ -4523,6 +4523,16 @@ describe("installed gyst in a sandboxed browser", () => {
     await keys(page, "Shift+C");
     const comments = page.getByRole("dialog", { name: "Comments" });
     await comments.waitFor();
+    // Comments offers the line that asks the agent to respond: the workflow and this session.
+    const respond = comments.locator("[data-respond]");
+    await respond.getByText(`/gyst-respond ${walk.id}`, { exact: true }).waitFor();
+    await context.grantPermissions(["clipboard-read", "clipboard-write"]);
+    onTestFinished(() => context.clearPermissions());
+    await respond.getByRole("button", { name: "Copy" }).click();
+    await respond.getByRole("button", { name: "Copied" }).waitFor();
+    expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(
+      `/gyst-respond ${walk.id}`,
+    );
     const resolved = comments.locator("[data-thread]").filter({ hasText: "Resolved" });
     await resolved.getByRole("button", { name: /a\.ts:L19/ }).click();
     // A resolved thread takes no new human reply until reopened.
