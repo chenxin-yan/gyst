@@ -4,15 +4,21 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import {
   BadArgs,
   type CaptureProgress,
+  type ExportPayload,
+  type ExportPreviewPayload,
   parsePullRequestUrl,
+  readinessProblems,
   type Request,
   RequestSchema,
   type Scope,
+  ValidationFailed,
 } from "@gyst/core";
-import { Effect, Layer, Schema, Stdio, Stream } from "effect";
+import { Effect, FileSystem, Layer, Schema, Stdio, Stream } from "effect";
+import { resolve } from "node:path";
 import { DaemonClient } from "../../daemon/client.ts";
 import { checkoutRepository } from "../../daemon/github.ts";
 import { Paths } from "../../daemon/paths.ts";
+import { approvedAtTerminal, disclosureOf, writeNewFile } from "../export.ts";
 
 export const daemonClient = layer(
   "daemonClient",
@@ -139,19 +145,23 @@ export type TerminalProgress = NonNullable<ReturnType<typeof terminalProgress>>;
 // `bad_args` rather than a request the daemon rejects as malformed.
 const decodeRequest = Schema.decodeUnknownEffect(RequestSchema, { onExcessProperty: "error" });
 
+/** One validated request's reply, as the daemon client decoded it. */
+const ask = Effect.fn("session.ask")(function* (input: Request, progress?: TerminalProgress) {
+  const request = yield* decodeRequest(input).pipe(
+    Effect.mapError((error) => new BadArgs({ message: "invalid flags", detail: error.message })),
+  );
+  const client = yield* DaemonClient;
+  return yield* client
+    .request(request, progress?.report)
+    .pipe(Effect.ensuring(progress?.clear ?? Effect.void));
+});
+
 const call = Effect.fn("session.call")(function* (
   input: Request,
   stdout: (line: string) => void,
   progress?: TerminalProgress,
 ) {
-  const request = yield* decodeRequest(input).pipe(
-    Effect.mapError((error) => new BadArgs({ message: "invalid flags", detail: error.message })),
-  );
-  const client = yield* DaemonClient;
-  const reply = yield* client
-    .request(request, progress?.report)
-    .pipe(Effect.ensuring(progress?.clear ?? Effect.void));
-  stdout(JSON.stringify(reply));
+  stdout(JSON.stringify(yield* ask(input, progress)));
 });
 
 const readStdin = Effect.flatMap(Stdio.Stdio, (stdio) =>
@@ -423,6 +433,72 @@ const remove = defineCommand(
       ),
 );
 
+const exportCommand = defineCommand(
+  "export",
+  {
+    description:
+      "Show what a standalone HTML copy of the session's walkthrough would share and, once the person at this terminal approves exactly that, write it; needs an interactive terminal",
+  },
+  (command) =>
+    command
+      .use(daemonClient)
+      .flags(sessionFlag, {
+        name: "output",
+        type: "string",
+        description:
+          "The file to write; default gyst-walkthrough-<snapshot>.html here. An existing file is never replaced",
+      })
+      .action(
+        handler(function* ({ flags, stdout }) {
+          const preview = (yield* ask({
+            command: "preview",
+            session: flags.session,
+          })) as ExportPreviewPayload;
+          if (preview.approval === null)
+            return yield* new ValidationFailed({
+              message: `the walkthrough is not ready to export: ${readinessProblems(preview.preparation).join("; ")}`,
+              detail: { preparation: preview.preparation },
+            });
+          // Approval is a person's: a pipe or an agent's shell has no terminal to answer from.
+          if (!process.stdin.isTTY || !process.stderr.isTTY)
+            return yield* new BadArgs({
+              message:
+                "exporting needs a person to approve what it shares: run `gyst session export` in an interactive terminal, or export from the viewer",
+            });
+          const path = resolve(
+            flags.output ?? `gyst-walkthrough-${preview.snapshotId.slice(0, 12)}.html`,
+          );
+          if (
+            yield* (yield* FileSystem.FileSystem)
+              .exists(path)
+              .pipe(Effect.orElseSucceed(() => false))
+          )
+            return yield* new BadArgs({
+              message: `${path} already exists; choose another --output. Nothing was written.`,
+            });
+          process.stderr.write(disclosureOf(preview, path));
+          if (!(yield* approvedAtTerminal('Type "yes" to approve and write the file: ')))
+            return yield* new BadArgs({ message: "export not approved; nothing was written" });
+          const file = (yield* ask({
+            command: "export",
+            session: flags.session,
+            approval: preview.approval,
+          })) as ExportPayload;
+          yield* writeNewFile(path, file.html);
+          stdout(
+            JSON.stringify({
+              path,
+              bytes: Buffer.byteLength(file.html),
+              sessionId: file.sessionId,
+              snapshotId: file.snapshotId,
+              approval: file.approval,
+              exportedAt: file.exportedAt,
+            }),
+          );
+        }),
+      ),
+);
+
 export const session = defineCommand(
   "session",
   { description: "Manage co-review sessions" },
@@ -439,5 +515,6 @@ export const session = defineCommand(
       .add(threads)
       .add(apply)
       .add(refresh)
+      .add(exportCommand)
       .add(remove),
 );

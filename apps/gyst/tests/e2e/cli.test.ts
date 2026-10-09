@@ -26,7 +26,12 @@ describe("installed gyst CLI", () => {
       (await readdir(installed.packageDir)).filter((name) => name !== "node_modules").sort(),
     ).toEqual(["LICENSE", "README.md", "bin", "dist", "package.json", "skills"]);
     expect(await readdir(join(installed.packageDir, "bin"))).toEqual(["gyst.js"]);
-    expect(await readdir(join(installed.packageDir, "dist"))).toEqual(["web-ui"]);
+    expect((await readdir(join(installed.packageDir, "dist"))).sort()).toEqual([
+      "export",
+      "web-ui",
+    ]);
+    // The standalone walkthrough reader is one self-contained file.
+    expect(await readdir(join(installed.packageDir, "dist", "export"))).toEqual(["index.html"]);
   });
 
   it("prints help for the root and session commands without the hidden daemon", async () => {

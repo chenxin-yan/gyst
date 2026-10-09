@@ -40,6 +40,7 @@ import {
   webAssetsOrNotice,
   WebUiDir,
 } from "../web/server.ts";
+import { exportFile } from "./export.ts";
 import { Navigation } from "./navigation.ts";
 import { makeNavigationAddons } from "./navigation-addon.ts";
 import { Paths } from "./paths.ts";
@@ -212,6 +213,10 @@ export class DaemonServer extends Context.Service<
             return sessions.commits(request);
           case "code":
             return sessions.code(request);
+          case "preview":
+            return sessions.preview(request);
+          case "export":
+            return sessions.exported(request).pipe(Effect.flatMap(exportFile));
           case "apply":
             return sessions.apply(request);
           case "viewed":

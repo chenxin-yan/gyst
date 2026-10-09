@@ -8,6 +8,8 @@ import {
   DaemonError,
   DeletePayloadSchema,
   DiffPayloadSchema,
+  ExportPayloadSchema,
+  ExportPreviewPayloadSchema,
   FilesPayloadSchema,
   IdentifiersPayloadSchema,
   ListPayloadSchema,
@@ -26,6 +28,7 @@ import {
   ViewedPayloadSchema,
 } from "@gyst/core/wire";
 import { Schema } from "effect";
+import { answer, embeddedExport, standalone, standaloneEvents } from "./standalone.ts";
 
 /**
  * The HTTP hop to the daemon failed before a Reply existed. Domain failures are not
@@ -98,6 +101,8 @@ const payloadSchemas = {
   files: FilesPayloadSchema,
   commits: CommitsPayloadSchema,
   code: CodePayloadSchema,
+  preview: ExportPreviewPayloadSchema,
+  export: ExportPayloadSchema,
   delete: DeletePayloadSchema,
   refresh: RefreshPayloadSchema,
   viewed: ViewedPayloadSchema,
@@ -123,11 +128,15 @@ const decodeReply = Schema.decodeUnknownSync(Schema.fromJsonString(ReplySchema))
 export async function operation<Request extends BrowserRequest>(
   request: Request,
 ): Promise<Payload<Request["command"]>> {
-  const response = await post(webPaths.operation, {
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify(request),
-  });
-  const reply = await replyOf(response);
+  // A standalone walkthrough answers from the export it embeds, through the same decoding.
+  const reply = standalone
+    ? answer(embeddedExport(), request)
+    : await replyOf(
+        await post(webPaths.operation, {
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify(request),
+        }),
+      );
   if (!reply.ok) throw reply.error;
   try {
     return Schema.decodeUnknownSync(payloadSchemas[request.command], {
@@ -151,6 +160,7 @@ export async function* events(
   session: string,
   signal: AbortSignal,
 ): AsyncGenerator<SubscriptionEvent, void, undefined> {
+  if (standalone) return yield* standaloneEvents(signal);
   const url = new URL(webPaths.events, location.href);
   url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
   url.search = new URLSearchParams({ session }).toString();

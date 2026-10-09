@@ -2,17 +2,17 @@
 // TS/JS add-on's engine finds for a symbol on a code line, read in a peek under that line. Here
 // are its stages as plain data and the pure steps between them, so they are unit tested; the
 // requests and the peek itself live in `semantic.tsx`. Navigation never reads or writes Viewed.
-import type {
-  BrowserRequest,
-  CapturedRange,
-  IdentifiersPayload,
-  NavigationGap,
-  NavigationLocation,
-  NavigationResultPayload,
-  NavigationSideState,
-  NavigationUnavailable,
+import {
+  type BrowserRequest,
+  type CapturedRange,
+  type IdentifiersPayload,
+  type NavigationGap,
+  type NavigationLocation,
+  type NavigationResultPayload,
+  type NavigationSideState,
+  type NavigationUnavailable,
+  notCaptured,
 } from "@gyst/core/wire";
-import { notCaptured } from "./captured.ts";
 
 export type Query = NavigationResultPayload["query"];
 export type CodeSide = NavigationResultPayload["side"];

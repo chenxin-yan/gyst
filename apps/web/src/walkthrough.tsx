@@ -28,11 +28,12 @@ import {
  * The sidebar's walkthrough: its overview row and its groups in the agent's order, each with a
  * checkmark and count derived from Viewed hunks, in words as well as marks, and Outdated where a
  * refresh left it so. An incomplete walkthrough says what it still lacks; a plain diff session
- * needs none.
+ * needs none. Without `viewed` (a standalone walkthrough has no reading progress) a group shows
+ * its hunk count alone.
  */
 export function WalkthroughNav(props: {
   status: StatusPayload;
-  viewed: ReadonlySet<string>;
+  viewed: ReadonlySet<string> | undefined;
   view: ReviewView;
   onView: (view: ReviewView) => void;
 }) {
@@ -63,27 +64,35 @@ export function WalkthroughNav(props: {
             </li>
           )}
           {status.groups.map((group) => {
-            const progress = groupProgress(group, props.viewed);
+            const progress = groupProgress(group, props.viewed ?? new Set());
             const selected = view.kind === "group" && view.id === group.id;
-            const words = `${progress.viewed} of ${progress.total} ${progress.total === 1 ? "hunk" : "hunks"} viewed`;
+            const hunks = `${progress.total} ${progress.total === 1 ? "hunk" : "hunks"}`;
+            const words =
+              props.viewed === undefined
+                ? hunks
+                : progress.done
+                  ? `all ${progress.viewed} of ${hunks} viewed`
+                  : `${progress.viewed} of ${hunks} viewed`;
             const outdated = outdatedGroups.has(group.id);
             return (
               <li key={group.id}>
                 <button
                   type="button"
                   aria-current={selected || undefined}
-                  aria-label={`${group.title}, ${progress.done ? `all ${words}` : words}${outdated ? ", Outdated" : ""}`}
+                  aria-label={`${group.title}, ${words}${outdated ? ", Outdated" : ""}`}
                   title={group.title}
                   onClick={() => props.onView({ kind: "group", id: group.id })}
                   {...stylex.props(nav.row, selected && nav.selected)}
                 >
                   <span {...stylex.props(nav.check, progress.done && nav.checkDone)} aria-hidden>
-                    {progress.done ? "✓" : ""}
+                    {props.viewed !== undefined && progress.done ? "✓" : ""}
                   </span>
                   <span {...stylex.props(nav.title)}>{group.title}</span>
                   {outdated && outdatedMark}
                   <span {...stylex.props(nav.count)} aria-hidden>
-                    {progress.viewed}/{progress.total}
+                    {props.viewed === undefined
+                      ? progress.total
+                      : `${progress.viewed}/${progress.total}`}
                   </span>
                 </button>
               </li>
