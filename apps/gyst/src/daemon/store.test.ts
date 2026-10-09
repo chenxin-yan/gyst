@@ -1,10 +1,10 @@
 import { afterAll, beforeAll, describe, expect, it } from "vite-plus/test";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { type Session, statusOf } from "@gyst/core";
-import { ConfigProvider, Effect, Layer } from "effect";
+import { ConfigProvider, Deferred, Effect, Fiber, FileSystem, Layer, PlatformError } from "effect";
 import { chmod, mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { Paths } from "./paths.ts";
 import { inspectSavedSessions, SessionStore } from "./store.ts";
 
@@ -32,12 +32,17 @@ const session = (id: string): Session => ({
   pickupReceipts: [],
 });
 
-const run = <A, E>(effect: Effect.Effect<A, E, SessionStore>) =>
+/** `wrap` may replace file system operations to observe or fail them. */
+const run = <A, E>(
+  effect: Effect.Effect<A, E, SessionStore>,
+  wrap: (real: FileSystem.FileSystem) => FileSystem.FileSystem = (real) => real,
+) =>
   Effect.runPromise(
     Effect.provide(
       effect,
       SessionStore.layer.pipe(
         Layer.provide(Paths.layer),
+        Layer.provide(Layer.effect(FileSystem.FileSystem, Effect.map(FileSystem.FileSystem, wrap))),
         Layer.provide(NodeServices.layer),
         Layer.provide(ConfigProvider.layer(ConfigProvider.fromUnknown({ GYST_DATA_DIR: dataDir }))),
       ),
@@ -58,6 +63,158 @@ describe("SessionStore", () => {
     expect(error._tag).toBe("PlatformError");
     expect((await readdir(dataDir)).sort()).toEqual(["a.json", "blocked.json"]);
     await rm(join(dataDir, "blocked.json"), { recursive: true });
+  });
+
+  /**
+   * Records each sync and rename. `fails` names the sync that fails; `afterRename` runs once each
+   * rename has happened.
+   */
+  const observing =
+    (
+      calls: string[],
+      options: {
+        fails?: "file" | "directory";
+        error?: PlatformError.PlatformError;
+        afterRename?: Effect.Effect<void>;
+      } = {},
+    ) =>
+    (real: FileSystem.FileSystem): FileSystem.FileSystem => ({
+      ...real,
+      open: (path, openOptions) =>
+        Effect.map(real.open(path, openOptions), (handle) =>
+          Object.create(handle, {
+            sync: {
+              value: Effect.suspend(() => {
+                const synced = path === dataDir ? "directory" : "file";
+                calls.push(synced === "directory" ? "sync directory" : `sync ${basename(path)}`);
+                return options.fails === synced
+                  ? Effect.fail(
+                      options.error ??
+                        PlatformError.systemError({
+                          _tag: "Unknown",
+                          module: "FileSystem",
+                          method: "sync",
+                        }),
+                    )
+                  : handle.sync;
+              }),
+            },
+          }),
+        ),
+      rename: (from, to) =>
+        Effect.suspend(() => {
+          calls.push(`rename to ${basename(to)}`);
+          return real.rename(from, to).pipe(Effect.andThen(options.afterRename ?? Effect.void));
+        }),
+    });
+  const leftovers = async () => (await readdir(dataDir)).filter((name) => !name.endsWith(".json"));
+  const revisionOnDisk = async (id: string) =>
+    JSON.parse(await readFile(join(dataDir, `${id}.json`), "utf8")).revision;
+
+  it("syncs a saved file before its rename and its directory after, and the directory on request", async () => {
+    const calls: string[] = [];
+    await run(
+      SessionStore.use((s) => s.save(session("synced"))),
+      observing(calls),
+    );
+    expect(calls).toEqual([
+      expect.stringMatching(/^sync /),
+      "rename to synced.json",
+      "sync directory",
+    ]);
+    calls.length = 0;
+    await run(
+      SessionStore.use((s) => s.syncSaved),
+      observing(calls),
+    );
+    expect(calls).toEqual(["sync directory"]);
+    await rm(join(dataDir, "synced.json"));
+  });
+
+  it("keeps the old file when the new one cannot be synced, and reports a replacement it cannot make durable", async () => {
+    await run(SessionStore.use((s) => s.save(session("unsynced"))));
+    const saveRevision = (revision: number, fails: "file" | "directory") =>
+      run(
+        Effect.flip(SessionStore.use((s) => s.save({ ...session("unsynced"), revision }))),
+        observing([], { fails }),
+      );
+    expect((await saveRevision(1, "file"))._tag).toBe("PlatformError");
+    expect(await revisionOnDisk("unsynced")).toBe(0);
+    expect(await leftovers()).toEqual([]);
+    // Renamed before its directory sync failed: visible, but it may not survive a crash.
+    expect((await saveRevision(2, "directory"))._tag).toBe("PlatformError");
+    expect(await revisionOnDisk("unsynced")).toBe(2);
+    expect(await leftovers()).toEqual([]);
+    expect(
+      (
+        await run(
+          Effect.flip(SessionStore.use((s) => s.syncSaved)),
+          observing([], { fails: "directory" }),
+        )
+      )._tag,
+    ).toBe("PlatformError");
+    await rm(join(dataDir, "unsynced.json"));
+  });
+
+  it("reports running out of space before the rename as storage_full, and never after it", async () => {
+    await run(SessionStore.use((s) => s.save(session("full"))));
+    const noSpace = (method: string) =>
+      PlatformError.systemError({
+        _tag: "Unknown",
+        module: "FileSystem",
+        method,
+        cause: Object.assign(new Error("ENOSPC: no space left on device"), { code: "ENOSPC" }),
+      });
+    const writing = await run(
+      Effect.flip(SessionStore.use((s) => s.save({ ...session("full"), revision: 1 }))),
+      (real) => ({
+        ...real,
+        writeFileString: () => Effect.fail(noSpace("writeFile")),
+      }),
+    );
+    expect(writing).toMatchObject({
+      _tag: "source_unavailable",
+      detail: { reason: "storage_full" },
+    });
+    expect(await revisionOnDisk("full")).toBe(0);
+    expect(await leftovers()).toEqual([]);
+    const syncing = await run(
+      Effect.flip(SessionStore.use((s) => s.save({ ...session("full"), revision: 2 }))),
+      observing([], { fails: "directory", error: noSpace("sync") }),
+    );
+    expect(syncing._tag).toBe("PlatformError");
+    expect(await revisionOnDisk("full")).toBe(2);
+    expect(await leftovers()).toEqual([]);
+    await rm(join(dataDir, "full.json"));
+  });
+
+  it("syncs the directory of a renamed file even when interrupted after the rename", async () => {
+    const calls: string[] = [];
+    const renamed = Effect.runSync(Deferred.make<void>());
+    const release = Effect.runSync(Deferred.make<void>());
+    await run(
+      Effect.gen(function* () {
+        const saving = yield* Effect.forkChild(
+          SessionStore.use((s) => s.save(session("interrupted"))),
+        );
+        yield* Deferred.await(renamed);
+        const interrupting = yield* Effect.forkChild(Fiber.interrupt(saving));
+        yield* Deferred.succeed(release, undefined);
+        yield* Fiber.join(interrupting);
+      }),
+      observing(calls, {
+        afterRename: Deferred.succeed(renamed, undefined).pipe(
+          Effect.andThen(Deferred.await(release)),
+        ),
+      }),
+    );
+    expect(calls).toEqual([
+      expect.stringMatching(/^sync /),
+      "rename to interrupted.json",
+      "sync directory",
+    ]);
+    expect(await leftovers()).toEqual([]);
+    await rm(join(dataDir, "interrupted.json"));
   });
 
   it("skips undecodable session files but keeps the valid ones", async () => {
@@ -86,6 +243,12 @@ describe("SessionStore", () => {
     await writeFile(join(dataDir, "hunk-notes.json"), hunkNotes);
     const loaded = await run(SessionStore.use((s) => s.loadAll));
     expect(loaded.map((loadedSession) => loadedSession.id)).toEqual(["a"]);
+    // Reclaiming captured content still reads what it skipped.
+    const saved = await run(SessionStore.use((s) => s.loadSaved));
+    expect(saved.sessions).toEqual(loaded);
+    expect(saved.undecodable.toSorted()).toEqual(
+      ["{not json", JSON.stringify({ id: "x" }), older, hunkNotes].toSorted(),
+    );
     expect(await readFile(join(dataDir, "older.json"), "utf8")).toBe(older);
     expect(await readFile(join(dataDir, "hunk-notes.json"), "utf8")).toBe(hunkNotes);
   });

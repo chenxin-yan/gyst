@@ -40,8 +40,9 @@ const text = async (content: string | Uint8Array): Promise<ContentSide> => {
   return { kind: "text", blob, size };
 };
 const absent: ContentSide = { kind: "absent" };
-const unavailable = (reason: "binary" | "unsupported-encoding" | "symlink" | "submodule") =>
-  ({ kind: "unavailable", reason }) as const;
+const unavailable = (
+  reason: "binary" | "unsupported-encoding" | "symlink" | "submodule" | "quota",
+) => ({ kind: "unavailable", reason }) as const;
 
 const manifestOf = (files: ReadonlyArray<ManifestFile>): SnapshotManifest =>
   // Decoded, so every test manifest is one a capture could produce.
@@ -90,6 +91,8 @@ const snapshot = async () =>
   manifestOf([
     { path: "README.md", old: await text("# old\n"), new: await text("# new\n") },
     { path: "assets/icon.ts", old: unavailable("binary"), new: unavailable("binary") },
+    // A snapshot quota left these supporting files out: only a TS/JS/JSON one is a named gap.
+    { path: "docs.md", old: unavailable("quota"), new: unavailable("quota") },
     { path: "image.png", old: unavailable("binary"), new: unavailable("binary") },
     { path: "linked.ts", old: unavailable("symlink"), new: absent },
     {
@@ -101,6 +104,7 @@ const snapshot = async () =>
     { path: "src/crlf.ts", old: await text(crlfOld), new: await text(crlfNew) },
     { path: "src/data.json", old: await text("[1]\n"), new: await text("[1]\n") },
     { path: "src/deleted.cjs", old: await text("module.exports = 1;\n"), new: absent },
+    { path: "src/helper.ts", old: unavailable("quota"), new: unavailable("quota") },
     { path: "src/latin1.js", old: unavailable("unsupported-encoding"), new: await text("x;\n") },
     { path: "tsconfig.json", old: absent, new: await text('{ "compilerOptions": {} }\n') },
     { path: "vendor/lib", old: unavailable("submodule"), new: unavailable("submodule") },
@@ -147,6 +151,7 @@ describe("materializeSide", () => {
     expect(old.gaps).toEqual([
       { kind: "uncaptured", file: "assets/icon.ts", reason: "binary" },
       { kind: "uncaptured", file: "linked.ts", reason: "symlink" },
+      { kind: "uncaptured", file: "src/helper.ts", reason: "quota" },
       { kind: "uncaptured", file: "src/latin1.js", reason: "unsupported-encoding" },
       { kind: "uncaptured", file: "vendor/lib", reason: "submodule" },
       { kind: "no-project-config" },
@@ -154,6 +159,7 @@ describe("materializeSide", () => {
     expect(current.gaps).toEqual([
       { kind: "uncaptured", file: "assets/icon.ts", reason: "binary" },
       { kind: "dependencies", file: "package.json" },
+      { kind: "uncaptured", file: "src/helper.ts", reason: "quota" },
       { kind: "uncaptured", file: "vendor/lib", reason: "submodule" },
     ]);
   });

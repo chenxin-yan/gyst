@@ -435,9 +435,12 @@ export class Navigation extends Context.Service<
           Effect.flatMap((current) => (current ? close(analysis) : Effect.void)),
         );
 
+      // A snapshot replaced meanwhile retires its analysis; holding content keeps what is being
+      // read from being reclaimed under it until then.
       const readText = (file: string, blob: string, size: number) =>
         content.readBlob(blob, { offset: 0, length: size }).pipe(
           Stream.runCollect,
+          (read) => content.hold(read),
           // `toString` keeps a BOM, which the engine counts as a code unit too.
           Effect.map((chunks) => Buffer.concat(chunks).toString("utf8")),
           Effect.mapError(
@@ -470,7 +473,7 @@ export class Navigation extends Context.Service<
             );
           const home = path.join(dir, "home");
           yield* fs.makeDirectory(home, { mode: 0o700 });
-          const inputs = yield* services(materializeSide(manifest, side, dir));
+          const inputs = yield* content.hold(services(materializeSide(manifest, side, dir)));
           // The engine reports real paths; fencing compares against the same spelling.
           const project = yield* fs.realPath(inputs.project);
           const engine = yield* services(
@@ -692,44 +695,50 @@ export class Navigation extends Context.Service<
           ),
         );
 
-      /** The request's captured source text, or why it cannot be analysed. */
-      const select = Effect.fnUntraced(function* (request: Target) {
-        const { manifest } = yield* sessions
-          .snapshot(request)
-          .pipe(
-            Effect.catchTag("stale_revision", () =>
-              Effect.fail(new Unavailable({ reason: { kind: "historical" } })),
-            ),
-          );
-        const file = manifest.files.find(({ path: member }) => member === request.file);
-        if (!file)
-          return yield* new ValidationFailed({
-            message: "file is not in this snapshot",
-            detail: { file: request.file },
-          });
-        const captured = file[request.side];
-        if (captured.kind !== "text")
-          return yield* new Unavailable({
-            reason: {
-              kind: "not-source",
-              detail:
-                captured.kind === "absent"
-                  ? `${request.file} has no ${request.side} side`
-                  : `the ${request.side} side of ${request.file} was not captured as text (${captured.reason})`,
-            },
-          });
-        if (lspLanguageId(request.file) === undefined)
-          return yield* new Unavailable({
-            reason: {
-              kind: "not-source",
-              detail: `${request.file} is not a TypeScript or JavaScript source`,
-            },
-          });
-        const addon = usableAddon(request.addon);
-        if (addon.kind !== "available") return yield* new Unavailable({ reason: addon });
-        const text = yield* readText(request.file, captured.blob, captured.size);
-        return { manifest, text, addon };
-      });
+      /**
+       * The request's captured source text, or why it cannot be analysed. Held from choosing the
+       * snapshot, so a refresh's reclaim meanwhile cannot remove the text before it is read.
+       */
+      const select = Effect.fnUntraced(
+        function* (request: Target) {
+          const { manifest } = yield* sessions
+            .snapshot(request)
+            .pipe(
+              Effect.catchTag("stale_revision", () =>
+                Effect.fail(new Unavailable({ reason: { kind: "historical" } })),
+              ),
+            );
+          const file = manifest.files.find(({ path: member }) => member === request.file);
+          if (!file)
+            return yield* new ValidationFailed({
+              message: "file is not in this snapshot",
+              detail: { file: request.file },
+            });
+          const captured = file[request.side];
+          if (captured.kind !== "text")
+            return yield* new Unavailable({
+              reason: {
+                kind: "not-source",
+                detail:
+                  captured.kind === "absent"
+                    ? `${request.file} has no ${request.side} side`
+                    : `the ${request.side} side of ${request.file} was not captured as text (${captured.reason})`,
+              },
+            });
+          if (lspLanguageId(request.file) === undefined)
+            return yield* new Unavailable({
+              reason: {
+                kind: "not-source",
+                detail: `${request.file} is not a TypeScript or JavaScript source`,
+              },
+            });
+          const addon = usableAddon(request.addon);
+          if (addon.kind !== "available") return yield* new Unavailable({ reason: addon });
+          const text = yield* readText(request.file, captured.blob, captured.size);
+          return { manifest, text, addon };
+        },
+        (selecting) => content.hold(selecting),
+      );
 
       /**
        * Runs `use` on the ready engine for the request's key, waiting for an engine slot, its
@@ -1121,6 +1130,23 @@ export class Navigation extends Context.Service<
       /** Resolves once every engine slot is free: no teardown (idle, evicted, failed) is running. */
       const drained: Effect.Effect<void> = Effect.suspend(() =>
         slots === 0 ? Effect.void : Effect.andThen(Deferred.await(changed), drained),
+      );
+      // A capture short of space may drop what a crashed daemon left and every engine no query
+      // holds: each is rebuilt from captured content on its next use.
+      yield* sessions.disposable(
+        ready.pipe(
+          Effect.ignore,
+          Effect.andThen(
+            lock(
+              Effect.sync(() => {
+                const idle = [...analyses.values()].filter(({ active }) => active === 0);
+                for (const analysis of idle) analyses.delete(analysis.key);
+                return idle;
+              }),
+            ),
+          ),
+          Effect.flatMap(closeAll),
+        ),
       );
       yield* Effect.addFinalizer(() =>
         lock(

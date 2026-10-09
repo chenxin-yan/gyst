@@ -57,6 +57,7 @@ const run = <A, E>(
   effect: Effect.Effect<A, E, Git | CapturedContent>,
   wrap: (real: ContentService) => ContentService = (real) => real,
   spawner: Layer.Layer<ChildProcessSpawner.ChildProcessSpawner> = NodeServices.layer,
+  environment: Record<string, string> = {},
 ) =>
   Effect.runPromise(
     Effect.provide(
@@ -70,7 +71,11 @@ const run = <A, E>(
         Layer.provide(spawner),
         Layer.provide(Paths.layer),
         Layer.provide(NodeServices.layer),
-        Layer.provide(ConfigProvider.layer(ConfigProvider.fromUnknown({ GYST_DATA_DIR: dataDir }))),
+        Layer.provide(
+          ConfigProvider.layer(
+            ConfigProvider.fromUnknown({ GYST_DATA_DIR: dataDir, ...environment }),
+          ),
+        ),
       ),
     ),
   );
@@ -887,6 +892,155 @@ describe("Git.capture", () => {
     expect(range.progress.at(-1)).toMatchObject({ phase: "diff", done: 1, total: 1 });
   });
 
+  it("keeps reviewed files whole under a snapshot quota and leaves out other text beyond it in path order, never storing it", async () => {
+    const cwd = await repo("quota");
+    const write = (path: string, bytes: number, fill = path[0]!) =>
+      writeFile(join(cwd, path), fill.repeat(bytes));
+    await write("a-small.txt", 10);
+    await write("b-large.txt", 60);
+    await write("c-small.txt", 10);
+    await write("d-small.txt", 10);
+    await write("e-mode.txt", 10);
+    await write("f-moved.txt", 5);
+    await write("same-as-a.txt", 10, "a");
+    git(cwd, "add", ".");
+    git(cwd, "commit", "-qm", "supporting");
+    // Reviewed: tracked.txt (4 bytes before, 5 after) and an added 30-byte file. Neither a mode
+    // change nor a rename is reviewed.
+    await writeFile(join(cwd, "tracked.txt"), "two!\n");
+    await write("new.txt", 30);
+    await chmod(join(cwd, "e-mode.txt"), 0o755);
+    await rm(join(cwd, "f-moved.txt"));
+    await write("g-moved.txt", 5, "f");
+    const quota = (size: string, wrap?: (real: ContentService) => ContentService) =>
+      run(
+        Effect.gen(function* () {
+          const manifest = yield* Git.use((g) => g.capture(cwd, { kind: "uncommitted" }));
+          yield* CapturedContent.use((c) => c.putManifest(manifest));
+          return manifest;
+        }),
+        wrap,
+        undefined,
+        { GYST_SNAPSHOT_QUOTA: size },
+      );
+    // 39 bytes are required, so 16 are left: a-small fits, then nothing until the 5-byte rename,
+    // whose two paths share it, while same-as-a costs nothing more, its bytes already counted.
+    const manifest = await quota("55 B");
+    const omitted = { kind: "unavailable", reason: "quota" };
+    expect(manifest.files.map(({ path }) => path)).toEqual([
+      "a-small.txt",
+      "b-large.txt",
+      "c-small.txt",
+      "d-small.txt",
+      "e-mode.txt",
+      "f-moved.txt",
+      "g-moved.txt",
+      "new.txt",
+      "same-as-a.txt",
+      "tracked.txt",
+    ]);
+    expect(fileOf(manifest, "a-small.txt")?.new.kind).toBe("text");
+    expect(fileOf(manifest, "same-as-a.txt")?.new.kind).toBe("text");
+    for (const path of ["b-large.txt", "c-small.txt", "d-small.txt"])
+      expect(fileOf(manifest, path)).toEqual({ path, old: omitted, new: omitted });
+    expect(fileOf(manifest, "e-mode.txt")).toEqual({
+      path: "e-mode.txt",
+      old: omitted,
+      new: omitted,
+      modeChange: { old: "100644", new: "100755" },
+    });
+    expect(fileOf(manifest, "f-moved.txt")?.old.kind).toBe("text");
+    expect(fileOf(manifest, "g-moved.txt")).toMatchObject({
+      new: { kind: "text" },
+      renamedFrom: "f-moved.txt",
+    });
+    expect(hunkFiles(manifest)).toEqual(["new.txt", "tracked.txt"]);
+    expect(await bytesOf(fileOf(manifest, "tracked.txt")?.new)).toEqual(Buffer.from("two!\n"));
+    // What the quota left out never reached the content store.
+    expect(await blobs()).not.toContain(sha256("b".repeat(60)));
+    expect(await blobs()).not.toContain(sha256("e".repeat(10)));
+
+    // A working-tree file edited after it was measured, before it is stored, fails the capture.
+    let edited = false;
+    const editing = await run(
+      Effect.flip(Git.use((g) => g.capture(cwd, { kind: "uncommitted" }))),
+      (real) => ({
+        ...real,
+        putBlob: (bytes) =>
+          Effect.promise(async () => {
+            if (!edited) await write("new.txt", 31);
+            edited = true;
+          }).pipe(Effect.andThen(real.putBlob(bytes))),
+      }),
+      undefined,
+      { GYST_SNAPSHOT_QUOTA: "55 B" },
+    );
+    expect(editing).toMatchObject({ _tag: "bad_args", detail: { path: "new.txt" } });
+    await write("new.txt", 30);
+
+    // Without a quota every file is captured.
+    expect((await capture(cwd)).files.every(({ new: side }) => side.kind !== "unavailable")).toBe(
+      true,
+    );
+
+    const refused = await run(
+      Effect.flip(Git.use((g) => g.capture(cwd, { kind: "uncommitted" }))),
+      undefined,
+      undefined,
+      { GYST_SNAPSHOT_QUOTA: "38 B" },
+    );
+    expect(refused).toMatchObject({
+      _tag: "source_unavailable",
+      message: expect.stringContaining("GYST_SNAPSHOT_QUOTA"),
+      detail: { reason: "quota_exceeded" },
+    });
+    const invalid = await run(
+      Effect.flip(Git.use((g) => g.capture(cwd, { kind: "uncommitted" }))),
+      undefined,
+      undefined,
+      { GYST_SNAPSHOT_QUOTA: "50" },
+    );
+    expect(invalid).toMatchObject({
+      _tag: "bad_args",
+      message: expect.stringContaining("GYST_SNAPSHOT_QUOTA"),
+    });
+    expect(await staging()).toEqual([]);
+  });
+
+  it("leaves out a pure rename beyond a snapshot quota the reviewed edit fits, keeping its record", async () => {
+    const cwd = await repo("quota-rename");
+    await writeFile(join(cwd, "big-old.txt"), "r".repeat(1000));
+    git(cwd, "add", ".");
+    git(cwd, "commit", "-qm", "big");
+    await writeFile(join(cwd, "tracked.txt"), "two!\n");
+    await rm(join(cwd, "big-old.txt"));
+    await writeFile(join(cwd, "big-new.txt"), "r".repeat(1000));
+    const manifest = await run(
+      Effect.gen(function* () {
+        const manifest = yield* Git.use((g) => g.capture(cwd, { kind: "uncommitted" }));
+        yield* CapturedContent.use((c) => c.putManifest(manifest));
+        return manifest;
+      }),
+      undefined,
+      undefined,
+      { GYST_SNAPSHOT_QUOTA: "100 B" },
+    );
+    const omitted = { kind: "unavailable", reason: "quota" };
+    expect(fileOf(manifest, "big-old.txt")).toEqual({
+      path: "big-old.txt",
+      old: omitted,
+      new: { kind: "absent" },
+    });
+    expect(fileOf(manifest, "big-new.txt")).toEqual({
+      path: "big-new.txt",
+      old: { kind: "absent" },
+      new: omitted,
+      renamedFrom: "big-old.txt",
+    });
+    expect(hunkFiles(manifest)).toEqual(["tracked.txt"]);
+    expect(await blobs()).not.toContain(sha256("r".repeat(1000)));
+  });
+
   it("reports a failed content write as an actionable error and leaves no staging", async () => {
     const cwd = await repo("write-failure");
     const error = await captureError(cwd, undefined, (real) => ({
@@ -1024,6 +1178,71 @@ describe("Git.capture Generated files", () => {
       dirs.flatMap((dir, at) => (at % 2 ? [] : [join(dir, "x.js")])).sort(),
     );
   }, 60_000);
+
+  it("reads uncommitted attributes under a snapshot quota from the captured bytes, stored or left out, into a fresh content store", async () => {
+    const cwd = await repo("generated-quota");
+    await writeFile(join(cwd, ".gitattributes"), "tracked.txt linguist-generated=true\n");
+    git(cwd, "add", ".");
+    git(cwd, "commit", "-qm", "attributes");
+    await writeFile(join(cwd, "tracked.txt"), "changed\n");
+    const attributes = sha256("tracked.txt linguist-generated=true\n");
+    const quota = (
+      size: string,
+      spawner?: Layer.Layer<ChildProcessSpawner.ChildProcessSpawner>,
+    ) => {
+      const fresh = join(root, `generated-quota-data-${size.replace(" ", "")}`);
+      return run(
+        Effect.gen(function* () {
+          const manifest = yield* Git.use((g) => g.capture(cwd, { kind: "uncommitted" }));
+          yield* CapturedContent.use((c) => c.putManifest(manifest));
+          return {
+            manifest,
+            blobs: yield* Effect.promise(() => readdir(join(fresh, "content", "blobs"))),
+          };
+        }),
+        undefined,
+        spawner,
+        { GYST_DATA_DIR: fresh, GYST_SNAPSHOT_QUOTA: size },
+      );
+    };
+
+    const admitted = await quota("1 MiB");
+    expect(generatedOf(admitted.manifest)).toEqual(["tracked.txt"]);
+    expect(admitted.blobs).toContain(attributes);
+    // tracked.txt needs 12 bytes, so the attributes file is left out, yet still decides.
+    const omitted = await quota("12 B");
+    expect(generatedOf(omitted.manifest)).toEqual(["tracked.txt"]);
+    expect(fileOf(omitted.manifest, ".gitattributes")).toEqual({
+      path: ".gitattributes",
+      old: { kind: "unavailable", reason: "quota" },
+      new: { kind: "unavailable", reason: "quota" },
+    });
+    expect(omitted.blobs).not.toContain(attributes);
+
+    // Edited once measured (paths go in order, so on reading tracked.txt's old side), the
+    // attributes file fails the capture rather than deciding with other bytes.
+    const trackedOid = git(cwd, "rev-parse", "HEAD:tracked.txt").trim();
+    let edited = false;
+    const editing = Layer.effect(
+      ChildProcessSpawner.ChildProcessSpawner,
+      Effect.gen(function* () {
+        const live = yield* ChildProcessSpawner.ChildProcessSpawner;
+        return ChildProcessSpawner.make((command) =>
+          command._tag === "StandardCommand" && command.args.includes(trackedOid) && !edited
+            ? Effect.promise(async () => {
+                edited = true;
+                await writeFile(join(cwd, ".gitattributes"), "tracked.txt -linguist-generated\n");
+              }).pipe(Effect.andThen(live.spawn(command)))
+            : live.spawn(command),
+        );
+      }),
+    ).pipe(Layer.provide(NodeServices.layer));
+    await expect(quota("12 B", editing)).rejects.toMatchObject({
+      _tag: "bad_args",
+      detail: { path: ".gitattributes" },
+    });
+    expect(edited).toBe(true);
+  });
 
   it("reads a range's attributes from its commits, while uncommitted work reads the checkout's", async () => {
     const cwd = await repo("generated-range");

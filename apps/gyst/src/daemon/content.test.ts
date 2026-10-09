@@ -3,6 +3,7 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import { type SnapshotManifest, snapshotIdOf } from "@gyst/core";
 import {
   ConfigProvider,
+  Deferred,
   Effect,
   Fiber,
   FileSystem,
@@ -12,7 +13,7 @@ import {
   Stream,
 } from "effect";
 import { createHash } from "node:crypto";
-import { chmod, mkdtemp, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CapturedContent } from "./content.ts";
@@ -146,6 +147,39 @@ describe("CapturedContent blobs", () => {
     expect(new Set(results.map(({ blob }) => blob))).toEqual(new Set([sha256(bytes)]));
     expect((await blobs()).filter((name) => !before.includes(name))).toEqual([sha256(bytes)]);
     expect(await staged()).toEqual([]);
+  });
+
+  it("syncs a new blob before linking it, and an existing one never again", async () => {
+    const calls: string[] = [];
+    const observed = Layer.effect(
+      FileSystem.FileSystem,
+      Effect.map(FileSystem.FileSystem, (fs): FileSystem.FileSystem => ({
+        ...fs,
+        open: (path, options) =>
+          Effect.map(fs.open(path, options), (handle) =>
+            Object.create(handle, {
+              sync: {
+                value: Effect.andThen(
+                  Effect.sync(() => calls.push("sync")),
+                  handle.sync,
+                ),
+              },
+            }),
+          ),
+        link: (from, to) =>
+          Effect.andThen(
+            Effect.sync(() => calls.push("link")),
+            fs.link(from, to),
+          ),
+      })),
+    ).pipe(Layer.provide(NodeServices.layer));
+    const bytes = encoder.encode("synced once\n");
+    const putObserved = runWith(observed);
+    await putObserved(CapturedContent.use((content) => content.putBlob(Stream.make(bytes))));
+    expect(calls).toEqual(["sync", "link"]);
+    calls.length = 0;
+    await putObserved(CapturedContent.use((content) => content.putBlob(Stream.make(bytes))));
+    expect(calls).toEqual(["link"]);
   });
 
   it("removes only its own staging when the input fails or is interrupted", async () => {
@@ -377,4 +411,117 @@ describe("CapturedContent manifests", () => {
       );
     },
   );
+});
+
+describe("CapturedContent reclaim", () => {
+  beforeAll(async () => {
+    dataDir = await mkdtemp(join(tmpdir(), "gyst-reclaim-"));
+  });
+  afterAll(() => rm(dataDir, { recursive: true, force: true }));
+  const snapshots = () => readdir(join(contentDir(), "snapshots"));
+
+  it("removes every manifest, blob and staging leftover outside what is retained", async () => {
+    const kept = await put(encoder.encode("kept\n"));
+    const shared = await put(encoder.encode("shared\n"));
+    const dropped = await put(encoder.encode("dropped\n"));
+    const publish = (files: SnapshotManifest["files"]) =>
+      run(CapturedContent.use((content) => content.putManifest(manifestWith(files))));
+    const keptSnapshot = await publish([
+      { path: "a.ts", old: { kind: "text", ...shared }, new: { kind: "text", ...kept } },
+    ]);
+    await publish([
+      { path: "a.ts", old: { kind: "text", ...shared }, new: { kind: "text", ...dropped } },
+    ]);
+    // What a daemon that died mid-write leaves behind.
+    await mkdir(join(contentDir(), "staging", "left-over"), { recursive: true });
+    await writeFile(join(contentDir(), "staging", "left-over", "object"), "partial");
+
+    const reclaimed = await run(
+      CapturedContent.use((content) =>
+        content.reclaim(
+          Effect.succeed({
+            snapshots: new Set([keptSnapshot]),
+            blobs: new Set([kept.blob, shared.blob]),
+          }),
+        ),
+      ),
+    );
+    expect(reclaimed).toEqual({ snapshots: 1, blobs: 1 });
+    expect(await snapshots()).toEqual([`${keptSnapshot}.json`]);
+    expect((await blobs()).toSorted()).toEqual([kept.blob, shared.blob].toSorted());
+    expect(await staged()).toEqual([]);
+    expect(await read(shared.blob, { offset: 0, length: shared.size })).toEqual(
+      encoder.encode("shared\n"),
+    );
+  });
+
+  it("waits until nothing holds content, and evaluates what is retained only then", async () => {
+    const early = await put(encoder.encode("held\n"));
+    await run(
+      Effect.gen(function* () {
+        const content = yield* CapturedContent;
+        const reading = yield* Deferred.make<void>();
+        const release = yield* Deferred.make<void>();
+        const reader = yield* Effect.forkChild(
+          content.hold(
+            Deferred.succeed(reading, undefined).pipe(
+              Effect.andThen(Deferred.await(release)),
+              Effect.andThen(
+                Stream.mkUint8Array(
+                  content.readBlob(early.blob, { offset: 0, length: early.size }),
+                ).pipe(Effect.map((bytes) => new TextDecoder().decode(bytes))),
+              ),
+            ),
+          ),
+        );
+        yield* Deferred.await(reading);
+        let evaluated = false;
+        const reclaim = yield* Effect.forkChild(
+          content.reclaim(
+            Effect.sync(() => {
+              evaluated = true;
+              return { snapshots: new Set<string>(), blobs: new Set<string>() };
+            }),
+          ),
+        );
+        // A waiting reclaim never holds up another hold, nested or new.
+        const late = yield* content.putBlob(Stream.make(encoder.encode("late\n")));
+        expect(evaluated).toBe(false);
+        yield* Deferred.succeed(release, undefined);
+        expect(yield* Fiber.join(reader)).toBe("held\n");
+        expect(yield* Fiber.join(reclaim)).toMatchObject({ blobs: expect.any(Number) });
+        expect(evaluated).toBe(true);
+        expect(yield* Effect.promise(blobs)).not.toContain(late.blob);
+      }),
+    );
+  });
+
+  it("reports running out of space as storage_full and leaves no staging", async () => {
+    const outOfSpace = Layer.effect(
+      FileSystem.FileSystem,
+      Effect.map(FileSystem.FileSystem, (fs) => {
+        const full = PlatformError.systemError({
+          _tag: "Unknown",
+          module: "FileSystem",
+          method: "write",
+          description: "no space left on device",
+          cause: Object.assign(new Error("ENOSPC: no space left on device"), { code: "ENOSPC" }),
+        });
+        return { ...fs, sink: () => Sink.fail(full), writeFile: () => Effect.fail(full) };
+      }),
+    ).pipe(Layer.provide(NodeServices.layer));
+    const before = await blobs();
+    const error = await runWith(outOfSpace)(
+      Effect.flip(
+        CapturedContent.use((content) => content.putBlob(Stream.make(encoder.encode("big\n")))),
+      ),
+    );
+    expect(error).toMatchObject({
+      _tag: "source_unavailable",
+      message: expect.stringContaining("out of space"),
+      detail: { reason: "storage_full" },
+    });
+    expect(await blobs()).toEqual(before);
+    expect(await staged()).toEqual([]);
+  });
 });

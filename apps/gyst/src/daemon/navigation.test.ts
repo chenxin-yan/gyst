@@ -5,6 +5,7 @@ import {
   type ByteRange,
   navigationInstallCommand,
   type BrowserRequest,
+  SourceUnavailable,
   type TextPoint,
 } from "@gyst/core";
 import {
@@ -108,10 +109,35 @@ let readGate:
       release: Deferred.Deferred<void>;
     }
   | undefined;
+/** How many blob writes still fail as out of space before writes succeed again. */
+let outOfSpace = 0;
+/** When set, the next load of `snapshotId`'s manifest signals `started`, then waits for `release`. */
+let manifestGate:
+  | { snapshotId: string; started: Deferred.Deferred<void>; release: Deferred.Deferred<void> }
+  | undefined;
 const gatedContent = Layer.effect(
   CapturedContent,
   Effect.map(CapturedContent, (real) => ({
     ...real,
+    loadManifest: (snapshotId: string) => {
+      const gate = manifestGate;
+      if (gate?.snapshotId !== snapshotId) return real.loadManifest(snapshotId);
+      manifestGate = undefined;
+      return Deferred.succeed(gate.started, undefined).pipe(
+        Effect.andThen(Deferred.await(gate.release)),
+        Effect.andThen(real.loadManifest(snapshotId)),
+      );
+    },
+    putBlob: <E>(bytes: Stream.Stream<Uint8Array, E>) => {
+      if (outOfSpace === 0) return real.putBlob(bytes);
+      outOfSpace--;
+      return Effect.fail(
+        new SourceUnavailable({
+          message: "gyst's data directory is out of space",
+          detail: { reason: "storage_full" },
+        }),
+      );
+    },
     readBlob: (blob: string, range: ByteRange) => {
       const gate = readGate;
       if (gate === undefined || (gate.only && !gate.only.has(blob)) || gate.skip-- > 0)
@@ -1127,6 +1153,91 @@ describe("Navigation lifecycle", () => {
       }),
     );
   }, 120_000);
+
+  it("holds captured content from choosing a snapshot to reading it, so a reclaim meanwhile waits", async () => {
+    const dataDir = join(dir, "data-select");
+    const cwdA = await changedRepo("select-a");
+    const cwdB = await changedRepo("select-b");
+    await write(cwdB, { "src/other.ts": "export {};\n" });
+    await runReal(
+      dataDir,
+      Effect.gen(function* () {
+        const sessions = yield* Sessions;
+        const a = yield* changedSession(cwdA);
+        // The one-entry manifest cache now holds B's, so the query loads A's again.
+        yield* changedSession(cwdB);
+        const gate = {
+          snapshotId: a.session.snapshotId,
+          started: yield* Deferred.make<void>(),
+          release: yield* Deferred.make<void>(),
+        };
+        manifestGate = gate;
+        const query = yield* Effect.forkChild(definition(a.target("new"), plusAt("new")));
+        yield* Deferred.await(gate.started);
+        yield* Effect.promise(() => write(cwdA, { "src/use.ts": `${newUse}// later\n` }));
+        yield* sessions.refresh({
+          command: "refresh",
+          session: a.session.id,
+          snapshotId: a.session.snapshotId,
+          requestId: "later",
+        });
+        let reclaimed = false;
+        const reclaiming = yield* Effect.forkChild(
+          sessions.reclaim.pipe(Effect.tap(() => Effect.sync(() => (reclaimed = true)))),
+        );
+        yield* Effect.sleep("50 millis");
+        expect(reclaimed).toBe(false);
+        yield* Deferred.succeed(gate.release, undefined);
+        expect((yield* Fiber.join(query)).outcome).toEqual({
+          kind: "unavailable",
+          reason: { kind: "historical" },
+        });
+        yield* Fiber.join(reclaiming);
+      }),
+    );
+  }, 60_000);
+
+  it("drops a crashed daemon's leftovers and idle engines, never an active one, before a capture refuses for space", async () => {
+    const dataDir = join(dir, "data-space");
+    const leftover = join(dataDir, "navigation", "crashed", "project", "a.ts");
+    await write(dataDir, { "navigation/crashed/project/a.ts": "export {};\n" });
+    const cwds = [];
+    for (const name of ["space-a", "space-b", "space-c"]) cwds.push(await changedRepo(name));
+    const [cwdA, cwdB, cwdC] = cwds as [string, string, string];
+    await runReal(
+      dataDir,
+      Effect.gen(function* () {
+        const sessions = yield* Sessions;
+        const open = (cwd: string) =>
+          sessions.open({ command: "open", cwd, scope: { kind: "uncommitted" } });
+        const a = yield* changedSession(cwdA);
+        outOfSpace = 1;
+        yield* open(cwdB);
+        expect(outOfSpace).toBe(0);
+        expect(existsSync(leftover)).toBe(false);
+
+        expect(located(yield* definition(a.target("old"), plusAt("old"))).locations).toHaveLength(
+          1,
+        );
+        const idle = engines()[0]!.pid;
+        const busy = yield* hold(new Set([a.blob("src/math.ts", "new")]));
+        const query = yield* Effect.forkChild(definition(a.target("new"), plusAt("new")));
+        yield* Deferred.await(busy.started);
+        readGate = undefined;
+        outOfSpace = 1;
+        // The reclaim after the drop waits for the active query's read; the idle engine is gone.
+        const opening = yield* Effect.forkChild(open(cwdC));
+        yield* until(Effect.sync(() => !alive(idle)));
+        expect((yield* readiness(a.session.id, a.session.snapshotId)).sides.old).toEqual({
+          kind: "stopped",
+        });
+        yield* Deferred.succeed(busy.release, undefined);
+        expect(located(yield* Fiber.join(query)).locations).toHaveLength(1);
+        yield* Fiber.join(opening);
+        expect(outOfSpace).toBe(0);
+      }),
+    );
+  }, 60_000);
 
   it("expires an idle engine, but never while a query is active", async () => {
     const dataDir = join(dir, "data-idle");

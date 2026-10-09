@@ -75,7 +75,7 @@ export const noGitHub = Layer.succeed(GitHub, {
 /**
  * Publishes manifests by identity alone and loads back those it published. A blob `manifestOf`
  * named reads back whole as its identifying text (a supporting file's content); other byte
- * operations are unused through `Sessions`.
+ * operations are unused through `Sessions`, and nothing is ever reclaimed.
  */
 export const publishingContent = (
   putManifest: (typeof CapturedContent)["Service"]["putManifest"] = (manifest) =>
@@ -101,5 +101,7 @@ export const publishingContent = (
         ? Effect.succeed(manifest)
         : Effect.fail(new BadArgs({ message: "snapshot not found", detail: snapshotId }));
     },
+    hold: (effect) => effect,
+    reclaim: () => Effect.succeed({ snapshots: 0, blobs: 0 }),
   });
 };
