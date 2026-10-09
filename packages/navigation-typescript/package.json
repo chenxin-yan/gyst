@@ -1,6 +1,6 @@
 {
   "name": "@gyst/navigation-typescript",
-  "version": "0.1.2",
+  "version": "0.2.0",
   "description": "Optional TypeScript/JavaScript definition and usage navigation for gyst",
   "license": "MIT",
   "type": "module",
