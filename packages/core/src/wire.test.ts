@@ -290,7 +290,7 @@ describe("daemon wire envelopes", () => {
       }
     };
     visit(new URL(manifest.exports["./wire"], packageDir));
-    expect([...seen].map((href) => href.slice(packageDir.href.length)).sort()).toEqual([
+    expect([...seen].map((href) => href.slice(packageDir.href.length)).toSorted()).toEqual([
       "src/content.ts",
       "src/errors.ts",
       "src/github.ts",

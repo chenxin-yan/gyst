@@ -77,9 +77,9 @@ export default async function setup(project: Pick<TestProject, "provide">) {
   try {
     // Vitest sets NODE_ENV=test, which would ship a React development build; test what npm users get.
     await exec("pnpm", packageDir, ["build"], { ...testedEnv, NODE_ENV: "production" });
-    const packed = JSON.parse(
+    const packed: { filename: string } = JSON.parse(
       await exec("pnpm", packageDir, ["pack", "--pack-destination", root, "--json"], testedEnv),
-    ) as { filename: string };
+    );
     await exec(
       "npm",
       root,
@@ -88,16 +88,10 @@ export default async function setup(project: Pick<TestProject, "provide">) {
     );
     // The add-on's own install fetches its pinned engine from the registry (or npm's cache).
     await exec("pnpm", navigationDir, ["build"], testedEnv);
-    navigationTarball = (
-      JSON.parse(
-        await exec(
-          "pnpm",
-          navigationDir,
-          ["pack", "--pack-destination", root, "--json"],
-          testedEnv,
-        ),
-      ) as { filename: string }
-    ).filename;
+    const navigationPacked: { filename: string } = JSON.parse(
+      await exec("pnpm", navigationDir, ["pack", "--pack-destination", root, "--json"], testedEnv),
+    );
+    navigationTarball = navigationPacked.filename;
     await exec(
       "npm",
       root,

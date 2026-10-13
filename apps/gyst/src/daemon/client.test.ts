@@ -21,18 +21,21 @@ vi.mock("@effect/platform-node/NodeSocket", async (importOriginal) => {
   const NodeSocket = await importOriginal<typeof import("@effect/platform-node/NodeSocket")>();
   const { createConnection } = await import("node:net");
   const { EventEmitter } = await import("node:events");
-  const { Effect } = await import("effect");
+  const effect = await import("effect");
   return {
     ...NodeSocket,
     makeNet: (options: { readonly path: string }) => {
       if (!dials.hungUp.has(dials.count++)) return NodeSocket.makeNet(options);
       // The peer's fd is closed before this resolves, so the client's first write gets EPIPE.
       return NodeSocket.fromDuplex(
-        Effect.promise(async () => {
+        effect.Effect.promise(async () => {
           const accepted = EventEmitter.once(dials.server!, "connection");
           const conn = createConnection(options.path);
-          const [[peer]] = await Promise.all([accepted, EventEmitter.once(conn, "connect")]);
-          (peer as Socket).destroy();
+          const [[peer]]: [Socket[], unknown[]] = await Promise.all([
+            accepted,
+            EventEmitter.once(conn, "connect"),
+          ]);
+          peer!.destroy();
           return conn;
         }),
       );

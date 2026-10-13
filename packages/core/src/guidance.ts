@@ -181,7 +181,7 @@ export function parseReferenceHref(href: string): CodeRange | undefined {
   }
   const range = {
     path,
-    side: match[1] as CodeSide,
+    side: match[1],
     startLine: Number(match[3]),
     endLine: Number(match[4] ?? match[3]),
   };

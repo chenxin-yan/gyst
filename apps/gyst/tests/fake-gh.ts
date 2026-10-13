@@ -31,11 +31,11 @@ else {
       : argv[0] === "api" && argv[1] === "graphql"
         ? `${fields.get("query")?.includes("stack{") ? "stack" : "pull"}-${fields.get("owner")}-${fields.get("repo")}-${fields.get("number")}.json`
         : undefined;
-  if (name === undefined) refuse(`only api graphql and repo view are recorded: ${argv}`);
+  if (name === undefined) refuse(`only api graphql and repo view are recorded: ${argv.join(" ")}`);
   else {
     let reply: Reply | undefined;
     try {
-      reply = JSON.parse(readFileSync(join(dir, name), "utf8")) as Reply;
+      reply = JSON.parse(readFileSync(join(dir, name), "utf8"));
     } catch {
       refuse(`no fixture ${name}`);
     }

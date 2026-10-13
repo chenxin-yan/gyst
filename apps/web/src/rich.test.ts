@@ -291,8 +291,9 @@ describe("mermaidConfig", () => {
     );
     expect(config).not.toHaveProperty("themeCSS");
     const used = new Set(Object.values(colors));
-    for (const [name, value] of Object.entries(config.themeVariables as Record<string, unknown>))
-      if (name !== "darkMode") expect(used.has(value as string), name).toBe(true);
+    for (const [name, value] of Object.entries<unknown>(config.themeVariables))
+      if (name !== "darkMode")
+        expect(typeof value === "string" && used.has(value), name).toBe(true);
   });
 });
 

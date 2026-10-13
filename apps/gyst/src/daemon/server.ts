@@ -56,6 +56,11 @@ const signalled = Effect.callback<void>((resume) => {
   });
 });
 
+const identityChanged = () =>
+  new DaemonUnreachable({
+    message: "daemon identity changed or upgrade is in progress; no review command was executed",
+  });
+
 export class DaemonServer extends Context.Service<
   DaemonServer,
   {
@@ -192,11 +197,6 @@ export class DaemonServer extends Context.Service<
       const restart = yield* Latch.make(false);
       const instanceId = crypto.randomUUID();
       let draining = false;
-      const identityChanged = () =>
-        new DaemonUnreachable({
-          message:
-            "daemon identity changed or upgrade is in progress; no review command was executed",
-        });
 
       /**
        * Streams one session's committed changes: `ready`, then each change, until `deleted`, the

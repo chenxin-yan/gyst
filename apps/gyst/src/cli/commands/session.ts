@@ -276,7 +276,13 @@ const code = defineCommand(
         sessionFlag,
         snapshotFlag,
         { name: "file", type: "string", required: true, description: "A path from `files`" },
-        { name: "side", type: "string", required: true, description: "`old` or `new`" },
+        {
+          name: "side",
+          type: "string",
+          required: true,
+          choices: ["old", "new"],
+          description: "`old` or `new`",
+        },
         { name: "start-line", type: "number", description: "First line (1-based); default 1" },
         {
           name: "offset",
@@ -293,7 +299,7 @@ const code = defineCommand(
               session: flags.session,
               snapshotId: flags.snapshot,
               file: flags.file,
-              side: flags.side as "old" | "new",
+              side: flags.side,
               startLine: flags["start-line"],
               offset: flags.offset,
               endLine: flags["end-line"],

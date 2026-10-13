@@ -169,16 +169,23 @@ const exchange = Effect.fn("exchange")(function* (message: unknown) {
   while (!("ok" in JSON.parse(line))) line = yield* next;
   return decodeReply(line);
 }, Effect.scoped);
-const send = Effect.fn("send")(function* (request: Request) {
+
+/** Sends any value as the request, as an untrusted client could. */
+const sendUnchecked = Effect.fn("send")(function* (request: unknown) {
   const hello = yield* exchange({ command: "daemon.info" });
   if (!hello.ok) return hello;
   const info = Schema.decodeUnknownSync(DaemonInfoSchema)(hello.value);
   return yield* exchange({ ...info, request });
 });
+const send = (request: Request) => sendUnchecked(request);
+const sessionOf = (value: unknown) =>
+  Schema.decodeUnknownSync(
+    Schema.Struct({ session: Schema.Struct({ id: Schema.String, snapshotId: Schema.String }) }),
+  )(value).session;
 const open = (cwd: string) => send({ command: "open", cwd, scope: { kind: "uncommitted" } });
 const openedId = (reply: Reply) => {
   if (!reply.ok) throw new Error(`open failed: ${reply.error.message}`);
-  return (reply.value as { session: { id: string } }).session.id;
+  return sessionOf(reply.value).id;
 };
 const remove = (session: string) => send({ command: "delete", session, requestId: session });
 const ok = (reply: Reply) => reply.ok;
@@ -188,6 +195,8 @@ beforeAll(async () => {
   socketPath = join(dataDir, "daemon.sock");
 });
 afterAll(() => rm(dataDir, { recursive: true, force: true }));
+
+const published = () => [...files.values()].some((session) => session.repoRoot === "/disconnected");
 
 describe("DaemonServer", () => {
   it("keeps an open queued behind the idle check alive during final-session shutdown", async () => {
@@ -326,7 +335,7 @@ describe("DaemonServer", () => {
         );
         const status = yield* send({ command: "status", session });
         if (!status.ok) throw new Error("status failed");
-        const snapshotId = (status.value as { session: { snapshotId: string } }).session.snapshotId;
+        const { snapshotId } = sessionOf(status.value);
         // Ordinary review operations never reach navigation.
         expect(navigationCalls).toEqual([]);
 
@@ -362,12 +371,12 @@ describe("DaemonServer", () => {
         navigationCalls.length = 0;
         const refreshed = yield* send({ command: "refresh", session });
         if (!refreshed.ok) throw new Error("refresh failed");
-        const current = (refreshed.value as { session: { snapshotId: string } }).session.snapshotId;
+        const current = sessionOf(refreshed.value).snapshotId;
         expect(navigationCalls).toEqual([{ retire: session, keep: current }]);
         // A browser-shaped request without the launcher's discovery is refused before dispatch.
         for (const request of [requests[0], requests[3]]) {
           const { addon: _, ...unbound } = request;
-          expect(yield* send(unbound as unknown as Request)).toMatchObject({
+          expect(yield* sendUnchecked(unbound)).toMatchObject({
             ok: false,
             error: { _tag: "bad_args" },
           });
@@ -419,17 +428,18 @@ describe("DaemonServer", () => {
 
         const client = yield* DaemonClient;
         const heard: unknown[] = [];
-        const opened = (yield* client.request(
-          { command: "open", cwd: "/progress-client", scope: { kind: "uncommitted" } },
-          (event) => Effect.sync(() => void heard.push(event)),
-        )) as { session: { id: string } };
+        const opened = sessionOf(
+          yield* client.request(
+            { command: "open", cwd: "/progress-client", scope: { kind: "uncommitted" } },
+            (event) => Effect.sync(() => void heard.push(event)),
+          ),
+        );
         expect(heard).toEqual(progress);
         // Without a handler the interim lines are skipped and the reply still decodes.
-        const refreshed = (yield* client.request({
-          command: "refresh",
-          session: opened.session.id,
-        })) as { session: { id: string } };
-        expect(refreshed.session.id).toBe(opened.session.id);
+        const refreshed = sessionOf(
+          yield* client.request({ command: "refresh", session: opened.id }),
+        );
+        expect(refreshed.id).toBe(opened.id);
         // A reuse captures nothing, so it reports nothing.
         heard.length = 0;
         yield* client.request(
@@ -479,8 +489,6 @@ describe("DaemonServer", () => {
         progressGate = undefined;
         yield* Effect.sleep("50 millis");
         yield* Deferred.succeed(gate, undefined);
-        const published = () =>
-          [...files.values()].some((session) => session.repoRoot === "/disconnected");
         yield* Effect.sync(published).pipe(
           Effect.repeat({ until: (done) => done, schedule: Schedule.spaced("10 millis") }),
           Effect.timeout("2 seconds"),

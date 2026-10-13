@@ -666,7 +666,7 @@ describe("Git.capture", () => {
     const names = ["a b.txt", 'quo"te.txt', "new\nline.txt", "tab\there.txt", "ü.txt"];
     for (const name of names) await writeFile(join(cwd, name), `${name}\n`);
     const manifest = await capture(cwd);
-    expect(hunkFiles(manifest)).toEqual([...names].sort());
+    expect(hunkFiles(manifest)).toEqual(names.toSorted());
     await writeFile(Buffer.concat([Buffer.from(`${cwd}/bad-`), Buffer.from([0xff])]), "x\n");
     expect(await captureError(cwd)).toMatchObject({
       _tag: "bad_args",
@@ -802,8 +802,8 @@ describe("Git.capture", () => {
     const before = await blobs();
     const manifest = await capture(cwd);
     expect(fileOf(manifest, "copy.txt")!.new).toEqual(fileOf(manifest, "tracked.txt")!.old);
-    expect((await blobs()).filter((blob) => !before.includes(blob)).sort()).toEqual(
-      [sha256("one\n"), sha256("two\n")].filter((blob) => !before.includes(blob)).sort(),
+    expect((await blobs()).filter((blob) => !before.includes(blob)).toSorted()).toEqual(
+      [sha256("one\n"), sha256("two\n")].filter((blob) => !before.includes(blob)).toSorted(),
     );
     await rm(cwd, { recursive: true, force: true });
     const side = fileOf(manifest, "tracked.txt")!.new;
@@ -903,22 +903,19 @@ async function stacked(name: string) {
   return { ...github, m1: m1.trim(), m2, a1, b1, f1 };
 }
 
-describe("Git.pullRequestRange", () => {
-  const range = (cwd: string, number: number, baseRefName: string, headRefOid: string) =>
-    run(
+const range = (cwd: string, number: number, baseRefName: string, headRefOid: string) =>
+  run(
+    Git.use((g) => g.pullRequestRange(cwd, pullRequestScope(number), { baseRefName, headRefOid })),
+  );
+const rangeError = (cwd: string, number: number, baseRefName: string, headRefOid: string) =>
+  run(
+    Effect.flip(
       Git.use((g) =>
         g.pullRequestRange(cwd, pullRequestScope(number), { baseRefName, headRefOid }),
       ),
-    );
-  const rangeError = (cwd: string, number: number, baseRefName: string, headRefOid: string) =>
-    run(
-      Effect.flip(
-        Git.use((g) =>
-          g.pullRequestRange(cwd, pullRequestScope(number), { baseRefName, headRefOid }),
-        ),
-      ),
-    );
-
+    ),
+  );
+describe("Git.pullRequestRange", () => {
   it("resolves a stacked layer against its own base branch, never the stack base", async () => {
     const github = await stacked("pr-stacked");
     expect(await range(github.checkout, 2, "layer-a", github.b1)).toEqual({
@@ -1060,20 +1057,22 @@ describe("Git.pullRequestRange", () => {
         const firstFiber = yield* Effect.forkChild(acquire(github.b1));
         yield* Effect.promise(() => paused.promise);
         // A restack moves both refs while the first acquisition is between its reads.
-        const a2 = yield* Effect.promise(() => github.commit("layer-a", { "a.txt": "a, again\n" }));
+        const movedA = yield* Effect.promise(() =>
+          github.commit("layer-a", { "a.txt": "a, again\n" }),
+        );
         github.publish("layer-a", 1);
         git(github.author, "rebase", "-q", "--onto", "layer-a", github.a1, "layer-b");
-        const b2 = github.publish("layer-b", 2);
-        const secondFiber = yield* Effect.forkChild(acquire(b2));
+        const movedB = github.publish("layer-b", 2);
+        const secondFiber = yield* Effect.forkChild(acquire(movedB));
         yield* Effect.sleep("500 millis");
-        const fetchesWhileHeld = fetches;
+        const held = fetches;
         resume.resolve();
         return {
           first: yield* Fiber.join(firstFiber),
           second: yield* Fiber.join(secondFiber),
-          fetchesWhileHeld,
-          a2,
-          b2,
+          fetchesWhileHeld: held,
+          a2: movedA,
+          b2: movedB,
         };
       }),
       undefined,
@@ -1116,24 +1115,23 @@ describe("Git.pullRequestRange", () => {
   });
 });
 
+/** Captures a PR at the head GitHub reported and publishes it, like `capture`. */
+const capturePullRequest = (cwd: string, number: number, baseRefName: string, head: string) =>
+  run(
+    Effect.gen(function* () {
+      const manifest = yield* Git.use((g) =>
+        g.capturePullRequest(cwd, pullRequestScope(number), {
+          baseRefName,
+          headRefOid: head,
+        }),
+      );
+      expect(yield* CapturedContent.use((c) => c.putManifest(manifest))).toBe(
+        snapshotIdOf(manifest),
+      );
+      return manifest;
+    }),
+  );
 describe("Git.capturePullRequest", () => {
-  /** Captures a PR at the head GitHub reported and publishes it, like `capture`. */
-  const capturePullRequest = (cwd: string, number: number, baseRefName: string, head: string) =>
-    run(
-      Effect.gen(function* () {
-        const manifest = yield* Git.use((g) =>
-          g.capturePullRequest(cwd, pullRequestScope(number), {
-            baseRefName,
-            headRefOid: head,
-          }),
-        );
-        expect(yield* CapturedContent.use((c) => c.putManifest(manifest))).toBe(
-          snapshotIdOf(manifest),
-        );
-        return manifest;
-      }),
-    );
-
   it("captures only a layer's own hunks, with inherited source readable unchanged", async () => {
     const github = await stacked("capture-pr-layer");
     const manifest = await capturePullRequest(github.checkout, 2, "layer-a", github.b1);

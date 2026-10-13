@@ -12,6 +12,13 @@ const singles = bindings.filter(({ keys }) => keys.length === 1).map(({ keys }) 
 const sequences = bindings.filter(({ keys }) => keys.length > 1).map(({ keys }) => keys);
 const keysOf = (id: string) => commands.find((command) => command.id === id)!.keys;
 
+const label = (id: string, platform: "mac" | "linux") =>
+  keysOf(id).map((keys) =>
+    keys.map((key) => formatForDisplay(key, { platform, keyLabels })).join(" "),
+  );
+const ids = (mode: "vim" | "mouse") => commandsFor(mode).map(({ id }) => id);
+const event = (key: string, init: Partial<KeyboardEvent> = {}) => ({ ...init, key });
+
 describe("commands", () => {
   it("names every key as TanStack Hotkeys knows it", () => {
     for (const { keys } of bindings)
@@ -47,10 +54,6 @@ describe("commands", () => {
   });
 
   it("prints keys for the help and the menu as the platform shows them", () => {
-    const label = (id: string, platform: "mac" | "linux") =>
-      keysOf(id).map((keys) =>
-        keys.map((key) => formatForDisplay(key, { platform, keyLabels })).join(" "),
-      );
     expect(
       ["down", "halfDown", "bottom", "unfoldAll", "menu", "open", "cancel", "help"].map((id) =>
         label(id, "linux"),
@@ -75,12 +78,10 @@ describe("commands", () => {
 
   // Shift+J walks groups while j moves the cursor; ]n and [n walk notes, and i shows them all.
   it("binds walkthrough groups and notes apart from movement", () => {
-    const label = (id: string) =>
-      keysOf(id).map((keys) =>
-        keys.map((key) => formatForDisplay(key, { platform: "linux", keyLabels })).join(" "),
-      );
     expect(
-      ["nextGroup", "previousGroup", "nextNote", "previousNote", "toggleNotes"].map(label),
+      ["nextGroup", "previousGroup", "nextNote", "previousNote", "toggleNotes"].map((id) =>
+        label(id, "linux"),
+      ),
     ).toEqual([["Shift+j"], ["Shift+k"], ["] n"], ["[ n"], ["i"]]);
     expect(areHotkeysEqual("Shift+J", "J")).toBe(false);
     expect(typed("Shift+J", { key: "J" })).toBe(true);
@@ -110,7 +111,6 @@ describe("commands", () => {
 
   // Mouse mode has no cursor: a command that acts at it is neither bound, listed nor offered there.
   it("leaves cursor-only commands, such as Open, to Vim mode", () => {
-    const ids = (mode: "vim" | "mouse") => commandsFor(mode).map(({ id }) => id);
     expect(ids("vim")).toEqual(commands.map(({ id }) => id));
     expect(commandsFor("vim").find(({ id }) => id === "open")?.keys).toEqual([["Enter"]]);
     expect(commands.filter(({ id }) => !ids("mouse").includes(id)).map(({ id }) => id)).toEqual([
@@ -123,7 +123,6 @@ describe("commands", () => {
 
   // Caps Lock types `M` without Shift, and another layout types `ь` on the M key.
   it("runs a key only for the character its binding names", () => {
-    const event = (key: string, init: Partial<KeyboardEvent> = {}) => ({ ...init, key });
     expect(typed("M", event("m", { code: "KeyM" }))).toBe(true);
     expect(typed("M", event("M", { code: "KeyM" }))).toBe(false);
     expect(typed("Shift+M", event("M", { code: "KeyM", shiftKey: true }))).toBe(true);

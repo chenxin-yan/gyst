@@ -51,7 +51,7 @@ describe("SessionStore", () => {
     await mkdir(join(dataDir, "blocked.json"));
     const error = await run(Effect.flip(SessionStore.use((s) => s.save(session("blocked")))));
     expect(error._tag).toBe("PlatformError");
-    expect((await readdir(dataDir)).sort()).toEqual(["a.json", "blocked.json"]);
+    expect((await readdir(dataDir)).toSorted()).toEqual(["a.json", "blocked.json"]);
     await rm(join(dataDir, "blocked.json"), { recursive: true });
   });
 

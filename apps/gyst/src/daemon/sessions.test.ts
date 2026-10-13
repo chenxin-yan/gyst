@@ -86,7 +86,7 @@ let uncaptured: ManifestFile[];
 let gate: { started: Deferred.Deferred<void>; release: Deferred.Deferred<void> } | undefined;
 const withUncaptured = (manifest: SnapshotManifest): SnapshotManifest => ({
   ...manifest,
-  files: [...manifest.files, ...uncaptured].sort((a, b) => (a.path < b.path ? -1 : 1)),
+  files: [...manifest.files, ...uncaptured].toSorted((a, b) => (a.path < b.path ? -1 : 1)),
 });
 const holdCaptures = Effect.gen(function* () {
   const held = { started: yield* Deferred.make<void>(), release: yield* Deferred.make<void>() };
@@ -131,14 +131,14 @@ const git = Layer.succeed(Git, {
     cwd.startsWith(root) || cwd.startsWith(otherRoot)
       ? Effect.succeed(cwd.startsWith(root) ? root : otherRoot)
       : Effect.fail(new BadArgs({ message: "current directory is not inside a git repository" })),
-  capture: (root, scope) =>
+  capture: (repoRoot, scope) =>
     Effect.suspend(() => {
-      captureCalls.push({ root, scope });
+      captureCalls.push({ root: repoRoot, scope });
       return capturing(scope);
     }),
-  capturePullRequest: (root, scope, target) =>
+  capturePullRequest: (repoRoot, scope, target) =>
     Effect.suspend(() => {
-      captureCalls.push({ root, scope, target });
+      captureCalls.push({ root: repoRoot, scope, target });
       const captured: Effect.Effect<SnapshotManifest, SourceUnavailable | BadArgs | InternalError> =
         pullRequestCaptureFailure ? Effect.fail(pullRequestCaptureFailure) : capturing(scope);
       return captured;
@@ -678,8 +678,8 @@ describe("Sessions.open", () => {
     // Equal scope, other repository: the persisted session, not the one just opened.
     expect((await run(openScope(scopes[1], otherRoot))).session.id).toBe(persisted.id);
     const { sessions } = await run(Sessions.use((s) => s.list));
-    expect(sessions.map(({ id }) => id).sort()).toEqual(
-      [persisted.id, ...opened.map(({ session }) => session.id)].sort(),
+    expect(sessions.map(({ id }) => id).toSorted()).toEqual(
+      [persisted.id, ...opened.map(({ session }) => session.id)].toSorted(),
     );
     expect(sessions[0]).toEqual({
       id: persisted.id,
@@ -740,7 +740,7 @@ describe("Sessions.open", () => {
       Effect.gen(function* () {
         const sessions = yield* Sessions;
         const listed = () =>
-          sessions.list.pipe(Effect.map(({ sessions }) => sessions.map(({ id }) => id)));
+          sessions.list.pipe(Effect.map((listing) => listing.sessions.map(({ id }) => id)));
         patchEffect = Effect.fail(new BadArgs({ message: "the working tree changed" }));
         expect(Exit.isFailure(yield* Effect.exit(openScope()))).toBe(true);
         expect(yield* listed()).toEqual([persisted.id]);
@@ -802,11 +802,11 @@ describe("Sessions.open", () => {
   });
 });
 
+const unavailable = (reason: "gh_missing" | "objects_missing") =>
+  new SourceUnavailable({ message: `PR source unavailable: ${reason}`, detail: { reason } });
 describe("Sessions PR sessions", () => {
   const layer2: PullRequestScope = { kind: "pr", repository: "acme/widgets", number: 2 };
   const decodeSession = Schema.decodeUnknownSync(SessionSchema);
-  const unavailable = (reason: "gh_missing" | "objects_missing") =>
-    new SourceUnavailable({ message: `PR source unavailable: ${reason}`, detail: { reason } });
 
   it("captures the PR's range at GitHub's head and stores its attempted stack discovery", async () => {
     const opened = await run(openScope(layer2, `${root}/sub`));
@@ -957,31 +957,30 @@ describe("Sessions PR sessions", () => {
   });
 });
 
-describe("Sessions PR stacks", () => {
-  const scopeOf = (number: number): PullRequestScope => ({
-    kind: "pr",
-    repository: "acme/widgets",
-    number,
-  });
-  const layers = (...numbers: number[]) =>
-    numbers.map((number, index) => ({ position: index + 1, pullRequest: pullRequestOf(number) }));
-  const stacked = (...numbers: number[]): StackDiscovery => ({
-    ok: true,
-    membership: {
-      membership: "stacked",
-      number: 7,
-      baseRefName: "main",
-      layers: layers(...numbers),
-    },
-  });
-  const statusOf = (session: string) =>
-    Sessions.use((s) => s.status({ command: "status", session }));
-  const recheck = (session: string) => Sessions.use((s) => s.stack({ command: "stack", session }));
-  const openLayer = (session: string, number: number) =>
-    Sessions.use((s) => s.layer({ command: "layer", session, number }));
-  /** Everything a recheck must leave as it was: snapshot, review state, receipts and timestamps. */
-  const reviewState = (session: Session) => ({ ...session, pullRequest: undefined });
+const scopeOf = (number: number): PullRequestScope => ({
+  kind: "pr",
+  repository: "acme/widgets",
+  number,
+});
+const layers = (...numbers: number[]) =>
+  numbers.map((number, index) => ({ position: index + 1, pullRequest: pullRequestOf(number) }));
+const statusOf = (session: string) => Sessions.use((s) => s.status({ command: "status", session }));
+const recheck = (session: string) => Sessions.use((s) => s.stack({ command: "stack", session }));
+const openLayer = (session: string, number: number) =>
+  Sessions.use((s) => s.layer({ command: "layer", session, number }));
+/** Everything a recheck must leave as it was: snapshot, review state, receipts and timestamps. */
+const reviewState = (session: Session) => ({ ...session, pullRequest: undefined });
+const stacked = (...numbers: number[]): StackDiscovery => ({
+  ok: true,
+  membership: {
+    membership: "stacked",
+    number: 7,
+    baseRefName: "main",
+    layers: layers(...numbers),
+  },
+});
 
+describe("Sessions PR stacks", () => {
   it("reports the whole known stack with the selected PR and only its opened layers' sessions", async () => {
     const { session: b } = await run(openScope(scopeOf(2)));
     const status = await run(statusOf(b.id));
@@ -1221,6 +1220,8 @@ describe("Sessions PR stacks", () => {
   });
 });
 
+const diffBy = (selector: { hunk?: string; group?: string; file?: string }) =>
+  Sessions.use((s) => s.diff({ command: "diff", session: "persisted", ...selector }));
 describe("Sessions reads", () => {
   it("returns group diffs in explanation order rather than snapshot order", async () => {
     files.set(persisted.id, {
@@ -1259,17 +1260,15 @@ describe("Sessions reads", () => {
   });
 
   it("filters diffs by hunk, group, or file and rejects bad selectors", async () => {
-    const diff = (selector: { hunk?: string; group?: string; file?: string }) =>
-      Sessions.use((s) => s.diff({ command: "diff", session: "persisted", ...selector }));
-    expect((await run(diff({}))).hunks.map((hunk) => hunk.id)).toEqual(["h1", "h2", "h3"]);
-    expect((await run(diff({ hunk: "h2" }))).hunks.map((hunk) => hunk.id)).toEqual(["h2"]);
-    expect((await run(diff({ group: "g1" }))).hunks.map((hunk) => hunk.id)).toEqual(["h1"]);
-    const byFile = await run(diff({ file: "y.txt" }));
+    expect((await run(diffBy({}))).hunks.map((hunk) => hunk.id)).toEqual(["h1", "h2", "h3"]);
+    expect((await run(diffBy({ hunk: "h2" }))).hunks.map((hunk) => hunk.id)).toEqual(["h2"]);
+    expect((await run(diffBy({ group: "g1" }))).hunks.map((hunk) => hunk.id)).toEqual(["h1"]);
+    const byFile = await run(diffBy({ file: "y.txt" }));
     expect(byFile.hunks.map((hunk) => hunk.id)).toEqual(["h2", "h3"]);
     expect(byFile.revision).toBe(3);
-    expect((await failure(diff({ hunk: "h1", file: "x.txt" })))._tag).toBe("bad_args");
-    expect((await failure(diff({ group: "missing" })))._tag).toBe("validation_failed");
-    expect((await failure(diff({ hunk: "missing" })))._tag).toBe("validation_failed");
+    expect((await failure(diffBy({ hunk: "h1", file: "x.txt" })))._tag).toBe("bad_args");
+    expect((await failure(diffBy({ group: "missing" })))._tag).toBe("validation_failed");
+    expect((await failure(diffBy({ hunk: "missing" })))._tag).toBe("validation_failed");
   });
 });
 
@@ -1443,21 +1442,21 @@ describe("Sessions.apply", () => {
   });
 });
 
+const viewedRequest = (fields: Partial<Input<"viewed">> = {}): Input<"viewed"> => ({
+  command: "viewed",
+  session: persisted.id,
+  snapshotId: persisted.snapshotId,
+  revision: persisted.revision,
+  requestId: "r1",
+  hunkIds: ["h2", "h3"],
+  viewed: true,
+  ...fields,
+});
+const sessionSaves = () => commits.filter((commit) => commit === `session ${persisted.id}`);
+const viewed = (fields?: Partial<Input<"viewed">>) =>
+  Sessions.use((s) => s.viewed(viewedRequest(fields)));
 describe("Sessions.viewed", () => {
-  const request = (fields: Partial<Input<"viewed">> = {}): Input<"viewed"> => ({
-    command: "viewed",
-    session: persisted.id,
-    snapshotId: persisted.snapshotId,
-    revision: persisted.revision,
-    requestId: "r1",
-    hunkIds: ["h2", "h3"],
-    viewed: true,
-    ...fields,
-  });
-  const viewed = (fields?: Partial<Input<"viewed">>) =>
-    Sessions.use((s) => s.viewed(request(fields)));
   const status = Sessions.use((s) => s.status({ command: "status", session: persisted.id }));
-  const sessionSaves = () => commits.filter((commit) => commit === `session ${persisted.id}`);
 
   it("sets and clears exactly the named hunks, saving effect and receipt together", async () => {
     const result = await run(viewed());
@@ -1788,10 +1787,9 @@ describe("Sessions.load", () => {
   });
 });
 
+const remove = (session: string, requestId: string) =>
+  Sessions.use((s) => s.delete({ command: "delete", session, requestId }));
 describe("Sessions.delete", () => {
-  const remove = (session: string, requestId: string) =>
-    Sessions.use((s) => s.delete({ command: "delete", session, requestId }));
-
   it("removes only the named session and signals idle once the last one is gone", async () => {
     await run(
       Effect.gen(function* () {
@@ -1946,28 +1944,28 @@ describe("Sessions.delete", () => {
   });
 });
 
-describe("Sessions.subscribe", () => {
-  const subscribe = (session = persisted.id) => Sessions.use((s) => s.subscribe({ session }));
-  const versionNow = (session = persisted.id) => {
-    const saved = files.get(session)!;
-    return { sessionId: saved.id, snapshotId: saved.snapshotId, revision: saved.revision };
-  };
-  const apply = (revision: number, idempotencyKey: string) =>
-    Sessions.use((s) =>
-      s.apply({
-        command: "apply",
-        session: persisted.id,
-        batch: JSON.stringify({
-          revision,
-          snapshotId: files.get(persisted.id)!.snapshotId,
-          idempotencyKey,
-          ops: [{ type: "group.update", id: "g2", title: idempotencyKey }],
-        }),
+const subscribe = (session = persisted.id) => Sessions.use((s) => s.subscribe({ session }));
+const versionNow = (session = persisted.id) => {
+  const saved = files.get(session)!;
+  return { sessionId: saved.id, snapshotId: saved.snapshotId, revision: saved.revision };
+};
+const applyAt = (revision: number, idempotencyKey: string) =>
+  Sessions.use((s) =>
+    s.apply({
+      command: "apply",
+      session: persisted.id,
+      batch: JSON.stringify({
+        revision,
+        snapshotId: files.get(persisted.id)!.snapshotId,
+        idempotencyKey,
+        ops: [{ type: "group.update", id: "g2", title: idempotencyKey }],
       }),
-    );
+    }),
+  );
+const removePersisted = (requestId: string) =>
+  Sessions.use((s) => s.delete({ command: "delete", session: persisted.id, requestId }));
+describe("Sessions.subscribe", () => {
   const refresh = Sessions.use((s) => s.refresh({ command: "refresh", session: persisted.id }));
-  const remove = (requestId: string) =>
-    Sessions.use((s) => s.delete({ command: "delete", session: persisted.id, requestId }));
 
   it("returns the version current at registration, and no_session for an unknown id", async () => {
     await run(
@@ -1995,7 +1993,7 @@ describe("Sessions.subscribe", () => {
           yield* viewedNow(persisted.id, ["h2"], "read-h2");
           expect(yield* Queue.take(events)).toEqual({ kind: "changed", ...versionNow() });
           expect(yield* nothing).toBe(true);
-          yield* apply(versionNow().revision, "retitle");
+          yield* applyAt(versionNow().revision, "retitle");
           expect(yield* Queue.take(events)).toEqual({ kind: "changed", ...versionNow() });
           expect(yield* nothing).toBe(true);
           const refreshed = yield* refresh;
@@ -2007,7 +2005,7 @@ describe("Sessions.subscribe", () => {
           });
           expect(refreshed.session.snapshotId).not.toBe(persisted.snapshotId);
           expect(yield* nothing).toBe(true);
-          yield* remove("gone");
+          yield* removePersisted("gone");
           expect(files.has(persisted.id)).toBe(false);
           expect(yield* Queue.take(events)).toEqual({ kind: "deleted", sessionId: persisted.id });
           expect(yield* nothing).toBe(true);
@@ -2022,16 +2020,16 @@ describe("Sessions.subscribe", () => {
         Effect.gen(function* () {
           const s = yield* Sessions;
           const { request } = yield* viewedNow(persisted.id, ["h2"], "once");
-          yield* apply(persisted.revision + 1, "once");
+          yield* applyAt(persisted.revision + 1, "once");
           const { events } = yield* subscribe();
           const saved = JSON.stringify([...files]);
           yield* s.viewed(request);
-          yield* apply(persisted.revision + 1, "once");
+          yield* applyAt(persisted.revision + 1, "once");
           expect(JSON.stringify([...files])).toBe(saved);
           expect(yield* Queue.poll(events)).toEqual(Option.none());
-          yield* remove("gone");
+          yield* removePersisted("gone");
           expect((yield* Queue.take(events)).kind).toBe("deleted");
-          yield* remove("gone");
+          yield* removePersisted("gone");
           expect(yield* Queue.poll(events)).toEqual(Option.none());
         }),
       ),
@@ -2067,9 +2065,9 @@ describe("Sessions.subscribe", () => {
           saveFails = true;
           const mutations: ReadonlyArray<Effect.Effect<unknown, unknown, Sessions>> = [
             viewedNow(persisted.id, ["h2"], "fails"),
-            apply(persisted.revision, "fails"),
+            applyAt(persisted.revision, "fails"),
             refresh,
-            remove("fails"),
+            removePersisted("fails"),
           ];
           for (const mutation of mutations)
             expect(Exit.isFailure(yield* Effect.exit(mutation))).toBe(true);
@@ -2154,6 +2152,16 @@ describe("Sessions.subscribe", () => {
   });
 });
 
+const runGit = (cwd: string, ...args: string[]) =>
+  execFileSync("git", args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+const bigLine = (index: number) => `line ${String(index).padStart(5, "0")} ${"x".repeat(40)}\n`;
+const anchor = (path: string, side: "old" | "new", startLine: number, endLine: number) => ({
+  path,
+  side,
+  startLine,
+  endLine,
+});
+
 describe("Sessions captured reads over real captures", () => {
   let dir: string;
   beforeAll(async () => {
@@ -2195,18 +2203,15 @@ describe("Sessions captured reads over real captures", () => {
       ),
     );
 
-  const git = (cwd: string, ...args: string[]) =>
-    execFileSync("git", args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
   const repo = async (name: string, committed: Record<string, string | Uint8Array>) => {
     const cwd = join(dir, name);
     await mkdir(cwd, { recursive: true });
-    git(cwd, "init", "-q");
-    git(cwd, "config", "user.email", "test@gyst.invalid");
-    git(cwd, "config", "user.name", "Gyst Test");
-    for (const [path, content] of Object.entries(committed))
-      await writeFile(join(cwd, path), content);
-    git(cwd, "add", ".");
-    git(cwd, "commit", "-qm", "initial");
+    runGit(cwd, "init", "-q");
+    runGit(cwd, "config", "user.email", "test@gyst.invalid");
+    runGit(cwd, "config", "user.name", "Gyst Test");
+    for (const [path, data] of Object.entries(committed)) await writeFile(join(cwd, path), data);
+    runGit(cwd, "add", ".");
+    runGit(cwd, "commit", "-qm", "initial");
     return cwd;
   };
 
@@ -2222,21 +2227,20 @@ describe("Sessions captured reads over real captures", () => {
       let offset: number | undefined;
       let expectedLine = 1;
       while (true) {
-        const { content } = yield* code({ ...request, offset });
-        if (content.kind !== "text") throw new Error(`not text: ${content.kind}`);
+        const { content: page } = yield* code({ ...request, offset });
+        if (page.kind !== "text") throw new Error(`not text: ${page.kind}`);
         pages++;
-        expect(Buffer.byteLength(content.text)).toBeLessThanOrEqual(pageBytes);
-        expect(content.start).toEqual({ line: expectedLine, offset: offset ?? 0 });
-        text += content.text;
-        if (!content.next) return { text, pages };
+        expect(Buffer.byteLength(page.text)).toBeLessThanOrEqual(pageBytes);
+        expect(page.start).toEqual({ line: expectedLine, offset: offset ?? 0 });
+        text += page.text;
+        if (!page.next) return { text, pages };
         expectedLine = 1 + (text.match(/\n/g)?.length ?? 0);
-        expect(content.next).toEqual({ line: expectedLine, offset: Buffer.byteLength(text) });
-        offset = content.next.offset;
+        expect(page.next).toEqual({ line: expectedLine, offset: Buffer.byteLength(text) });
+        offset = page.next.offset;
       }
     });
 
   const endings = "\uFEFFfirst\r\nsecond\rstill second\nlast";
-  const bigLine = (index: number) => `line ${String(index).padStart(5, "0")} ${"x".repeat(40)}\n`;
   const big = Array.from({ length: 4000 }, (_, index) => bigLine(index + 1)).join("");
   const lineBytes = bigLine(1).length;
   // Two-byte characters align with every page split; a short line follows the giant one.
@@ -2269,7 +2273,7 @@ describe("Sessions captured reads over real captures", () => {
         expect(diff.snapshotId).toBe(session.snapshotId);
 
         const read = (file: string, side: "old" | "new" = "new", more = {}) =>
-          code({ ...ids, file, side, ...more }).pipe(Effect.map(({ content }) => content));
+          code({ ...ids, file, side, ...more }).pipe(Effect.map((reply) => reply.content));
         expect(yield* read("endings.txt")).toEqual({
           kind: "text",
           size: Buffer.byteLength(endings),
@@ -2403,12 +2407,6 @@ describe("Sessions captured reads over real captures", () => {
         const ids = (yield* sessions.diff({ command: "diff", session: session.id })).hunks.map(
           ({ id }) => id,
         );
-        const anchor = (path: string, side: "old" | "new", startLine: number, endLine: number) => ({
-          path,
-          side,
-          startLine,
-          endLine,
-        });
         const apply = (revision: number, idempotencyKey: string, ops: unknown[]) =>
           sessions.apply({
             command: "apply",
@@ -2504,12 +2502,16 @@ describe("Sessions captured reads over real captures", () => {
       Effect.gen(function* () {
         const sessions = yield* Sessions;
         const { session } = yield* sessions.open({ command: "open", cwd, scope: uncommitted });
-        const ids = { command: "files", session: session.id, snapshotId: session.snapshotId };
+        const ids = {
+          command: "files" as const,
+          session: session.id,
+          snapshotId: session.snapshotId,
+        };
         const listed = [];
         let after: string | undefined;
         let pages = 0;
         do {
-          const page = yield* sessions.files({ ...ids, after } as Input<"files">);
+          const page = yield* sessions.files({ ...ids, after });
           pages++;
           expect(page.total).toBe(701);
           expect(Buffer.byteLength(JSON.stringify(page.files))).toBeLessThanOrEqual(
@@ -2521,15 +2523,15 @@ describe("Sessions captured reads over real captures", () => {
         } while (after !== undefined);
         expect(pages).toBeGreaterThan(2);
         expect(listed.map(({ path }) => path)).toEqual(
-          [...Object.keys(committed), "added.txt"].sort(),
+          [...Object.keys(committed), "added.txt"].toSorted(),
         );
         expect(listed.find(({ path }) => path === "added.txt")).toMatchObject({
           old: { kind: "absent" },
           new: { kind: "text", size: 4 },
         });
-        expect(
-          yield* Effect.flip(sessions.files({ ...ids, after: "not-a-member" } as Input<"files">)),
-        ).toMatchObject({ _tag: "validation_failed" });
+        expect(yield* Effect.flip(sessions.files({ ...ids, after: "not-a-member" }))).toMatchObject(
+          { _tag: "validation_failed" },
+        );
       }),
     );
   });

@@ -17,6 +17,8 @@ const collect = <E>(stdout: Stream.Stream<Uint8Array, E>) =>
       kept.byteLength > handshakeBytes ? kept : Buffer.concat([kept, chunk]),
   );
 
+const unusable = (reason: string): AddonDiscovery => ({ kind: "unusable", reason });
+
 /**
  * Runs the add-on script at `entry` (a real path) with gyst's own Node and judges its `--version`
  * handshake against this gyst. The launcher runs it on what it finds on its PATH; the daemon runs
@@ -28,7 +30,6 @@ export const handshakeAddon = Effect.fn("handshakeAddon")(function* (
   runningVersion: string,
 ) {
   const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
-  const unusable = (reason: string): AddonDiscovery => ({ kind: "unusable", reason });
   const answer = yield* Effect.gen(function* () {
     const handle = yield* spawner.spawn(
       ChildProcess.make(process.execPath, [entry, "--version"], {

@@ -23,7 +23,7 @@ describe("installed gyst CLI", () => {
     expect(existsSync(join(installed.prefix, "lib", "node_modules", "@gyst", "core"))).toBe(false);
     expect(existsSync(join(installed.packageDir, "node_modules", "@gyst", "core"))).toBe(false);
     expect(
-      (await readdir(installed.packageDir)).filter((name) => name !== "node_modules").sort(),
+      (await readdir(installed.packageDir)).filter((name) => name !== "node_modules").toSorted(),
     ).toEqual(["LICENSE", "README.md", "bin", "dist", "package.json", "skills"]);
     expect(await readdir(join(installed.packageDir, "bin"))).toEqual(["gyst.js"]);
     expect(await readdir(join(installed.packageDir, "dist"))).toEqual(["web-ui"]);

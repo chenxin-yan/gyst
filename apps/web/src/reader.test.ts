@@ -33,6 +33,17 @@ const sides = (oldText: string, newText: string) => ({
   newFile: { name: "a.ts", contents: newText },
 });
 
+const sized = (n: number, size: number) => ({ kind: "text", blob: blob(n), size }) as const;
+const diffOf = (patch: string, old: ManifestFile["old"], current: ManifestFile["new"]) =>
+  fileDiffOf({
+    path: "a.ts",
+    hunks: [hunk("a.ts", patch)],
+    manifest: { path: "a.ts", old, new: current },
+  });
+const readAbsent = (absent: "old" | "new") => async (side: "old" | "new") =>
+  side === absent
+    ? { ...page("", 0, null), content: { kind: "absent" } as const }
+    : page("a\nb\n", 0, null);
 describe("fileDiffOf", () => {
   it("keeps exact numbers and between-hunk hidden counts, and stays partial for loadDiffFiles", () => {
     const diff = fileDiffOf({
@@ -51,14 +62,6 @@ describe("fileDiffOf", () => {
       [20, 20, 15],
     ]);
   });
-
-  const sized = (n: number, size: number) => ({ kind: "text", blob: blob(n), size }) as const;
-  const diffOf = (patch: string, old: ManifestFile["old"], current: ManifestFile["new"]) =>
-    fileDiffOf({
-      path: "a.ts",
-      hunks: [hunk("a.ts", patch)],
-      manifest: { path: "a.ts", old, new: current },
-    });
 
   it("reads a side the manifest records with no lines as a new or deleted file", () => {
     const added = "@@ -0,0 +1,2 @@\n+a\n+b";
@@ -124,10 +127,6 @@ describe("fileDiffOf", () => {
   });
 
   it("loads a new or deleted file shown as a change before its files page with an empty side", async () => {
-    const read = (absent: "old" | "new") => async (side: "old" | "new") =>
-      side === absent
-        ? { ...page("", 0, null), content: { kind: "absent" } as const }
-        : page("a\nb\n", 0, null);
     const added = fileDiffOf({
       path: "a.ts",
       hunks: [hunk("a.ts", "@@ -0,0 +1,2 @@\n+a\n+b")],
@@ -137,7 +136,7 @@ describe("fileDiffOf", () => {
     const addedLoaded = hydratePartialDiff(
       "clone",
       added,
-      await capturedFiles("a.ts", read("old")),
+      await capturedFiles("a.ts", readAbsent("old")),
     );
     expect([addedLoaded.deletionLines, addedLoaded.additionLines]).toEqual([[], ["a\n", "b\n"]]);
     expect(hiddenRanges(addedLoaded)).toEqual([]);
@@ -150,7 +149,7 @@ describe("fileDiffOf", () => {
     const deletedLoaded = hydratePartialDiff(
       "clone",
       deleted,
-      await capturedFiles("a.ts", read("new")),
+      await capturedFiles("a.ts", readAbsent("new")),
     );
     expect([deletedLoaded.deletionLines, deletedLoaded.additionLines]).toEqual([
       ["a\n", "b\n"],
@@ -160,6 +159,8 @@ describe("fileDiffOf", () => {
   });
 });
 
+const status = (hunks: Hunk[], manifest?: ManifestFile) =>
+  statusOf({ path: "a.ts", hunks, manifest });
 describe("changedFiles", () => {
   it("lists files with hunks and loaded entries that changed without hunks, in path order", () => {
     const manifest: ManifestFile[] = [
@@ -189,8 +190,6 @@ describe("changedFiles", () => {
     const filled = hunk("a.ts", "@@ -0,0 +1,2 @@\n+a\n+b");
     const emptied = hunk("a.ts", "@@ -1,2 +0,0 @@\n-a\n-b");
     const empty = { kind: "text", blob: blob(0), size: 0 } as const;
-    const status = (hunks: Hunk[], manifest?: ManifestFile) =>
-      statusOf({ path: "a.ts", hunks, manifest });
     expect(status([filled], { path: "a.ts", old: empty, new: text(1) })).toBe("M");
     expect(status([emptied], { path: "a.ts", old: text(1), new: empty })).toBe("M");
     expect(status([filled], { path: "a.ts", old: { kind: "absent" }, new: text(1) })).toBe("A");
@@ -210,7 +209,7 @@ describe("changedFiles", () => {
   });
 });
 
-const page = (text: string, start: number, next: number | null): CodePayload => ({
+const page = (body: string, start: number, next: number | null): CodePayload => ({
   sessionId: "s",
   snapshotId: blob(9),
   file: "a.ts",
@@ -219,7 +218,7 @@ const page = (text: string, start: number, next: number | null): CodePayload => 
     kind: "text",
     size: 7,
     start: { line: 1, offset: start },
-    text,
+    text: body,
     next: next === null ? null : { line: 2, offset: next },
   },
 });
@@ -246,6 +245,8 @@ describe("capturedText", () => {
     expect(await capturedText(async () => absent)).toBe("");
   });
 });
+
+let finish = () => {};
 
 describe("capturedFiles", () => {
   it("reads both sides of a file", async () => {
@@ -283,14 +284,13 @@ describe("capturedFiles", () => {
     );
     await expect(capturedFiles("a.ts", read, () => false)).rejects.toBeInstanceOf(PagingStopped);
     // Only each side's first page was read; the second never was.
-    expect(read.mock.calls.map(([side, offset]) => `${side} ${offset}`).sort()).toEqual([
+    expect(read.mock.calls.map(([side, offset]) => `${side} ${offset}`).toSorted()).toEqual([
       "new undefined",
       "old undefined",
     ]);
   });
 
   it("settles a one-sided failure only once the other side has settled", async () => {
-    let finish = () => {};
     const read = (side: "old" | "new") =>
       side === "old"
         ? Promise.reject(new Error("offline"))

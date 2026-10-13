@@ -123,6 +123,8 @@ export type FakeGhReply = {
 
 const fakeGhScript = fileURLToPath(new URL("fake-gh.ts", import.meta.url));
 
+const graphqlAnswer = (pullRequest: unknown) =>
+  JSON.stringify({ data: { repository: { pullRequest } } });
 /**
  * A recorded `gh` first on PATH, shadowing any real one, so no test reaches GitHub. Replies are
  * written in the shapes the live API returned: GraphQL `data`, with `errors` or gh's own exit code
@@ -148,8 +150,6 @@ export async function fakeGh(root: string) {
   /** What `gh repo view` answers for every checkout; acme/widgets unless a test says otherwise. */
   const repository = (answer: FakeGhReply) => write("repository.json", answer);
   await repository({ exitCode: 0, stdout: `https://github.com/${githubRepository}\n` });
-  const answer = (pullRequest: unknown) =>
-    JSON.stringify({ data: { repository: { pullRequest } } });
   const fieldsOf = (recorded: FakePullRequest) => {
     const { headRefOid: _, ...pullRequest } = recorded;
     return {
@@ -168,7 +168,7 @@ export async function fakeGh(root: string) {
     pullRequest: (pullRequest: FakePullRequest) =>
       reply("pull", pullRequest.number, {
         exitCode: 0,
-        stdout: answer({ ...fieldsOf(pullRequest), headRefOid: pullRequest.headRefOid }),
+        stdout: graphqlAnswer({ ...fieldsOf(pullRequest), headRefOid: pullRequest.headRefOid }),
       }),
     /** `number`'s native stack, its layers in position order; null is no membership. */
     stack: (
@@ -181,7 +181,7 @@ export async function fakeGh(root: string) {
     ) =>
       reply("stack", number, {
         exitCode: 0,
-        stdout: answer({
+        stdout: graphqlAnswer({
           number,
           stack: stack && {
             number: stack.number,
@@ -206,7 +206,7 @@ export async function fakeGh(root: string) {
       return (await readFile(log, "utf8"))
         .split("\n")
         .filter(Boolean)
-        .map((line) => (JSON.parse(line) as { argv: string[] }).argv);
+        .map((line): string[] => JSON.parse(line).argv);
     },
   };
 }

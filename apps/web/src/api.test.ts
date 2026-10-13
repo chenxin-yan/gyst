@@ -68,7 +68,7 @@ describe("bootstrap", () => {
     const error = await reason(bootstrap("secret-2"));
     expect(error).toBeInstanceOf(TransportError);
     expect(error).toMatchObject({ reason: "forbidden" });
-    expect((error as Error).message).not.toContain("secret-2");
+    expect(error).not.toMatchObject({ message: expect.stringContaining("secret-2") });
   });
 });
 
@@ -78,7 +78,7 @@ describe("operation", () => {
     expect(await operation({ command: "list" })).toEqual({ sessions: [summary] });
     const [path, init] = fetch.mock.calls[0]!;
     expect(path).toBe("/api/operation");
-    expect(JSON.parse(String(init.body))).toEqual({ command: "list" });
+    expect(await new Response(init.body).json()).toEqual({ command: "list" });
     expect(init).toMatchObject({ method: "POST", credentials: "same-origin", cache: "no-store" });
   });
 
@@ -155,39 +155,40 @@ describe("operation", () => {
   });
 });
 
+const frame = (event: unknown) => `data: ${JSON.stringify(event)}\n\n`;
+// A stream answering with these chunks as they are split on the wire, then ending unless held
+// open; `seen.cancelled` says whether the reader let go of it.
+const stream = (
+  chunks: string[],
+  contentType = "text/event-stream; charset=utf-8",
+  held = false,
+) => {
+  const seen = { cancelled: false };
+  const encoder = new TextEncoder();
+  const fetch = vi.fn(async (_path: string, _init: RequestInit) => {
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        for (const chunk of chunks) controller.enqueue(encoder.encode(chunk));
+        if (!held) controller.close();
+      },
+      cancel() {
+        seen.cancelled = true;
+      },
+    });
+    return new Response(body, { status: 200, headers: { "content-type": contentType } });
+  });
+  vi.stubGlobal("fetch", fetch);
+  return Object.assign(fetch, { seen });
+};
+const all = async (signal = new AbortController().signal) => {
+  const seen: unknown[] = [];
+  for await (const event of events("s-1", signal)) seen.push(event);
+  return seen;
+};
+
 describe("events", () => {
   const ready = { kind: "ready", daemon: "d1", sessionId: "s-1", snapshotId: "abc", revision: 2 };
   const changed = { kind: "changed", sessionId: "s-1", snapshotId: "abc", revision: 3 };
-  const frame = (event: unknown) => `data: ${JSON.stringify(event)}\n\n`;
-  // A stream answering with these chunks as they are split on the wire, then ending unless held
-  // open; `seen.cancelled` says whether the reader let go of it.
-  const stream = (
-    chunks: string[],
-    contentType = "text/event-stream; charset=utf-8",
-    held = false,
-  ) => {
-    const seen = { cancelled: false };
-    const encoder = new TextEncoder();
-    const fetch = vi.fn(async (_path: string, _init: RequestInit) => {
-      const body = new ReadableStream<Uint8Array>({
-        start(controller) {
-          for (const chunk of chunks) controller.enqueue(encoder.encode(chunk));
-          if (!held) controller.close();
-        },
-        cancel() {
-          seen.cancelled = true;
-        },
-      });
-      return new Response(body, { status: 200, headers: { "content-type": contentType } });
-    });
-    vi.stubGlobal("fetch", fetch);
-    return Object.assign(fetch, { seen });
-  };
-  const all = async (signal = new AbortController().signal) => {
-    const seen: unknown[] = [];
-    for await (const event of events("s-1", signal)) seen.push(event);
-    return seen;
-  };
 
   it("posts the session with the operation's credentials and the caller's signal", async () => {
     const fetch = stream([frame(ready)]);
@@ -195,7 +196,7 @@ describe("events", () => {
     expect(await all(signal)).toEqual([ready]);
     const [path, init] = fetch.mock.calls[0]!;
     expect(path).toBe("/api/events");
-    expect(JSON.parse(String(init.body))).toEqual({ session: "s-1" });
+    expect(await new Response(init.body).json()).toEqual({ session: "s-1" });
     expect(init).toMatchObject({ method: "POST", credentials: "same-origin", cache: "no-store" });
     expect(init.signal).toBe(signal);
   });
@@ -215,9 +216,8 @@ describe("events", () => {
 
   it("decodes a failed frame's error as its DaemonError", async () => {
     stream([frame({ kind: "failed", error: { code: "no_session", message: "gone" } })]);
-    const [event] = (await all()) as [{ kind: string; error: unknown }];
-    expect(event.kind).toBe("failed");
-    expect(event.error).toBeInstanceOf(NoSession);
+    const [event] = await all();
+    expect(event).toMatchObject({ kind: "failed", error: expect.any(NoSession) });
   });
 
   it.each([

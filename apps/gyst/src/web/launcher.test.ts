@@ -367,7 +367,7 @@ describe("serveViewer", () => {
       Effect.gen(function* () {
         const client = yield* DaemonClient;
         let firstDaemon = "";
-        const { b, id, saved } = yield* Effect.gen(function* () {
+        const launched = yield* Effect.gen(function* () {
           const server = yield* DaemonServer;
           const daemon = yield* Effect.forkChild(server.run);
           yield* Effect.retry(daemonAnswers, {
@@ -443,6 +443,7 @@ describe("serveViewer", () => {
         }).pipe(Effect.provide(daemonLayer));
 
         yield* Effect.gen(function* () {
+          const { b, id, saved } = launched;
           const server = yield* DaemonServer;
           const daemon = yield* Effect.forkChild(server.run);
           yield* Effect.retry(daemonAnswers, {

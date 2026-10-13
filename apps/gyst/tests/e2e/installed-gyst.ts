@@ -113,7 +113,7 @@ export function isAlive(pid: number): boolean {
   try {
     process.kill(pid, 0);
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ESRCH") return false;
+    if (error instanceof Error && "code" in error && error.code === "ESRCH") return false;
     throw error;
   }
   if (process.platform !== "linux") return true;
@@ -152,12 +152,12 @@ export async function killDaemon(dataDir: string, signal: NodeJS.Signals = "SIGK
 }
 
 /** Sends a signal; false if the process already exited, e.g. by its own idle shutdown. */
-function signal(pid: number, name: NodeJS.Signals): boolean {
+function sendSignal(pid: number, name: NodeJS.Signals): boolean {
   try {
     process.kill(pid, name);
     return true;
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ESRCH") return false;
+    if (error instanceof Error && "code" in error && error.code === "ESRCH") return false;
     throw error;
   }
 }
@@ -171,13 +171,13 @@ export async function stopDaemon(dataDir: string): Promise<void> {
   if (Number.isNaN(pid) || !isAlive(pid)) return;
   const args = commandLine(pid);
   if (!args.includes(installed.prefix) || !args.endsWith(" daemon run")) return;
-  if (!signal(pid, "SIGTERM")) return;
+  if (!sendSignal(pid, "SIGTERM")) return;
   const exited = await waitFor(() => !isAlive(pid), `daemon ${pid} to exit`).then(
     () => true,
     () => false,
   );
   if (exited) return;
-  signal(pid, "SIGKILL");
+  sendSignal(pid, "SIGKILL");
   await waitFor(() => !isAlive(pid), `daemon ${pid} to exit after SIGKILL`);
   throw new Error(`daemon ${pid} ignored SIGTERM during cleanup`);
 }

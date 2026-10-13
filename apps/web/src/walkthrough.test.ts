@@ -169,7 +169,12 @@ describe("notes", () => {
   it("follow code order: the view's file order, then hunk, old side first, then start line", () => {
     const coreView = viewFiles({ kind: "group", id: "core" }, files, both);
     expect(
-      noteSequence(coreView, both).map(({ note, file, side, line }) => [note.id, file, side, line]),
+      noteSequence(coreView, both).map(({ note: { id }, file, side, line }) => [
+        id,
+        file,
+        side,
+        line,
+      ]),
     ).toEqual([
       ["b-note", "b.ts", "additions", 5],
       ["span", "a.ts", "additions", 20],
@@ -188,7 +193,7 @@ describe("notes", () => {
       edge,
     ]);
     const all = viewFiles({ kind: "files", path: "" }, files, mixed);
-    expect(noteSequence(all, mixed).map(({ note }) => note.id)).toEqual([
+    expect(noteSequence(all, mixed).map(({ note: { id } }) => id)).toEqual([
       "old-side",
       "new-side",
       "second-hunk",
@@ -206,7 +211,7 @@ describe("notes", () => {
 
   it("step by the reader's place, from a note's own line, or from the note Mouse mode went to", () => {
     const sequence = noteSequence(viewFiles({ kind: "files", path: "" }, files, both), both);
-    expect(sequence.map(({ note }) => note.id)).toEqual(["span", "b-note", "gone"]);
+    expect(sequence.map(({ note: { id } }) => id)).toEqual(["span", "b-note", "gone"]);
     expect(noteStep(sequence, undefined, 1)).toBe(0);
     expect(noteStep(sequence, undefined, -1)).toBe(2);
     expect(noteStep(sequence, { fileIndex: 0, side: "additions", line: 0 }, 1)).toBe(0);

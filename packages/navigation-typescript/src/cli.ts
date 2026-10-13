@@ -7,9 +7,9 @@ import { dirname, join } from "node:path";
 
 type Manifest = { name: string; version: string; dependencies: { typescript: string } };
 // Read where the add-on is installed rather than bundled, so a copy reports its own release.
-const packageJson = JSON.parse(
+const packageJson: Manifest = JSON.parse(
   readFileSync(new URL("../package.json", import.meta.url), "utf8"),
-) as Manifest;
+);
 
 /** The handshake and launch contract; gyst's `navigationAddon.protocol` must equal it. */
 const protocol = 1;

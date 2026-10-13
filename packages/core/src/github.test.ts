@@ -26,7 +26,7 @@ const pullRequest = (number: number): PullRequest => ({
   headRefName: `layer-${number}`,
 });
 const stacked = (...numbers: number[]) => ({
-  membership: "stacked",
+  membership: "stacked" as const,
   number: 7,
   baseRefName: "main",
   layers: numbers.map((number, index) => ({
@@ -200,15 +200,17 @@ describe("SessionSchema PR context", () => {
   });
 });
 
+const hunk = (id: string): Hunk => ({
+  id,
+  file: `${id}.txt`,
+  header: "@@ -1 +1 @@",
+  patch: "@@ -1 +1 @@\n-a\n+b",
+  contentHash: id,
+});
+const pr = (number: number, repository = "acme/widgets") =>
+  ({ kind: "pr", repository, number }) as const;
 describe("pullRequestStatusOf", () => {
   const at = "2026-01-01T00:00:00.000Z";
-  const hunk = (id: string): Hunk => ({
-    id,
-    file: `${id}.txt`,
-    header: "@@ -1 +1 @@",
-    patch: "@@ -1 +1 @@\n-a\n+b",
-    contentHash: id,
-  });
   const session = (id: string, scope: Session["scope"], extra: Partial<Session> = {}): Session => ({
     id,
     repoRoot: "/repo",
@@ -226,15 +228,13 @@ describe("pullRequestStatusOf", () => {
     viewedReceipts: [],
     ...extra,
   });
-  const pr = (number: number, repository = "acme/widgets") =>
-    ({ kind: "pr", repository, number }) as const;
   const prSession = (id: string, number: number, extra: Partial<Session> = {}) =>
     session(id, pr(number), {
       pullRequest: {
         pullRequest: pullRequest(number),
         stack: { verifiedAt: at, ...stacked(1, 2, 3) },
         unavailable: null,
-      } as Session["pullRequest"],
+      },
       ...extra,
     });
   const decodeStatus = Schema.decodeUnknownSync(PullRequestStatusSchema, strict);
@@ -268,7 +268,7 @@ describe("pullRequestStatusOf", () => {
         pullRequest: pullRequest(2),
         stack: { verifiedAt: at, ...stacked(1, 2) },
         unavailable: null,
-      } as Session["pullRequest"],
+      },
     });
     const c = prSession("c", 3);
     expect(pullRequestStatusOf(b, [b, c])!.sessions.map(({ number }) => number)).toEqual([2]);

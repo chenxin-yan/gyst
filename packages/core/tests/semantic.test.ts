@@ -135,9 +135,9 @@ it("publishes a walkthrough progressively beside per-hunk Viewed and replays exa
   expect(refreshed.viewedHunkIds).toEqual(["b", "c"]);
 });
 
+const text = (index: number) => `note-${index}-`.padEnd(400, "x");
 it("interns guidance text once and replays exact historical guidance after refresh", () => {
   const count = 50;
-  const text = (index: number) => `note-${index}-`.padEnd(400, "x");
   let session = Schema.decodeUnknownSync(SessionSchema)({
     ...initial(),
     hunks: Array.from({ length: count }, (_, index) => hunk(`h${index}`)),

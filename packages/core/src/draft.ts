@@ -24,12 +24,21 @@ export type MutableSession = Mutable<
 
 export function draftOf(session: Session): MutableSession {
   const { receiptTexts, applyReceipts, viewedReceipts, ...live } = session;
-  // SAFETY: structuredClone returns a detached copy, so dropping readonly cannot alias the caller's
-  // session. Receipt history is append-only and its entries are never mutated, so sharing them is safe.
+  // structuredClone detaches the live state, so dropping readonly cannot alias the caller's session.
+  // Receipt history is append-only and its entries are never mutated, so sharing them is safe.
+  const { hunks, groups, viewedHunkIds, ...rest } = structuredClone(live);
   return {
-    ...(structuredClone(live) as Mutable<typeof live>),
+    ...rest,
+    hunks: [...hunks],
+    groups: groups.map((group) => ({
+      ...group,
+      hunkIds: [...group.hunkIds],
+      files: [...group.files],
+      notes: [...group.notes],
+    })),
+    viewedHunkIds: [...viewedHunkIds],
     receiptTexts: [...receiptTexts],
     applyReceipts: [...applyReceipts],
     viewedReceipts: [...viewedReceipts],
-  } as MutableSession;
+  };
 }

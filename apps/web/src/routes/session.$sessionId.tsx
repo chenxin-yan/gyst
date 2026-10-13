@@ -476,6 +476,8 @@ const lineStep = 57;
 
 const noWholeFiles: ReadonlyMap<string, string> = new Map();
 
+const name = (path: string) => path.slice(path.lastIndexOf("/") + 1);
+
 function SessionReader(props: {
   session: SessionSummary;
   hunks: readonly Hunk[];
@@ -1387,7 +1389,6 @@ function SessionReader(props: {
   const labelOf = (command: Command) =>
     command.id === "mode" ? `Switch to ${vim ? "Mouse" : "Vim"} mode` : command.label;
 
-  const name = (path: string) => path.slice(path.lastIndexOf("/") + 1);
   const selected = lines && Math.abs(lines.range.end - lines.range.start) + 1;
   const cursorLabel =
     here === undefined

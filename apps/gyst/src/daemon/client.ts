@@ -97,6 +97,12 @@ const startupPolls = Schedule.max([Schedule.spaced("20 millis"), Schedule.recurs
 const handshakeHungUp = (error: { readonly _tag: string }) =>
   Socket.isSocketError(error) && error.reason._tag !== "SocketOpenError";
 
+const compatibilityError = (message: string) =>
+  new DaemonUnreachable({
+    message: `daemon compatibility check failed: ${message}`,
+    detail: "No review command was sent; saved review files were not changed.",
+  });
+
 export class DaemonClient extends Context.Service<
   DaemonClient,
   {
@@ -203,11 +209,6 @@ export class DaemonClient extends Context.Service<
           ),
         );
 
-      const compatibilityError = (message: string) =>
-        new DaemonUnreachable({
-          message: `daemon compatibility check failed: ${message}`,
-          detail: "No review command was sent; saved review files were not changed.",
-        });
       const negotiate = Effect.gen(function* () {
         const line = yield* connect(encodeMessage({ command: "daemon.info" }));
         const reply = yield* decodeReply(line).pipe(

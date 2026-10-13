@@ -142,7 +142,7 @@ describe("SnapshotManifestSchema", () => {
       provenance: { kind: "pr", base: base!, head: head!, mergeBase: mergeBase! },
     };
     expect(Result.getOrThrow(decode(pullRequest))).toEqual(pullRequest);
-    expect(JSON.parse(canonicalManifestJson(pullRequest)) as SnapshotManifest).toMatchObject({
+    expect(JSON.parse(canonicalManifestJson(pullRequest))).toMatchObject({
       scope,
       provenance: pullRequest.provenance,
     });
@@ -158,14 +158,14 @@ describe("SnapshotManifestSchema", () => {
 
 describe("snapshotIdOf", () => {
   it("is a deterministic content identity that includes supporting files", () => {
-    const reordered = JSON.parse(
+    const reordered: SnapshotManifest = JSON.parse(
       JSON.stringify({
         hunks: manifest.hunks,
         files: manifest.files,
         provenance: manifest.provenance,
         scope: manifest.scope,
       }),
-    ) as SnapshotManifest;
+    );
     expect(snapshotIdOf(reordered)).toBe(snapshotIdOf(manifest));
     // Keys are sorted at every level, independent of schema field order.
     expect(canonicalManifestJson(manifest)).toMatch(/^\{"files":\[\{"new":\{"blob":/);

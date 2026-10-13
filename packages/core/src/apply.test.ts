@@ -120,6 +120,21 @@ const third: ApplyOp = {
   memberHunkIds: ["a4"],
 };
 
+const create = (anchor: CodeRange, group = "g1"): ApplyOp => ({
+  type: "note.create",
+  id: "n",
+  group,
+  anchor,
+  markdown: "x",
+});
+const createNote = (id: string, group: string, anchor: CodeRange): ApplyOp => ({
+  type: "note.create",
+  id,
+  group,
+  anchor,
+  markdown: "x",
+});
+
 describe("applyBatch", () => {
   it("publishes a walkthrough, groups, file order and notes as one batch", () => {
     const changed = applied([
@@ -366,13 +381,6 @@ describe("applyBatch", () => {
   });
 
   it("rejects a note that covers another group's or an ungrouped changed line, or none of its own", () => {
-    const create = (anchor: CodeRange, group = "g1"): ApplyOp => ({
-      type: "note.create",
-      id: "n",
-      group,
-      anchor,
-      markdown: "x",
-    });
     expect(rejected([create(range("a.ts", "new", 2, 31))]).detail).toEqual([
       {
         opIndex: 0,
@@ -404,13 +412,6 @@ describe("applyBatch", () => {
   });
 
   it("checks written anchors against the captured snapshot's lines", () => {
-    const create = (anchor: CodeRange): ApplyOp => ({
-      type: "note.create",
-      id: "n",
-      group: "g1",
-      anchor,
-      markdown: "x",
-    });
     for (const [anchor, message] of [
       [
         range("a.ts", "new", 59, 61),
@@ -471,7 +472,7 @@ describe("applyBatch", () => {
       ...changed.groups.flatMap((group) => [group.overview, ...group.notes]),
     ];
     // g1's untouched overview has none.
-    expect(texts.map((text) => text?.references)).toEqual([
+    expect(texts.map((entry) => entry?.references)).toEqual([
       references,
       [],
       references,
@@ -627,13 +628,6 @@ describe("applyBatch", () => {
   });
 
   it("unviews exactly the hunks whose guidance changed", () => {
-    const create = (anchor: CodeRange, group = "g1"): ApplyOp => ({
-      type: "note.create",
-      id: "n",
-      group,
-      anchor,
-      markdown: "x",
-    });
     expect(unviewedBy([create(range("a.ts", "new", 31), "g2")])).toEqual(["a3"]);
     expect(unviewedBy([create(range("a.ts", "new", 2, 11))])).toEqual(["a1", "a2"]);
     expect(unviewedBy([{ type: "note.update", id: "n1", markdown: "Edited." }])).toEqual(["a1"]);
@@ -681,20 +675,13 @@ describe("applyBatch", () => {
   });
 
   it("stores notes in code order: file order, hunk order, old side first, then start line", () => {
-    const create = (id: string, group: string, anchor: CodeRange): ApplyOp => ({
-      type: "note.create",
-      id,
-      group,
-      anchor,
-      markdown: "x",
-    });
     const sorted = applied([
-      create("late", "g1", range("a.ts", "new", 11)),
-      create("wide", "g1", range("a.ts", "new", 1, 11)),
-      create("new", "g1", range("a.ts", "new", 2, 3)),
-      create("old", "g1", range("a.ts", "old", 2)),
-      create("a", "g2", range("a.ts", "new", 31)),
-      create("b", "g2", range("b.ts", "new", 1)),
+      createNote("late", "g1", range("a.ts", "new", 11)),
+      createNote("wide", "g1", range("a.ts", "new", 1, 11)),
+      createNote("new", "g1", range("a.ts", "new", 2, 3)),
+      createNote("old", "g1", range("a.ts", "old", 2)),
+      createNote("a", "g2", range("a.ts", "new", 31)),
+      createNote("b", "g2", range("b.ts", "new", 1)),
     ]);
     expect(sorted.groups.map(({ notes }) => notes.map(({ id }) => id))).toEqual([
       ["old", "wide", "n1", "new", "late"],

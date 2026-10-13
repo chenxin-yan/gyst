@@ -1,9 +1,8 @@
 import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
-import type { CaptureProgress, OpenPayload, Request } from "@gyst/core";
-import { Clock, Effect, Option } from "effect";
+import { type CaptureProgress, OpenPayloadSchema, type Request } from "@gyst/core";
+import { Clock, Effect, Option, Schema } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import { createServer } from "node:http";
-import type { AddressInfo } from "node:net";
 import { DaemonClient } from "../daemon/client.ts";
 import { daemonVersion } from "../daemon/protocol.ts";
 import { makeLaunch } from "./auth.ts";
@@ -71,10 +70,11 @@ export const serveViewer = Effect.fn("serveViewer")(function* (
 ) {
   const assets = yield* loadWebAssets(options.webUiDir);
   const client = yield* DaemonClient;
-  // The client decoded this reply with `OpenPayloadSchema`.
-  const opened = (yield* client
+  const opened = yield* client
     .request(open, options.progress?.report)
-    .pipe(Effect.ensuring(options.progress?.clear ?? Effect.void))) as OpenPayload;
+    .pipe(Effect.ensuring(options.progress?.clear ?? Effect.void));
+  // The client decoded this reply with `OpenPayloadSchema`; this only narrows its type.
+  if (!Schema.is(OpenPayloadSchema)(opened)) return yield* Effect.die("not an open payload");
   const launch = makeLaunch(yield* Clock.currentTimeMillis);
   const addon = yield* makeNavigationAddon(options.launchPath, daemonVersion);
 
@@ -84,7 +84,11 @@ export const serveViewer = Effect.fn("serveViewer")(function* (
   // Runs before the server's own close, so open browser connections cannot hold shutdown.
   yield* Effect.addFinalizer(() => Effect.sync(() => server.closeAllConnections()));
 
-  const { port } = server.address() as AddressInfo;
+  const address = server.address();
+  // NodeHttpServer.make listened on 127.0.0.1 before returning.
+  if (!address || typeof address === "string")
+    return yield* Effect.die("the viewer has no TCP port");
+  const { port } = address;
   const sessionPath = `/session/${encodeURIComponent(opened.session.id)}`;
   const url = `http://${launch.hostname}:${port}${sessionPath}#${launch.bootstrap}`;
   const shown = options.opener !== undefined && (yield* openBrowser(options.opener, url));
