@@ -5,7 +5,6 @@
 import { webPaths } from "@gyst/core/web";
 import { execFileSync, spawn } from "node:child_process";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
-import type { AddressInfo } from "node:net";
 import { join, resolve } from "node:path";
 import type { Plugin } from "vite-plus";
 
@@ -90,7 +89,9 @@ export function devViewer(launch: DevLaunch): Plugin {
       server.printUrls = () => {};
       server.httpServer?.once("listening", () => {
         const viewer = new URL(link);
-        viewer.port = String((server.httpServer!.address() as AddressInfo).port);
+        const address = server.httpServer?.address();
+        if (!address || typeof address === "string") throw new Error("Vite has no TCP port");
+        viewer.port = String(address.port);
         server.config.logger.info(`\n  gyst  ${viewer.href}\n`);
       });
     },

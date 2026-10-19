@@ -469,6 +469,25 @@ const collect = async (stream: Awaited<ReturnType<typeof openStream>>) => {
   return frames;
 };
 
+/** A "flooded" stream fed far more than the kernel's loopback buffers hold while nothing is read. */
+const flood = async () => {
+  flooded = undefined;
+  released = 0;
+  const { events } = await serve();
+  const stream = await events("flooded");
+  onTestFinished(() => stream.close());
+  await vi.waitFor(() => expect(flooded).toBeDefined());
+  const context = "c".repeat(32 * 1024);
+  const offered = 1500;
+  for (let revision = 1; revision <= offered; revision++) {
+    Queue.offerUnsafe(flooded!.changes, { kind: "changed", ...version(revision), context });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
+  // What left the queue is all the daemon buffers for this reader.
+  expect(flooded!.taken).toBeLessThan(offered / 3);
+  return { stream, latest: { kind: "changed", ...version(offered), context }, offered };
+};
+
 describe("browserApp events", () => {
   it("applies the operation route's Host, Origin and forwarding rules before the daemon", async () => {
     subscribed = [];
@@ -602,25 +621,6 @@ describe("browserApp events", () => {
     );
     expect(released).toBe(1);
   });
-
-  /** A "flooded" stream fed far more than the kernel's loopback buffers hold while nothing is read. */
-  const flood = async () => {
-    flooded = undefined;
-    released = 0;
-    const { events } = await serve();
-    const stream = await events("flooded");
-    onTestFinished(() => stream.close());
-    await vi.waitFor(() => expect(flooded).toBeDefined());
-    const context = "c".repeat(32 * 1024);
-    const offered = 1500;
-    for (let revision = 1; revision <= offered; revision++) {
-      Queue.offerUnsafe(flooded!.changes, { kind: "changed", ...version(revision), context });
-      await new Promise((resolve) => setTimeout(resolve, 0));
-    }
-    // What left the queue is all the daemon buffers for this reader.
-    expect(flooded!.taken).toBeLessThan(offered / 3);
-    return { stream, latest: { kind: "changed", ...version(offered), context }, offered };
-  };
 
   it("holds a reader that stops reading to its newest change, which it reads on resuming", async () => {
     const { stream, latest, offered } = await flood();
