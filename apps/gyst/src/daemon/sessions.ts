@@ -564,7 +564,7 @@ export class Sessions extends Context.Service<
         const generated = new Set(session.generatedFiles);
         const generatedFiles = [...new Set(hunks.map(({ file }) => file))]
           .filter((file) => generated.has(file))
-          .sort();
+          .toSorted();
         return {
           sessionId: session.id,
           snapshotId: session.snapshotId,

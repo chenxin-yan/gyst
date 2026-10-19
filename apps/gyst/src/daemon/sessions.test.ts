@@ -2899,12 +2899,12 @@ describe("Sessions captured reads over real captures", () => {
         expect(diff.generatedFiles).toEqual(["gen.txt"]);
         const plainOnly = { command: "diff", session: session.id, file: "plain.txt" } as const;
         expect(yield* sessions.diff(plainOnly)).not.toHaveProperty("generatedFiles");
-        const files = yield* sessions.files({
+        const page = yield* sessions.files({
           command: "files",
           session: session.id,
           snapshotId: session.snapshotId,
         });
-        expect(files.files.find(({ path }) => path === "gen.txt")).toMatchObject({
+        expect(page.files.find(({ path }) => path === "gen.txt")).toMatchObject({
           generated: true,
         });
         yield* viewedNow(
