@@ -689,6 +689,8 @@ const gateOf = (operation: any) =>
     : operation?.command === "files" && operation.after
       ? "files"
       : undefined;
+// pgrep reads POSIX extended regexes, which lack the `\x2d`-style escapes RegExp.escape emits.
+const escapeEre = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 describe("installed gyst in a sandboxed browser", () => {
   let one: Launch;
   let two: Launch;
@@ -891,7 +893,7 @@ describe("installed gyst in a sandboxed browser", () => {
         await stop(proc, "SIGTERM").catch(() => stop(proc, "SIGKILL"));
       if (data) await stopDaemon(data);
       if (root) {
-        const pattern = [root, installed.prefix].map((path) => RegExp.escape(path)).join("|");
+        const pattern = [root, installed.prefix].map(escapeEre).join("|");
         const found = spawnSync("pgrep", ["-a", "-f", pattern], { encoding: "utf8" });
         expect([0, 1]).toContain(found.status);
         expect(found.stdout, "processes left by the browser tests").toBe("");
