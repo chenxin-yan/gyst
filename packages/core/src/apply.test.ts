@@ -1043,7 +1043,7 @@ describe("thread replies and note conversations", () => {
     expect(replaced.drafts[0]!.note).toEqual({ id: "n1", removed: true });
     // Dissolving the group removes its notes, never their conversations.
     const dissolved = applied([{ type: "group.dissolve", id: "g1" }], withThreads);
-    expect(dissolved.threads.map(({ id, note }) => ({ id, note }))).toEqual([
+    expect(dissolved.threads.map((thread) => ({ id: thread.id, note: thread.note }))).toEqual([
       { id: "t-code", note: undefined },
       { id: "t-note", note: { id: "n1", removed: true } },
     ]);

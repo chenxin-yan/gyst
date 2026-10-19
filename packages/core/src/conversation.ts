@@ -240,6 +240,8 @@ export function converse(
 
 const invalid = (message: string, detail?: unknown): Result.Result<never, ValidationFailed> =>
   Result.fail(new ValidationFailed({ message, ...(detail !== undefined && { detail }) }));
+const reopenFirst = (id: string) =>
+  invalid(`thread ${id} is resolved; reopen it before replying`, { thread: id });
 
 type Made = Omit<ConversationResult, "sessionId" | "revision">;
 
@@ -322,8 +324,6 @@ function act(
       );
     return Result.succeed(wording);
   };
-  const reopenFirst = (id: string) =>
-    invalid(`thread ${id} is resolved; reopen it before replying`, { thread: id });
   /** A Pending human message, still as the human last read it (`seen`), so no edit overwrites unseen. */
   const pendingOnly = (
     id: string,
