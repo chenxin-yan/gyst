@@ -158,6 +158,12 @@ const argvChunks = <T>(items: readonly T[], bytesOf: (item: T) => number): T[][]
   }
   return chunks;
 };
+// Each file adds its copy to `hash-object` and `--cacheinfo 100644,<object id>,<path>` to
+// `update-index`; 96 bytes bound the fixed words and the longest (SHA-256) object id.
+const stagedArgBytes = ({ path, copy }: { path: string; copy: string }) =>
+  Buffer.byteLength(path) + Buffer.byteLength(copy) + 96;
+const gitStepFailed = (result: { stderr: string }, step: string) =>
+  new BadArgs({ message: result.stderr.trim() || `git ${step} failed` });
 
 /** Why bytes that were read are not eligible text; the staged copy is discarded, never committed. */
 class Ineligible extends Data.TaggedError("Ineligible")<{
@@ -710,22 +716,16 @@ export class Git extends Context.Service<
           // Writing the index would run the post-index-change hook, a project program, and a
           // split index would put its shared part in the repository.
           const privateIndex = ["-c", "core.hooksPath=/dev/null", "-c", "core.splitIndex=false"];
-          const failed = (result: { stderr: string }, step: string) =>
-            new BadArgs({ message: result.stderr.trim() || `git ${step} failed` });
           const staged: Array<{ path: string; copy: string }> = [];
           for (const { path, blob } of files)
             staged.push({ path, copy: yield* content.materialize(blob) });
-          // Each file adds its copy to `hash-object` and `--cacheinfo 100644,<object id>,<path>` to
-          // `update-index`; 96 bytes bound the fixed words and the longest (SHA-256) object id.
-          const argBytes = ({ path, copy }: { path: string; copy: string }) =>
-            Buffer.byteLength(path) + Buffer.byteLength(copy) + 96;
-          for (const chunk of argvChunks(staged, argBytes)) {
+          for (const chunk of argvChunks(staged, stagedArgBytes)) {
             const hashed = yield* run(
               root,
-              ["hash-object", "-w", "--no-filters", "--", ...chunk.map(({ copy }) => copy)],
+              ["hash-object", "-w", "--no-filters", "--", ...chunk.map((file) => file.copy)],
               extra,
             );
-            if (hashed.exitCode !== 0) return yield* failed(hashed, "hash-object");
+            if (hashed.exitCode !== 0) return yield* gitStepFailed(hashed, "hash-object");
             const oids = text(hashed.stdout).trim().split("\n");
             const indexed = yield* run(
               root,
@@ -737,10 +737,10 @@ export class Git extends Context.Service<
               ],
               extra,
             );
-            if (indexed.exitCode !== 0) return yield* failed(indexed, "update-index");
+            if (indexed.exitCode !== 0) return yield* gitStepFailed(indexed, "update-index");
           }
           const written = yield* run(root, [...privateIndex, "write-tree"], extra);
-          if (written.exitCode !== 0) return yield* failed(written, "write-tree");
+          if (written.exitCode !== 0) return yield* gitStepFailed(written, "write-tree");
           return { tree: text(written.stdout).trim(), extra };
         },
         Effect.catchTag("PlatformError", (error) =>

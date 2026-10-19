@@ -994,7 +994,7 @@ describe("Git.capture Generated files", () => {
     }
 
     expect(generatedOf(await capture(cwd))).toEqual(
-      dirs.flatMap((dir, at) => (at % 2 ? [] : [join(dir, "x.js")])).sort(),
+      dirs.flatMap((dir, at) => (at % 2 ? [] : [join(dir, "x.js")])).toSorted(),
     );
   }, 60_000);
 
