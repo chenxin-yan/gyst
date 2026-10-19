@@ -74,6 +74,8 @@ export function codePageOf(
 const notIncluded = (what: string) =>
   new StaleRevision({ message: `This walkthrough export does not include ${what}.` });
 
+const ok = (value: unknown): Reply => ({ ok: true, value });
+
 /** What the daemon would answer `request` with, read from the export alone. */
 export function answer(data: WalkthroughExport, request: BrowserRequest): Reply {
   const { walkthrough, exportedAt } = data;
@@ -86,7 +88,6 @@ export function answer(data: WalkthroughExport, request: BrowserRequest): Reply 
     createdAt: exportedAt,
     updatedAt: exportedAt,
   };
-  const ok = (value: unknown): Reply => ({ ok: true, value });
   switch (request.command) {
     case "open":
       return ok({ session, created: false, link: "" });

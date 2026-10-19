@@ -196,13 +196,13 @@ describe("commands", () => {
       "references",
     ];
     for (const mode of ["vim", "mouse"] as const) {
-      const ids = commandsFor(mode, true).map(({ id }) => id);
-      expect(ids).toEqual(
+      const readOnlyIds = commandsFor(mode, true).map(({ id }) => id);
+      expect(readOnlyIds).toEqual(
         commandsFor(mode)
           .map(({ id }) => id)
           .filter((id) => !writes.includes(id)),
       );
-      expect(ids).toEqual(
+      expect(readOnlyIds).toEqual(
         expect.arrayContaining([
           "nextFile",
           "nextGroup",

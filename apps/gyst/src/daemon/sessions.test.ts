@@ -2653,6 +2653,58 @@ const sha256 = (text: string) => createHash("sha256").update(text).digest("hex")
 const bigLine = (index: number) => `line ${String(index).padStart(5, "0")} ${"x".repeat(40)}\n`;
 const numberedLines = (prefix: string, count: number) =>
   Array.from({ length: count }, (_, index) => `${prefix}${index + 1}\n`).join("");
+const textSide = (text: string) => ({
+  kind: "text",
+  blob: sha256(text),
+  size: Buffer.byteLength(text),
+});
+const preview = (session: string) =>
+  Sessions.use((s) => s.preview({ command: "preview", session }));
+const exported = (session: string, approval: string | null) =>
+  Sessions.use((s) => s.exported({ command: "export", session, approval: approval ?? "" }));
+/** One batch of `ops` against the session as it is now. */
+const applyNow = (session: string, key: string, ops: readonly object[]) =>
+  Sessions.use((s) =>
+    Effect.gen(function* () {
+      const status = yield* s.status({ command: "status", session });
+      return yield* s.apply({
+        command: "apply",
+        session,
+        batch: JSON.stringify({
+          revision: status.revision,
+          snapshotId: status.session.snapshotId,
+          idempotencyKey: key,
+          ops,
+        }),
+      });
+    }),
+  );
+/** One group over every current hunk, its note on a.ts line 10 naming helper.ts lines 2-3. */
+const publish = (session: string, key: string) =>
+  Sessions.use((s) =>
+    Effect.gen(function* () {
+      const { hunks } = yield* s.diff({ command: "diff", session });
+      const link = "[the helper](gyst:new/helper.ts#L2-L3)";
+      return yield* applyNow(session, key, [
+        { type: "walkthrough.update", overview: "One change." },
+        {
+          type: "group.create",
+          id: "g",
+          title: "Change",
+          overview: `Uses ${link}.`,
+          memberHunkIds: hunks.map(({ id }) => id),
+        },
+        {
+          type: "note.create",
+          id: "n",
+          group: "g",
+          anchor: { path: "a.ts", side: "new", startLine: 10, endLine: 10 },
+          markdown: `Calls ${link}.`,
+        },
+      ]);
+    }),
+  );
+
 const anchor = (path: string, side: "old" | "new", startLine: number, endLine: number) => ({
   path,
   side,
@@ -3428,66 +3480,11 @@ describe("Sessions captured reads over real captures", () => {
   });
 
   describe("exporting a walkthrough", () => {
-    const sha256 = (text: string) => createHash("sha256").update(text).digest("hex");
-    const textSide = (text: string) => ({
-      kind: "text",
-      blob: sha256(text),
-      size: Buffer.byteLength(text),
-    });
-    const numbered = (prefix: string, count: number) =>
-      Array.from({ length: count }, (_, index) => `${prefix}${index + 1}\n`).join("");
-    const preview = (session: string) =>
-      Sessions.use((s) => s.preview({ command: "preview", session }));
-    const exported = (session: string, approval: string | null) =>
-      Sessions.use((s) => s.exported({ command: "export", session, approval: approval ?? "" }));
-    /** One batch of `ops` against the session as it is now. */
-    const applyNow = (session: string, key: string, ops: readonly object[]) =>
-      Sessions.use((s) =>
-        Effect.gen(function* () {
-          const status = yield* s.status({ command: "status", session });
-          return yield* s.apply({
-            command: "apply",
-            session,
-            batch: JSON.stringify({
-              revision: status.revision,
-              snapshotId: status.session.snapshotId,
-              idempotencyKey: key,
-              ops,
-            }),
-          });
-        }),
-      );
-    /** One group over every current hunk, its note on a.ts line 10 naming helper.ts lines 2-3. */
-    const publish = (session: string, key: string) =>
-      Sessions.use((s) =>
-        Effect.gen(function* () {
-          const { hunks } = yield* s.diff({ command: "diff", session });
-          const link = "[the helper](gyst:new/helper.ts#L2-L3)";
-          return yield* applyNow(session, key, [
-            { type: "walkthrough.update", overview: "One change." },
-            {
-              type: "group.create",
-              id: "g",
-              title: "Change",
-              overview: `Uses ${link}.`,
-              memberHunkIds: hunks.map(({ id }) => id),
-            },
-            {
-              type: "note.create",
-              id: "n",
-              group: "g",
-              anchor: { path: "a.ts", side: "new", startLine: 10, endLine: 10 },
-              markdown: `Calls ${link}.`,
-            },
-          ]);
-        }),
-      );
-
     it("previews and generates exactly the changed and referenced files, without the checkout, for that state only", async () => {
-      const edited = numbered("a", 20).replace("a10\n", "</script><!--\n");
+      const edited = numberedLines("a", 20).replace("a10\n", "</script><!--\n");
       const cwd = await repo("export", {
-        "a.ts": numbered("a", 20),
-        "helper.ts": numbered("h", 4),
+        "a.ts": numberedLines("a", 20),
+        "helper.ts": numberedLines("h", 4),
         "unrelated.ts": "export const secret = 'not shared';\n",
       });
       await writeFile(join(cwd, "a.ts"), edited);
@@ -3508,10 +3505,20 @@ describe("Sessions captured reads over real captures", () => {
             unavailable: [],
           });
           expect(shown.included).toEqual([
-            { snapshotId, path: "a.ts", side: "old", content: textSide(numbered("a", 20)) },
+            { snapshotId, path: "a.ts", side: "old", content: textSide(numberedLines("a", 20)) },
             { snapshotId, path: "a.ts", side: "new", content: textSide(edited) },
-            { snapshotId, path: "helper.ts", side: "old", content: textSide(numbered("h", 4)) },
-            { snapshotId, path: "helper.ts", side: "new", content: textSide(numbered("h", 4)) },
+            {
+              snapshotId,
+              path: "helper.ts",
+              side: "old",
+              content: textSide(numberedLines("h", 4)),
+            },
+            {
+              snapshotId,
+              path: "helper.ts",
+              side: "new",
+              content: textSide(numberedLines("h", 4)),
+            },
             { snapshotId, path: "untracked.ts", side: "old", content: { kind: "absent" } },
             {
               snapshotId,
@@ -3528,9 +3535,9 @@ describe("Sessions captured reads over real captures", () => {
           const approved = yield* exported(session.id, shown.approval);
           expect(approved.approval).toBe(shown.approval);
           expect(approved.contents).toEqual({
-            [sha256(numbered("a", 20))]: numbered("a", 20),
+            [sha256(numberedLines("a", 20))]: numberedLines("a", 20),
             [sha256(edited)]: edited,
-            [sha256(numbered("h", 4))]: numbered("h", 4),
+            [sha256(numberedLines("h", 4))]: numberedLines("h", 4),
             [sha256("export const fresh = 1;\n")]: "export const fresh = 1;\n",
           });
           expect(JSON.stringify(approved)).not.toContain("not shared");
@@ -3554,10 +3561,10 @@ describe("Sessions captured reads over real captures", () => {
 
     it("refuses a walkthrough that is not ready, and an approval a refresh replaced, keeping older pins", async () => {
       const cwd = await repo("export-refusals", {
-        "a.ts": numbered("a", 20),
-        "helper.ts": numbered("h", 4),
+        "a.ts": numberedLines("a", 20),
+        "helper.ts": numberedLines("h", 4),
       });
-      await writeFile(join(cwd, "a.ts"), numbered("a", 20).replace("a10\n", "changed\n"));
+      await writeFile(join(cwd, "a.ts"), numberedLines("a", 20).replace("a10\n", "changed\n"));
       await runReal(
         Effect.gen(function* () {
           const sessions = yield* Sessions;
@@ -3605,7 +3612,7 @@ describe("Sessions captured reads over real captures", () => {
               snapshotId: session.snapshotId,
               path: "helper.ts",
               side: "new",
-              content: textSide(numbered("h", 4)),
+              content: textSide(numberedLines("h", 4)),
             },
           ]);
           const { walkthrough } = yield* exported(session.id, moved.approval);
@@ -3631,10 +3638,10 @@ describe("Sessions captured reads over real captures", () => {
     });
 
     it("holds every included side from preparing to generating, so a reclaim meanwhile removes none of it", async () => {
-      const edited = numbered("a", 20).replace("a10\n", "held\n");
+      const edited = numberedLines("a", 20).replace("a10\n", "held\n");
       const cwd = await repo("export-held", {
-        "a.ts": numbered("a", 20),
-        "helper.ts": numbered("h", 4),
+        "a.ts": numberedLines("a", 20),
+        "helper.ts": numberedLines("h", 4),
       });
       await writeFile(join(cwd, "a.ts"), edited);
       await runReal(
