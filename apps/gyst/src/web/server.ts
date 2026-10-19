@@ -20,7 +20,7 @@ import * as HttpServerResponse from "effect/http/HttpServerResponse";
 import * as Socket from "effect/socket/Socket";
 import { readdir, readFile } from "node:fs/promises";
 import { createServer } from "node:http";
-import type { AddressInfo, Socket as NetSocket } from "node:net";
+import type { Socket as NetSocket } from "node:net";
 import { extname, join, relative, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { webPaths } from "@gyst/core/web";
@@ -378,7 +378,11 @@ export const serveViewer = <E, R>(
         scope,
         Effect.sync(() => connections.forEach((connection) => connection.destroy())),
       );
-      return (server.address() as AddressInfo).port;
+      const address = server.address();
+      // NodeHttpServer.make listened on 127.0.0.1 before returning.
+      if (!address || typeof address === "string")
+        return yield* Effect.die("the viewer has no TCP port");
+      return address.port;
     }
     return yield* new DaemonUnreachable({
       message: `no free port for the gyst viewer on 127.0.0.1:${first}-${last}; free one, or set GYST_PORT to start elsewhere`,

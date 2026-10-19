@@ -3,7 +3,7 @@
 import { mkdir, mkdtemp, realpath, symlink, writeFile } from "node:fs/promises";
 import { randomBytes } from "node:crypto";
 import { type IncomingMessage, request as httpRequest } from "node:http";
-import { type AddressInfo, connect, createServer } from "node:net";
+import { connect, createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -75,6 +75,18 @@ export type RawStream = Omit<RawResponse, "body"> & {
   close(): void;
 };
 
+const head = (response: IncomingMessage) => {
+  const { rawHeaders } = response;
+  const headers = rawHeaders.flatMap((name, index) =>
+    index % 2 === 0 ? [[name.toLowerCase(), rawHeaders[index + 1]!] as const] : [],
+  );
+  return {
+    status: response.statusCode!,
+    headers,
+    header: (name: string) => headers.find(([header]) => header === name)?.[1],
+  };
+};
+
 /**
  * A WebSocket handshake that resolves on the response head: 101 and its messages, or a refusal and
  * none. Until `frames` is read nothing is taken off the socket, so a reader that stops reading
@@ -102,17 +114,6 @@ export function openStream(
         randomBytes(16).toString("base64"),
       ],
     });
-    const head = (response: IncomingMessage) => {
-      const { rawHeaders } = response;
-      const headers = rawHeaders.flatMap((name, index) =>
-        index % 2 === 0 ? [[name.toLowerCase(), rawHeaders[index + 1]!] as const] : [],
-      );
-      return {
-        status: response.statusCode!,
-        headers,
-        header: (name: string) => headers.find(([header]) => header === name)?.[1],
-      };
-    };
     outgoing.once("response", (response) => {
       response.resume();
       resolve({ ...head(response), async *frames() {}, close: () => outgoing.destroy() });
@@ -188,7 +189,8 @@ export const freePort = () =>
     const server = createServer();
     server.once("error", reject);
     server.listen(0, "127.0.0.1", () => {
-      const { port } = server.address() as AddressInfo;
-      server.close(() => resolve(port));
+      const address = server.address();
+      if (!address || typeof address === "string") return reject(new Error("not listening on TCP"));
+      server.close(() => resolve(address.port));
     });
   });

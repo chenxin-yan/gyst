@@ -232,7 +232,7 @@ const ok = (reply: Reply) => reply.ok;
 /** The port a reply's viewer link names. */
 const linkPort = (reply: Reply) => {
   if (!reply.ok) throw new Error(`open failed: ${reply.error.message}`);
-  const { link } = reply.value as { link: string };
+  const { link } = Schema.decodeUnknownSync(Schema.Struct({ link: Schema.String }))(reply.value);
   const match = /^http:\/\/localhost:(\d+)\/session\/[^/]+$/.exec(link);
   if (!match) throw new Error(`not a viewer link: ${link}`);
   return Number(match[1]);
@@ -503,7 +503,7 @@ describe("DaemonServer", () => {
     try {
       await Effect.runPromise(
         Effect.gen(function* () {
-          const { session, browser, queries } = yield* Effect.gen(function* () {
+          const first = yield* Effect.gen(function* () {
             navigationCalls.length = 0;
             const server = yield* DaemonServer;
             const running = yield* Effect.forkChild(server.run);
@@ -517,8 +517,7 @@ describe("DaemonServer", () => {
             const browser = browserAt(linkPort(opened));
             const status = yield* send({ command: "status", session });
             if (!status.ok) throw new Error("status failed");
-            const snapshotId = (status.value as { session: { snapshotId: string } }).session
-              .snapshotId;
+            const { snapshotId } = sessionOf(status.value);
             // Ordinary review operations never reach navigation.
             expect(navigationCalls).toEqual([]);
 
@@ -555,25 +554,26 @@ describe("DaemonServer", () => {
           yield* Effect.gen(function* () {
             const { running } = yield* started;
             navigationCalls.length = 0;
-            yield* browser.operation(queries[3]);
-            expect(navigationCalls).toEqual([{ ...queries[3], addon: available }]);
+            yield* first.browser.operation(first.queries[3]);
+            expect(navigationCalls).toEqual([{ ...first.queries[3], addon: available }]);
 
             // The latest CLI invocation's PATH replaces it; one without the add-on finds none.
             navigationCalls.length = 0;
-            expect(ok(yield* send({ command: "open", session, path: later }))).toBe(true);
-            yield* browser.operation(queries[3]);
-            expect(navigationCalls).toEqual([{ ...queries[3], addon: { kind: "missing" } }]);
+            expect(ok(yield* send({ command: "open", session: first.session, path: later }))).toBe(
+              true,
+            );
+            yield* first.browser.operation(first.queries[3]);
+            expect(navigationCalls).toEqual([{ ...first.queries[3], addon: { kind: "missing" } }]);
 
             navigationCalls.length = 0;
-            const refreshed = yield* send({ command: "refresh", session });
+            const refreshed = yield* send({ command: "refresh", session: first.session });
             if (!refreshed.ok) throw new Error("refresh failed");
-            const current = (refreshed.value as { session: { snapshotId: string } }).session
-              .snapshotId;
-            expect(navigationCalls).toEqual([{ retire: session, keep: current }]);
-            expect(ok(yield* remove(session))).toBe(true);
+            const current = sessionOf(refreshed.value).snapshotId;
+            expect(navigationCalls).toEqual([{ retire: first.session, keep: current }]);
+            expect(ok(yield* remove(first.session))).toBe(true);
             expect(navigationCalls).toEqual([
-              { retire: session, keep: current },
-              { retire: session, keep: undefined },
+              { retire: first.session, keep: current },
+              { retire: first.session, keep: undefined },
             ]);
             expect(launchPaths).toEqual({});
             yield* Fiber.interrupt(running);

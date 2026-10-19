@@ -180,9 +180,7 @@ describe("events", () => {
     socket.send({ kind: "failed", error: { code: "no_session", message: "gone" } });
     socket.end(1000);
     await done;
-    const [event] = seen as [{ kind: string; error: unknown }];
-    expect(event.kind).toBe("failed");
-    expect(event.error).toBeInstanceOf(NoSession);
+    expect(seen).toMatchObject([{ kind: "failed", error: expect.any(NoSession) }]);
   });
 
   it.each([

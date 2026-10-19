@@ -123,6 +123,8 @@ const decodeEvent = Schema.decodeUnknownSync(Schema.fromJsonString(SubscriptionE
   onExcessProperty: "error",
 });
 
+const noop = () => {};
+
 /**
  * The session's committed-state invalidations as the daemon sends them over a WebSocket, `ready`
  * first, until the daemon ends them or `signal` aborts. Throws a TransportError when the connection
@@ -138,7 +140,7 @@ export async function* events(
   const socket = new WebSocket(url);
   const messages: unknown[] = [];
   let closed: CloseEvent | undefined;
-  let wake = () => {};
+  let wake = noop;
   socket.addEventListener("message", ({ data }) => {
     messages.push(data);
     wake();
