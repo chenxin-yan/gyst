@@ -26,7 +26,7 @@ describe("installed gyst CLI", () => {
       (await readdir(installed.packageDir)).filter((name) => name !== "node_modules").toSorted(),
     ).toEqual(["LICENSE", "README.md", "bin", "dist", "package.json", "skills"]);
     expect(await readdir(join(installed.packageDir, "bin"))).toEqual(["gyst.js"]);
-    expect((await readdir(join(installed.packageDir, "dist"))).sort()).toEqual([
+    expect((await readdir(join(installed.packageDir, "dist"))).toSorted()).toEqual([
       "export",
       "web-ui",
     ]);

@@ -91,11 +91,12 @@ function embeddedOf(html: string) {
   return { text: html.slice(start, html.indexOf("</script>", start)) };
 }
 
-const session = async (box: Sandbox, cwd: string, ...scope: string[]) =>
-  json(await box.gyst(cwd, ["session", "open", ...scope])).session as {
-    id: string;
-    snapshotId: string;
-  };
+const session = async (
+  box: Sandbox,
+  cwd: string,
+  ...scope: string[]
+): Promise<{ id: string; snapshotId: string }> =>
+  json(await box.gyst(cwd, ["session", "open", ...scope])).session;
 
 /** Publishes `ops` against the session's current state. */
 async function publish(box: Sandbox, cwd: string, id: string, key: string, ops: object[]) {
@@ -113,11 +114,23 @@ async function publish(box: Sandbox, cwd: string, id: string, key: string, ops: 
     ),
   );
 }
-const hunksOf = async (box: Sandbox, cwd: string, id: string) =>
-  json(await box.gyst(cwd, ["session", "diff", "--session", id])).hunks as {
-    id: string;
-    file: string;
-  }[];
+const hunksOf = async (
+  box: Sandbox,
+  cwd: string,
+  id: string,
+): Promise<{ id: string; file: string }[]> =>
+  json(await box.gyst(cwd, ["session", "diff", "--session", id])).hunks;
+const keys = async (page: Page, ...pressed: string[]) => {
+  await page.evaluate(() => {
+    if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
+  });
+  for (const key of pressed) await page.keyboard.press(key);
+};
+const headings = (page: Page) =>
+  page
+    .getByRole("main")
+    .getByRole("heading", { level: 2 })
+    .evaluateAll((all) => all.map((heading) => heading.getAttribute("aria-label")));
 
 describe("walkthrough export", () => {
   let browser: Browser;
@@ -171,16 +184,6 @@ describe("walkthrough export", () => {
     await page.goto(href);
     return { page, started };
   }
-
-  const keys = async (page: Page, ...pressed: string[]) => {
-    await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
-    for (const key of pressed) await page.keyboard.press(key);
-  };
-  const headings = (page: Page) =>
-    page
-      .getByRole("main")
-      .getByRole("heading", { level: 2 })
-      .evaluateAll((all) => all.map((heading) => heading.getAttribute("aria-label")));
 
   it("exports from the CLI only once a person approves at a terminal, and reads offline with gyst stopped and the checkout gone", async () => {
     const box = await headless();
@@ -344,7 +347,7 @@ describe("walkthrough export", () => {
     // The embedded data: the walkthrough and exactly its files, and nothing private.
     const { text } = embeddedOf(html);
     const data = JSON.parse(text);
-    expect(Object.keys(data).sort()).toEqual(["contents", "exportedAt", "gyst", "walkthrough"]);
+    expect(Object.keys(data).toSorted()).toEqual(["contents", "exportedAt", "gyst", "walkthrough"]);
     expect(data.walkthrough.provenance).toEqual({ kind: "range", base, head, mergeBase });
     expect(data.walkthrough.files.map(({ path }: { path: string }) => path)).toEqual([
       "src/app.ts",
@@ -585,8 +588,8 @@ describe("walkthrough export", () => {
         memberHunkIds: (await hunksOf(box, cwd, id)).map((hunk) => hunk.id),
       },
     ]);
-    const current = json(await box.gyst(cwd, ["session", "status", "--session", id])).session
-      .snapshotId as string;
+    const current: string = json(await box.gyst(cwd, ["session", "status", "--session", id]))
+      .session.snapshotId;
     expect(current).not.toBe(first);
 
     // Authoring refuses a reference to a side without text, unsafe links and diagram

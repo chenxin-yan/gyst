@@ -290,7 +290,7 @@ export function exportPlanOf(
       groups: session.groups,
       hunks: session.hunks,
       files,
-      pinned: [...pinned.values()].sort(order),
+      pinned: [...pinned.values()].toSorted(order),
     },
     unavailable: [...unavailable.values()],
   };

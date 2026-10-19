@@ -31,7 +31,7 @@ const hunks = Result.getOrThrow(
       .join(""),
   ),
 );
-const [hunkA, hunkB] = hunks.map((hunk) => hunk.id) as [string, string];
+const [hunkA = "", hunkB = ""] = hunks.map((hunk) => hunk.id);
 
 const file = (path: string, old: ManifestFile["old"], current: ManifestFile["new"]) =>
   ({ path, old, new: current }) satisfies ManifestFile;
@@ -180,7 +180,7 @@ describe("exportPlanOf", () => {
 
   it("carries guidance, diff, scope and provenance, and nothing private of the session", () => {
     const { walkthrough } = ready();
-    expect(Object.keys(walkthrough).sort()).toEqual(
+    expect(Object.keys(walkthrough).toSorted()).toEqual(
       [
         "files",
         "groups",
@@ -190,7 +190,7 @@ describe("exportPlanOf", () => {
         "provenance",
         "scope",
         "snapshotId",
-      ].sort(),
+      ].toSorted(),
     );
     expect(walkthrough.provenance).toEqual(current.provenance);
     const json = JSON.stringify(walkthrough);
@@ -200,7 +200,8 @@ describe("exportPlanOf", () => {
 
   it("refuses a walkthrough that is not ready, without a partial or Outdated override", () => {
     const base = session();
-    const [ga, gb] = base.groups as [Group, Group];
+    const ga = base.groups[0]!;
+    const gb = base.groups[1]!;
     const refusals: [Partial<Session>, string][] = [
       [{ overview: null, groups: [] }, "the session has no walkthrough"],
       [{ groups: [ga] }, "1 of 2 changed hunks are in no group"],
@@ -294,11 +295,9 @@ describe("WalkthroughExportSchema", () => {
 });
 
 describe("provenanceLines", () => {
-  const [base, head, mergeBase] = ["a", "b", "c"].map((c) => c.repeat(40)) as [
-    string,
-    string,
-    string,
-  ];
+  const base = "a".repeat(40);
+  const head = "b".repeat(40);
+  const mergeBase = "c".repeat(40);
   it("states each scope's resolved identities, and never a commit for captured working-tree bytes", () => {
     expect(
       provenanceLines(

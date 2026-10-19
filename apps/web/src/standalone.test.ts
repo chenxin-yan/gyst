@@ -1,9 +1,5 @@
-import type {
-  BrowserRequest,
-  CodePayload,
-  StatusPayload,
-  WalkthroughExport,
-} from "@gyst/core/wire";
+import { type BrowserRequest, CodePayloadSchema, type WalkthroughExport } from "@gyst/core/wire";
+import { Schema } from "effect";
 import { describe, expect, it } from "vite-plus/test";
 import { type CodeRead, readRange, readWholeSide } from "./captured.ts";
 import { answer, codePageOf } from "./standalone.ts";
@@ -59,7 +55,7 @@ const data: WalkthroughExport = {
 const read: CodeRead = async (request) => {
   const reply = answer(data, { ...request, session: "walkthrough" });
   if (!reply.ok) throw reply.error;
-  return reply.value as CodePayload;
+  return Schema.decodeUnknownSync(CodePayloadSchema)(reply.value);
 };
 const reply = (request: BrowserRequest) => answer(data, request);
 
@@ -140,13 +136,17 @@ describe("answer", () => {
       { ...data, walkthrough: { ...data.walkthrough, files } },
       { command: "status", session: "walkthrough" },
     );
-    expect(status.ok && (status.value as StatusPayload).files).toEqual([
-      { path: "a.ts", hunkCount: 1, viewed: false, generated: true },
-    ]);
+    expect(status).toEqual({
+      ok: true,
+      value: expect.objectContaining({
+        files: [{ path: "a.ts", hunkCount: 1, viewed: false, generated: true }],
+      }),
+    });
     const plain = reply({ command: "status", session: "walkthrough" });
-    expect(plain.ok && (plain.value as StatusPayload).files).toEqual([
-      { path: "a.ts", hunkCount: 1, viewed: false },
-    ]);
+    expect(plain).toEqual({
+      ok: true,
+      value: expect.objectContaining({ files: [{ path: "a.ts", hunkCount: 1, viewed: false }] }),
+    });
   });
 
   it("refuses every write, check and refresh: the export is read-only", () => {

@@ -4,8 +4,8 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import {
   BadArgs,
   type CaptureProgress,
-  type ExportPayload,
-  type ExportPreviewPayload,
+  ExportPayloadSchema,
+  ExportPreviewPayloadSchema,
   parsePullRequestUrl,
   readinessProblems,
   type Request,
@@ -456,10 +456,10 @@ const exportCommand = defineCommand(
       })
       .action(
         handler(function* ({ flags, stdout }) {
-          const preview = (yield* ask({
-            command: "preview",
-            session: flags.session,
-          })) as ExportPreviewPayload;
+          const preview = yield* ask({ command: "preview", session: flags.session });
+          // The client decoded these replies with their payload schemas; this only narrows their types.
+          if (!Schema.is(ExportPreviewPayloadSchema)(preview))
+            return yield* Effect.die("not an export preview");
           if (preview.approval === null)
             return yield* new ValidationFailed({
               message: `the walkthrough is not ready to export: ${readinessProblems(preview.preparation).join("; ")}`,
@@ -485,11 +485,12 @@ const exportCommand = defineCommand(
           process.stderr.write(disclosureOf(preview, path));
           if (!(yield* approvedAtTerminal('Type "yes" to approve and write the file: ')))
             return yield* new BadArgs({ message: "export not approved; nothing was written" });
-          const file = (yield* ask({
+          const file = yield* ask({
             command: "export",
             session: flags.session,
             approval: preview.approval,
-          })) as ExportPayload;
+          });
+          if (!Schema.is(ExportPayloadSchema)(file)) return yield* Effect.die("not an export");
           yield* writeNewFile(path, file.html);
           stdout(
             JSON.stringify({
