@@ -206,7 +206,11 @@ function MessageField(props: {
         <select
           aria-label="Kind"
           value={text.kind}
-          onChange={(event) => props.onText({ ...text, kind: event.target.value as MessageKind })}
+          onChange={(event) => {
+            const kind = event.target.value;
+            // The select offers only the message kinds.
+            if (kind === "question" || kind === "change") props.onText({ ...text, kind });
+          }}
           {...stylex.props(styles.select)}
         >
           <option value="question">Question</option>

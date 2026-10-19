@@ -81,7 +81,7 @@ export function threadPlaces(
       line: anchor.endLine,
     });
   }
-  return places.sort((a, b) => a.fileIndex - b.fileIndex || a.line - b.line);
+  return places.toSorted((a, b) => a.fileIndex - b.fileIndex || a.line - b.line);
 }
 
 /** The kept draft of a new comment on exactly `anchor`, its snapshot included, which `c` resumes. */

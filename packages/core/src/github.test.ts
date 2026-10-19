@@ -248,31 +248,31 @@ describe("pullRequestStatusOf", () => {
       ...extra,
     });
   const decodeStatus = Schema.decodeUnknownSync(PullRequestStatusSchema, strict);
+  const thread = (id: string, resolved: boolean): Session["threads"][number] => ({
+    id,
+    anchor: {
+      snapshotId: "a".repeat(64),
+      path: "c-1.txt",
+      side: "new",
+      startLine: 1,
+      endLine: 1,
+    },
+    resolved,
+    messages: [
+      {
+        id: `${id}-m`,
+        author: "human",
+        kind: "question",
+        pending: true,
+        markdown: "Why?",
+        references: [],
+        createdAt: at,
+      },
+    ],
+  });
 
   it("lists saved sessions of the selected PR and its known layers in layer order, never unopened ones", () => {
     const b = prSession("b", 2, { viewedHunkIds: ["b-1"] });
-    const thread = (id: string, resolved: boolean): Session["threads"][number] => ({
-      id,
-      anchor: {
-        snapshotId: "a".repeat(64),
-        path: "c-1.txt",
-        side: "new",
-        startLine: 1,
-        endLine: 1,
-      },
-      resolved,
-      messages: [
-        {
-          id: `${id}-m`,
-          author: "human",
-          kind: "question",
-          pending: true,
-          markdown: "Why?",
-          references: [],
-          createdAt: at,
-        },
-      ],
-    });
     const c = prSession("c", 3, {
       hunks: [hunk("c-1")],
       viewedHunkIds: ["c-1"],

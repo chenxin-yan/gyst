@@ -90,10 +90,10 @@ export const publishingContent = (
       ),
     putBlob: () => Effect.die("unused by Sessions"),
     readBlob: (blob) => {
-      const text = blobTexts.get(blob);
-      return text === undefined
+      const identity = blobTexts.get(blob);
+      return identity === undefined
         ? Stream.die("unused by Sessions")
-        : Stream.succeed(new TextEncoder().encode(text));
+        : Stream.succeed(new TextEncoder().encode(identity));
     },
     materialize: () => Effect.die("unused by Sessions"),
     loadManifest: (snapshotId) => {

@@ -47,12 +47,10 @@ describe("commands", () => {
 
   // c comments and r replies, while ]c, zc and zR keep their sequences; C lists every comment.
   it("binds conversation keys beside the sequences they end", () => {
-    const label = (id: string) =>
-      keysOf(id).map((keys) =>
-        keys.map((key) => formatForDisplay(key, { platform: "linux", keyLabels })).join(" "),
-      );
     expect(
-      ["comment", "reply", "resolve", "comments", "nextThread", "previousThread"].map(label),
+      ["comment", "reply", "resolve", "comments", "nextThread", "previousThread"].map((id) =>
+        label(id, "linux"),
+      ),
     ).toEqual([["c"], ["r"], ["x"], ["Shift+c"], ["] t"], ["[ t"]]);
     expect(typed("C", { key: "C" })).toBe(false);
     expect(typed("Shift+C", { key: "C" })).toBe(true);

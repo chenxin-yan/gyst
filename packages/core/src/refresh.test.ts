@@ -513,24 +513,25 @@ describe("refreshSession", () => {
   });
 });
 
-describe("refreshSession conversations", () => {
-  const asked = (id: string, pending = true): HumanMessage => ({
-    id,
-    author: "human",
-    kind: "question",
-    pending,
-    markdown: `Question ${id}?`,
-    references: [],
-    createdAt: "2026-01-01T00:00:00.000Z",
-  });
-  const thread = (id: string, anchor: CapturedRange, extra: Partial<Thread> = {}): Thread => ({
-    id,
-    anchor,
-    resolved: false,
-    messages: [asked(`${id}-1`)],
-    ...extra,
-  });
+const asked = (id: string, pending = true): HumanMessage => ({
+  id,
+  author: "human",
+  kind: "question",
+  pending,
+  markdown: `Question ${id}?`,
+  references: [],
+  createdAt: "2026-01-01T00:00:00.000Z",
+});
+const thread = (id: string, anchor: CapturedRange, extra: Partial<Thread> = {}): Thread => ({
+  id,
+  anchor,
+  resolved: false,
+  messages: [asked(`${id}-1`)],
+  ...extra,
+});
+const pinnedTo = (snapshotId: string): CapturedRange => ({ ...pin("a.ts", "new", 1), snapshotId });
 
+describe("refreshSession conversations", () => {
   it("maps a code thread line by line through its changed hunk, else keeps it on its original code", () => {
     // A's hunk gains a line after L10: no hunk counterpart, so A loses identity and Viewed.
     const grown = lines(
@@ -601,25 +602,28 @@ describe("refreshSession conversations", () => {
   });
 
   it("pins the snapshots of every thread, message reference, reply wording and its note's code, and draft", () => {
-    const at = (snapshotId: string): CapturedRange => ({ ...pin("a.ts", "new", 1), snapshotId });
     const pinned = pinnedSnapshotIds({
       ...session(),
       overview: null,
       groups: [],
       threads: [
-        thread("t", at("anchor"), {
+        thread("t", pinnedTo("anchor"), {
           resolved: true,
           messages: [
             {
               ...asked("h"),
-              references: [at("human")],
-              wording: { markdown: "w", references: [at("wording")], anchor: at("note-code") },
+              references: [pinnedTo("human")],
+              wording: {
+                markdown: "w",
+                references: [pinnedTo("wording")],
+                anchor: pinnedTo("note-code"),
+              },
             },
             {
               id: "a",
               author: "agent",
               markdown: "A.",
-              references: [at("agent")],
+              references: [pinnedTo("agent")],
               createdAt: LATER,
             },
           ],
@@ -629,11 +633,11 @@ describe("refreshSession conversations", () => {
         {
           id: "d",
           snapshotId: "draft-begun",
-          anchor: at("draft"),
+          anchor: pinnedTo("draft"),
           wording: {
             markdown: "w",
-            references: [at("draft-wording")],
-            anchor: at("draft-note-code"),
+            references: [pinnedTo("draft-wording")],
+            anchor: pinnedTo("draft-note-code"),
           },
         },
       ],
