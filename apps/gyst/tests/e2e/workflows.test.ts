@@ -103,6 +103,7 @@ async function humanOf(box: Sandbox, cwd: string, args: string[]) {
   };
 }
 
+const pullRequestUrl = (number: number) => `https://github.com/acme/widgets/pull/${number}`;
 const newLines = (hunk: Hunk) => {
   const lines = changedLinesOf(hunk).new;
   return { startLine: lines[0]!, endLine: lines.at(-1)! };
@@ -221,7 +222,7 @@ describe("review workflows through the installed CLI", () => {
     const published = await agent.apply(second);
     expect((await agent.apply(second)).stdout).toBe(published.stdout);
     expect(json(published).preparation).toMatchObject({ state: "complete", totalHunks: 2 });
-    expect((await agent.status()).groups.map(({ id }: { id: string }) => id)).toEqual([
+    expect((await agent.status()).groups.map((group: { id: string }) => group.id)).toEqual([
       "reject-expired",
       "injected-clock",
     ]);
@@ -465,10 +466,9 @@ describe("review workflows through the installed CLI", () => {
     const box = await sandbox();
     const stack = await stackedRepository(box);
     const { checkout, fake } = stack;
-    const url = (number: number) => `https://github.com/acme/widgets/pull/${number}`;
 
     // gyst: open layer B; status carries the whole stack, and only B has a session.
-    const opened = json(await box.gyst(checkout, ["session", "open", "--pr", url(2)]));
+    const opened = json(await box.gyst(checkout, ["session", "open", "--pr", pullRequestUrl(2)]));
     const agent = agentOf(box, checkout, opened.session.id);
     const status = await agent.status();
     expect(status.session.scope).toMatchObject({ kind: "pr", number: 2 });
