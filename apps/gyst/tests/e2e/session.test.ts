@@ -40,6 +40,7 @@ import {
 // The installed daemon reports its package version.
 const daemonVersion = packageJson.version;
 const decodeSession = Schema.decodeUnknownSync(Schema.fromJsonString(SessionSchema));
+const sha256 = (text: string) => createHash("sha256").update(text).digest("hex");
 
 type Sandbox = Awaited<ReturnType<typeof sandbox>>;
 
@@ -1373,7 +1374,6 @@ describe("gyst session CLI seam", () => {
     await writeFile(join(cwd, "tracked.txt"), "replaced by a refresh\n");
     const blobs = join(data, "content", "blobs");
     const stored = async () => (await readdir(blobs)).toSorted();
-    const sha256 = (text: string) => createHash("sha256").update(text).digest("hex");
     const doomed = json(await gyst(cwd, ["session", "open"])).session;
     // A range over the same commit captures the same unchanged files: stored once, shared.
     const kept = json(await gyst(cwd, ["session", "open", "HEAD~1..HEAD"])).session;

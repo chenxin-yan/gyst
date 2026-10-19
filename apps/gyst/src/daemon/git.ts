@@ -829,14 +829,14 @@ export class Git extends Context.Service<
               staged.push({ path, copy: yield* content.materialize(blob) });
               continue;
             }
-            const copy = join(measuredCopies, `${at}`);
+            const measuredCopy = join(measuredCopies, `${at}`);
             const hash = createHash("sha256");
             yield* bytes.pipe(
               Stream.tap((chunk) => Effect.sync(() => void hash.update(chunk))),
-              Stream.run(fs.sink(copy)),
+              Stream.run(fs.sink(measuredCopy)),
             );
             if (hash.digest("hex") !== blob) return yield* Worktree.changedDuringCapture(path);
-            staged.push({ path, copy });
+            staged.push({ path, copy: measuredCopy });
           }
           for (const chunk of argvChunks(staged, stagedArgBytes)) {
             const hashed = yield* run(

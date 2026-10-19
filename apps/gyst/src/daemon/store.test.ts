@@ -54,6 +54,59 @@ beforeAll(async () => {
 });
 afterAll(() => rm(dataDir, { recursive: true, force: true }));
 
+/**
+ * Records each sync and rename. `fails` names the sync that fails; `afterRename` runs once each
+ * rename has happened.
+ */
+const observing =
+  (
+    calls: string[],
+    options: {
+      fails?: "file" | "directory";
+      error?: PlatformError.PlatformError;
+      afterRename?: Effect.Effect<void>;
+    } = {},
+  ) =>
+  (real: FileSystem.FileSystem): FileSystem.FileSystem => ({
+    ...real,
+    open: (path, openOptions) =>
+      Effect.map(real.open(path, openOptions), (handle) =>
+        Object.create(handle, {
+          sync: {
+            value: Effect.suspend(() => {
+              const synced = path === dataDir ? "directory" : "file";
+              calls.push(synced === "directory" ? "sync directory" : `sync ${basename(path)}`);
+              return options.fails === synced
+                ? Effect.fail(
+                    options.error ??
+                      PlatformError.systemError({
+                        _tag: "Unknown",
+                        module: "FileSystem",
+                        method: "sync",
+                      }),
+                  )
+                : handle.sync;
+            }),
+          },
+        }),
+      ),
+    rename: (from, to) =>
+      Effect.suspend(() => {
+        calls.push(`rename to ${basename(to)}`);
+        return real.rename(from, to).pipe(Effect.andThen(options.afterRename ?? Effect.void));
+      }),
+  });
+const leftovers = async () => (await readdir(dataDir)).filter((name) => !name.endsWith(".json"));
+const revisionOnDisk = async (id: string) =>
+  JSON.parse(await readFile(join(dataDir, `${id}.json`), "utf8")).revision;
+const noSpace = (method: string) =>
+  PlatformError.systemError({
+    _tag: "Unknown",
+    module: "FileSystem",
+    method,
+    cause: Object.assign(new Error("ENOSPC: no space left on device"), { code: "ENOSPC" }),
+  });
+
 describe("SessionStore", () => {
   it("saves atomically with owner-only permissions and leaves no temp files behind", async () => {
     await run(SessionStore.use((s) => s.save(session("a"))));
@@ -64,52 +117,6 @@ describe("SessionStore", () => {
     expect((await readdir(dataDir)).toSorted()).toEqual(["a.json", "blocked.json"]);
     await rm(join(dataDir, "blocked.json"), { recursive: true });
   });
-
-  /**
-   * Records each sync and rename. `fails` names the sync that fails; `afterRename` runs once each
-   * rename has happened.
-   */
-  const observing =
-    (
-      calls: string[],
-      options: {
-        fails?: "file" | "directory";
-        error?: PlatformError.PlatformError;
-        afterRename?: Effect.Effect<void>;
-      } = {},
-    ) =>
-    (real: FileSystem.FileSystem): FileSystem.FileSystem => ({
-      ...real,
-      open: (path, openOptions) =>
-        Effect.map(real.open(path, openOptions), (handle) =>
-          Object.create(handle, {
-            sync: {
-              value: Effect.suspend(() => {
-                const synced = path === dataDir ? "directory" : "file";
-                calls.push(synced === "directory" ? "sync directory" : `sync ${basename(path)}`);
-                return options.fails === synced
-                  ? Effect.fail(
-                      options.error ??
-                        PlatformError.systemError({
-                          _tag: "Unknown",
-                          module: "FileSystem",
-                          method: "sync",
-                        }),
-                    )
-                  : handle.sync;
-              }),
-            },
-          }),
-        ),
-      rename: (from, to) =>
-        Effect.suspend(() => {
-          calls.push(`rename to ${basename(to)}`);
-          return real.rename(from, to).pipe(Effect.andThen(options.afterRename ?? Effect.void));
-        }),
-    });
-  const leftovers = async () => (await readdir(dataDir)).filter((name) => !name.endsWith(".json"));
-  const revisionOnDisk = async (id: string) =>
-    JSON.parse(await readFile(join(dataDir, `${id}.json`), "utf8")).revision;
 
   it("syncs a saved file before its rename and its directory after, and the directory on request", async () => {
     const calls: string[] = [];
@@ -158,13 +165,6 @@ describe("SessionStore", () => {
 
   it("reports running out of space before the rename as storage_full, and never after it", async () => {
     await run(SessionStore.use((s) => s.save(session("full"))));
-    const noSpace = (method: string) =>
-      PlatformError.systemError({
-        _tag: "Unknown",
-        module: "FileSystem",
-        method,
-        cause: Object.assign(new Error("ENOSPC: no space left on device"), { code: "ENOSPC" }),
-      });
     const writing = await run(
       Effect.flip(SessionStore.use((s) => s.save({ ...session("full"), revision: 1 }))),
       (real) => ({

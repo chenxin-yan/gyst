@@ -1017,9 +1017,9 @@ describe("Git.capture", () => {
     await writeFile(join(cwd, "big-new.txt"), "r".repeat(1000));
     const manifest = await run(
       Effect.gen(function* () {
-        const manifest = yield* Git.use((g) => g.capture(cwd, { kind: "uncommitted" }));
-        yield* CapturedContent.use((c) => c.putManifest(manifest));
-        return manifest;
+        const captured = yield* Git.use((g) => g.capture(cwd, { kind: "uncommitted" }));
+        yield* CapturedContent.use((c) => c.putManifest(captured));
+        return captured;
       }),
       undefined,
       undefined,

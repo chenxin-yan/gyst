@@ -2649,6 +2649,7 @@ describe("Sessions.subscribe", () => {
 
 const runGit = (cwd: string, ...args: string[]) =>
   execFileSync("git", args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+const sha256 = (text: string) => createHash("sha256").update(text).digest("hex");
 const bigLine = (index: number) => `line ${String(index).padStart(5, "0")} ${"x".repeat(40)}\n`;
 const numberedLines = (prefix: string, count: number) =>
   Array.from({ length: count }, (_, index) => `${prefix}${index + 1}\n`).join("");
@@ -3426,13 +3427,20 @@ describe("Sessions captured reads over real captures", () => {
     );
   });
 
+  const onDisk = (kind: "blobs" | "snapshots" | "staging") =>
+    readdir(join(dir, "data", "content", kind));
+  /** Resolves once `blob` is gone from disk, failing after about two seconds. */
+  const gone = (blob: string) =>
+    Effect.promise(async () => {
+      for (let attempt = 0; attempt < 100; attempt++) {
+        if (!(await onDisk("blobs")).includes(blob)) return;
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+      throw new Error(`${blob} was never reclaimed`);
+    });
+
   describe("reclaiming storage", () => {
-    const onDisk = (kind: "blobs" | "snapshots" | "staging") =>
-      readdir(join(dir, "data", "content", kind));
-    const sha256 = (text: string) => createHash("sha256").update(text).digest("hex");
     const reclaim = Sessions.use((s) => s.reclaim);
-    const remove = (session: string, requestId: string) =>
-      Sessions.use((s) => s.delete({ command: "delete", session, requestId }));
     type Act = Input<"draft" | "send" | "resolve" | "discard">;
     const act = (request: Act) => Sessions.use((s) => s.converse(request));
 
@@ -3479,7 +3487,7 @@ describe("Sessions captured reads over real captures", () => {
           );
           const read = (file: string, side: "old" | "new") =>
             code({ session: uncommittedId, snapshotId: session.snapshotId, file, side }).pipe(
-              Effect.map(({ content }) => content.kind === "text" && content.text),
+              Effect.map((reply) => reply.content.kind === "text" && reply.content.text),
             );
           expect(yield* read("shared.ts", "new")).toBe("shared\n");
           expect(yield* read("a.ts", "old")).toBe("a two\n");
@@ -3498,18 +3506,16 @@ describe("Sessions captured reads over real captures", () => {
     });
 
     it("keeps of an older snapshot what references, resolved threads and live drafts pin, across a restart", async () => {
-      const numbered = (prefix: string, count: number) =>
-        Array.from({ length: count }, (_, index) => `${prefix}${index + 1}\n`).join("");
       const cwd = await repo("pins", {
-        "a.ts": numbered("a", 20),
-        "helper.ts": numbered("h", 4),
+        "a.ts": numberedLines("a", 20),
+        "helper.ts": numberedLines("h", 4),
         "thread.ts": "t1\nt2\n",
         "draft.ts": "d1\nd2\n",
         "other.ts": "o1\n",
       });
       const edit = (version: string) =>
         Promise.all([
-          writeFile(join(cwd, "a.ts"), numbered("a", 20).replace("a10\n", "changed\n")),
+          writeFile(join(cwd, "a.ts"), numberedLines("a", 20).replace("a10\n", "changed\n")),
           writeFile(join(cwd, "thread.ts"), `t-${version}\nt2\n`),
           writeFile(join(cwd, "draft.ts"), `d-${version}\nd2\n`),
           writeFile(join(cwd, "other.ts"), `o-${version}\n`),
@@ -3552,7 +3558,7 @@ describe("Sessions captured reads over real captures", () => {
               ],
             }),
           });
-          const anchor = (path: string) => ({
+          const firstLineOf = (path: string) => ({
             snapshotId: session.snapshotId,
             path,
             side: "new" as const,
@@ -3563,7 +3569,7 @@ describe("Sessions captured reads over real captures", () => {
             command: "draft",
             session: session.id,
             requestId: "comment",
-            target: { kind: "comment", anchor: anchor("thread.ts") },
+            target: { kind: "comment", anchor: firstLineOf("thread.ts") },
           });
           const sent = yield* act({
             command: "send",
@@ -3589,11 +3595,11 @@ describe("Sessions captured reads over real captures", () => {
             command: "draft",
             session: session.id,
             requestId: "live",
-            target: { kind: "comment", anchor: anchor("draft.ts") },
+            target: { kind: "comment", anchor: firstLineOf("draft.ts") },
           });
           yield* Effect.promise(async () => {
             await edit("second");
-            await writeFile(join(cwd, "helper.ts"), numbered("h", 4).replace("h2\n", "H2\n"));
+            await writeFile(join(cwd, "helper.ts"), numberedLines("h", 4).replace("h2\n", "H2\n"));
           });
           expect((yield* refreshNow(session.id)).replaced).toBe(true);
           return { sessionId: session.id, earlier: session.snapshotId, draft: live.draft! };
@@ -3601,7 +3607,7 @@ describe("Sessions captured reads over real captures", () => {
       );
       const readEarlier = (file: string) =>
         code({ session: sessionId, snapshotId: earlier, file, side: "new" }).pipe(
-          Effect.map(({ content }) => content.kind === "text" && content.text),
+          Effect.map((reply) => reply.content.kind === "text" && reply.content.text),
         );
       // A new daemon: the browser that began the draft is long gone, and its pin still holds the
       // whole snapshot its links may name.
@@ -3617,7 +3623,7 @@ describe("Sessions captured reads over real captures", () => {
         Effect.gen(function* () {
           yield* act({ command: "discard", session: sessionId, requestId: "discard", draft });
           yield* reclaim;
-          expect(yield* readEarlier("helper.ts")).toBe(numbered("h", 4));
+          expect(yield* readEarlier("helper.ts")).toBe(numberedLines("h", 4));
           expect(yield* readEarlier("thread.ts")).toBe("t-first\nt2\n");
           for (const file of ["other.ts", "draft.ts"])
             expect(
@@ -3642,15 +3648,6 @@ describe("Sessions captured reads over real captures", () => {
       const cwd = await repo("background", { "d.ts": "d\n", "o.ts": "o\n" });
       await writeFile(join(cwd, "d.ts"), "d first\n");
       await writeFile(join(cwd, "o.ts"), "o first\n");
-      /** Resolves once `blob` is gone from disk, failing after about two seconds. */
-      const gone = (blob: string) =>
-        Effect.promise(async () => {
-          for (let attempt = 0; attempt < 100; attempt++) {
-            if (!(await onDisk("blobs")).includes(blob)) return;
-            await new Promise((resolve) => setTimeout(resolve, 20));
-          }
-          throw new Error(`${blob} was never reclaimed`);
-        });
       await runReal(
         Effect.gen(function* () {
           const sessions = yield* Sessions;
@@ -3961,7 +3958,7 @@ describe("Sessions captured reads over real captures", () => {
         Effect.gen(function* () {
           const sessions = yield* Sessions;
           const { session } = yield* sessions.open({ command: "open", cwd, scope: uncommitted });
-          const opened = files.get(session.id)!;
+          const saved = files.get(session.id)!;
           const comment = yield* act({
             command: "draft",
             session: session.id,
@@ -3992,7 +3989,7 @@ describe("Sessions captured reads over real captures", () => {
             ]),
           );
           expect((yield* refreshNow(session.id)).replaced).toBe(true);
-          return { opened, sessionId: session.id };
+          return { opened: saved, sessionId: session.id };
         }),
       );
       // The thread keeps only t.ts of the first snapshot; an older version's copy of the session
