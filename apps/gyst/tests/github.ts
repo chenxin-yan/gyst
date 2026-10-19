@@ -212,6 +212,22 @@ export async function fakeGh(root: string) {
 }
 export type FakeGh = Awaited<ReturnType<typeof fakeGh>>;
 
+const pullRequestOf = (
+  number: number,
+  title: string,
+  baseRefName: string,
+  headRefName: string,
+  headRefOid: string,
+): FakePullRequest => ({
+  number,
+  title,
+  body: `${title}, for review.`,
+  state: "OPEN",
+  baseRefName,
+  headRefName,
+  headRefOid,
+});
+
 /**
  * main m1 <- A (#1, layer-a) <- B (#2, layer-b) <- C (#3, layer-c), GitHub's native stack 7, plus
  * #4 (feature) branched from m1 before main moved on to m2 and never restacked. The fake gh is
@@ -235,25 +251,10 @@ export async function stackedRepository(box: {
   github.publish("feature", 4);
   const m2 = await github.commit("main", { "README.md": "widgets, moved on\n" });
   github.publish("main");
-  const pr = (
-    number: number,
-    title: string,
-    baseRefName: string,
-    headRefName: string,
-    headRefOid: string,
-  ): FakePullRequest => ({
-    number,
-    title,
-    body: `${title}, for review.`,
-    state: "OPEN",
-    baseRefName,
-    headRefName,
-    headRefOid,
-  });
-  const a = pr(1, "Add layer A", "main", "layer-a", a1);
-  const b = pr(2, "Add layer B", "layer-a", "layer-b", b1);
-  const c = pr(3, "Add layer C", "layer-b", "layer-c", c1);
-  const feature = pr(4, "Add the feature", "main", "feature", f1);
+  const a = pullRequestOf(1, "Add layer A", "main", "layer-a", a1);
+  const b = pullRequestOf(2, "Add layer B", "layer-a", "layer-b", b1);
+  const c = pullRequestOf(3, "Add layer C", "layer-b", "layer-c", c1);
+  const feature = pullRequestOf(4, "Add the feature", "main", "feature", f1);
   for (const layer of [a, b, c, feature]) await fake.pullRequest(layer);
   const stack = async (...layers: FakePullRequest[]) => {
     for (const layer of layers)
