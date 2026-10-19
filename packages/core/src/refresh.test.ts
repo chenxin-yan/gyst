@@ -532,6 +532,10 @@ const thread = (id: string, anchor: CapturedRange, extra: Partial<Thread> = {}):
   ...extra,
 });
 const pinnedTo = (snapshotId: string): CapturedRange => ({ ...pin("a.ts", "new", 1), snapshotId });
+const oldPinnedTo = (snapshotId: string, path: string): CapturedRange => ({
+  ...pin(path, "old", 1),
+  snapshotId,
+});
 
 describe("refreshSession conversations", () => {
   it("maps a code thread line by line through its changed hunk, else keeps it on its original code", () => {
@@ -661,26 +665,22 @@ describe("refreshSession conversations", () => {
   });
 
   it("keeps every file of the current and draft-begun snapshots, and only the pinned files of others", () => {
-    const at = (snapshotId: string, path: string): CapturedRange => ({
-      ...pin(path, "old", 1),
-      snapshotId,
-    });
-    const resolved = thread("resolved", at("s0", "thread.ts"), {
+    const resolved = thread("resolved", oldPinnedTo("s0", "thread.ts"), {
       resolved: true,
       messages: [
         {
           ...asked("h"),
-          references: [at("s0", "linked.ts")],
-          wording: { markdown: "w", references: [], anchor: at("s0", "note.ts") },
+          references: [oldPinnedTo("s0", "linked.ts")],
+          wording: { markdown: "w", references: [], anchor: oldPinnedTo("s0", "note.ts") },
         },
       ],
     });
     const kept = retainedFiles({
       ...session(),
-      overview: { markdown: "Overview.", references: [at("s0", "overview.ts")] },
+      overview: { markdown: "Overview.", references: [oldPinnedTo("s0", "overview.ts")] },
       groups: [],
       threads: [resolved],
-      drafts: [{ id: "d", snapshotId: "s-begun", anchor: at("s-draft", "draft.ts") }],
+      drafts: [{ id: "d", snapshotId: "s-begun", anchor: oldPinnedTo("s-draft", "draft.ts") }],
     });
     expect(kept).toEqual(
       new Map<string, unknown>([

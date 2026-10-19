@@ -1202,9 +1202,9 @@ describe("Navigation lifecycle", () => {
     const dataDir = join(dir, "data-space");
     const leftover = join(dataDir, "navigation", "crashed", "project", "a.ts");
     await write(dataDir, { "navigation/crashed/project/a.ts": "export {};\n" });
-    const cwds = [];
-    for (const name of ["space-a", "space-b", "space-c"]) cwds.push(await changedRepo(name));
-    const [cwdA, cwdB, cwdC] = cwds as [string, string, string];
+    const cwdA = await changedRepo("space-a");
+    const cwdB = await changedRepo("space-b");
+    const cwdC = await changedRepo("space-c");
     await runReal(
       dataDir,
       Effect.gen(function* () {
