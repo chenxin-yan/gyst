@@ -105,7 +105,7 @@ const confineConfig = (file: string, config: Record<string, unknown>) => {
     "extends",
     "extends",
     (target) => typeof target === "string" && relativeTarget(target) && inLayout(target),
-  ) as Array<string>;
+  ).filter((target): target is string => typeof target === "string");
   confine(kept, "files", "files");
   confine(kept, "include", "include");
   confine(

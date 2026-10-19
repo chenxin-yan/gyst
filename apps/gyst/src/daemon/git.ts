@@ -139,11 +139,12 @@ class Ineligible extends Data.TaggedError("Ineligible")<{
   readonly reason: "binary" | "unsupported-encoding";
 }> {}
 
+const validate = (decode: () => void) =>
+  Effect.try({ try: decode, catch: () => new Ineligible({ reason: "unsupported-encoding" }) });
+
 /** Stops the stream at the first NUL or invalid UTF-8 sequence, including one split by chunks. */
 const eligibleText = <E>(bytes: Stream.Stream<Uint8Array, E>) => {
   const utf8 = new TextDecoder("utf-8", { fatal: true });
-  const validate = (decode: () => void) =>
-    Effect.try({ try: decode, catch: () => new Ineligible({ reason: "unsupported-encoding" }) });
   return bytes.pipe(
     Stream.mapEffect((chunk) =>
       chunk.includes(0)
@@ -162,6 +163,21 @@ export type LocalScope = Exclude<Scope, { readonly kind: "pr" }>;
 /** What GitHub reports a PR's range must be captured at. */
 export type PullRequestTarget = { readonly baseRefName: string; readonly headRefOid: string };
 type CommitProvenance = Exclude<Provenance, { readonly kind: "uncommitted" }>;
+
+const couldNotRun = <A, E, R>(
+  effect: Effect.Effect<A, E | PlatformError.PlatformError, R>,
+): Effect.Effect<A, Exclude<E, PlatformError.PlatformError> | BadArgs, R> =>
+  Effect.catchIf(
+    effect,
+    PlatformError.isPlatformError,
+    (error) => Effect.fail(new BadArgs({ message: "git could not be run", detail: error.message })),
+    Effect.fail,
+  );
+const objectsMissing = (message: string, diagnostic?: string) =>
+  new SourceUnavailable({
+    message,
+    detail: { reason: "objects_missing", ...(diagnostic && { diagnostic }) },
+  });
 
 export class Git extends Context.Service<
   Git,
@@ -224,14 +240,6 @@ export class Git extends Context.Service<
           // Timeout interruption must also terminate Git wrappers that ignore SIGTERM.
           forceKillAfter: "500 millis",
         });
-      const couldNotRun = <A, E, R>(
-        effect: Effect.Effect<A, E | PlatformError.PlatformError, R>,
-      ): Effect.Effect<A, Exclude<E, PlatformError.PlatformError> | BadArgs, R> =>
-        Effect.mapError(effect, (error) =>
-          error instanceof PlatformError.PlatformError
-            ? new BadArgs({ message: "git could not be run", detail: error.message })
-            : (error as Exclude<E, PlatformError.PlatformError>),
-        );
 
       /** A small command's whole stdout (endpoints, one file's patch); stderr drained, bounded. */
       const run = Effect.fn("Git.run")(
@@ -384,11 +392,6 @@ export class Git extends Context.Service<
         // `%` never appears in a repository name, so escaping every `.` is injective and leaves no
         // leading dot, `..` or `.lock` that Git would refuse in a ref.
         const namespace = `refs/gyst/github/${scope.repository.replaceAll(".", "%2e")}/pull/${scope.number}`;
-        const objectsMissing = (message: string, diagnostic?: string) =>
-          new SourceUnavailable({
-            message,
-            detail: { reason: "objects_missing", ...(diagnostic && { diagnostic }) },
-          });
         const fetchAndResolve = Effect.gen(function* () {
           const fetched = yield* run(root, [
             // The reference-transaction hook would otherwise run a project program.
@@ -563,6 +566,9 @@ export class Git extends Context.Service<
           } satisfies CapturedSide;
         });
 
+      const copy = (side: ContentSide) =>
+        side.kind === "text" ? content.materialize(side.blob) : Effect.succeed("/dev/null");
+
       // Git is the diff engine over private copies of the committed bytes, never the live paths.
       // Outside any repository (the ceiling stops discovery) with no attributes file, no project
       // or global attribute can select a filter, textconv or binary treatment for these copies.
@@ -570,8 +576,6 @@ export class Git extends Context.Service<
       // them binary.
       const hunksOf = Effect.fn("Git.hunksOf")(
         function* (path: string, old: ContentSide, current: ContentSide) {
-          const copy = (side: ContentSide) =>
-            side.kind === "text" ? content.materialize(side.blob) : Effect.succeed("/dev/null");
           const oldFile = yield* copy(old);
           const newFile = yield* copy(current);
           const scratch = dirname(old.kind === "text" ? oldFile : newFile);
@@ -649,7 +653,7 @@ export class Git extends Context.Service<
           provenance = commits;
           const oldTree = yield* tree(root, provenance.mergeBase ?? provenance.base);
           const newTree = yield* tree(root, provenance.head);
-          const paths = [...new Set([...oldTree.keys(), ...newTree.keys()])].sort();
+          const paths = [...new Set([...oldTree.keys(), ...newTree.keys()])].toSorted();
           yield* report("capture", 0, paths.length);
           for (const path of paths) {
             sides.push({
@@ -664,7 +668,7 @@ export class Git extends Context.Service<
           provenance = { kind: "uncommitted", head: baseline };
           const oldTree = yield* tree(root, baseline);
           const inventory = yield* worktreeInventory(root);
-          const paths = [...new Set([...oldTree.keys(), ...inventory.paths])].sort();
+          const paths = [...new Set([...oldTree.keys(), ...inventory.paths])].toSorted();
           const seen = new Map<string, Worktree.WorktreeEntry>();
           // A path under a gitlink (a directory the index now records as a submodule) belongs to
           // that other repository: checked before any working-tree access, so none is read.

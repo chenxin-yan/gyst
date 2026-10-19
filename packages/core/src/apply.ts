@@ -173,6 +173,9 @@ function capturedProblem(captured: CapturedIndex, range: CodeRange): string | un
   return undefined;
 }
 
+const notesOf = (groups: Session["groups"]) =>
+  new Map(groups.flatMap(({ notes }) => notes.map((note) => [note.id, note] as const)));
+
 /**
  * Viewed is unset on the hunks whose guidance changed between `before` and `after`: a note added,
  * removed, edited or re-anchored unviews the hunks of both anchors; a group or walkthrough
@@ -188,8 +191,6 @@ function invalidatedHunkIds(before: Session, after: MutableSession): Set<string>
     note && note.anchor.snapshotId === before.snapshotId
       ? anchoredHunkIds(before.hunks, note.anchor)
       : [];
-  const notesOf = (groups: Session["groups"]) =>
-    new Map(groups.flatMap(({ notes }) => notes.map((note) => [note.id, note] as const)));
   const notesBefore = notesOf(before.groups);
   const notesAfter = notesOf(after.groups);
   for (const id of new Set([...notesBefore.keys(), ...notesAfter.keys()])) {

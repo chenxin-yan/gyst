@@ -8,6 +8,9 @@ const range = (path: string, side: "old" | "new", startLine: number, endLine = s
   endLine,
 });
 
+const introFence = (body: string, info = "mermaid") => `Intro.\n\n\`\`\`${info}\n${body}\n\`\`\``;
+const fence = (body: string) => `\`\`\`mermaid\n${body}\n\`\`\``;
+
 describe("inspectMarkdown", () => {
   it("extracts inline, reference-style and angle-bracket gyst: references once each", () => {
     expect(
@@ -129,13 +132,12 @@ describe("inspectMarkdown", () => {
   });
 
   it("rejects Mermaid diagrams that carry their own configuration", () => {
-    const fence = (body: string, info = "mermaid") => `Intro.\n\n\`\`\`${info}\n${body}\n\`\`\``;
     for (const markdown of [
-      fence("%%{init: {'theme':'dark'}}%%\nflowchart LR\n  A --> B"),
-      fence("flowchart LR\n  %%{ init: { 'securityLevel': 'loose' } }%%\n  A --> B"),
-      fence("   %% {init: {}}%%\ngraph TD"),
-      fence("%%{init: {}}%%\ngraph TD", "Mermaid"),
-      fence("%%{wrap}%%\nsequenceDiagram", "mermaid title"),
+      introFence("%%{init: {'theme':'dark'}}%%\nflowchart LR\n  A --> B"),
+      introFence("flowchart LR\n  %%{ init: { 'securityLevel': 'loose' } }%%\n  A --> B"),
+      introFence("   %% {init: {}}%%\ngraph TD"),
+      introFence("%%{init: {}}%%\ngraph TD", "Mermaid"),
+      introFence("%%{wrap}%%\nsequenceDiagram", "mermaid title"),
       "~~~mermaid\n%%{init:{}}%%\ngraph TD\n~~~",
       "> ```mermaid\n> %%{init:{}}%%\n> graph TD\n> ```",
       "- item\n\n  ```mermaid\n  %%{init:{}}%%\n  graph TD\n  ```",
@@ -148,15 +150,14 @@ describe("inspectMarkdown", () => {
       "\n\n---\ntitle: x\n---\ngraph TD",
       "  ---\nconfig: {}\n---\ngraph TD",
     ])
-      expect(inspectMarkdown(fence(body)).problems, body).toEqual([
+      expect(inspectMarkdown(introFence(body)).problems, body).toEqual([
         "line 3: Mermaid diagrams may not carry --- frontmatter",
       ]);
     // Other languages may show Mermaid syntax as code.
-    expect(inspectMarkdown(fence("%%{init:{}}%%\n---", "text")).problems).toEqual([]);
+    expect(inspectMarkdown(introFence("%%{init:{}}%%\n---", "text")).problems).toEqual([]);
   });
 
   it("rejects Mermaid shape data, which can load images, and author styling", () => {
-    const fence = (body: string) => `\`\`\`mermaid\n${body}\n\`\`\``;
     for (const body of [
       'flowchart LR\n  A@{ img: "https://example.com/probe.png", label: "Probe" }',
       'flowchart LR\n  A@{ "\\u0069mg": "https://example.com/probe.png" }',
@@ -184,7 +185,6 @@ describe("inspectMarkdown", () => {
   });
 
   it("rejects Mermaid math and sequence participant data, which load images while rendering", () => {
-    const fence = (body: string) => `\`\`\`mermaid\n${body}\n\`\`\``;
     for (const body of [
       'sequenceDiagram\n  participant A as <img src="http://127.0.0.1:9/math.png"> $$x$$',
       "flowchart LR\n  A[$$x^2$$] --> B",

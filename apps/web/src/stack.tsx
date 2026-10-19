@@ -49,7 +49,7 @@ export function StackSwitcher(props: {
     const items = [...(dialog.current?.querySelectorAll<HTMLElement>("[data-stack-item]") ?? [])];
     if (items.length === 0) return;
     event.preventDefault();
-    const at = items.indexOf(document.activeElement as HTMLElement);
+    const at = items.findIndex((item) => item === document.activeElement);
     const last = items.length - 1;
     const next =
       event.key === "Home"

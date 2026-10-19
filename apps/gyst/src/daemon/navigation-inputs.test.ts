@@ -48,7 +48,7 @@ const manifestOf = (files: ReadonlyArray<ManifestFile>): SnapshotManifest =>
   Schema.decodeUnknownSync(SnapshotManifestSchema)({
     scope: { kind: "uncommitted" },
     provenance: { kind: "uncommitted", head: null },
-    files: [...files].sort((a, b) => (a.path < b.path ? -1 : 1)),
+    files: files.toSorted((a, b) => (a.path < b.path ? -1 : 1)),
     hunks: [],
   });
 
@@ -70,7 +70,7 @@ const materialize = (manifest: SnapshotManifest, side: "old" | "new", root: stri
 const tree = async (dir: string): Promise<Record<string, Buffer>> => {
   const entries = await readdir(dir, { recursive: true, withFileTypes: true });
   const files: Record<string, Buffer> = {};
-  for (const entry of entries.filter((entry) => entry.isFile())) {
+  for (const entry of entries.filter((dirent) => dirent.isFile())) {
     const file = join(entry.parentPath, entry.name);
     files[relative(dir, file).split("\\").join("/")] = await readFile(file);
   }
@@ -106,6 +106,20 @@ const snapshot = async () =>
     { path: "vendor/lib", old: unavailable("submodule"), new: unavailable("submodule") },
   ]);
 
+const size = (files: Record<string, Buffer>) =>
+  Object.values(files).reduce((total, bytes) => total + bytes.byteLength, 0);
+const unresolved = (file: string, target: string) => ({
+  kind: "unresolved-import",
+  file,
+  message: `cannot resolve extends ${JSON.stringify(target)}`,
+});
+const config = (value: unknown) => JSON.stringify(value, null, 2) + "\n";
+const drop = (value: string) => ({
+  kind: "unresolved-import",
+  file: "app/tsconfig.json",
+  message: `cannot resolve ${value}`,
+});
+
 describe("materializeSide", () => {
   it("writes each side's captured TS/JS/JSON text as its own exact, private tree", async () => {
     const manifest = await snapshot();
@@ -129,8 +143,6 @@ describe("materializeSide", () => {
       "src/latin1.js": Buffer.from("x;\n"),
       "tsconfig.json": Buffer.from('{ "compilerOptions": {} }\n'),
     });
-    const size = (files: Record<string, Buffer>) =>
-      Object.values(files).reduce((total, bytes) => total + bytes.byteLength, 0);
     expect(oldLayout).toMatchObject({ files: 4, bytes: size(await tree(oldLayout.project)) });
     expect(newLayout).toMatchObject({ files: 6, bytes: size(await tree(newLayout.project)) });
 
@@ -200,11 +212,6 @@ describe("materializeSide", () => {
       { path: ".eslintrc.json", old: absent, new: await text('{ "extends": "airbnb" }') },
       { path: "config/base.json", old: unavailable("symlink"), new: absent },
     ]);
-    const unresolved = (file: string, target: string) => ({
-      kind: "unresolved-import",
-      file,
-      message: `cannot resolve extends ${JSON.stringify(target)}`,
-    });
     expect((await materialize(manifest, "old", (await freshRoot()).root)).gaps).toEqual([
       { kind: "uncaptured", file: "config/base.json", reason: "symlink" },
       unresolved("app/tsconfig.json", "./tsconfig.base.json"),
@@ -242,7 +249,6 @@ describe("materializeSide", () => {
   });
 
   it("drops every config value naming an input outside the layout, and leaves out an unreadable config", async () => {
-    const config = (value: unknown) => JSON.stringify(value, null, 2) + "\n";
     const appConfig = {
       extends: ["./base.json", "../../outside.json", "pkg/tsconfig.json"],
       files: ["main.ts", "../../escape.ts"],
@@ -273,11 +279,6 @@ describe("materializeSide", () => {
       { path: "web/src/a.js", old: absent, new: await text("export {};\n") },
     ]);
     const layout = await materialize(manifest, "new", (await freshRoot()).root);
-    const drop = (value: string) => ({
-      kind: "unresolved-import",
-      file: "app/tsconfig.json",
-      message: `cannot resolve ${value}`,
-    });
     expect(layout.gaps).toEqual([
       drop('extends "../../outside.json"'),
       drop('extends "pkg/tsconfig.json"'),
@@ -333,7 +334,7 @@ describe("materializeSide", () => {
     expect(copy.nlink).toBe(1);
     expect(blob.nlink).toBe(1);
     expect(await readdir(outer)).toEqual(["root"]);
-    expect((await readdir(root)).sort()).toEqual(["package.json", "project"]);
+    expect((await readdir(root)).toSorted()).toEqual(["package.json", "project"]);
     expect(await readFile(join(root, "package.json"), "utf8")).toBe("{}\n");
     expect(await readdir(join(dataDir, "content", "staging"))).toEqual([]);
   });
@@ -347,7 +348,7 @@ describe("materializeSide", () => {
     const error = await run(Effect.flip(materializeSide(escaping, "old", root)));
     expect(error).toMatchObject({ _tag: "internal_error", detail: "../escape.ts" });
     expect(await readdir(outer)).toEqual(["root"]);
-    expect((await readdir(root)).sort()).toEqual(["package.json", "project"]);
+    expect((await readdir(root)).toSorted()).toEqual(["package.json", "project"]);
     expect(await readdir(join(root, "project"))).toEqual([]);
   });
 

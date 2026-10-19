@@ -205,13 +205,14 @@ const references = (target: Target, position: TextPoint) =>
 const identifiers = (target: Target, line: number) =>
   Navigation.use((n) => n.identifiers({ command: "identifiers", ...target, line, addon }));
 
-const located = (payload: { outcome: { kind: string } }) => {
+const located = (payload: {
+  outcome: Effect.Success<
+    ReturnType<typeof definition | typeof references | typeof identifiers>
+  >["outcome"];
+}) => {
   if (payload.outcome.kind !== "locations")
     throw new Error(`not locations: ${JSON.stringify(payload.outcome)}`);
-  return payload.outcome as Extract<
-    Effect.Success<ReturnType<typeof definition>>["outcome"],
-    { kind: "locations" }
-  >;
+  return payload.outcome;
 };
 
 const oldMath =
@@ -1017,7 +1018,7 @@ describe("Navigation lifecycle", () => {
         const a = yield* changedSession(cwdA);
         const b = yield* changedSession(cwdB);
         const sides = (of: typeof a) =>
-          Effect.map(readiness(of.session.id, of.session.snapshotId), ({ sides }) => sides);
+          Effect.map(readiness(of.session.id, of.session.snapshotId), (ready) => ready.sides);
         const engineOf = (args: number) => engines()[args]!.pid;
 
         // The old side of A is used first, so it is the least recently used once both are idle.
@@ -1162,7 +1163,7 @@ describe("Navigation lifecycle", () => {
       dataDir,
       Effect.gen(function* () {
         const { session, blob, target } = yield* changedSession(cwd);
-        const sides = Effect.map(readiness(session.id, session.snapshotId), ({ sides }) => sides);
+        const sides = Effect.map(readiness(session.id, session.snapshotId), (ready) => ready.sides);
         expect(located(yield* definition(target("new"), plusAt("new"))).locations).toHaveLength(1);
         const engine = engines()[0]!.pid;
 

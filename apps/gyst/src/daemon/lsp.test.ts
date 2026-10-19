@@ -1,7 +1,7 @@
 import { describe, expect, it, onTestFinished } from "vite-plus/test";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import type { TextPoint } from "@gyst/core";
-import { Effect, Exit, Scope } from "effect";
+import { Effect, Exit, Schema, Scope } from "effect";
 import type { ChildProcessSpawner } from "effect/process";
 import { existsSync } from "node:fs";
 import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
@@ -77,10 +77,10 @@ const until = async (done: () => boolean, ms: number) => {
   return done();
 };
 
-describe("LSP positions", () => {
-  const point = (line: number, character: number): TextPoint => ({ line, character });
-  const lsp = (line: number, character: number): LspPosition => ({ line, character });
+const point = (line: number, character: number): TextPoint => ({ line, character });
+const lsp = (line: number, character: number): LspPosition => ({ line, character });
 
+describe("LSP positions", () => {
   it("counts UTF-16 code units, so an astral character before the cursor is two", () => {
     expect(toLspPosition("a𐐀b", point(1, 3))).toEqual(lsp(0, 3));
     expect(fromLspPosition("a𐐀b", lsp(0, 3))).toEqual(point(1, 3));
@@ -163,9 +163,9 @@ describe("lspLanguageId", () => {
   });
 });
 
-describe("LSP framing", () => {
-  const bytes = (text: string) => new TextEncoder().encode(text);
+const bytes = (text: string) => new TextEncoder().encode(text);
 
+describe("LSP framing", () => {
   it("reassembles frames split anywhere and splits several frames in one chunk", () => {
     const frames = Buffer.concat([
       encodeFrame({ id: 1, result: "π 🦀" }),
@@ -270,11 +270,20 @@ const startFake = async (scope: Scope.Closeable, script: string, project: string
       engineSettings,
     ),
   );
+const LspPositionSchema = Schema.Struct({ line: Schema.Number, character: Schema.Number });
+const decodeLocations = Schema.decodeUnknownSync(
+  Schema.Array(
+    Schema.Struct({
+      uri: Schema.String,
+      range: Schema.Struct({ start: LspPositionSchema, end: LspPositionSchema }),
+    }),
+  ),
+);
 const logged = async (log: string) =>
   (await readFile(log, "utf8"))
     .trim()
     .split("\n")
-    .map((line) => JSON.parse(line) as { method?: string; params?: unknown; id?: unknown });
+    .map((line): { method?: string; params?: unknown; id?: unknown } => JSON.parse(line));
 
 describe("startLanguageServer", () => {
   it("initializes with UTF-16 and answers configuration, registration and progress, refusing anything else", async () => {
@@ -455,6 +464,11 @@ const privateHome = async (dir: string) => {
   return home;
 };
 
+const at = (line: number, lineText: string, from = 0) => {
+  const character = lineText.indexOf("𐐀x", from);
+  return { start: { line, character }, end: { line, character: character + 3 } };
+};
+
 describe("startEngine (real typescript@7.0.2 through the workspace add-on)", () => {
   it("negotiates UTF-16 and maps BOM, CRLF, lone CR and astral positions exactly", async () => {
     const dir = await tempDir();
@@ -484,11 +498,7 @@ describe("startEngine (real typescript@7.0.2 through the workspace add-on)", () 
         textDocument: { uri, languageId: lspLanguageId("a.ts"), version: 1, text },
       }),
     );
-    const [line1, line2] = text.split("\n") as [string, string];
-    const at = (line: number, lineText: string, from = 0) => {
-      const character = lineText.indexOf("𐐀x", from);
-      return { start: { line, character }, end: { line, character: character + 3 } };
-    };
+    const [line1 = "", line2 = ""] = text.split("\n");
     const declaration = at(1, line1);
     const lonePrefixed = at(1, line1, declaration.end.character);
     const crlfLine = at(2, line2);
@@ -496,13 +506,15 @@ describe("startEngine (real typescript@7.0.2 through the workspace add-on)", () 
 
     const position = toLspPosition(text, crlfLine.start);
     expect(position).toEqual({ line: 2, character: crlfLine.start.character });
-    const references = (await run(
-      engine.request("textDocument/references", {
-        textDocument: { uri },
-        position,
-        context: { includeDeclaration: true },
-      }),
-    )) as ReadonlyArray<{ uri: string; range: { start: LspPosition; end: LspPosition } }>;
+    const references = decodeLocations(
+      await run(
+        engine.request("textDocument/references", {
+          textDocument: { uri },
+          position,
+          context: { includeDeclaration: true },
+        }),
+      ),
+    );
     expect(
       references.map(({ uri: target, range }) => ({
         target,

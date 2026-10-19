@@ -74,6 +74,11 @@ const page = (
   content: { kind: "text", size: 999, start: { line: start, offset: 0 }, text, next },
 });
 
+const readSymlink: CodeRead = async () => ({
+  ...page(1, "", null),
+  content: { kind: "unavailable", reason: "symlink" },
+});
+
 describe("readRange", () => {
   it("reads the target and three lines either side from the snapshot it is pinned to", async () => {
     const requests: Parameters<CodeRead>[0][] = [];
@@ -110,11 +115,7 @@ describe("readRange", () => {
   });
 
   it("says why a side has no text", async () => {
-    const read: CodeRead = async () => ({
-      ...page(1, "", null),
-      content: { kind: "unavailable", reason: "symlink" },
-    });
-    expect(await readRange(target, read)).toEqual({
+    expect(await readRange(target, readSymlink)).toEqual({
       kind: "unavailable",
       reason: "new side not captured: symbolic link",
     });

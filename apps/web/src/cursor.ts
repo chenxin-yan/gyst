@@ -207,11 +207,7 @@ export type Model = {
   stops: (file: string, side: Side) => readonly Stop[];
 };
 
-const stripped = (stop: Stop): Cursor => {
-  const cursor: Partial<Stop> = { ...stop };
-  delete cursor.row;
-  return cursor as Cursor;
-};
+const stripped = ({ row: _row, ...cursor }: Stop): Cursor => cursor;
 
 /** The stop a cursor stands on under the model's layout, as a cursor. */
 export function place(model: Model, cursor: Cursor): Cursor {
@@ -287,7 +283,7 @@ function changeStarts(file: string, rows: readonly Row[], stops: readonly Stop[]
       const line = lineOn(row, side)!;
       starts.set(row.block, { cursor: { file, kind: "line", side, line }, split: row.split });
     }
-  return [...starts.values()].sort((a, b) => a.split - b.split);
+  return [...starts.values()].toSorted((a, b) => a.split - b.split);
 }
 
 /** The next or previous change's first line after or before the cursor, across files. */

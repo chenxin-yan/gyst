@@ -9,6 +9,8 @@ import { GitHub } from "./github.ts";
 const sha256 = (input: string) => createHash("sha256").update(input).digest("hex");
 const commit = (char: string) => char.repeat(40);
 
+const text = (identity: string) => ({ kind: "text", blob: sha256(identity), size: 1 }) as const;
+
 /**
  * What a `Git.capture` double returns: `patch`'s hunks over files whose new side is identified by
  * those hunks, plus unchanged `supporting` files identified by their text.
@@ -20,7 +22,6 @@ export const manifestOf = (
 ): SnapshotManifest => {
   const hunks = Result.getOrThrow(parseSnapshot(patch));
   const changed = Map.groupBy(hunks, (hunk) => hunk.file);
-  const text = (identity: string) => ({ kind: "text", blob: sha256(identity), size: 1 }) as const;
   const files = [
     ...[...changed].map(([path, fileHunks]) => ({
       path,
@@ -31,7 +32,7 @@ export const manifestOf = (
       const side = text(content);
       return { path, old: side, new: side };
     }),
-  ].sort((a, b) => (a.path < b.path ? -1 : 1));
+  ].toSorted((a, b) => (a.path < b.path ? -1 : 1));
   return {
     scope,
     provenance:

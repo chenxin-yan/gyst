@@ -6,7 +6,6 @@ import { webPaths } from "@gyst/core/web";
 import { type ChildProcess, execFileSync, spawn } from "node:child_process";
 import { existsSync } from "node:fs";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
-import type { AddressInfo } from "node:net";
 import { join, resolve } from "node:path";
 import type { Plugin } from "vite-plus";
 
@@ -99,8 +98,10 @@ export function devLauncher(launch: DevLaunch): Plugin {
       // launch URL, on Vite's port; a restart has a new launch and so a new URL.
       server.printUrls = () => {};
       server.httpServer?.once("listening", () => {
+        const address = server.httpServer?.address();
+        if (!address || typeof address === "string") return;
         const viewer = new URL(url);
-        viewer.port = String((server.httpServer!.address() as AddressInfo).port);
+        viewer.port = String(address.port);
         server.config.logger.info(`\n  gyst  ${viewer.href}\n`);
       });
     },

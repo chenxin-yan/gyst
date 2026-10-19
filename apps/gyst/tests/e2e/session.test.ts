@@ -357,7 +357,7 @@ describe("gyst session CLI seam", () => {
     expect(json(await gyst(cwd, ["session", "status", "--session", id]))).toEqual(prepared);
     expect(json(await gyst(cwd, ["session", "check", "--session", id])).state).toBe("changed");
     const listed = json(await gyst(box.root, ["session", "list"])).sessions;
-    expect(new Set(listed.map(({ id }: { id: string }) => id))).toEqual(
+    expect(new Set(listed.map((entry: { id: string }) => entry.id))).toEqual(
       new Set([threeDot, twoDot, uncommitted].map(({ session }) => session.id)),
     );
     for (const { session } of [threeDot, twoDot, uncommitted])
@@ -435,7 +435,11 @@ describe("gyst session CLI seam", () => {
       () => !isAlive(respawned) && !existsSync(join(data, "daemon.pid")),
       `daemon ${respawned} to exit after the last delete`,
     );
-    expect((await readdir(data)).sort()).toEqual(["content", "corrupt.json", "delete-receipts"]);
+    expect((await readdir(data)).toSorted()).toEqual([
+      "content",
+      "corrupt.json",
+      "delete-receipts",
+    ]);
 
     // A lost acknowledgement retried after that exit starts a daemon that answers from the receipt
     // and, holding no sessions, shuts down again.
@@ -446,7 +450,11 @@ describe("gyst session CLI seam", () => {
       () => installedDaemons().length === 0 && !existsSync(join(data, "daemon.pid")),
       "the replaying daemon to exit with no sessions left",
     );
-    expect((await readdir(data)).sort()).toEqual(["content", "corrupt.json", "delete-receipts"]);
+    expect((await readdir(data)).toSorted()).toEqual([
+      "content",
+      "corrupt.json",
+      "delete-receipts",
+    ]);
   }, 20_000);
 
   it("keeps failed persistence from exposing an opened or hiding a deleted session", async () => {
@@ -629,7 +637,7 @@ describe("gyst session CLI seam", () => {
       `daemon.pid to name ${survivor}`,
     );
     expect(installedDaemons()).toEqual([survivor]);
-    expect((await readdir(data)).sort()).toEqual(["content", "daemon.pid", "daemon.sock"]);
+    expect((await readdir(data)).toSorted()).toEqual(["content", "daemon.pid", "daemon.sock"]);
   }, 20_000);
 
   it("exits 130 on SIGINT through crust's cancellation and releases the socket and pid file", async () => {
@@ -824,7 +832,7 @@ describe("gyst session CLI seam", () => {
       gyst(cwd, ["session", "apply", ...pinned], batch("concurrent-b", "second")),
     ]);
 
-    expect(results.map(({ exitCode }) => exitCode).sort((a, b) => a! - b!)).toEqual([0, 1]);
+    expect(results.map(({ exitCode }) => exitCode).toSorted((a, b) => a! - b!)).toEqual([0, 1]);
     expect(failed(results.find(({ exitCode }) => exitCode === 1)!).code).toBe("stale_revision");
     expect(json(await gyst(cwd, ["session", "status", ...pinned])).revision).toBe(1);
     succeeded(await gyst(cwd, ["session", "delete", ...pinned, "--request-id", "cleanup"]));

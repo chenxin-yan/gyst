@@ -6,7 +6,7 @@ import { randomBytes, randomUUID } from "node:crypto";
 import { accessSync, constants } from "node:fs";
 import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { createServer as createHttpServer, request as httpRequest } from "node:http";
-import { type AddressInfo, createServer } from "node:net";
+import { createServer } from "node:net";
 import { homedir, userInfo } from "node:os";
 import { delimiter, join } from "node:path";
 import {
@@ -152,6 +152,8 @@ const ownDaemon = (pid: number) =>
 /** Each test page's operations on the wire, which `settled` waits out. */
 const operationsInFlight = new WeakMap<Page, Set<PageRequest>>();
 
+const urlPath = (url: string) => new URL(url).pathname;
+
 /**
  * A page closed after its test, which must see exactly the listed HTTP error responses
  * (`<path> <status>`) and problems: failed requests, page errors and console errors. Chromium's
@@ -166,14 +168,13 @@ async function newPage(
   const page = await from.newPage();
   page.setDefaultTimeout(15_000);
   const seen = { responses: [] as string[], problems: [] as string[] };
-  const path = (url: string) => new URL(url).pathname;
   page.on("response", (response) => {
     if (response.status() >= 400)
-      seen.responses.push(`${path(response.url())} ${response.status()}`);
+      seen.responses.push(`${urlPath(response.url())} ${response.status()}`);
   });
   page.on("requestfailed", (request) => {
     if (!isEventsUrl(new URL(request.url())))
-      seen.problems.push(`requestfailed ${path(request.url())}`);
+      seen.problems.push(`requestfailed ${urlPath(request.url())}`);
   });
   const operations = new Set<PageRequest>();
   operationsInFlight.set(page, operations);
@@ -280,7 +281,9 @@ const says = (page: Page, text: string) =>
 const cursorBar = (page: Page) => page.getByRole("main").locator("[data-cursor][aria-hidden=true]");
 /** Presses keys in order, from the page rather than a focused control. */
 async function keys(page: Page, ...pressed: string[]) {
-  await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
+  await page.evaluate(() => {
+    if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
+  });
   for (const key of pressed) await page.keyboard.press(key);
 }
 /** Waits until the cursor bar covers a copy of the line `text`, on the bar's own column. */
@@ -307,7 +310,9 @@ const topLine = async (page: Page) => {
         copy.getBoundingClientRect().top,
       ]),
     );
-  const below = lines.filter(([, top]) => top! >= panel.y + 34 - 2).sort(([, a], [, b]) => a! - b!);
+  const below = lines
+    .filter(([, top]) => top! >= panel.y + 34 - 2)
+    .toSorted(([, a], [, b]) => a! - b!);
   return below[0]?.[0];
 };
 /** Waits until `read` gives the same value twice, 200 ms apart, as once a scroll settled. */
@@ -638,6 +643,54 @@ const stackRowsOf = (page: Page) =>
 const hasFocus = (locator: ReturnType<Page["locator"]>) =>
   locator.evaluate((element) => element === document.activeElement);
 
+// Live review: each test opens a fresh main...live session on launches of its own.
+const idsIn = async (id: string, file: string) =>
+  (await gyst("session", "diff", "--session", id)).hunks
+    .filter((hunk: { file: string }) => hunk.file === file)
+    .map((hunk: { id: string }) => hunk.id);
+// A set: the daemon's order of Viewed hunk ids is not part of these tests.
+const viewedIn = async (id: string) =>
+  new Set((await gyst("session", "status", "--session", id)).viewedHunkIds);
+const pause = (page: Page, ms: number) =>
+  page.evaluate((wait) => new Promise((resolve) => setTimeout(resolve, wait)), ms);
+const cookieOf = async (origin: string) =>
+  (await context.cookies(origin)).filter((c) => c.name === "gyst_auth");
+const post = (path: string, headers: Record<string, string>, body?: string) => ({
+  method: "POST",
+  path,
+  headers,
+  ...(body === undefined ? {} : { body }),
+});
+const fence = (diagram: string) => `\`\`\`mermaid\n${diagram}\n\`\`\``;
+
+/**
+ * The page is connected again but still shows `progress` from before: it says so, and a click
+ * on `file`'s Viewed box sends and queues nothing.
+ */
+const synchronizingWithout = async (
+  page: Page,
+  writes: unknown[],
+  file: string,
+  progress: string,
+) => {
+  await says(page, "Synchronizing…");
+  await says(page, "Reading what changed meanwhile. Viewed changes are paused.");
+  await says(page, progress);
+  const sent = writes.length;
+  await viewedBox(page, file).click();
+  await pause(page, 300);
+  expect(writes).toHaveLength(sent);
+  expect(await viewedBox(page, file).isChecked()).toBe(false);
+};
+const pathOf = (id: string) => `/session/${encodeURIComponent(id)}`;
+const gateOf = (operation: any) =>
+  operation?.command === "code" && operation.file === "paged.ts"
+    ? "code"
+    : operation?.command === "files" && operation.after
+      ? "files"
+      : undefined;
+// pgrep reads POSIX extended regexes, which lack the `\x2d`-style escapes RegExp.escape emits.
+const escapeEre = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 describe("installed gyst in a sandboxed browser", () => {
   let one: Launch;
   let two: Launch;
@@ -840,8 +893,7 @@ describe("installed gyst in a sandboxed browser", () => {
         await stop(proc, "SIGTERM").catch(() => stop(proc, "SIGKILL"));
       if (data) await stopDaemon(data);
       if (root) {
-        const escape = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-        const pattern = [root, installed.prefix].map(escape).join("|");
+        const pattern = [root, installed.prefix].map(escapeEre).join("|");
         const found = spawnSync("pgrep", ["-a", "-f", pattern], { encoding: "utf8" });
         expect([0, 1]).toContain(found.status);
         expect(found.stdout, "processes left by the browser tests").toBe("");
@@ -891,7 +943,7 @@ describe("installed gyst in a sandboxed browser", () => {
     const operations = requests.filter((r) => operationOf(r) !== undefined);
     // Eager captured-content reads are bounded and checked in their own test.
     const reads = operations.map(operationOf).filter((op) => op.command !== "code");
-    expect(reads.sort((a, b) => a.command.localeCompare(b.command))).toEqual([
+    expect(reads.toSorted((a, b) => a.command.localeCompare(b.command))).toEqual([
       { command: "diff", session: one.id },
       { command: "files", session: one.id, snapshotId: sessions[0].snapshotId },
       { command: "open", session: one.id },
@@ -979,10 +1031,10 @@ describe("installed gyst in a sandboxed browser", () => {
     // Each changed text file's two sides, read once, from the session's snapshot.
     const { snapshotId } = (await gyst("session", "list")).sessions[0];
     const reads = codes.map(({ file, side, snapshotId: read }) => `${file} ${side} ${read}`);
-    expect(reads.sort()).toEqual(
+    expect(reads.toSorted()).toEqual(
       ["README.md", "app.ts", "src/long.ts"]
         .flatMap((file) => [`${file} new ${snapshotId}`, `${file} old ${snapshotId}`])
-        .sort(),
+        .toSorted(),
     );
     expect(mostInFlight).toBeLessThanOrEqual(4);
     // A loaded range opens on a click without another read; the other ranges stay hidden.
@@ -1274,7 +1326,7 @@ describe("installed gyst in a sandboxed browser", () => {
         const below = [...main.querySelectorAll("h2")]
           .map((heading) => ({ heading, y: heading.getBoundingClientRect().top - panel }))
           .filter(({ y }) => y >= -1)
-          .sort((a, b) => a.y - b.y)[0];
+          .toSorted((a, b) => a.y - b.y)[0];
         return below !== undefined && below.y < 40
           ? below.heading.getAttribute("aria-label")
           : null;
@@ -1317,17 +1369,17 @@ describe("installed gyst in a sandboxed browser", () => {
     const inFlight = { code: 0, files: 0 };
     const most = { code: 0, files: 0 };
     const settle = (request: PageRequest) => {
-      const command = operationOf(request)?.command;
-      if (command === "code" || command === "files") inFlight[command as "code" | "files"]--;
+      const command: unknown = operationOf(request)?.command;
+      if (command === "code" || command === "files") inFlight[command]--;
     };
     page.on("requestfinished", settle);
     page.on("requestfailed", settle);
     await page.route(isOperationUrl, async (route) => {
-      const command = route.request().postDataJSON()?.command;
+      const command: unknown = route.request().postDataJSON()?.command;
       if (command === "code" || command === "files") {
-        started[command as "code" | "files"]++;
-        const count = ++inFlight[command as "code" | "files"];
-        most[command as "code" | "files"] = Math.max(most[command as "code" | "files"], count);
+        started[command]++;
+        const count = ++inFlight[command];
+        most[command] = Math.max(most[command], count);
         // A little latency, so concurrent requests overlap and are counted.
         await new Promise((resolve) => setTimeout(resolve, 30));
       }
@@ -1340,7 +1392,7 @@ describe("installed gyst in a sandboxed browser", () => {
     expect(started.code).toBeLessThan(800);
     // A loaded file's trailing range (lines 14-20) shows its count.
     await pane.getByText("7 unmodified lines").first().waitFor();
-    const settled = async () => {
+    const scrollSettled = async () => {
       let last = -1;
       await waitFor(async () => {
         const quiet = inFlight.code === 0 && started.code === last;
@@ -1349,7 +1401,7 @@ describe("installed gyst in a sandboxed browser", () => {
         return quiet;
       }, "the eager loads to settle");
     };
-    await settled();
+    await scrollSettled();
     // Only the window and a few nearby files loaded, not the whole session.
     expect(started.code).toBeLessThan(100);
 
@@ -1374,7 +1426,7 @@ describe("installed gyst in a sandboxed browser", () => {
       scroller.scrollTop = scroller.scrollHeight / 2;
     });
     await waitFor(async () => started.code > before, "reads for the files landed on");
-    await settled();
+    await scrollSettled();
     await pane.getByText("7 unmodified lines").first().waitFor();
     expect(started.code).toBeLessThan(before + 100);
     expect(most.code).toBeLessThanOrEqual(4);
@@ -1401,7 +1453,7 @@ describe("installed gyst in a sandboxed browser", () => {
         const below = [...main.querySelectorAll("h2")]
           .map((heading) => ({ heading, y: heading.getBoundingClientRect().top - panel }))
           .filter(({ y }) => y >= -1)
-          .sort((a, b) => a.y - b.y)[0];
+          .toSorted((a, b) => a.y - b.y)[0];
         return below !== undefined && below.y < 40
           ? below.heading.getAttribute("aria-label")
           : null;
@@ -1893,7 +1945,8 @@ describe("installed gyst in a sandboxed browser", () => {
     await says(page, "README.md · file");
     const focused = () =>
       page.evaluate(() => {
-        const element = document.activeElement as HTMLElement;
+        const element = document.activeElement;
+        if (!element) return null;
         return {
           name: element.getAttribute("aria-label") ?? element.textContent,
           visible:
@@ -2026,12 +2079,6 @@ describe("installed gyst in a sandboxed browser", () => {
       const page = await newPage();
       const held = { code: 0, files: 0 };
       const finished = { code: 0, files: 0 };
-      const gateOf = (operation: any) =>
-        operation?.command === "code" && operation.file === "paged.ts"
-          ? "code"
-          : operation?.command === "files" && operation.after
-            ? "files"
-            : undefined;
       page.on("requestfinished", (request) => {
         const gate = gateOf(operationOf(request));
         if (gate) finished[gate]++;
@@ -2181,8 +2228,6 @@ describe("installed gyst in a sandboxed browser", () => {
     await page.getByRole("main").getByText("range-only").waitFor();
     await crumbIs(page, "demo/main...feature");
     expect(await page.getByRole("main").getByText("uncommitted-edit").count()).toBe(0);
-    const cookieOf = async (origin: string) =>
-      (await context.cookies(origin)).filter((c) => c.name === "gyst_auth");
     const [first] = await cookieOf(one.origin);
     const [second] = await cookieOf(two.origin);
     expect(second?.domain).toBe(two.hostname);
@@ -2226,12 +2271,6 @@ describe("installed gyst in a sandboxed browser", () => {
     const op = JSON.stringify({ command: "list" });
     const subscription = JSON.stringify({ session: one.id });
     const good = { host, origin, cookie: `gyst_auth=${cookie!.value}` };
-    const post = (path: string, headers: Record<string, string>, body?: string) => ({
-      method: "POST",
-      path,
-      headers,
-      ...(body === undefined ? {} : { body }),
-    });
     const bearer = `Bearer ${randomBytes(32).toString("base64url")}`;
     const cases = {
       "authorized list": [post("/api/operation", good, op), 200],
@@ -2337,7 +2376,7 @@ describe("installed gyst in a sandboxed browser", () => {
       row.getByRole("button", { name: "Delete session" }).click(),
     ]);
     const payload = operationOf(response.request());
-    expect(Object.keys(payload).sort()).toEqual(["command", "requestId", "session"]);
+    expect(Object.keys(payload).toSorted()).toEqual(["command", "requestId", "session"]);
     expect(payload.session).toBe(two.id);
     expect(payload.requestId).toMatch(/^[0-9a-f]{32}$/);
     const deleted = { ok: true, value: { deleted: true, sessionId: two.id } };
@@ -2858,11 +2897,11 @@ describe("installed gyst in a sandboxed browser", () => {
           return { x: box.x, y: box.y, bottom: box.bottom };
         }),
       );
-    const [old21, new21] = (await copies("export const a21 = 21;")).sort((a, b) => a.x - b.x);
+    const [old21, new21] = (await copies("export const a21 = 21;")).toSorted((a, b) => a.x - b.x);
     expect(old21!.x).toBeLessThan(new21!.x);
     expect(old21!.y).toBeGreaterThanOrEqual(row.y + row.height - 1);
     expect(new21!.y).toBeGreaterThanOrEqual(row.y + row.height - 1);
-    const [old20] = (await copies("export const a20 = 20;")).sort((a, b) => a.x - b.x);
+    const [old20] = (await copies("export const a20 = 20;")).toSorted((a, b) => a.x - b.x);
     expect(old20!.bottom).toBeLessThanOrEqual(row.y + 1);
     // Preview on the left, its location on the right.
     const [shown, listed] = await Promise.all([preview.boundingBox(), location.boundingBox()]);
@@ -3085,7 +3124,7 @@ describe("installed gyst in a sandboxed browser", () => {
     await page.goto(`${one.origin}/session/${walk.id}`);
     const pane = page.getByRole("main");
     const overview = pane.getByRole("region", { name: "Walkthrough overview" });
-    const constants = overview.getByRole("button", { name: "the constants" });
+    const constantsLink = overview.getByRole("button", { name: "the constants" });
     const peek = overview.locator("[data-peek]");
     const closedTo = async (close: () => Promise<void>) => {
       await waitFor(async () => (await focusedText(page)) === "Expand", "Expand focused");
@@ -3099,12 +3138,12 @@ describe("installed gyst in a sandboxed browser", () => {
     const escape = () => page.keyboard.press("Escape");
     const closeButton = () => peek.getByRole("button", { name: "Close reference" }).click();
     // Closing the peek, by Esc or Close, gives focus back to the reference it was followed from.
-    await constants.click();
+    await constantsLink.click();
     await closedTo(escape);
-    await constants.click();
+    await constantsLink.click();
     await closedTo(closeButton);
 
-    await constants.click();
+    await constantsLink.click();
     await peek.waitFor();
     await peek.locator("[data-peek-preview] [data-target]").first().waitFor();
     expect(await spacerOf(page).count()).toBe(0);
@@ -3120,7 +3159,7 @@ describe("installed gyst in a sandboxed browser", () => {
     expect(await panelTop(page)).toBe(before);
     // Back rebuilt the overview: closing still finds the reference, by Esc or Close.
     await closedTo(escape);
-    await constants.click();
+    await constantsLink.click();
     await peek.getByRole("button", { name: "Expand" }).click();
     await headingsAre(page, ["src/long.ts"]);
     await keys(page, "Backspace");
@@ -3443,8 +3482,7 @@ describe("installed gyst in a sandboxed browser", () => {
     await page.setViewportSize({ width: 1280, height: 1200 });
     // Mermaid's chunks stay held until the reader has left the diagram's group and come back.
     const mermaidChunk = /\/assets\/mermaid[^/]*\.js$/;
-    let release = () => {};
-    const held = new Promise<void>((resolve) => (release = resolve));
+    const { promise: held, resolve: release } = Promise.withResolvers<void>();
     const chunks: string[] = [];
     await page.route(mermaidChunk, async (route) => {
       chunks.push(route.request().url());
@@ -3527,7 +3565,9 @@ describe("installed gyst in a sandboxed browser", () => {
     });
     await new Promise<void>((resolve) => host.listen(0, "127.0.0.1", resolve));
     onTestFinished(() => new Promise<void>((resolve) => host.close(() => resolve())));
-    const probe = `http://127.0.0.1:${(host.address() as AddressInfo).port}`;
+    const address = host.address();
+    if (!address || typeof address === "string") throw new Error("not listening on TCP");
+    const probe = `http://127.0.0.1:${address.port}`;
     const fetching: Array<[string, string]> = [
       [
         `sequenceDiagram\n  participant A\n  properties A: {"icon":"${probe}/icon.svg"}`,
@@ -3538,7 +3578,6 @@ describe("installed gyst in a sandboxed browser", () => {
         "Mermaid diagrams may not carry $$ math, which can load images",
       ],
     ];
-    const fence = (diagram: string) => `\`\`\`mermaid\n${diagram}\n\`\`\``;
     const walk = await openWalk();
     for (const [index, [diagram, problem]] of fetching.entries())
       expect(
@@ -3817,14 +3856,6 @@ describe("installed gyst in a sandboxed browser", () => {
     expect(await stop(four.proc, "SIGINT")).toBe(130);
   }, 30_000);
 
-  // Live review: each test opens a fresh main...live session on launches of its own.
-  const idsIn = async (id: string, file: string) =>
-    (await gyst("session", "diff", "--session", id)).hunks
-      .filter((hunk: { file: string }) => hunk.file === file)
-      .map((hunk: { id: string }) => hunk.id);
-  // A set: the daemon's order of Viewed hunk ids is not part of these tests.
-  const viewedIn = async (id: string) =>
-    new Set((await gyst("session", "status", "--session", id)).viewedHunkIds);
   /** From the first file: to src/long.ts's change, down past the first screen, three lines selected. */
   const readingKeys = [
     "]",
@@ -3838,27 +3869,6 @@ describe("installed gyst in a sandboxed browser", () => {
     "j",
     "j",
   ];
-  const pause = (page: Page, ms: number) =>
-    page.evaluate((wait) => new Promise((resolve) => setTimeout(resolve, wait)), ms);
-  /**
-   * The page is connected again but still shows `progress` from before: it says so, and a click
-   * on `file`'s Viewed box sends and queues nothing.
-   */
-  const synchronizingWithout = async (
-    page: Page,
-    writes: unknown[],
-    file: string,
-    progress: string,
-  ) => {
-    await says(page, "Synchronizing…");
-    await says(page, "Reading what changed meanwhile. Viewed changes are paused.");
-    await says(page, progress);
-    const sent = writes.length;
-    await viewedBox(page, file).click();
-    await pause(page, 300);
-    expect(writes).toHaveLength(sent);
-    expect(await viewedBox(page, file).isChecked()).toBe(false);
-  };
 
   it("shares committed Viewed progress live between two viewers and the CLI, leaving the other viewer's cursor, selection and scroll", async () => {
     const id = await freshSession();
@@ -3992,7 +4002,6 @@ describe("installed gyst in a sandboxed browser", () => {
     const launched = await launchFor(x);
     const [page, other] = [await newPage(), await newPage()];
     for (const each of [page, other]) await each.setViewportSize({ width: 1280, height: 800 });
-    const pathOf = (id: string) => `/session/${encodeURIComponent(id)}`;
     const at = (id: string) =>
       waitFor(() => new URL(page.url()).pathname === pathOf(id), `the page at ${id}`);
     let readsOfY = 0;
@@ -4656,7 +4665,7 @@ describe("installed gyst in a sandboxed browser", () => {
       sessions
         .filter(({ scope }: any) => scope.kind === "pr")
         .map(({ id, scope }: any) => [id, scope.number])
-        .sort(([, x]: number[], [, y]: number[]) => x! - y!),
+        .toSorted(([, x]: number[], [, y]: number[]) => x! - y!),
     ).toEqual([
       [b.id, 2],
       [c, 3],
@@ -4772,7 +4781,7 @@ describe("installed gyst in a sandboxed browser", () => {
     await says(page, "Live");
     await settled(page);
     const { trigger, dialog } = switcher(page);
-    const failed =
+    const verifyFailed =
       "Couldn't verify the stack (the GitHub request failed, just now); showing it as of just now";
 
     try {
@@ -4788,7 +4797,7 @@ describe("installed gyst in a sandboxed browser", () => {
       });
       await gyst("session", "check", "--session", b.id, "--stack");
       await trigger.click();
-      await dialog.getByRole("status").getByText(failed, { exact: true }).waitFor();
+      await dialog.getByRole("status").getByText(verifyFailed, { exact: true }).waitFor();
       await page.keyboard.press("Escape");
       await viewedBox(page, "b.txt").click();
       await waitFor(
@@ -4803,7 +4812,7 @@ describe("installed gyst in a sandboxed browser", () => {
     await settled(page);
     await trigger.click();
     await dialog.waitFor();
-    expect(await dialog.getByRole("status").textContent()).toBe(failed);
+    expect(await dialog.getByRole("status").textContent()).toBe(verifyFailed);
     expect(await stop(b.proc, "SIGINT")).toBe(130);
   }, 30_000);
 

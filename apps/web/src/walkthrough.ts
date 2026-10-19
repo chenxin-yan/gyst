@@ -152,7 +152,7 @@ export function noteSequence(shown: ViewFiles, status: StatusPayload): NotePlace
       }),
   );
   return places
-    .sort(
+    .toSorted(
       (a, b) =>
         a.place.fileIndex - b.place.fileIndex ||
         a.hunk - b.hunk ||

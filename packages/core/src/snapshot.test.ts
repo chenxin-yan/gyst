@@ -68,15 +68,16 @@ new mode 100755
   });
 });
 
-describe("parseFilePatch", () => {
-  const diffOf = (old: string, current: string) => `diff --git a${old} b${current}
+const diffOf = (old: string, current: string) => `diff --git a${old} b${current}
 --- a${old}
 +++ b${current}
 @@ -1 +1 @@
 -one
 +two
 `;
+const reject = (patch: string) => Result.getOrThrow(Result.flip(parseFilePatch(patch, "x")));
 
+describe("parseFilePatch", () => {
   it("attributes hunks and their ids to the logical path, not the header names", () => {
     const [bound] = Result.getOrThrow(
       parseFilePatch(diffOf("/tmp/x/object", "/tmp/y/object"), 'a "b".txt'),
@@ -89,7 +90,6 @@ describe("parseFilePatch", () => {
   it("allows a diff without hunks and rejects several files or non-diffs", () => {
     const emptyAdd = "diff --git a/dev/null b/x\nnew file mode 100644\nindex 0000000..e69de29\n";
     expect(Result.getOrThrow(parseFilePatch(emptyAdd, "x"))).toEqual([]);
-    const reject = (patch: string) => Result.getOrThrow(Result.flip(parseFilePatch(patch, "x")));
     expect(reject(diffOf("/a", "/a") + diffOf("/b", "/b")).detail).toBe(
       "expected a unified diff of exactly one file",
     );
@@ -97,7 +97,6 @@ describe("parseFilePatch", () => {
   });
 
   it("rejects malformed and truncated hunks as bad_args instead of throwing", () => {
-    const reject = (patch: string) => Result.getOrThrow(Result.flip(parseFilePatch(patch, "x")));
     const truncated = reject("--- a/x\n+++ b/x\n@@ -1,2 +1,2 @@\n-old\n");
     expect(truncated).toMatchObject({ _tag: "bad_args", message: "invalid unified diff" });
     expect(truncated.detail).toBe("parsePatchContent: hunk line count mismatch");

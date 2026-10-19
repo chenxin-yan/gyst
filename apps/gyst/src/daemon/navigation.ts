@@ -720,6 +720,9 @@ export class Navigation extends Context.Service<
         return { manifest, text, addon };
       });
 
+      const stop = (analysis: Analysis, reason: NavigationUnavailable) =>
+        discard(analysis, reason).pipe(Effect.andThen(Effect.fail(new Unavailable({ reason }))));
+
       /**
        * Runs `use` on the ready engine for the request's key, waiting for an engine slot, its
        * preparation and answer at most `policy.query` altogether. Whatever happens, nothing is
@@ -736,10 +739,6 @@ export class Navigation extends Context.Service<
         ) => Effect.Effect<A, EngineFailure | InternalError>,
       ) =>
         Effect.gen(function* () {
-          const stop = (analysis: Analysis, reason: NavigationUnavailable) =>
-            discard(analysis, reason).pipe(
-              Effect.andThen(Effect.fail(new Unavailable({ reason }))),
-            );
           const deadline = (yield* Clock.currentTimeMillis) + Duration.toMillis(policy.query);
           const result = yield* Effect.acquireUseRelease(
             acquire(request, manifest, addon, deadline),

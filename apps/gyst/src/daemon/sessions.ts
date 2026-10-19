@@ -123,7 +123,7 @@ const uncaptured = (manifest: SnapshotManifest) => {
     side.kind === "unavailable" ? [{ path, reason: side.reason }] : [],
   );
   if (sides.length === 0) return undefined;
-  const reasons = [...new Set(sides.map(({ reason }) => reason))].sort().join(", ");
+  const reasons = [...new Set(sides.map(({ reason }) => reason))].toSorted().join(", ");
   return {
     state: "unavailable" as const,
     message: `the working tree has ${reasons} inputs that gyst does not capture, so it cannot tell whether they changed (first: ${sides[0]!.path})`,
@@ -400,7 +400,7 @@ export class Sessions extends Context.Service<
       const list = Effect.sync(() => ({
         sessions: [...sessions.values()]
           .map(summaryOf)
-          .sort((a, b) => a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id)),
+          .toSorted((a, b) => a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id)),
       })).pipe(Semaphore.withPermit(lock), Effect.withSpan("Sessions.list"));
 
       const status = Effect.fn("Sessions.status")(function* (request: Input<"status">) {

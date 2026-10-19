@@ -216,6 +216,8 @@ const addonUnavailable = (addon: object) => ({
   reason: { kind: "addon", addon },
 });
 
+const ready = (state: any) =>
+  [state.sides.old, state.sides.new].filter((side: any) => side.kind === "ready").length;
 describe("TS/JS navigation through the installed add-on", () => {
   it("reviews without the add-on, names the exact install command and starts nothing", async () => {
     const box = await sandbox();
@@ -622,8 +624,6 @@ describe("TS/JS navigation through the installed add-on", () => {
     clearInterval(monitor);
     expect(most).toBe(2);
     expect(engines(navigation.prefix)).toHaveLength(2);
-    const ready = (state: any) =>
-      [state.sides.old, state.sides.new].filter((side: any) => side.kind === "ready").length;
     expect(ready(await a.status()) + ready(await b.status())).toBe(2);
 
     const kept = ready(await b.status());
@@ -658,6 +658,24 @@ describe("TS/JS navigation through the installed add-on", () => {
   }, 120_000);
 });
 
+// Only the core file changes, and only after its last line, so these positions hold on both sides.
+const lineOf = (text: string, pattern: RegExp) => {
+  const index = text.split("\n").findIndex((line) => pattern.test(line));
+  if (index === -1) throw new Error(`this repository no longer has a line matching ${pattern}`);
+  return index + 1;
+};
+const timed = async <T>(query: () => Promise<T>) => {
+  const started = performance.now();
+  const result = await query();
+  return { result, ms: Math.round(performance.now() - started) };
+};
+const cost = (side: any) => ({
+  files: side.files,
+  bytes: side.bytes,
+  gaps: side.gaps.map((gap: any) => `${gap.kind}${gap.file ? ` ${gap.file}` : ""}`),
+});
+const outside = (name: string, outcome: any) =>
+  `${name}: ${outcome.locations.length} locations, ${outcome.outside} outside, gaps ${JSON.stringify(outcome.gaps.map((gap: any) => gap.kind))}`;
 describe("TS/JS navigation over this repository", () => {
   it("queries real symbols on both sides of a range of a clone, and records the cost", async () => {
     const box = await sandbox();
@@ -677,12 +695,6 @@ describe("TS/JS navigation over this repository", () => {
     const serverText = await readFile(join(clone, server), "utf8");
     const addonFile = "apps/gyst/src/web/navigation-addon.ts";
     const addonText = await readFile(join(clone, addonFile), "utf8");
-    // Only the core file changes, and only after its last line, so these positions hold on both sides.
-    const lineOf = (text: string, pattern: RegExp) => {
-      const index = text.split("\n").findIndex((line) => pattern.test(line));
-      if (index === -1) throw new Error(`this repository no longer has a line matching ${pattern}`);
-      return index + 1;
-    };
 
     const viewer = await launchViewer(["HEAD~1..HEAD"], {
       cwd: clone,
@@ -697,11 +709,6 @@ describe("TS/JS navigation over this repository", () => {
       for (const file of page.files) capturedFiles.add(file.path);
       after = page.next;
     }
-    const timed = async <T>(query: () => Promise<T>) => {
-      const started = performance.now();
-      const result = await query();
-      return { result, ms: Math.round(performance.now() - started) };
-    };
     const declaration = lineOf(oldCore, /^export const navigationInstallCommand\b/);
     const declared = at(oldCore, declaration, "navigationInstallCommand");
     const sessionsImport = lineOf(serverText, /^import \{ Sessions \} from "\.\/sessions\.ts";$/);
@@ -762,15 +769,8 @@ describe("TS/JS navigation over this repository", () => {
     const textual = git(box, clone, "grep", "-c", "navigationInstallCommand").trim().split("\n");
 
     const state = await status();
-    const cost = (side: any) => ({
-      files: side.files,
-      bytes: side.bytes,
-      gaps: side.gaps.map((gap: any) => `${gap.kind}${gap.file ? ` ${gap.file}` : ""}`),
-    });
     expect(state.sides.old.kind).toBe("ready");
     expect(state.sides.new.kind).toBe("ready");
-    const outside = (name: string, outcome: any) =>
-      `${name}: ${outcome.locations.length} locations, ${outcome.outside} outside, gaps ${JSON.stringify(outcome.gaps.map((gap: any) => gap.kind))}`;
     console.log(
       [
         "[navigation-measure] this repository, HEAD~1..HEAD of a local clone",

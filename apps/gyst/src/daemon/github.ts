@@ -294,7 +294,7 @@ export class GitHub extends Context.Service<
               ? [{ position: node.position, pullRequest: pullRequestOf(node.pullRequest) }]
               : [],
           )
-          .sort((a, b) => a.position - b.position);
+          .toSorted((a, b) => a.position - b.position);
         const membership = { membership: "stacked", number, baseRefName, layers } as const;
         if (
           entries.totalCount !== size ||

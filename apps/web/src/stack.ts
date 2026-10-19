@@ -61,10 +61,11 @@ const reasons = {
   github_failed: "the GitHub request failed",
 } satisfies Record<GitHubUnavailableReason, string>;
 
+const count = (value: number, unit: string) => `${value} ${unit}${value === 1 ? "" : "s"} ago`;
+
 /** How long ago an ISO time was, in words; a time ahead of `now` (clock skew) reads as just now. */
 export const timeAgo = (at: string, now: Date) => {
   const minutes = Math.floor((now.getTime() - Date.parse(at)) / 60_000);
-  const count = (value: number, unit: string) => `${value} ${unit}${value === 1 ? "" : "s"} ago`;
   if (!(minutes >= 1)) return "just now";
   if (minutes < 60) return count(minutes, "minute");
   if (minutes < 24 * 60) return count(Math.floor(minutes / 60), "hour");

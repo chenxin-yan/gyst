@@ -159,7 +159,7 @@ export type ByteRange = typeof ByteRangeSchema.Type;
 
 const sortKeys = (_key: string, value: unknown) =>
   value !== null && typeof value === "object" && !Array.isArray(value)
-    ? Object.fromEntries(Object.entries(value).sort(([a], [b]) => (a < b ? -1 : 1)))
+    ? Object.fromEntries(Object.entries(value).toSorted(([a], [b]) => (a < b ? -1 : 1)))
     : value;
 
 /** The exact stored bytes of a manifest: sorted-key JSON of its encoded form. */

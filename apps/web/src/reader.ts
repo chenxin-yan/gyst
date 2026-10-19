@@ -40,7 +40,7 @@ export function changedFiles(
   for (const file of manifest)
     if (!files.has(file.path) && changedWithoutHunks(file))
       files.set(file.path, { path: file.path, hunks: [], manifest: file });
-  return [...files.values()].sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
+  return [...files.values()].toSorted((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
 }
 
 /**
@@ -227,8 +227,9 @@ export function treeOf(paths: Iterable<string>): TreeNode[] {
   const compact = (node: TreeNode): TreeNode => {
     if (node.kind === "file") return node;
     let folder = node;
-    while (folder.children.length === 1 && folder.children[0]!.kind === "folder") {
-      const [only] = folder.children as [Extract<TreeNode, { kind: "folder" }>];
+    while (folder.children.length === 1) {
+      const [only] = folder.children;
+      if (only?.kind !== "folder") break;
       folder = { ...only, name: `${folder.name}/${only.name}` };
     }
     return { ...folder, children: folder.children.map(compact) };

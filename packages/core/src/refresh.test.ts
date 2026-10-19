@@ -143,11 +143,11 @@ describe("refreshSession", () => {
     const original: Session = {
       ...session(),
       hunks: fresh,
-      groups: fresh.map((hunk, index) => ({
+      groups: fresh.map((freshHunk, index) => ({
         id: `duplicate-${index}`,
         title: `note ${index}`,
         overview: overview(`group ${index}`),
-        hunkIds: [hunk.id],
+        hunkIds: [freshHunk.id],
         files: ["same.ts"],
         notes: [note(`note-${index}`, "same.ts", index === 0 ? 1 : 20)],
       })),

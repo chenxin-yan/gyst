@@ -12,7 +12,6 @@ import {
 } from "@gyst/core";
 import { Clock, Duration, Effect, Exit, Schedule, Scope, Stream } from "effect";
 import { createServer } from "node:http";
-import type { AddressInfo } from "node:net";
 import { mkdtemp, realpath, rm, symlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -121,7 +120,9 @@ async function serve(launch: Launch = makeLaunch(t0), addon?: NavigationAddon) {
       );
     }).pipe(Scope.provide(scope)),
   );
-  const { port } = server.address() as AddressInfo;
+  const address = server.address();
+  if (!address || typeof address === "string") throw new Error("not listening on TCP");
+  const { port } = address;
   const host = `${launch.hostname}:${port}`;
   const origin = ["origin", `http://${host}`] as const;
   const bootstrap = (token = launch.bootstrap, extra: Array<readonly [string, string]> = []) =>
@@ -179,7 +180,7 @@ describe("loadWebAssets", () => {
   });
 
   it("keeps regular packaged files only, never symlinks", () => {
-    expect([...assets.keys()].sort()).toEqual([
+    expect([...assets.keys()].toSorted()).toEqual([
       "/assets/app.css",
       "/assets/app.js",
       "/favicon.svg",
@@ -577,14 +578,14 @@ describe("browserApp operation size", () => {
   });
 });
 
-describe("browserApp events", () => {
-  /** The frames of a stream that the server ends, decoded. */
-  const collect = async (stream: Awaited<ReturnType<typeof openStream>>) => {
-    const frames: unknown[] = [];
-    for await (const frame of stream.frames()) frames.push(JSON.parse(frame));
-    return frames;
-  };
+/** The frames of a stream that the server ends, decoded. */
+const collect = async (stream: Awaited<ReturnType<typeof openStream>>) => {
+  const frames: unknown[] = [];
+  for await (const frame of stream.frames()) frames.push(JSON.parse(frame));
+  return frames;
+};
 
+describe("browserApp events", () => {
   it("applies the operation route's Host, Origin and cookie rules before the daemon", async () => {
     subscribed = [];
     const { launch, port, host, origin, authed } = await serve();
@@ -627,13 +628,13 @@ describe("browserApp events", () => {
 
     // Behind an SSH forward the browser-visible port differs from the listener's.
     const sshHost = `${launch.hostname}:48809`;
-    const forwarded = await openStream(port, {
+    const behindForward = await openStream(port, {
       target: "/api/events",
       headers: [["host", sshHost], ["origin", `http://${sshHost}`], cookie],
       body: '{"session":"s1"}',
     });
-    expect(forwarded.status).toBe(200);
-    expect(await collect(forwarded)).toEqual(liveEvents);
+    expect(behindForward.status).toBe(200);
+    expect(await collect(behindForward)).toEqual(liveEvents);
     expect(subscribed).toEqual([{ session: "s1" }]);
   });
 
@@ -742,17 +743,18 @@ describe("cross-launch isolation", () => {
   });
 });
 
+const tempDir = async () => {
+  const dir = await mkdtemp(join(tmpdir(), "gyst-bridge-addon-"));
+  onTestFinished(() => rm(dir, { recursive: true, force: true }));
+  return dir;
+};
+
 describe("browserApp navigation", () => {
   const addonCli = fileURLToPath(
     new URL("../../../../packages/navigation-typescript/src/cli.ts", import.meta.url),
   );
   const target = { session: "s1", snapshotId, side: "new", file: "src/a.ts" } as const;
   const position = { line: 2, character: 4 };
-  const tempDir = async () => {
-    const dir = await mkdtemp(join(tmpdir(), "gyst-bridge-addon-"));
-    onTestFinished(() => rm(dir, { recursive: true, force: true }));
-    return dir;
-  };
   /** Installs the workspace add-on into `bin` as npm's global bin link would. */
   const install = (bin: string) => symlink(addonCli, join(bin, navigationAddon.bin));
 
@@ -808,7 +810,10 @@ describe("browserApp navigation", () => {
     forwarded = [];
     const bin = await tempDir();
     const { operation } = await serve(makeLaunch(t0), await holder(`/nonexistent:${bin}`));
-    const addonOf = () => (forwarded.at(-1) as { addon?: unknown } | undefined)?.addon;
+    const addonOf = () => {
+      const last = forwarded.at(-1);
+      return last && "addon" in last ? last.addon : undefined;
+    };
     await operation({ command: "navigation", session: "s1", snapshotId });
     expect(addonOf()).toEqual({ kind: "missing" });
     await install(bin);

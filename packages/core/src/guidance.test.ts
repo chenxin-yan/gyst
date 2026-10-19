@@ -40,6 +40,13 @@ describe("changedLinesOf", () => {
   });
 });
 
+const range = (side: "old" | "new", startLine: number, endLine: number) => ({
+  path: "a.ts",
+  side,
+  startLine,
+  endLine,
+});
+
 describe("anchoredHunkIds", () => {
   const hunks = [
     hunk("first", "@@ -1,3 +1,3 @@\n a\n-b\n+B\n c"),
@@ -47,12 +54,6 @@ describe("anchoredHunkIds", () => {
     hunk("second", "@@ -20,2 +18,3 @@\n p\n+q\n r"),
     hunk("elsewhere", "@@ -1 +1 @@\n-a\n+b", "b.ts"),
   ];
-  const range = (side: "old" | "new", startLine: number, endLine: number) => ({
-    path: "a.ts",
-    side,
-    startLine,
-    endLine,
-  });
 
   it("matches changed lines on the range's side and file only", () => {
     expect(anchoredHunkIds(hunks, range("new", 1, 30))).toEqual(["first", "second"]);
@@ -82,19 +83,19 @@ describe("guidance schemas", () => {
 
   it("require an ordered range of positive lines on a logical path", () => {
     const valid = Schema.is(CodeRangeSchema);
-    const range = { path: "src/a.ts", side: "new", startLine: 3, endLine: 3 };
-    expect(valid(range)).toBe(true);
+    const ordered = { path: "src/a.ts", side: "new", startLine: 3, endLine: 3 };
+    expect(valid(ordered)).toBe(true);
     for (const invalid of [
-      { ...range, startLine: 0 },
-      { ...range, endLine: 2 },
-      { ...range, startLine: 1.5 },
-      { ...range, side: "both" },
-      { ...range, path: "../a.ts" },
-      { ...range, path: "/a.ts" },
+      { ...ordered, startLine: 0 },
+      { ...ordered, endLine: 2 },
+      { ...ordered, startLine: 1.5 },
+      { ...ordered, side: "both" },
+      { ...ordered, path: "../a.ts" },
+      { ...ordered, path: "/a.ts" },
     ])
       expect(valid(invalid), JSON.stringify(invalid)).toBe(false);
-    expect(Schema.is(CapturedRangeSchema)({ ...range, snapshotId: "s" })).toBe(true);
-    expect(Schema.is(CapturedRangeSchema)({ ...range, snapshotId: "s", endLine: 1 })).toBe(false);
+    expect(Schema.is(CapturedRangeSchema)({ ...ordered, snapshotId: "s" })).toBe(true);
+    expect(Schema.is(CapturedRangeSchema)({ ...ordered, snapshotId: "s", endLine: 1 })).toBe(false);
   });
 });
 

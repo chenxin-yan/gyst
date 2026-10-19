@@ -72,8 +72,8 @@ export type DaemonError = typeof DaemonError.Type;
 /** Agents parse `code` on the wire; in-process the same error is a tagged class instance. */
 export const ErrorPayloadSchema = Schema.Struct({ code: ErrorCodeSchema, ...errorFields }).pipe(
   Schema.decodeTo(DaemonError, {
-    // `DaemonError` then validates the error's own fields, such as `source_unavailable`'s detail.
     decode: SchemaGetter.transform(
+      // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- `DaemonError` then validates the error's own fields, such as `source_unavailable`'s detail.
       ({ code, ...rest }) => ({ _tag: code, ...rest }) as typeof DaemonError.Encoded,
     ),
     encode: SchemaGetter.transform(({ _tag, ...rest }) => ({ code: _tag, ...rest })),

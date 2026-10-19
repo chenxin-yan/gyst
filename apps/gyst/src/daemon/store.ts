@@ -22,7 +22,7 @@ export const inspectSavedSessions = Effect.gen(function* () {
   const names = (yield* fs.readDirectory(paths.dataDir)).filter((name) => name.endsWith(".json"));
   const hash = createHash("sha256");
   const incompatible: string[] = [];
-  for (const name of names.sort()) {
+  for (const name of names.toSorted()) {
     const content = yield* fs.readFile(paths.sessionFile(name.slice(0, -5)));
     hash.update(JSON.stringify([name, content.byteLength]));
     hash.update(content);

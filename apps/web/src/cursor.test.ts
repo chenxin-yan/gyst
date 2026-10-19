@@ -139,13 +139,13 @@ const line = (file: string, side: Side, n: number): Cursor => ({
 });
 const header = (file: string, side: Side = "additions"): Cursor => ({ file, kind: "header", side });
 
+const describeStops = (layout: "split" | "stacked", side: Side) =>
+  model(layout)
+    .stops("a.ts", side)
+    .slice(0, 7)
+    .map((stop) => (stop.kind === "line" ? `${stop.side}:${stop.line}` : stop.kind));
 describe("stops and movement", () => {
   it("walks one split column, and every stacked line", () => {
-    const describeStops = (layout: "split" | "stacked", side: Side) =>
-      model(layout)
-        .stops("a.ts", side)
-        .slice(0, 7)
-        .map((stop) => (stop.kind === "line" ? `${stop.side}:${stop.line}` : stop.kind));
     expect(describeStops("split", "deletions")).toEqual([
       "header",
       "range",
@@ -247,13 +247,13 @@ describe("change and file jumps", () => {
   });
 });
 
-describe("a captured file shown whole", () => {
-  const whole = (layout: "split" | "stacked", side: "deletions" | "additions"): Model => ({
-    files: ["src/long.ts"],
-    rows: () => capturedRows(5, side),
-    stops: (file, at) => stopsOf(file, capturedRows(5, side), layout, at),
-  });
+const whole = (layout: "split" | "stacked", side: "deletions" | "additions"): Model => ({
+  files: ["src/long.ts"],
+  rows: () => capturedRows(5, side),
+  stops: (file, at) => stopsOf(file, capturedRows(5, side), layout, at),
+});
 
+describe("a captured file shown whole", () => {
   it("walks lines 1 to the end on the side it was opened on, with no changes to jump to", () => {
     const split = whole("split", "deletions");
     const old = line("src/long.ts", "deletions", 2);

@@ -210,9 +210,10 @@ export const startLanguageServer = Effect.fnUntraced(function* (
       if (id !== undefined) send({ id, ...answer(settings, method, params) });
       return;
     }
-    const reply = typeof id === "number" ? pending.get(id) : undefined;
+    if (typeof id !== "number") return;
+    const reply = pending.get(id);
     if (reply === undefined) return;
-    pending.delete(id as number);
+    pending.delete(id);
     Deferred.doneUnsafe(
       reply,
       error === undefined

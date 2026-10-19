@@ -72,37 +72,23 @@ export default defineConfig({
         },
       ],
       "eslint/no-underscore-dangle": ["error", { allow: ["_tag"] }],
-      "unicorn/no-array-sort": "off",
-      "unicorn/consistent-function-scoping": "off",
-      "typescript/no-unsafe-type-assertion": "off",
-      "typescript/no-base-to-string": "off",
+      // Annotated return types already make TypeScript check every path; this JS-era rule only
+      // misfires on exhaustive switches and on effects that return a cleanup on one branch.
       "typescript/consistent-return": "off",
-      "typescript/no-unnecessary-type-assertion": "error",
-      "typescript/restrict-template-expressions": "off",
+      // `.then` callbacks that only set state are fine; the rule demands a return value anyway.
+      "promise/always-return": "off",
 
       "import/no-cycle": "error",
-      "promise/no-multiple-resolved": "error",
       "typescript/no-import-type-side-effects": "error",
       "oxc/bad-bitwise-operator": "error",
       "oxc/no-accumulating-spread": "error",
-
-      "typescript/no-floating-promises": "error",
       "typescript/no-misused-promises": "error",
       "typescript/switch-exhaustiveness-check": [
         "error",
         { considerDefaultExhaustiveForUnions: true },
       ],
-
-      "promise/always-return": "off",
     },
     overrides: [
-      {
-        files: ["**/*.test.ts", "**/tests/**/*.ts"],
-        rules: {
-          "eslint/no-shadow": "off",
-          "typescript/await-thenable": "off",
-        },
-      },
       {
         files: ["apps/web/**"],
         jsPlugins: ["@stylexjs/eslint-plugin"],
