@@ -311,8 +311,44 @@ describe("words", () => {
   });
 });
 
+const key = (stage: SemanticStage) => semanticKey({ kind: "semantic", origin, stage });
+const view = (stage: SemanticStage, at: LineOrigin = origin) =>
+  renderToStaticMarkup(
+    createElement(SemanticPeekView, {
+      peek: { kind: "semantic", origin: at, stage },
+      snapshotId,
+      read: () => new Promise<RangeRead>(() => {}),
+      narrow: false,
+      onSelect: () => {},
+      onChoose: () => {},
+      onExpand: () => {},
+      onClose: () => {},
+      onCheckAgain: () => {},
+      onRetry: () => {},
+      onContinue: () => {},
+    }),
+  );
+const text = (html: string) =>
+  html
+    .replace(/<[^>]+>/g, "")
+    .replaceAll("&#x27;", "'")
+    .replaceAll("&quot;", '"')
+    .replaceAll("&amp;", "&");
+/** A references answer listing `count` known missing inputs. */
+const viewWithGaps = (count: number) =>
+  view({
+    kind: "locations",
+    choice: { query: "references", symbol: plus },
+    locations: [{ file: "src/use.ts", range: plus.range }],
+    outside: 0,
+    gaps: Array.from({ length: count }, (_, n) => ({
+      kind: "dependencies" as const,
+      file: `packages/p${n}/package.json`,
+    })),
+    selected: 0,
+  });
+
 describe("semanticKey", () => {
-  const key = (stage: SemanticStage) => semanticKey({ kind: "semantic", origin, stage });
   const ask = { kind: "identifiers", query: "definition" } as const;
 
   it("keeps a waiting peek as its readiness changes, and an answer's as its selection moves", () => {
@@ -334,29 +370,7 @@ describe("semanticKey", () => {
 });
 
 describe("SemanticPeekView", () => {
-  const view = (stage: SemanticStage, at: LineOrigin = origin) =>
-    renderToStaticMarkup(
-      createElement(SemanticPeekView, {
-        peek: { kind: "semantic", origin: at, stage },
-        snapshotId,
-        read: () => new Promise<RangeRead>(() => {}),
-        narrow: false,
-        onSelect: () => {},
-        onChoose: () => {},
-        onExpand: () => {},
-        onClose: () => {},
-        onCheckAgain: () => {},
-        onRetry: () => {},
-        onContinue: () => {},
-      }),
-    );
   const ask = { kind: "identifiers", query: "definition" } as const;
-  const text = (html: string) =>
-    html
-      .replace(/<[^>]+>/g, "")
-      .replaceAll("&#x27;", "'")
-      .replaceAll("&quot;", '"')
-      .replaceAll("&amp;", "&");
 
   it("says Preparing while it waits, and how far the queried side is", () => {
     expect(text(view({ kind: "waiting", ask, ticket: 1 }))).toContain("Preparing navigation…");
@@ -510,20 +524,8 @@ describe("SemanticPeekView", () => {
   });
 
   it("lists a few known missing inputs at once and more on request", () => {
-    const gaps = (count: number) =>
-      view({
-        kind: "locations",
-        choice: { query: "references", symbol: plus },
-        locations: [{ file: "src/use.ts", range: plus.range }],
-        outside: 0,
-        gaps: Array.from({ length: count }, (_, n) => ({
-          kind: "dependencies" as const,
-          file: `packages/p${n}/package.json`,
-        })),
-        selected: 0,
-      });
-    expect(gaps(3)).toContain('<details open=""><summary>3 known missing inputs</summary>');
-    expect(gaps(4)).toContain("<details><summary>4 known missing inputs</summary>");
-    expect(text(gaps(4))).toContain("packages/p3/package.json declares packages");
+    expect(viewWithGaps(3)).toContain('<details open=""><summary>3 known missing inputs</summary>');
+    expect(viewWithGaps(4)).toContain("<details><summary>4 known missing inputs</summary>");
+    expect(text(viewWithGaps(4))).toContain("packages/p3/package.json declares packages");
   });
 });

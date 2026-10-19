@@ -39,7 +39,14 @@ import {
   viewerLink,
   waitFor,
 } from "./installed-gyst.ts";
-import { at, gitProject, mathFiles, newMath, newUse, oldUse } from "./navigation-project.ts";
+import {
+  at as wordAt,
+  gitProject,
+  mathFiles,
+  newMath,
+  newUse,
+  oldUse,
+} from "./navigation-project.ts";
 
 type Owned = { name: string; child: ChildProcess; out: string; exit?: number | string };
 /** The link a one-shot `gyst` printed, and its parts. */
@@ -748,8 +755,8 @@ async function navigationSession(
   );
   const { link, id } = viewerLink(opened.stdout);
   onTestFinished(() => gyst("session", "delete", "--session", id, "--request-id", randomUUID()));
-  const { snapshotId } = await gyst("session", "diff", "--session", id);
-  return { id, url: link, snapshot: (snapshotId as string).slice(0, 7) };
+  const { snapshotId }: { snapshotId: string } = await gyst("session", "diff", "--session", id);
+  return { id, url: link, snapshot: snapshotId.slice(0, 7) };
 }
 /** The navigation operations the page sends, in order. */
 const navigationOf = (page: Page) => {
@@ -4092,7 +4099,7 @@ describe("installed gyst in a sandboxed browser", () => {
     await symbols.waitFor({ timeout: 60_000 });
     expect(await optionsOf(symbols)).toEqual(
       ["three", "plus", "zero"].map(
-        (word) => `Definition of ${word}${placeOf(2, at(newUse, 2, word).character)}`,
+        (word) => `Definition of ${word}${placeOf(2, wordAt(newUse, 2, word).character)}`,
       ),
     );
     expect(await peek.getAttribute("aria-label")).toBe(
@@ -4134,7 +4141,7 @@ describe("installed gyst in a sandboxed browser", () => {
       `Definition of plus · new side · snapshot ${session.snapshot}`,
     );
     expect(await optionsOf(definitions)).toEqual([
-      `math.tssrc/ · ${placeOf(3, at(newMath, 3, "add").character)}`,
+      `math.tssrc/ · ${placeOf(3, wordAt(newMath, 3, "add").character)}`,
     ]);
     await waitFor(async () => (await markedOf(page)).join("") === "add", "add previewed");
     expect(
@@ -4155,7 +4162,7 @@ describe("installed gyst in a sandboxed browser", () => {
     await symbols.waitFor();
     expect(await optionsOf(symbols)).toEqual(
       ["add", "first", "second"].map(
-        (word) => `Usages of ${word}${placeOf(3, at(newMath, 3, word).character)}`,
+        (word) => `Usages of ${word}${placeOf(3, wordAt(newMath, 3, word).character)}`,
       ),
     );
     await waitFor(() => hasFocus(symbols), "the nested symbols focused");
@@ -4164,8 +4171,8 @@ describe("installed gyst in a sandboxed browser", () => {
     const usages = peek.getByRole("listbox", { name: "Usages" });
     await usages.waitFor();
     expect(await optionsOf(usages)).toEqual([
-      `math.tssrc/ · ${placeOf(3, at(newMath, 3, "first").character)}`,
-      `math.tssrc/ · ${placeOf(4, at(newMath, 4, "first").character)}`,
+      `math.tssrc/ · ${placeOf(3, wordAt(newMath, 3, "first").character)}`,
+      `math.tssrc/ · ${placeOf(4, wordAt(newMath, 4, "first").character)}`,
     ]);
     await waitFor(() => hasFocus(usages), "the usages focused");
     // While the next location's lines are read, the last ones stay, never marked as its own.
@@ -4221,7 +4228,7 @@ describe("installed gyst in a sandboxed browser", () => {
     await symbols.waitFor({ timeout: 60_000 });
     expect(await optionsOf(symbols)).toEqual(
       ["three", "plus"].map(
-        (word) => `Usages of ${word}${placeOf(2, at(oldUse, 2, word).character)}`,
+        (word) => `Usages of ${word}${placeOf(2, wordAt(oldUse, 2, word).character)}`,
       ),
     );
     await waitFor(() => hasFocus(symbols), "the old symbols focused");
@@ -4232,8 +4239,8 @@ describe("installed gyst in a sandboxed browser", () => {
       `Usages of plus · old side · snapshot ${session.snapshot}`,
     );
     expect(await optionsOf(usages)).toEqual([
-      `use.tssrc/ · ${placeOf(1, at(oldUse, 1, "plus").character)}`,
-      `use.tssrc/ · ${placeOf(2, at(oldUse, 2, "plus").character)}`,
+      `use.tssrc/ · ${placeOf(1, wordAt(oldUse, 1, "plus").character)}`,
+      `use.tssrc/ · ${placeOf(2, wordAt(oldUse, 2, "plus").character)}`,
     ]);
 
     // A right-click on a symbol offers both of its queries, without the browser's menu.
@@ -4247,14 +4254,14 @@ describe("installed gyst in a sandboxed browser", () => {
     await symbols.waitFor();
     expect(await optionsOf(symbols)).toEqual(
       ["Definition", "Usages"].map(
-        (query) => `${query} of plus${placeOf(3, at(newUse, 3, "plus").character)}`,
+        (query) => `${query} of plus${placeOf(3, wordAt(newUse, 3, "plus").character)}`,
       ),
     );
     await waitFor(() => hasFocus(symbols), "the right-clicked symbol's queries focused");
     await page.keyboard.press("Enter");
     await definitions.waitFor();
     expect(await optionsOf(definitions)).toEqual([
-      `math.tssrc/ · ${placeOf(3, at(newMath, 3, "add").character)}`,
+      `math.tssrc/ · ${placeOf(3, wordAt(newMath, 3, "add").character)}`,
     ]);
     await page.keyboard.press("Escape");
     await peek.waitFor({ state: "detached" });
@@ -4281,10 +4288,10 @@ describe("installed gyst in a sandboxed browser", () => {
         const walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT);
         let text = walker.nextNode();
         while (text && !text.textContent!.includes(word)) text = walker.nextNode();
-        const start = text!.textContent!.indexOf(word);
+        const offset = text!.textContent!.indexOf(word);
         const range = document.createRange();
-        range.setStart(text!, start);
-        range.setEnd(text!, start + word.length);
+        range.setStart(text!, offset);
+        range.setEnd(text!, offset + word.length);
         const box = range.getBoundingClientRect();
         return {
           x: box.x + box.width / 2,
@@ -4422,7 +4429,7 @@ describe("installed gyst in a sandboxed browser", () => {
     const definitions = peek.getByRole("listbox", { name: "Definitions" });
     await definitions.waitFor({ timeout: 30_000 });
     expect(await optionsOf(definitions)).toEqual([
-      `math.tssrc/ · ${placeOf(3, at(newMath, 3, "add").character)}`,
+      `math.tssrc/ · ${placeOf(3, wordAt(newMath, 3, "add").character)}`,
     ]);
     const rechecks = asked.filter(
       (operation) => operation.command === "navigation" && operation.recheck,

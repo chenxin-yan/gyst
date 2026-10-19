@@ -160,11 +160,11 @@ describe("commands", () => {
 
   // gd and gr ask from the cursor's line; after g, a capital R still refreshes and r ends gr.
   it("binds gd and gr for definitions and usages beside gg", () => {
-    const label = (id: string) =>
-      keysOf(id).map((keys) =>
-        keys.map((key) => formatForDisplay(key, { platform: "linux", keyLabels })).join(" "),
-      );
-    expect(["definition", "references", "top"].map(label)).toEqual([["g d"], ["g r"], ["g g"]]);
+    expect(["definition", "references", "top"].map((id) => label(id, "linux"))).toEqual([
+      ["g d"],
+      ["g r"],
+      ["g g"],
+    ]);
     expect(completesSequence({ key: "r" }, { key: "g", at: 1000 }, 1500)).toBe(true);
     expect(completesSequence({ key: "R" }, { key: "g", at: 1000 }, 1500)).toBe(false);
   });
