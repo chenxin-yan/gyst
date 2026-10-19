@@ -61,6 +61,7 @@ const read = (blob: string, range: { offset: number; length: number }) =>
   run(CapturedContent.use((content) => Stream.mkUint8Array(content.readBlob(blob, range))));
 const staged = () => readdir(join(contentDir(), "staging"));
 const blobs = () => readdir(join(contentDir(), "blobs"));
+const snapshotFiles = () => readdir(join(contentDir(), "snapshots"));
 
 beforeAll(async () => {
   dataDir = await mkdtemp(join(tmpdir(), "gyst-content-"));
@@ -418,7 +419,6 @@ describe("CapturedContent reclaim", () => {
     dataDir = await mkdtemp(join(tmpdir(), "gyst-reclaim-"));
   });
   afterAll(() => rm(dataDir, { recursive: true, force: true }));
-  const snapshots = () => readdir(join(contentDir(), "snapshots"));
 
   it("removes every manifest, blob and staging leftover outside what is retained", async () => {
     const kept = await put(encoder.encode("kept\n"));
@@ -447,7 +447,7 @@ describe("CapturedContent reclaim", () => {
       ),
     );
     expect(reclaimed).toEqual({ snapshots: 1, blobs: 1 });
-    expect(await snapshots()).toEqual([`${keptSnapshot}.json`]);
+    expect(await snapshotFiles()).toEqual([`${keptSnapshot}.json`]);
     expect((await blobs()).toSorted()).toEqual([kept.blob, shared.blob].toSorted());
     expect(await staged()).toEqual([]);
     expect(await read(shared.blob, { offset: 0, length: shared.size })).toEqual(

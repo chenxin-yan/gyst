@@ -46,7 +46,7 @@ import {
   type SnapshotLines,
   type SnapshotManifest,
   snapshotIdOf,
-  type SourceUnavailable,
+  SourceUnavailable,
   StaleRevision,
   type SourceCheckPayload,
   type StackPayload,
@@ -197,6 +197,9 @@ const uncaptured = (manifest: SnapshotManifest) => {
 
 const generatedFilesOf = (manifest: SnapshotManifest) =>
   manifest.files.flatMap(({ path, generated }) => (generated ? [path] : []));
+
+const storageFull = (error: { readonly _tag: string }) =>
+  error instanceof SourceUnavailable && error.detail.reason === "storage_full";
 
 const decodeEnvelope = Schema.decodeUnknownEffect(Schema.fromJsonString(ApplyEnvelopeSchema), {
   onExcessProperty: "error",
@@ -509,9 +512,6 @@ export class Sessions extends Context.Service<
         });
         return released ? requestReclaim : Effect.void;
       };
-      const storageFull = (error: { readonly _tag: string }) =>
-        error._tag === "source_unavailable" &&
-        (error as SourceUnavailable).detail.reason === "storage_full";
       const disposables = new Set<Effect.Effect<void>>();
       const disposable = (drop: Effect.Effect<void>) =>
         Effect.acquireRelease(
