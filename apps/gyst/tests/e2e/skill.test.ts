@@ -28,7 +28,7 @@ const filesOf = async (dir: string) => {
   return entries
     .filter((entry) => entry.isFile())
     .map((entry) => relative(dir, join(entry.parentPath, entry.name)))
-    .sort();
+    .toSorted();
 };
 const shippedMarkdown = async () => {
   const texts = new Map<string, string>();
@@ -60,8 +60,8 @@ async function withClaude() {
 
 describe("installed gyst skills", () => {
   it("ships the two workflows with their shared references, as authored, and the generated reference", async () => {
-    expect((await readdir(skills)).sort()).toEqual(["gyst", "gyst-cli", "gyst-respond"]);
-    expect((await readdir(authoredDir)).sort()).toEqual(workflows);
+    expect((await readdir(skills)).toSorted()).toEqual(["gyst", "gyst-cli", "gyst-respond"]);
+    expect((await readdir(authoredDir)).toSorted()).toEqual(workflows);
     for (const name of workflows) {
       const files = await filesOf(join(authoredDir, name));
       expect(await filesOf(join(skills, name))).toEqual(files);
