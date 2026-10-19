@@ -2289,6 +2289,8 @@ describe("Sessions.subscribe", () => {
 const runGit = (cwd: string, ...args: string[]) =>
   execFileSync("git", args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
 const bigLine = (index: number) => `line ${String(index).padStart(5, "0")} ${"x".repeat(40)}\n`;
+const numberedLines = (prefix: string, count: number) =>
+  Array.from({ length: count }, (_, index) => `${prefix}${index + 1}\n`).join("");
 const anchor = (path: string, side: "old" | "new", startLine: number, endLine: number) => ({
   path,
   side,
@@ -2671,13 +2673,11 @@ describe("Sessions captured reads over real captures", () => {
   });
 
   it("reconciles a real refresh: moved notes stay current, changed references keep their old code", async () => {
-    const numbered = (prefix: string, count: number) =>
-      Array.from({ length: count }, (_, index) => `${prefix}${index + 1}\n`).join("");
     const cwd = await repo("refresh", {
-      "a.ts": numbered("a", 20),
-      "helper.ts": numbered("h", 4),
+      "a.ts": numberedLines("a", 20),
+      "helper.ts": numberedLines("h", 4),
     });
-    await writeFile(join(cwd, "a.ts"), numbered("a", 20).replace("a10\n", "changed\n"));
+    await writeFile(join(cwd, "a.ts"), numberedLines("a", 20).replace("a10\n", "changed\n"));
     await runReal(
       Effect.gen(function* () {
         const sessions = yield* Sessions;
@@ -2715,9 +2715,9 @@ describe("Sessions captured reads over real captures", () => {
         yield* Effect.promise(async () => {
           await writeFile(
             join(cwd, "a.ts"),
-            `top\nsecond\n${numbered("a", 20).replace("a10\n", "changed\n")}`,
+            `top\nsecond\n${numberedLines("a", 20).replace("a10\n", "changed\n")}`,
           );
-          await writeFile(join(cwd, "helper.ts"), numbered("h", 4).replace("h3\n", "H3\n"));
+          await writeFile(join(cwd, "helper.ts"), numberedLines("h", 4).replace("h3\n", "H3\n"));
         });
         const refreshed = yield* refreshNow(session.id);
         const status = yield* sessions.status({ command: "status", session: session.id });

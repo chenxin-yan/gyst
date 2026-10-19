@@ -20,6 +20,21 @@ const range = (side: "old" | "new", startLine: number, endLine = startLine) => (
   startLine,
   endLine,
 });
+/** Lines one side adds (or removes) after line 5 while the other side stays the same bytes. */
+const changedRun = (side: "old" | "new", name: string, lines: string[]) =>
+  snapshot(
+    side === "old" ? name : "0",
+    side === "new" ? name : "0",
+    `@@ -5,${side === "old" ? lines.length + 2 : 2} +5,${side === "new" ? lines.length + 2 : 2} @@\n l5\n${lines.map((line) => `${side === "new" ? "+" : "-"}${line}\n`).join("")} l6\n`,
+  );
+/** As capture records an exact rename: the source deleted, the target added with its bytes. */
+const renamed = (source: string, bytes: string): SnapshotLines => ({
+  files: [
+    { path: source, old: blob(bytes), new: { kind: "absent" } },
+    { path: "a.ts", old: { kind: "absent" }, new: blob(bytes), renamedFrom: source },
+  ],
+  hunks: [],
+});
 
 // The old side is 20 lines; the first snapshot changes line 10, the second also inserts two lines
 // after line 2, so everything from line 3 on moves down by two on the new side.
@@ -104,25 +119,18 @@ describe("mapRange", () => {
   });
 
   it("refuses a repeated changed line whatever other edit hides the competing copy", () => {
-    // Lines one side adds (or removes) after line 5 while the other side stays the same bytes.
-    const run = (side: "old" | "new", name: string, lines: string[]) =>
-      snapshot(
-        side === "old" ? name : "0",
-        side === "new" ? name : "0",
-        `@@ -5,${side === "old" ? lines.length + 2 : 2} +5,${side === "new" ? lines.length + 2 : 2} @@\n l5\n${lines.map((line) => `${side === "new" ? "+" : "-"}${line}\n`).join("")} l6\n`,
-      );
     for (const side of ["old", "new"] as const) {
       // Deleting one ref and editing b leaves only the prefix reading, for the first ref.
-      const doubled = run(side, "11", ["a", "ref", "ref", "b"]);
-      const edited = run(side, "12", ["a", "ref", "B"]);
+      const doubled = changedRun(side, "11", ["a", "ref", "ref", "b"]);
+      const edited = changedRun(side, "12", ["a", "ref", "B"]);
       expect(mapRange(doubled, edited, range(side, 7))).toBeUndefined();
       expect(mapRange(doubled, edited, range(side, 8))).toBeUndefined();
       expect(mapRange(doubled, edited, range(side, 6))).toEqual(range(side, 6));
       expect(mapRange(edited, doubled, range(side, 7))).toBeUndefined();
       expect(mapRange(edited, doubled, range(side, 6))).toEqual(range(side, 6));
       // Two insertions agree on the second ref's readings, yet either later ref could be it.
-      const twice = run(side, "13", ["a", "ref", "ref", "X", "b"]);
-      const thrice = run(side, "14", ["a", "ref", "Y", "ref", "ref", "X", "b"]);
+      const twice = changedRun(side, "13", ["a", "ref", "ref", "X", "b"]);
+      const thrice = changedRun(side, "14", ["a", "ref", "Y", "ref", "ref", "X", "b"]);
       expect(mapRange(twice, thrice, range(side, 7))).toBeUndefined();
       expect(mapRange(twice, thrice, range(side, 8))).toBeUndefined();
       expect(mapRange(twice, thrice, range(side, 9, 10))).toEqual(range(side, 11, 12));
@@ -131,7 +139,7 @@ describe("mapRange", () => {
       expect(mapRange(thrice, twice, range(side, 11, 12))).toEqual(range(side, 9, 10));
       // A segment that stayed the same still maps its repeated lines.
       expect(
-        mapRange(twice, run(side, "15", ["a", "ref", "ref", "X", "b"]), range(side, 7, 8)),
+        mapRange(twice, changedRun(side, "15", ["a", "ref", "ref", "X", "b"]), range(side, 7, 8)),
       ).toEqual(range(side, 7, 8));
     }
   });
@@ -157,14 +165,6 @@ describe("mapRange", () => {
   });
 
   it("maps nothing through a rename, whose differing sides have no hunks to say how", () => {
-    // As capture records an exact rename: the source deleted, the target added with its bytes.
-    const renamed = (source: string, bytes: string): SnapshotLines => ({
-      files: [
-        { path: source, old: blob(bytes), new: { kind: "absent" } },
-        { path: "a.ts", old: { kind: "absent" }, new: blob(bytes), renamedFrom: source },
-      ],
-      hunks: [],
-    });
     const fromA = renamed("source-a.ts", "a");
     expect(mapRange(fromA, renamed("source-b.ts", "b"), range("new", 1, 3))).toBeUndefined();
     const source = { ...range("old", 1, 3), path: "source-a.ts" };

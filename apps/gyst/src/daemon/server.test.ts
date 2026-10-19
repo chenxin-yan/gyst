@@ -5,6 +5,7 @@ import {
   BadArgs,
   type BrowserRequest,
   navigationAddon,
+  RefreshPayloadSchema,
   type Reply,
   ReplySchema,
   type Request,
@@ -583,7 +584,9 @@ describe("DaemonServer", () => {
             });
             capturedPatch = patch;
             if (!refreshed.ok) throw new Error("refresh failed");
-            const current = (refreshed.value as { snapshotId: string }).snapshotId;
+            const current = Schema.decodeUnknownSync(RefreshPayloadSchema)(
+              refreshed.value,
+            ).snapshotId;
             expect(current).not.toBe(snapshotId);
             expect(navigationCalls).toEqual([{ retire: first.session, keep: current }]);
             expect(ok(yield* remove(first.session))).toBe(true);
@@ -638,19 +641,23 @@ describe("DaemonServer", () => {
 
         const client = yield* DaemonClient;
         const heard: unknown[] = [];
-        const opened = (yield* client.request(
-          { command: "open", cwd: "/progress-client", scope: { kind: "uncommitted" } },
-          (event) => Effect.sync(() => void heard.push(event)),
-        )) as { session: { id: string; snapshotId: string } };
+        const opened = sessionOf(
+          yield* client.request(
+            { command: "open", cwd: "/progress-client", scope: { kind: "uncommitted" } },
+            (event) => Effect.sync(() => void heard.push(event)),
+          ),
+        );
         expect(heard).toEqual(progress);
         // Without a handler the interim lines are skipped and the reply still decodes.
-        const refreshed = (yield* client.request({
-          command: "refresh",
-          session: opened.session.id,
-          snapshotId: opened.session.snapshotId,
-          requestId: "progress",
-        })) as { sessionId: string };
-        expect(refreshed.sessionId).toBe(opened.session.id);
+        const refreshed = Schema.decodeUnknownSync(RefreshPayloadSchema)(
+          yield* client.request({
+            command: "refresh",
+            session: opened.id,
+            snapshotId: opened.snapshotId,
+            requestId: "progress",
+          }),
+        );
+        expect(refreshed.sessionId).toBe(opened.id);
         // A reuse captures nothing, so it reports nothing.
         heard.length = 0;
         yield* client.request(

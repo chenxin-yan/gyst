@@ -24,7 +24,7 @@ function lines(
     .join("");
   return {
     files: Object.entries(files)
-      .sort(([a], [b]) => (a < b ? -1 : 1))
+      .toSorted(([a], [b]) => (a < b ? -1 : 1))
       .map(([path, [old, current]]): ManifestFile => ({
         path,
         old: blob(old),
@@ -39,7 +39,7 @@ const changeA = "@@ -9,3 +9,3 @@\n l9\n-l10\n+L10\n l11";
 const changeB = "@@ -4,3 +4,3 @@\n m4\n-m5\n+M5\n m6";
 const files = { "a.ts": ["a0", "a1"], "b.ts": ["b0", "b1"], "helper.ts": ["h0", "h0"] } as const;
 const first = lines(files, { "a.ts": changeA, "b.ts": changeB });
-const [hunkA, hunkB] = first.hunks.map(({ id }) => id) as [string, string];
+const [hunkA = "", hunkB = ""] = first.hunks.map(({ id }) => id);
 
 const pin = (path: string, side: "old" | "new", startLine: number, endLine = startLine) =>
   ({ snapshotId: "s1", path, side, startLine, endLine }) satisfies CapturedRange;
@@ -87,6 +87,28 @@ const to = (snapshot: SnapshotLines, snapshotId = "s2"): FreshSnapshot => ({
   snapshotId,
   snapshot,
 });
+const helperAt = (snapshotId: string, current: string, body?: string) =>
+  [
+    snapshotId,
+    lines(
+      { ...files, "helper.ts": ["h0", current] },
+      { "a.ts": changeA, "b.ts": changeB, ...(body && { "helper.ts": body }) },
+    ),
+  ] as const;
+/** As capture records an exact rename: the source deleted, the target added with its bytes. */
+const renamedFrom = (source: string, bytes: string): SnapshotLines => ({
+  files: [
+    ...first.files,
+    { path: source, old: blob(bytes), new: { kind: "absent" } },
+    { path: "target.ts", old: { kind: "absent" }, new: blob(bytes), renamedFrom: source },
+  ],
+  hunks: first.hunks,
+});
+const helperAdds = (current: string, body: string) =>
+  lines(
+    { ...files, "helper.ts": ["h0", current] },
+    { "a.ts": changeA, "b.ts": changeB, "helper.ts": body },
+  );
 
 describe("refreshSession", () => {
   it("keeps hunk identity, Viewed, membership and notes through header and line shifts", () => {
@@ -173,7 +195,7 @@ describe("refreshSession", () => {
 
   it("does not transfer review state between ambiguous duplicate hunks", () => {
     const twice = lines(files, { "a.ts": "@@ -1 +1 @@\n-x\n+y\n@@ -5 +5 @@\n-x\n+y" });
-    const [one, two] = twice.hunks.map(({ id }) => id) as [string, string];
+    const [one = "", two = ""] = twice.hunks.map(({ id }) => id);
     const original: Session = {
       ...session(),
       hunks: twice.hunks,
@@ -213,7 +235,8 @@ describe("refreshSession", () => {
     expect(refreshed.hunks).toEqual(original.hunks);
     // Note na's anchored hunk A is unviewed; group gb's Outdated overview leaves B as it was.
     expect(refreshed.viewedHunkIds).toEqual([hunkB]);
-    const [ga, gb] = refreshed.groups as Group[] as [Group, Group];
+    const ga = refreshed.groups[0]!;
+    const gb = refreshed.groups[1]!;
     expect(ga.notes[0]).toMatchObject({ outdated: ["references"], references: [helper] });
     expect(ga.notes[0]!.anchor.snapshotId).toBe("s2");
     expect(gb.overview).toEqual({ ...original.groups[1]!.overview, outdated: ["references"] });
@@ -260,14 +283,6 @@ describe("refreshSession", () => {
   });
 
   it("unviews a changed reference's note when what it reads changes again, even back to its pin", () => {
-    const helperAt = (snapshotId: string, current: string, body?: string) =>
-      [
-        snapshotId,
-        lines(
-          { ...files, "helper.ts": ["h0", current] },
-          { "a.ts": changeA, "b.ts": changeB, ...(body && { "helper.ts": body }) },
-        ),
-      ] as const;
     const [, edited] = helperAt("s2", "h1", "@@ -2 +2 @@\n-x2\n+y2");
     let state = refreshSession(session(), to(edited), retained, LATER);
     expect(state.groups[0]!.notes[0]!.outdated).toEqual(["references"]);
@@ -315,15 +330,6 @@ describe("refreshSession", () => {
   });
 
   it("marks guidance whose referenced rename target now holds other bytes, though neither capture diffs it", () => {
-    // As capture records an exact rename: the source deleted, the target added with its bytes.
-    const renamedFrom = (source: string, bytes: string): SnapshotLines => ({
-      files: [
-        ...first.files,
-        { path: source, old: blob(bytes), new: { kind: "absent" } },
-        { path: "target.ts", old: { kind: "absent" }, new: blob(bytes), renamedFrom: source },
-      ],
-      hunks: first.hunks,
-    });
     const target = pin("target.ts", "new", 1);
     const original: Session = {
       ...session(),
@@ -350,11 +356,6 @@ describe("refreshSession", () => {
 
   it("keeps guidance current when its referenced added lines survive edits beside them", () => {
     // The helper's working tree adds three lines after line 1; na references the last two.
-    const helperAdds = (current: string, body: string) =>
-      lines(
-        { ...files, "helper.ts": ["h0", current] },
-        { "a.ts": changeA, "b.ts": changeB, "helper.ts": body },
-      );
     const added = helperAdds("h5", "@@ -1,2 +1,5 @@\n h1\n+x\n+y\n+z\n h2");
     const reference = pin("helper.ts", "new", 3, 4);
     const original: Session = {
@@ -451,7 +452,7 @@ describe("refreshSession", () => {
     // Note na spans A and A2; A2 changes and the helper na references changes with it.
     const changeA2 = "@@ -20 +20 @@\n-l20\n+L20";
     const spanning = lines(files, { "a.ts": `${changeA}\n${changeA2}`, "b.ts": changeB });
-    const [a, a2, b] = spanning.hunks.map(({ id }) => id) as [string, string, string];
+    const [a = "", a2 = "", b = ""] = spanning.hunks.map(({ id }) => id);
     const original: Session = {
       ...session(),
       hunks: spanning.hunks,

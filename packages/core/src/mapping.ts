@@ -55,13 +55,14 @@ export function survivingHunkIds(
 
 const hunkHeader = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/;
 const otherSide = (side: CodeSide): CodeSide => (side === "old" ? "new" : "old");
+const headerStart = (line: string, count: string | undefined) =>
+  Number(line) + (count === "0" ? 1 : 0);
 
 /** A hunk's first line on each side; an empty side starts after the line its header names. */
 function startsOf(hunk: Hunk): Record<CodeSide, number> | undefined {
   const match = hunkHeader.exec(hunk.patch);
   if (!match) return undefined;
-  const start = (line: string, count: string | undefined) => Number(line) + (count === "0" ? 1 : 0);
-  return { old: start(match[1]!, match[2]), new: start(match[3]!, match[4]) };
+  return { old: headerStart(match[1]!, match[2]), new: headerStart(match[3]!, match[4]) };
 }
 
 /**
@@ -167,6 +168,12 @@ const renamed = ({ files }: SnapshotLines, path: string) =>
     file.path === path ? file.renamedFrom !== undefined : file.renamedFrom === path,
   );
 
+const tokenCounts = (tokens: readonly string[]) => {
+  const count = new Map<string, number>();
+  for (const token of tokens) count.set(token, (count.get(token) ?? 0) + 1);
+  return count;
+};
+
 /**
  * Maps single lines of one side of `path` from `from` to `to` (see `mapRange`), or undefined when
  * either snapshot lacks that side as text.
@@ -204,7 +211,7 @@ function lineMapper(
   // Each run of consecutive changed other-side lines, by its lines: the unchanged other-side lines
   // (or the file's start) bounding it.
   const runs = new Map<number, { readonly low: number; readonly high: number }>();
-  const sorted = [...changedOther].sort((a, b) => a - b);
+  const sorted = [...changedOther].toSorted((a, b) => a - b);
   for (let first = 0; first < sorted.length;) {
     let last = first;
     while (sorted[last + 1] === sorted[last]! + 1) last++;
@@ -246,13 +253,8 @@ function lineMapper(
     )
       suffix++;
     const unchanged = prefix === length && length === toSegment.tokens.length;
-    const counts = (tokens: readonly string[]) => {
-      const count = new Map<string, number>();
-      for (const token of tokens) count.set(token, (count.get(token) ?? 0) + 1);
-      return count;
-    };
-    const fromCounts = counts(fromSegment.tokens);
-    const toCounts = counts(toSegment.tokens);
+    const fromCounts = tokenCounts(fromSegment.tokens);
+    const toCounts = tokenCounts(toSegment.tokens);
     return (line: number) => {
       const index = line - fromSegment.first;
       const token = fromSegment.tokens[index]!;
