@@ -14,7 +14,7 @@ import type { CapturedRange } from "./guidance.ts";
 import { setViewed } from "./human-action.ts";
 import { type Session, SessionSchema } from "./session.ts";
 import { statusOf } from "./status.ts";
-import { type Thread, type ThreadCode, ThreadsPayloadSchema, type Wording } from "./thread.ts";
+import { type ThreadCode, ThreadsPayloadSchema, type Wording } from "./thread.ts";
 
 const LATER = "2026-02-02T00:00:00.000Z";
 const SNAPSHOT = "snapshot";
@@ -125,6 +125,27 @@ const threadsRequest = (mode: ThreadsRequest["mode"], requestId: string): Thread
 });
 const pick = (session: Session, mode: ThreadsRequest["mode"], requestId: string) =>
   Result.getOrThrow(pickUp(session, threadsRequest(mode, requestId), code(session), LATER));
+/** The agent rewrites note n1's markdown. */
+const rewrite = (session: Session, markdown: string) =>
+  Result.getOrThrow(
+    applyBatch(
+      session,
+      {
+        revision: session.revision,
+        snapshotId: SNAPSHOT,
+        idempotencyKey: markdown,
+        ops: [{ type: "note.update", id: "n1", markdown }],
+      },
+      captured[0]!,
+      LATER,
+    ),
+  ).session!;
+/** Two comment threads, each with one Pending message: a question, then a change. */
+const two = () => {
+  const a = post(base, { kind: "comment", anchor: range(4) }, "A?");
+  const b = post(a.session, { kind: "comment", anchor: range(5) }, "B?", { kind: "change" });
+  return b.session;
+};
 
 describe("human conversation actions", () => {
   it("comments on any captured range through a pinned draft, Pending until read", () => {
@@ -215,20 +236,6 @@ describe("human conversation actions", () => {
     });
     // The agent rewrites the note twice; each later reply, in the same thread, keeps the wording
     // it was composed against, and a draft begun before a rewrite keeps the older one.
-    const rewrite = (session: Session, markdown: string) =>
-      Result.getOrThrow(
-        applyBatch(
-          session,
-          {
-            revision: session.revision,
-            snapshotId: SNAPSHOT,
-            idempotencyKey: markdown,
-            ops: [{ type: "note.update", id: "n1", markdown }],
-          },
-          captured[0]!,
-          LATER,
-        ),
-      ).session!;
     const rewritten = rewrite(first.session, "B, explained better.");
     const second = post(rewritten, { kind: "note", note: "n1" }, "Thanks, and C?", {
       wording: { ...aboutB, markdown: "B, explained better." },
@@ -529,13 +536,13 @@ describe("human conversation actions", () => {
       resolved: false,
     }).session!;
     const corrected = post(reopened, { kind: "thread", thread }, "Rather, why not?").session;
-    for (const resolved of [true, false])
+    for (const resolving of [true, false])
       expect(
-        refused(corrected, `late-${resolved}`, {
+        refused(corrected, `late-${resolving}`, {
           command: "resolve",
           thread,
           seen: stale,
-          resolved,
+          resolved: resolving,
         }),
       ).toMatchObject({ _tag: "stale_revision" });
     expect(statusOf(corrected).threads).toEqual({ open: 1, resolved: 0, pending: 2 });
@@ -595,12 +602,6 @@ describe("human conversation actions", () => {
 });
 
 describe("pickUp", () => {
-  const two = () => {
-    const a = post(base, { kind: "comment", anchor: range(4) }, "A?");
-    const b = post(a.session, { kind: "comment", anchor: range(5) }, "B?", { kind: "change" });
-    return b.session;
-  };
-
   it("freezes exactly the Pending messages it returns and records the bundle", () => {
     const session = two();
     const picked = pick(session, "pending", "p1");
@@ -663,7 +664,8 @@ describe("pickUp", () => {
 
   it("returns only what was Pending when it was asked for; arrivals meanwhile wait", () => {
     const invoked = two();
-    const [first, second] = invoked.threads as [Thread, Thread];
+    const first = invoked.threads[0]!;
+    const second = invoked.threads[1]!;
     // While its code was read: a reply and a new thread arrived, and the second Pending message was deleted.
     const replied = post(invoked, { kind: "thread", thread: first.id }, "And?");
     const started = post(replied.session, { kind: "comment", anchor: range(6) }, "New?");
@@ -679,7 +681,7 @@ describe("pickUp", () => {
       picked.result.threads.map(({ id, unread, messages }) => ({
         id,
         unread,
-        messages: messages.map(({ id }) => id),
+        messages: messages.map((message) => message.id),
       })),
     ).toEqual([
       { id: first.id, unread: [first.messages[0]!.id], messages: [first.messages[0]!.id] },
@@ -713,7 +715,7 @@ describe("pickUp", () => {
 
   it("skips resolved threads until reopened, and recovers open work after a crash", () => {
     const session = two();
-    const [first, second] = session.threads.map(({ id }) => id) as [string, string];
+    const [first = "", second = ""] = session.threads.map(({ id }) => id);
     const resolved = done(session, "r", {
       command: "resolve",
       thread: second,
@@ -747,7 +749,7 @@ describe("pickUp", () => {
 
   it("serializes against pending edits: a deleted message is never returned, an edited one returns as edited", () => {
     const session = two();
-    const [a, b] = session.threads.map(({ messages }) => messages[0]!.id) as [string, string];
+    const [a = "", b = ""] = session.threads.map(({ messages }) => messages[0]!.id);
     const edited = done(session, "e", {
       command: "edit",
       message: a,

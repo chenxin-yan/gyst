@@ -4962,14 +4962,14 @@ describe("installed gyst in a sandboxed browser", () => {
     // Armed later: the next conversations read fails as if the connection dropped, and while
     // `failMessages` holds, every messages read does.
     let failRead = false;
-    let failed = 0;
+    let readsFailed = 0;
     let failMessages = false;
     await page.route(isOperationUrl, async (route) => {
       const command = route.request().postDataJSON()?.command;
       if (failMessages && command === "messages") return route.abort();
       if (!failRead || command !== "conversations") return route.fallback();
       failRead = false;
-      failed++;
+      readsFailed++;
       await route.abort();
     });
     await page.goto(`${one.origin}/session/${walk.id}`);
@@ -5021,7 +5021,7 @@ describe("installed gyst in a sandboxed browser", () => {
         markdown: "It is like [line 40](gyst:new/src/long.ts#L40-L44).",
       },
     ]);
-    await waitFor(() => failed === 1, "the failed conversations read");
+    await waitFor(() => readsFailed === 1, "the failed conversations read");
     await pane.locator("[data-thread]").getByText("2 messages").waitFor();
     await says(page, "Live");
     expect(messageReads).toEqual([]);

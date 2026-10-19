@@ -1593,12 +1593,11 @@ describe("Sessions.viewed", () => {
   });
 });
 
+const pickup = (session: string, requestId: string, mode: "pending" | "open" = "pending") =>
+  Sessions.use((s) => s.threads({ command: "threads", session, mode, requestId }));
 describe("Sessions conversations", () => {
   type Act = Input<"draft" | "send" | "edit" | "retract" | "resolve" | "discard">;
   const act = (request: Act) => Sessions.use((s) => s.converse(request));
-  const pickup = (session: string, requestId: string, mode: "pending" | "open" = "pending") =>
-    Sessions.use((s) => s.threads({ command: "threads", session, mode, requestId }));
-  const status = (session: string) => Sessions.use((s) => s.status({ command: "status", session }));
   /** Opens a session whose `notes.txt` is unchanged supporting code, and comments on its lines. */
   const commented = (markdown: string, requestId: string) =>
     Effect.gen(function* () {
@@ -1630,7 +1629,7 @@ describe("Sessions conversations", () => {
 
   it("keeps Pending bodies out of status and freezes exactly what one recorded pickup returns", async () => {
     const { session, anchor, sent } = await run(commented("Why keep *n2*?", "c1"));
-    const counted = await run(status(session.id));
+    const counted = await run(statusOf(session.id));
     expect(counted.threads).toEqual({ open: 1, resolved: 0, pending: 1 });
     expect(JSON.stringify(counted)).not.toContain("Why keep");
     // The author's listing names the thread and its counts, without bodies; reading the thread's
@@ -1656,7 +1655,7 @@ describe("Sessions conversations", () => {
       ),
     );
     expect(gone._tag).toBe("validation_failed");
-    expect((await run(status(session.id))).threads.pending).toBe(1);
+    expect((await run(statusOf(session.id))).threads.pending).toBe(1);
 
     const bundle = await run(pickup(session.id, "p1"));
     expect(bundle).toMatchObject({
@@ -1729,8 +1728,11 @@ describe("Sessions conversations", () => {
             s.diff({ command: "diff", session: session.id }),
           )).hunks;
           yield* viewedNow(session.id, [hunk!.id], "v1");
-          const viewed = yield* Queue.take(events);
-          expect(viewed).toMatchObject({ kind: "changed", conversations: version.conversations });
+          const viewedEvent = yield* Queue.take(events);
+          expect(viewedEvent).toMatchObject({
+            kind: "changed",
+            conversations: version.conversations,
+          });
           const read = yield* Sessions.use((s) =>
             s.conversations({ command: "conversations", session: session.id }),
           );

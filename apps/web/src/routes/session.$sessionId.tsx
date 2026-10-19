@@ -753,10 +753,10 @@ function SessionReader(props: {
     const rows = new Map(noteAnnotations);
     const add = (file: string, annotation: DiffLineAnnotation<DiffAnnotation>) =>
       rows.set(file, [...(rows.get(file) ?? []), annotation]);
-    const [threadRows, draftRow] = JSON.parse(conversationRows) as [
+    const [threadRows, draftRow]: [
       [string, string, "deletions" | "additions", number][],
       [string, string, "deletions" | "additions", number] | undefined,
-    ];
+    ] = JSON.parse(conversationRows);
     for (const [threadId, file, side, line] of threadRows)
       add(file, { side, lineNumber: line, metadata: { kind: "thread", threadId } });
     if (draftRow) {
