@@ -134,11 +134,7 @@ describe("commands", () => {
   // `/` searches the current view in either mode; n and N step through its matches, while ]n and
   // [n keep walking notes.
   it("binds search and its matches apart from notes, in both modes", () => {
-    const label = (id: string) =>
-      keysOf(id).map((keys) =>
-        keys.map((key) => formatForDisplay(key, { platform: "linux", keyLabels })).join(" "),
-      );
-    expect(["search", "nextMatch", "previousMatch"].map(label)).toEqual([
+    expect(["search", "nextMatch", "previousMatch"].map((id) => label(id, "linux"))).toEqual([
       ["/"],
       ["n"],
       ["Shift+n"],

@@ -1487,12 +1487,12 @@ describe("installed gyst in a sandboxed browser", () => {
 
     // The main thread's long tasks while typing a query that matches 2,000 lines of 400 files:
     // each shows lines 7-13, so line 10 old and new and lines 11-13.
-    await page.evaluate(() => {
+    const longTasks = await page.evaluateHandle(() => {
       const tasks: number[] = [];
-      Object.assign(window, { longTasks: tasks });
       new PerformanceObserver((list) => {
         for (const entry of list.getEntries()) tasks.push(entry.duration);
       }).observe({ type: "longtask" });
+      return tasks;
     });
     await keys(page, "/");
     const typed = performance.now();
@@ -1502,10 +1502,7 @@ describe("installed gyst in a sandboxed browser", () => {
     // Search reads no file's sides.
     await new Promise((resolve) => setTimeout(resolve, 300));
     expect(reads).toBe(before);
-    const longest = Math.max(
-      0,
-      ...(await page.evaluate(() => (window as unknown as { longTasks: number[] }).longTasks)),
-    );
+    const longest = Math.max(0, ...(await longTasks.jsonValue()));
     console.log(
       `search: typed 6 characters and counted 2000 matches in ${Math.round(counted)} ms; longest main-thread task ${Math.round(longest)} ms`,
     );
@@ -2122,17 +2119,15 @@ describe("installed gyst in a sandboxed browser", () => {
     await says(page, "README.md · file");
     const expanded = (path: string) => foldToggle(page, path).getAttribute("aria-expanded");
     // The browser's own find keeps its key.
-    await page.evaluate(() => {
+    const findKeys = await page.evaluateHandle(() => {
       const seen: boolean[] = [];
-      Object.assign(window, { findKeys: seen });
       addEventListener("keydown", (event) => {
         if (event.ctrlKey && event.key === "f") seen.push(event.defaultPrevented);
       });
+      return seen;
     });
     await keys(page, "Control+f");
-    expect(
-      await page.evaluate(() => (window as unknown as { findKeys: boolean[] }).findKeys),
-    ).toEqual([false]);
+    expect(await findKeys.jsonValue()).toEqual([false]);
 
     // Typing searches as it goes, never running review keys; a capital makes it case-sensitive.
     await keys(page, "/");

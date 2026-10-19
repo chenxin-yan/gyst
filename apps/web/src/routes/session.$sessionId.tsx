@@ -2466,7 +2466,7 @@ function ContinuousDiff(props: {
         }
       }
     }
-    const shown = [...layer.children] as HTMLElement[];
+    const shown = [...layer.children].filter((child) => child instanceof HTMLElement);
     for (const [at, { box, current }] of boxes.entries()) {
       let element = shown[at];
       if (element === undefined) {
