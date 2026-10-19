@@ -674,6 +674,19 @@ const gateOf = (operation: any) =>
       : undefined;
 // pgrep reads POSIX extended regexes, which lack the `\x2d`-style escapes RegExp.escape emits.
 const escapeEre = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+const isRemote = (url: URL) => url.hostname.endsWith("example.com");
+const reviewOf = ({ revision, session, viewedHunkIds, preparation }: any) => ({
+  revision,
+  snapshotId: session.snapshotId,
+  viewedHunkIds,
+  preparation,
+});
+const shortOf = (ref: string) =>
+  execFileSync("git", ["rev-parse", "--short=7", ref], {
+    cwd: repo,
+    env,
+    encoding: "utf8",
+  }).trim();
 describe("installed gyst in a sandboxed browser", () => {
   let one: Launch;
   let two: Launch;
@@ -5154,13 +5167,12 @@ describe("installed gyst in a sandboxed browser", () => {
     });
     // Remote pages and images are answered here: nothing may be fetched without a click.
     const fetched: string[] = [];
-    const remote = (url: URL) => url.hostname.endsWith("example.com");
     const answer = (route: Route) => {
       fetched.push(route.request().url());
       return route.fulfill({ contentType: "text/html", body: "<title>Remote</title>" });
     };
-    await context.route(remote, answer);
-    onTestFinished(() => context.unroute(remote, answer));
+    await context.route(isRemote, answer);
+    onTestFinished(() => context.unroute(isRemote, answer));
     const b = await launchIn(github.checkout, "--pr", pullRequestUrl(2));
     const ghCalls = (await github.fake.calls()).length;
     const before = await gyst("session", "status", "--session", b.id);
@@ -5224,12 +5236,6 @@ describe("installed gyst in a sandboxed browser", () => {
     await card.waitFor({ state: "detached" });
     await settled(page);
     const after = await gyst("session", "status", "--session", b.id);
-    const reviewOf = ({ revision, session, viewedHunkIds, preparation }: any) => ({
-      revision,
-      snapshotId: session.snapshotId,
-      viewedHunkIds,
-      preparation,
-    });
     expect(reviewOf(after)).toEqual(reviewOf(before));
     expect(after.pullRequest.pullRequest).toMatchObject({
       title: "Add layer B, retitled",
@@ -5278,12 +5284,6 @@ describe("installed gyst in a sandboxed browser", () => {
     const commitsShown = () =>
       card.getByRole("listitem").evaluateAll((items) => items.map((item) => item.textContent));
     await card.getByRole("listitem").nth(1).waitFor();
-    const shortOf = (ref: string) =>
-      execFileSync("git", ["rev-parse", "--short=7", ref], {
-        cwd: repo,
-        env,
-        encoding: "utf8",
-      }).trim();
     expect(await commitsShown()).toEqual([
       `${shortOf("authored~1")} Add the helper ${hostile}Why: **callers** repeat it.\n  - indented`,
       `${shortOf("authored")} Second step`,
