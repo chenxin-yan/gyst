@@ -36,6 +36,7 @@ const hunks = [
 ];
 const text = (markdown: string) => ({ markdown, references: [] });
 const pin = (range: CodeRange) => ({ snapshotId: SNAPSHOT, ...range });
+const earlier = (codeRange: CodeRange) => ({ snapshotId: "earlier", ...codeRange });
 const range = (path: string, side: "old" | "new", startLine: number, endLine = startLine) => ({
   path,
   side,
@@ -747,7 +748,6 @@ describe("applyBatch", () => {
 });
 
 describe("Outdated guidance", () => {
-  const earlier = (range: CodeRange) => ({ snapshotId: "earlier", ...range });
   const link = "Read [the helper](gyst:new/support.ts#L1-L2).";
   // As a refresh leaves it: pins to the replaced snapshot and an anchor that no longer maps.
   const outdated: Session = {
