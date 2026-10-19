@@ -103,20 +103,23 @@ describe("disclosureOf", () => {
   });
 });
 
+const write = (path: string, text: string) =>
+  Effect.runPromise(
+    Effect.flip(writeNewFile(path, text)).pipe(
+      Effect.map((error) => ({ error })),
+      Effect.orElseSucceed(() => ({ error: undefined })),
+      Effect.provide(NodeServices.layer),
+    ),
+  );
+const failing = (method: string) =>
+  PlatformError.systemError({ _tag: "Unknown", module: "FileSystem", method });
+
 describe("writeNewFile", () => {
   let dir: string;
   beforeAll(async () => {
     dir = await mkdtemp(join(tmpdir(), "gyst-export-write-"));
   });
   afterAll(() => rm(dir, { recursive: true, force: true }));
-  const write = (path: string, text: string) =>
-    Effect.runPromise(
-      Effect.flip(writeNewFile(path, text)).pipe(
-        Effect.map((error) => ({ error })),
-        Effect.orElseSucceed(() => ({ error: undefined })),
-        Effect.provide(NodeServices.layer),
-      ),
-    );
 
   it("writes the whole file and leaves nothing else behind", async () => {
     expect(await write(join(dir, "w.html"), "<!doctype html>whole")).toEqual({ error: undefined });
@@ -135,12 +138,10 @@ describe("writeNewFile", () => {
       _tag: "bad_args",
       message: `could not write ${join(dir, "missing", "w.html")}. Nothing was written.`,
     });
-    expect((await readdir(dir)).sort()).toEqual(["kept.html", "w.html"]);
+    expect((await readdir(dir)).toSorted()).toEqual(["kept.html", "w.html"]);
   });
 
   it("takes the file back when its directory cannot be synced, and says so when even that fails", async () => {
-    const failing = (method: string) =>
-      PlatformError.systemError({ _tag: "Unknown", module: "FileSystem", method });
     /** `writeNewFile` on a file system whose directory sync fails, and whose `remove` may too. */
     const unsynced = (path: string, removable: boolean) =>
       Effect.runPromise(
@@ -157,12 +158,12 @@ describe("writeNewFile", () => {
           );
         }).pipe(Effect.provide(NodeServices.layer)),
       );
-    const before = (await readdir(dir)).sort();
+    const before = (await readdir(dir)).toSorted();
     expect(await unsynced(join(dir, "unsynced.html"), true)).toMatchObject({
       _tag: "bad_args",
       message: `could not write ${join(dir, "unsynced.html")}. Nothing was written.`,
     });
-    expect((await readdir(dir)).sort()).toEqual(before);
+    expect((await readdir(dir)).toSorted()).toEqual(before);
     expect(await unsynced(join(dir, "stuck.html"), false)).toMatchObject({
       _tag: "bad_args",
       message: `${join(dir, "stuck.html")} holds the whole walkthrough, but gyst could not confirm it is saved or remove it; check it before sharing it, or delete it.`,
