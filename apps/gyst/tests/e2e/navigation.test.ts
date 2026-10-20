@@ -33,7 +33,7 @@ import {
   waitFor,
 } from "./installed-gyst.ts";
 import {
-  at,
+  wordStart,
   crlf,
   gitProject,
   mathFiles,
@@ -195,7 +195,7 @@ describe("TS/JS navigation through the installed add-on", () => {
         addon: missing,
         sides: { old: addonUnavailable(missing), new: addonUnavailable(missing) },
       });
-    expect((await definition("new", "src/use.ts", at(newUse, 2, "plus"))).outcome).toEqual(
+    expect((await definition("new", "src/use.ts", wordStart(newUse, 2, "plus"))).outcome).toEqual(
       addonUnavailable(missing),
     );
     expect((await identifiers("new", "src/math.ts", 3)).outcome).toEqual(addonUnavailable(missing));
@@ -221,7 +221,7 @@ describe("TS/JS navigation through the installed add-on", () => {
       addon: { kind: "available", version },
       sides: { old: { kind: "stopped" }, new: { kind: "stopped" } },
     });
-    const found = located(await definition("new", "src/use.ts", at(newUse, 2, "plus")));
+    const found = located(await definition("new", "src/use.ts", wordStart(newUse, 2, "plus")));
     expect(found.locations).toEqual([{ file: "src/math.ts", range: span(newMath, 3, "add") }]);
     expect(engines(prefix)).toHaveLength(1);
     expect(await daemonPid(box.data)).toBe(daemon);
@@ -244,7 +244,7 @@ describe("TS/JS navigation through the installed add-on", () => {
     const after = await queries(second);
     expect((await after.status()).addon).toEqual({ kind: "available", version });
     expect(
-      located(await after.definition("old", "src/use.ts", at(oldUse, 2, "plus"))).locations,
+      located(await after.definition("old", "src/use.ts", wordStart(oldUse, 2, "plus"))).locations,
     ).toEqual([{ file: "src/math.ts", range: span(oldMath, 1, "add") }]);
     // The daemon keeps the latest invocation's PATH for the session, whichever tab asks.
     expect((await before.status(true)).addon).toEqual({ kind: "available", version });
@@ -276,7 +276,7 @@ describe("TS/JS navigation through the installed add-on", () => {
       addon: mismatched,
       sides: { old: addonUnavailable(mismatched), new: addonUnavailable(mismatched) },
     });
-    expect((await definition("new", "src/use.ts", at(newUse, 2, "plus"))).outcome).toEqual(
+    expect((await definition("new", "src/use.ts", wordStart(newUse, 2, "plus"))).outcome).toEqual(
       addonUnavailable(mismatched),
     );
     expect(engines(box.root)).toEqual([]);
@@ -286,7 +286,9 @@ describe("TS/JS navigation through the installed add-on", () => {
     const matching = await queries(
       await launchViewer(["--session", viewer.id], { cwd, env: launchEnv(box.env, navigationBin) }),
     );
-    const found = located(await matching.definition("new", "src/use.ts", at(newUse, 2, "plus")));
+    const found = located(
+      await matching.definition("new", "src/use.ts", wordStart(newUse, 2, "plus")),
+    );
     expect(found.gaps).toEqual([
       { kind: "dependencies", file: "package.json" },
       { kind: "no-project-config" },
@@ -325,7 +327,7 @@ describe("TS/JS navigation through the installed add-on", () => {
       install,
     });
     expect(JSON.stringify(state)).not.toContain(box.root);
-    expect((await definition("new", "src/use.ts", at(newUse, 2, "plus"))).outcome).toEqual(
+    expect((await definition("new", "src/use.ts", wordStart(newUse, 2, "plus"))).outcome).toEqual(
       addonUnavailable(state.addon),
     );
     ok(await viewer.operation({ command: "status", session: ids.session }));
@@ -354,7 +356,7 @@ describe("TS/JS navigation through the installed add-on", () => {
       query,
       position,
     });
-    const newPlus = at(newUse, 2, "plus");
+    const newPlus = wordStart(newUse, 2, "plus");
     const newDefinition = await definition("new", "src/use.ts", newPlus);
     expect(newDefinition).toMatchObject(identity("new", "src/use.ts", "definition", newPlus));
     expect(located(newDefinition)).toEqual({
@@ -364,7 +366,7 @@ describe("TS/JS navigation through the installed add-on", () => {
       outside: 0,
       gaps: [{ kind: "dependencies", file: "package.json" }, { kind: "no-project-config" }],
     });
-    const oldPlus = at(oldUse, 2, "plus");
+    const oldPlus = wordStart(oldUse, 2, "plus");
     const oldDefinition = await definition("old", "src/use.ts", oldPlus);
     expect(oldDefinition).toMatchObject(identity("old", "src/use.ts", "definition", oldPlus));
     expect(located(oldDefinition).locations).toEqual([
@@ -380,7 +382,9 @@ describe("TS/JS navigation through the installed add-on", () => {
         range: span(newUse, line, "plus"),
       })),
     );
-    const addReferences = located(await references("new", "src/math.ts", at(newMath, 3, "add")));
+    const addReferences = located(
+      await references("new", "src/math.ts", wordStart(newMath, 3, "add")),
+    );
     expect(addReferences.locations).toEqual(
       expect.arrayContaining([
         { file: "src/math.ts", range: span(newMath, 3, "add") },
@@ -406,14 +410,16 @@ describe("TS/JS navigation through the installed add-on", () => {
         gaps: [{ kind: "dependencies", file: "package.json" }, { kind: "no-project-config" }],
       },
     });
-    const firstUse = located(await references("old", "src/math.ts", at(oldMath, 2, "first")));
+    const firstUse = located(
+      await references("old", "src/math.ts", wordStart(oldMath, 2, "first")),
+    );
     expect(firstUse.locations).toEqual([
       { file: "src/math.ts", range: span(oldMath, 1, "first") },
       { file: "src/math.ts", range: span(oldMath, 2, "first") },
     ]);
 
     // UTF-16 and CRLF: an astral identifier before the cursor, CR before each LF.
-    const astral = at(crlf, 2, "𐐀name", 1);
+    const astral = wordStart(crlf, 2, "𐐀name", 1);
     expect(astral).toEqual({ line: 2, character: 30 });
     const astralReferences = await references("new", "src/crlf.ts", astral);
     expect(astralReferences).toMatchObject(identity("new", "src/crlf.ts", "references", astral));
@@ -494,13 +500,17 @@ describe("TS/JS navigation through the installed add-on", () => {
     const viewer = await launchViewer([], { cwd, env: launchEnv(box.env, navigationBin) });
     const { ids, status, definition, references } = await queries(viewer);
 
-    const lib = located(await definition("new", "src/lib-use.ts", at(libUse, 2, "console")));
+    const lib = located(await definition("new", "src/lib-use.ts", wordStart(libUse, 2, "console")));
     expect(lib).toMatchObject({ symbol: { text: "console" }, locations: [] });
     expect(lib.outside).toBeGreaterThanOrEqual(1);
-    const leaked = located(await definition("new", "src/secret.ts", at(reach, 2, "secret")));
+    const leaked = located(await definition("new", "src/secret.ts", wordStart(reach, 2, "secret")));
     expect(leaked).toMatchObject({ symbol: { text: "secret" }, locations: [] });
     expect(leaked.outside).toBeGreaterThanOrEqual(1);
-    const leakedReferences = await references("new", "src/secret.ts", at(reach, 1, "secret"));
+    const leakedReferences = await references(
+      "new",
+      "src/secret.ts",
+      wordStart(reach, 1, "secret"),
+    );
     for (const payload of [lib, leaked, leakedReferences]) {
       const text = JSON.stringify(payload);
       for (const hidden of [secret, box.root, "hidden", "lib.dom", "node_modules"])
@@ -530,7 +540,7 @@ describe("TS/JS navigation through the installed add-on", () => {
       "the old snapshot's engine to stop",
     );
     const historical = { kind: "unavailable", reason: { kind: "historical" } };
-    expect((await definition("new", "src/use.ts", at(oldUse, 2, "plus"))).outcome).toEqual(
+    expect((await definition("new", "src/use.ts", wordStart(oldUse, 2, "plus"))).outcome).toEqual(
       historical,
     );
     expect((await status()).sides).toEqual({ old: historical, new: historical });
@@ -539,7 +549,8 @@ describe("TS/JS navigation through the installed add-on", () => {
     const current = await queries(viewer);
     expect(current.ids.snapshotId).toBe(refreshed.snapshotId);
     expect(
-      located(await current.definition("new", "src/use.ts", at(oldUse, 2, "plus"))).locations,
+      located(await current.definition("new", "src/use.ts", wordStart(oldUse, 2, "plus")))
+        .locations,
     ).toEqual([{ file: "src/math.ts", range: span(oldMath, 1, "add") }]);
   }, 120_000);
 
@@ -577,7 +588,11 @@ describe("TS/JS navigation through the installed add-on", () => {
     onTestFinished(() => clearInterval(monitor));
     const plus = async (q: typeof a, side: "old" | "new") =>
       located(
-        await q.definition(side, "src/use.ts", at(side === "old" ? oldUse : newUse, 2, "plus")),
+        await q.definition(
+          side,
+          "src/use.ts",
+          wordStart(side === "old" ? oldUse : newUse, 2, "plus"),
+        ),
       );
 
     await plus(a, "new");
@@ -677,7 +692,7 @@ describe("TS/JS navigation over this repository", () => {
       after = page.next;
     }
     const declaration = lineOf(oldCore, /^export const navigationInstallCommand\b/);
-    const declared = at(oldCore, declaration, "navigationInstallCommand");
+    const declared = wordStart(oldCore, declaration, "navigationInstallCommand");
     const sessionsImport = lineOf(
       serverText,
       /^import \{ type Opened, Sessions \} from "\.\/sessions\.ts";$/,
@@ -688,19 +703,19 @@ describe("TS/JS navigation over this repository", () => {
       definition(
         "new",
         core,
-        at(newCore, newCore.split("\n").length - 1, "navigationInstallCommand"),
+        wordStart(newCore, newCore.split("\n").length - 1, "navigationInstallCommand"),
       ),
     );
     const newWarm = await timed(() => references("new", core, declared));
     const oldCold = await timed(() =>
-      definition("old", server, at(serverText, sessionsImport, "Sessions")),
+      definition("old", server, wordStart(serverText, sessionsImport, "Sessions")),
     );
     const oldWarm = await timed(() => references("old", core, declared));
     const newSessions = located(
-      await definition("new", server, at(serverText, sessionsImport, "Sessions")),
+      await definition("new", server, wordStart(serverText, sessionsImport, "Sessions")),
     );
     const workspaceImport = located(
-      await definition("new", addonFile, at(addonText, coreImport, "navigationAddon")),
+      await definition("new", addonFile, wordStart(addonText, coreImport, "navigationAddon")),
     );
 
     const results = [newCold, newWarm, oldCold, oldWarm].map(({ result }) => located(result));
