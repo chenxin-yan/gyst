@@ -1,15 +1,17 @@
-import type {
-  BrowserRequest,
-  CapturedRange,
-  ConversationResult,
-  ConversationsPayload,
-  Draft,
-  Message,
-  MessageKind,
-  MessagesPayload,
-  ThreadEntry,
+import {
+  type BrowserRequest,
+  type CapturedRange,
+  type ConversationResult,
+  type ConversationsPayload,
+  type Draft,
+  type Message,
+  type MessageKind,
+  MessageKindSchema,
+  type MessagesPayload,
+  type ThreadEntry,
 } from "@gyst/core/wire";
 import * as stylex from "@stylexjs/stylex";
+import { Schema } from "effect";
 import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { isExpectedFailure, isUncertain, newRequestId, operation } from "./api.ts";
 import { Dialog } from "./commands.tsx";
@@ -209,7 +211,7 @@ function MessageField(props: {
           onChange={(event) => {
             const kind = event.target.value;
             // The select offers only the message kinds.
-            if (kind === "question" || kind === "change") props.onText({ ...text, kind });
+            if (Schema.is(MessageKindSchema)(kind)) props.onText({ ...text, kind });
           }}
           {...stylex.props(styles.select)}
         >
