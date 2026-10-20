@@ -278,10 +278,15 @@ const framesOf = (stream: RawStream) => {
   );
 };
 
-/** Listeners on `count` consecutive loopback ports from a free one, released after the test. */
+/**
+ * Listeners on `count` consecutive loopback ports from a free one, released after the test. The
+ * ports sit below the OS's ephemeral range (32768 and up on Linux, 49152 on macOS), so no connecting
+ * socket elsewhere on the machine is handed the port after them, which tests expect the daemon to
+ * take next.
+ */
 const occupy = async (count: number) => {
   for (;;) {
-    const first = await freePort();
+    const first = 20_000 + Math.floor(Math.random() * 12_000);
     const servers: Server[] = [];
     const taken = await Promise.all(
       Array.from(
