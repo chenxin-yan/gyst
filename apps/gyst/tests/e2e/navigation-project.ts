@@ -61,5 +61,5 @@ export const span = (text: string, line: number, word: string, nth = 0) => {
   if (character === -1) throw new Error(`no ${word} on line ${line}`);
   return { start: { line, character }, end: { line, character: character + word.length } };
 };
-export const at = (text: string, line: number, word: string, nth = 0) =>
+export const wordStart = (text: string, line: number, word: string, nth = 0) =>
   span(text, line, word, nth).start;
