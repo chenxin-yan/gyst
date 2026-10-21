@@ -8,10 +8,12 @@ import {
   capturedSideKey,
   capturedTargetsOf,
   type CaptureProgress,
+  earlierAnchorsOf,
   type CodePayload,
   type DeletePayload,
   type FilesPayload,
   GitHubUnavailableReasonSchema,
+  type Hunk,
   InternalError,
   type DiffPayload,
   type ListPayload,
@@ -21,12 +23,16 @@ import {
   type PullRequest,
   type PullRequestContext,
   pullRequestStatusOf,
-  refreshSession,
+  pinnedSnapshotIds,
+  recordedRefresh,
+  refresh as refreshOnto,
+  type RefreshPayload,
   type Request,
   setViewed,
   type Scope,
   type Session,
   type SessionVersion,
+  type SnapshotLines,
   type SnapshotManifest,
   snapshotIdOf,
   type SourceUnavailable,
@@ -60,7 +66,7 @@ import { CapturedContent, codePage } from "./content.ts";
 import { Git } from "./git.ts";
 import { GitHub, type StackDiscovery } from "./github.ts";
 import { type DeleteReceipt, SessionStore } from "./store.ts";
-type SourceCheck = Omit<SourceCheckPayload, "sessionId" | "revision">;
+type SourceCheck = Omit<SourceCheckPayload, "sessionId" | "snapshotId" | "revision">;
 type Operation = Request | BrowserRequest;
 type Input<C extends Operation["command"]> = Extract<Operation, { readonly command: C }>;
 /** An open's reply before the daemon adds its viewer link, which only the daemon's port names. */
@@ -175,10 +181,10 @@ export class Sessions extends Context.Service<
       request: Input<"diff">,
     ): Effect.Effect<DiffPayload, BadArgs | NoSession | ValidationFailed>;
     /**
-     * Reads name the session's current snapshot: another (older, retained or unknown) id is
-     * `stale_revision` carrying the current one. Everything is read from captured content, never a
-     * checkout, and a read that has selected its snapshot finishes against it even if a refresh
-     * replaces it meanwhile.
+     * Reads name the session's current snapshot, or an earlier one its guidance still pins
+     * (`pinnedSnapshotIds`): any other id is `stale_revision` carrying the current one. Everything
+     * is read from captured content, never a checkout, and a read that has selected its snapshot
+     * finishes against it even if a refresh replaces it meanwhile.
      */
     files(
       request: Input<"files">,
@@ -213,13 +219,19 @@ export class Sessions extends Context.Service<
     viewed(
       request: Input<"viewed">,
     ): Effect.Effect<ViewedPayload, BadArgs | NoSession | StaleRevision | ValidationFailed>;
-    /** Re-captures the recorded scope; exactly matched hunks keep their group and Viewed. */
+    /**
+     * Re-captures the recorded scope outside the review-state lock, then, under it, checks the
+     * observed snapshot is still current and commits the new snapshot, the reconciled review state
+     * (`refresh` in core) and the receipt in one save. An identical capture changes nothing but the
+     * receipt; a failed capture changes nothing. A retry with the same `requestId` returns the
+     * recorded result, even after a restart; the same `requestId` with another payload fails.
+     */
     refresh(
       request: Input<"refresh">,
       onProgress?: OnProgress,
     ): Effect.Effect<
-      StatusPayload,
-      BadArgs | NoSession | SourceUnavailable | ValidationFailed | InternalError
+      RefreshPayload,
+      BadArgs | NoSession | SourceUnavailable | StaleRevision | ValidationFailed | InternalError
     >;
     /**
      * Removes one saved session. A retry with the same `requestId` and session returns the recorded
@@ -381,6 +393,7 @@ export class Sessions extends Context.Service<
               receiptTexts: [],
               applyReceipts: [],
               viewedReceipts: [],
+              refreshReceipts: [],
               ...(context && { pullRequest: context }),
             };
             yield* store.save(session).pipe(Effect.orDie);
@@ -511,6 +524,7 @@ export class Sessions extends Context.Service<
         // two-second bound; cheaper fingerprints if large scopes then report unavailable.
         return {
           sessionId: target.session.id,
+          snapshotId: target.session.snapshotId,
           revision: target.session.revision,
           ...(yield* target.cached),
         };
@@ -587,8 +601,23 @@ export class Sessions extends Context.Service<
         return { sessionId: session.id, snapshotId: session.snapshotId, manifest };
       });
 
+      /** Like `snapshot`, but also an earlier snapshot the session's guidance still pins. */
+      const pinned = Effect.fn("Sessions.pinned")(function* (request: {
+        readonly session: string;
+        readonly snapshotId: string;
+      }) {
+        const session = yield* underLock(selected(request));
+        if (!pinnedSnapshotIds(session).includes(request.snapshotId))
+          return yield* new StaleRevision({
+            message: `snapshot ${request.snapshotId} is not the current snapshot of session ${session.id}, nor one its guidance still pins; read the session again`,
+            detail: { snapshotId: session.snapshotId },
+          });
+        const manifest = yield* manifestOf(request.snapshotId);
+        return { sessionId: session.id, snapshotId: request.snapshotId, manifest };
+      });
+
       const files = Effect.fn("Sessions.files")(function* (request: Input<"files">) {
-        const { sessionId, snapshotId, manifest } = yield* snapshot(request);
+        const { sessionId, snapshotId, manifest } = yield* pinned(request);
         let first = 0;
         if (request.after !== undefined) {
           const index = manifest.files.findIndex(({ path }) => path === request.after);
@@ -618,7 +647,7 @@ export class Sessions extends Context.Service<
       });
 
       const code = Effect.fn("Sessions.code")(function* (request: Input<"code">) {
-        const { sessionId, snapshotId, manifest } = yield* snapshot(request);
+        const { sessionId, snapshotId, manifest } = yield* pinned(request);
         // Membership is the manifest's, so unchanged supporting files are readable too.
         const file = manifest.files.find(({ path }) => path === request.file);
         if (!file)
@@ -651,13 +680,24 @@ export class Sessions extends Context.Service<
         }
       }).pipe(Semaphore.withPermit(lock), Effect.withSpan("Sessions.load"));
 
-      /** The line counts of the named sides of a snapshot, counted like `code` pages count them. */
+      /**
+       * The line counts of the named sides of a snapshot, counted like `code` pages count them, and
+       * the hunks of the named earlier snapshots. An earlier snapshot that cannot be read is left
+       * out, so its notes' surviving hunks cannot be named.
+       */
       const capturedIndexOf = Effect.fn("Sessions.capturedIndexOf")(function* (
         snapshotId: string,
         targets: ReturnType<typeof capturedTargetsOf>,
+        earlier: readonly string[],
       ) {
+        const earlierHunks = new Map<string, readonly Hunk[]>();
+        for (const id of earlier) {
+          const manifest = yield* content.loadManifest(id).pipe(Effect.option);
+          if (manifest._tag === "Some") earlierHunks.set(id, manifest.value.hunks);
+        }
         const sides = new Map<string, CapturedSide>();
-        if (targets.length === 0) return { snapshotId, sides } satisfies CapturedIndex;
+        if (targets.length === 0)
+          return { snapshotId, sides, earlierHunks } satisfies CapturedIndex;
         const manifest = yield* manifestOf(snapshotId);
         for (const { path, side: name } of targets) {
           const side = manifest.files.find((file) => file.path === path)?.[name];
@@ -677,7 +717,7 @@ export class Sessions extends Context.Service<
           const lines = lfs + (last !== undefined && last !== 10 ? 1 : 0);
           sides.set(capturedSideKey(name, path), { kind: "text", lines });
         }
-        return { snapshotId, sides } satisfies CapturedIndex;
+        return { snapshotId, sides, earlierHunks } satisfies CapturedIndex;
       });
 
       const apply = Effect.fn("Sessions.apply")(function* (request: Input<"apply">) {
@@ -696,8 +736,16 @@ export class Sessions extends Context.Service<
         const captured =
           before.snapshotId !== envelope.snapshotId ||
           before.applyReceipts.some(({ key }) => key === envelope.idempotencyKey)
-            ? ({ snapshotId: before.snapshotId, sides: new Map() } satisfies CapturedIndex)
-            : yield* capturedIndexOf(before.snapshotId, capturedTargetsOf(envelope));
+            ? ({
+                snapshotId: before.snapshotId,
+                sides: new Map(),
+                earlierHunks: new Map(),
+              } satisfies CapturedIndex)
+            : yield* capturedIndexOf(
+                before.snapshotId,
+                capturedTargetsOf(envelope, before),
+                earlierAnchorsOf(envelope, before),
+              );
         return yield* underLock(
           Effect.gen(function* () {
             const session = yield* selected(request);
@@ -727,30 +775,60 @@ export class Sessions extends Context.Service<
         return outcome.result;
       }, Semaphore.withPermit(lock));
 
+      /**
+       * The lines of every snapshot `session` pins, read from captured content. A pinned snapshot
+       * that cannot be read is left out, so the guidance pinning it cannot be verified.
+       */
+      const pinnedLinesOf = Effect.fn("Sessions.pinnedLinesOf")(function* (session: Session) {
+        const lines = new Map<string, SnapshotLines>();
+        for (const snapshotId of pinnedSnapshotIds(session)) {
+          const manifest = yield* content.loadManifest(snapshotId).pipe(Effect.option);
+          if (manifest._tag === "Some") lines.set(snapshotId, manifest.value);
+        }
+        return lines;
+      });
+
       const refresh = Effect.fn("Sessions.refresh")(function* (
         request: Input<"refresh">,
         onProgress?: OnProgress,
       ) {
-        const { repoRoot, scope } = yield* underLock(selected(request));
+        const observed = yield* underLock(selected(request));
+        // A recorded or stale request captures nothing.
+        const recorded = yield* Effect.fromResult(recordedRefresh(observed, request));
+        if (recorded) return recorded;
         // A PR re-reads only its range; its stack context changes on an explicit recheck alone.
-        const { manifest } = yield* acquire(repoRoot, scope, onProgress);
-        const snapshotId = yield* publish(manifest);
+        const { manifest } = yield* acquire(observed.repoRoot, observed.scope, onProgress);
+        const snapshotId =
+          snapshotIdOf(manifest) === observed.snapshotId
+            ? observed.snapshotId
+            : yield* publish(manifest);
+        const retained = yield* pinnedLinesOf(observed);
         return yield* underLock(
           Effect.gen(function* () {
-            // Reconcile the session as it is now: work saved during the capture survives, and a
+            // The session as it is now: work saved during the capture is reconciled too, and a
             // deletion during it wins (the published manifest stays, unreferenced, until #93).
             const session = yield* selected(request);
-            const refreshed = refreshSession(
-              { ...session, snapshotId },
-              manifest.hunks,
-              DateTime.formatIso(yield* DateTime.now),
+            const outcome = yield* Effect.fromResult(
+              refreshOnto(
+                session,
+                request,
+                { snapshotId, snapshot: manifest },
+                retained,
+                DateTime.formatIso(yield* DateTime.now),
+              ),
             );
-            yield* store.save(refreshed).pipe(Effect.orDie);
-            sessions.set(session.id, refreshed);
-            sourceChecks.delete(session.id);
-            announceChanged(refreshed);
-            announceLayers(refreshed);
-            return statusOf(refreshed);
+            if (outcome.session) {
+              // Effect and receipt are one file: saved before memory changes.
+              yield* store.save(outcome.session).pipe(Effect.orDie);
+              sessions.set(session.id, outcome.session);
+              // This capture is newer than any cached check, replaced snapshot or not.
+              sourceChecks.delete(session.id);
+              if (outcome.result.replaced) {
+                announceChanged(outcome.session);
+                announceLayers(outcome.session);
+              }
+            }
+            return outcome.result;
           }),
         );
       }, Semaphore.withPermit(sourceLock));

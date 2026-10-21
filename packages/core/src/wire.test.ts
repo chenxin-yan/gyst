@@ -40,6 +40,7 @@ describe("daemon wire envelopes", () => {
       { command: "list" },
       { command: "diff", session: "s1", file: "a.txt" },
       { command: "delete", session: "s1", requestId: "r1" },
+      { command: "refresh", session: "s1", snapshotId, requestId: "r1" },
     ])
       expect(decodeRequest(valid)).toEqual(valid);
     for (const invalid of [
@@ -88,6 +89,8 @@ describe("daemon wire envelopes", () => {
       { command: "open", session: "s1" },
       { command: "status", session: "s1" },
       { command: "delete", session: "s1", requestId: "r1" },
+      // A human refresh names the snapshot it replaces and a request id, like Viewed.
+      { command: "refresh", session: "s1", snapshotId, requestId: "r1" },
       {
         command: "viewed",
         session: "s1",
@@ -121,6 +124,8 @@ describe("daemon wire envelopes", () => {
       { command: "diff", session: "s1", executable: "/bin/sh" },
       { command: "apply", session: "s1", batch: "{}" },
       { command: "refresh", session: "s1" },
+      { command: "refresh", session: "s1", snapshotId, requestId: "r1", cwd: "/repo" },
+      { command: "refresh", session: "s1", snapshotId: "HEAD", requestId: "r1" },
       // Viewed names the observed snapshot and revision and a request id; never an author role.
       { command: "viewed", session: "s1", snapshotId, requestId: "r1", hunkIds: [], viewed: true },
       { command: "viewed", session: "s1", revision: 2, requestId: "r1", hunkIds: [], viewed: true },
@@ -281,6 +286,9 @@ describe("daemon wire envelopes", () => {
         totalHunks: 1,
         overviewMissing: true,
         groupsMissingOverview: [],
+        overviewOutdated: false,
+        groupsOutdated: [],
+        notesOutdated: [],
       },
       viewedHunkIds: [],
       files: [{ path: "a.ts", hunkCount: 1, viewed: false }],
@@ -322,6 +330,7 @@ describe("daemon wire envelopes", () => {
       "src/errors.ts",
       "src/github.ts",
       "src/guidance.ts",
+      "src/mapping.ts",
       "src/metadata.ts",
       "src/navigation.ts",
       "src/session.ts",
