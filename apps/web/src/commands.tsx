@@ -24,7 +24,7 @@ export function Keys({ command }: { command: Command }) {
  * A modal native dialog: it takes focus, keeps it inside, closes on Escape and gives focus back.
  * The review keys ignore keydowns from inside it, so it owns its own keys.
  */
-function Dialog(props: { label: string; onClose: () => void; children: ReactNode }) {
+export function Dialog(props: { label: string; onClose: () => void; children: ReactNode }) {
   const dialog = useRef<HTMLDialogElement>(null);
   useEffect(() => {
     const node = dialog.current!;

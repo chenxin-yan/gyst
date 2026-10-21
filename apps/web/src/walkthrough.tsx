@@ -145,7 +145,10 @@ const nav = stylex.create({
 });
 
 /** Focuses the reference to `refocus` inside `slot` whenever it is set: a closed peek's origin. */
-function useRefocus(slot: RefObject<HTMLElement | null>, refocus: CapturedRange | undefined) {
+export function useRefocus(
+  slot: RefObject<HTMLElement | null>,
+  refocus: CapturedRange | undefined,
+) {
   useEffect(() => {
     if (refocus === undefined) return;
     const title = CSS.escape(referenceLabel(refocus));
@@ -223,6 +226,8 @@ export function NoteCard(props: {
   onReference: (target: CapturedRange) => void;
   /** A reference whose peek just closed: focused again, also when the renderer remounts the note. */
   refocus?: CapturedRange | undefined;
+  /** Replies to the note, starting its thread if it has none. */
+  onReply?: (() => void) | undefined;
 }) {
   const { note, onHighlight, refocus } = props;
   const slot = useRef<HTMLDivElement>(null);
@@ -264,6 +269,11 @@ export function NoteCard(props: {
               references={note.references}
               onReference={props.onReference}
             />
+            {props.onReply && (
+              <button type="button" onClick={props.onReply} {...stylex.props(noteStyles.reply)}>
+                Reply
+              </button>
+            )}
           </div>
         )}
       </div>
@@ -280,6 +290,8 @@ export function EarlierNoteCard(props: {
   note: StatusNote;
   read: () => Promise<RangeRead>;
   onReference: (target: CapturedRange) => void;
+  /** Replies to the note, starting its thread if it has none; its conversation is in Comments. */
+  onReply: () => void;
 }) {
   const { note } = props;
   const [shown, setShown] = useState(false);
@@ -308,6 +320,9 @@ export function EarlierNoteCard(props: {
           {shown ? "Hide the earlier code" : "Show the earlier code"}
         </button>
         {shown && <PeekPreview target={note.anchor} read={props.read} />}
+        <button type="button" onClick={props.onReply} {...stylex.props(noteStyles.reply)}>
+          Reply
+        </button>
       </div>
     </div>
   );
@@ -366,6 +381,11 @@ const noteStyles = stylex.create({
   },
   chevronOpen: { transform: "rotate(45deg)" },
   body: { marginTop: "4px" },
+  reply: {
+    marginTop: "4px",
+    fontSize: "12px",
+    color: { default: theme.muted, ":hover": theme.ink },
+  },
   foreign: {
     padding: "2px 10px 4px",
     fontFamily: theme.sans,

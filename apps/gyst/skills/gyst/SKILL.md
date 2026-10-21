@@ -84,6 +84,7 @@ Example first batch; replace the revision, snapshot id, key, hunk ids and ranges
 - `group.create`: `id`, `title`, `overview`, `memberHunkIds`, optional `files` (defaults to the members' files in snapshot order). Groups append in order.
 - `group.update`: `id` with any of `title`, `overview` (`null` removes it), `memberHunkIds`, `files`. `group.dissolve`: `id`; its hunks become ungrouped and its notes go.
 - `note.create`: `id`, `group`, `anchor`, `markdown`. `note.update`: `id` with `anchor` (re-anchors, keeping its id) and/or `markdown`. `note.remove`: `id`.
+- `thread.reply`: `thread`, `markdown`: a free-form reply in an existing thread from `gyst session threads`, published with the batch's other ops. Replies cannot be edited, and they never resolve or reopen a thread.
 - `walkthrough.revalidate`, `group.revalidate` (`id`) and `note.revalidate` (`id`): keep an Outdated text's wording after checking it against this batch's snapshot. Its references are pinned again to that snapshot and must be captured text there; a note must already be anchored to that snapshot, so re-anchor it in the same batch first if needed. Revalidation changes no Viewed.
 
 The batch is validated as a whole: a hunk belongs to at most one group, `files` lists exactly the members' files, and every note still fits its group after membership changes. Edit guidance in place by id rather than recreating it. Adding, editing or removing a note, and editing or removing an overview, unviews the affected hunks; reordering does not, so avoid no-op rewrites.

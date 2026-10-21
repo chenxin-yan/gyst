@@ -33,8 +33,8 @@ const stacked = (fields: Partial<PullRequestStatus> = {}): PullRequestStatus => 
   unavailable: null,
   selected: 2,
   sessions: [
-    { number: 2, sessionId: "b", hunkCount: 4, viewedCount: 1 },
-    { number: 3, sessionId: "c", hunkCount: 2, viewedCount: 2 },
+    { number: 2, sessionId: "b", hunkCount: 4, viewedCount: 1, openThreads: 0 },
+    { number: 3, sessionId: "c", hunkCount: 2, viewedCount: 2, openThreads: 1 },
   ],
   ...fields,
 });
@@ -58,16 +58,17 @@ describe("stackRows", () => {
 
   it("counts Viewed hunks of the opened layers' own sessions", () => {
     const [, b, c] = stackRows(stacked(), 1);
-    expect(b!.session).toEqual({ id: "b", viewed: 1, total: 4 });
-    expect(c!.session).toEqual({ id: "c", viewed: 2, total: 2 });
+    expect(b!.session).toEqual({ id: "b", viewed: 1, total: 4, open: 0 });
+    // Every hunk Viewed with a thread still open: the counts stay apart.
+    expect(c!.session).toEqual({ id: "c", viewed: 2, total: 2, open: 1 });
   });
 
   it("counts the selected layer's Viewed from the reader's settled progress, newer than status", () => {
     const [a, b, c] = stackRows(stacked(), 3);
     expect([a!.session, b!.session, c!.session]).toEqual([
       undefined,
-      { id: "b", viewed: 3, total: 4 },
-      { id: "c", viewed: 2, total: 2 },
+      { id: "b", viewed: 3, total: 4, open: 0 },
+      { id: "c", viewed: 2, total: 2, open: 1 },
     ]);
   });
 
@@ -80,7 +81,7 @@ describe("stackRows", () => {
   });
 
   it("lists only the selected PR, without a position, when it stands alone or is unknown", () => {
-    const sessions = [{ number: 2, sessionId: "b", hunkCount: 3, viewedCount: 0 }];
+    const sessions = [{ number: 2, sessionId: "b", hunkCount: 3, viewedCount: 0, openThreads: 0 }];
     const standalone = stacked({
       stack: { verifiedAt: minutesAgo(1), membership: "none" },
       sessions,
@@ -98,7 +99,7 @@ describe("stackRows", () => {
           title: "Layer 2",
           state: "open",
           current: true,
-          session: { id: "b", viewed: 0, total: 3 },
+          session: { id: "b", viewed: 0, total: 3, open: 0 },
         },
       ]);
   });
