@@ -127,6 +127,16 @@ const sessionIds = async () =>
   (await gyst("session", "list")).sessions.map(({ id }: { id: string }) => id);
 const openRange = async (range: string): Promise<string> =>
   (await gyst("session", "open", range)).session.id;
+// Capturing 400 changed files is serial Git work: about 5 s at 2 or 16 CPUs, past the 15 s
+// default once a small runner is loaded, so this open alone gets longer.
+const openStress = async (): Promise<string> =>
+  json(
+    await run(installed.bin, ["session", "open", "stress~1...stress"], {
+      cwd: repo,
+      env,
+      timeout: 40_000,
+    }),
+  ).session.id;
 const ownDaemon = (pid: number) =>
   isAlive(pid) &&
   commandLine(pid).includes(installed.prefix) &&
@@ -1377,14 +1387,7 @@ describe("installed gyst in a sandboxed browser", () => {
   }, 30_000);
 
   it("loads hundreds of changed files a bounded few at a time, far scrolls included, and navigates loaded files without reads", async () => {
-    // Capturing 400 changed files is serial Git work: about 5 s at 2 or 16 CPUs, past the 15 s
-    // default once a small runner is loaded, so this open alone gets longer.
-    const opened = await run(installed.bin, ["session", "open", "stress~1...stress"], {
-      cwd: repo,
-      env,
-      timeout: 40_000,
-    });
-    const id: string = json(opened).session.id;
+    const id = await openStress();
     onTestFinished(() =>
       gyst("session", "delete", "--session", id, "--request-id", randomBytes(16).toString("hex")),
     );
@@ -1465,7 +1468,7 @@ describe("installed gyst in a sandboxed browser", () => {
   }, 60_000);
 
   it("searches hundreds of files in Mouse mode without reading their sides, scrolling to rows not yet rendered and wrapping, while typing stays responsive", async () => {
-    const id = await openRange("stress~1...stress");
+    const id = await openStress();
     onTestFinished(() =>
       gyst("session", "delete", "--session", id, "--request-id", randomBytes(16).toString("hex")),
     );
