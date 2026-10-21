@@ -1,4 +1,5 @@
 import { type CapturedRange, counterpartLine, type Hunk } from "@gyst/core/wire";
+import type { RangeCommits } from "./author.tsx";
 import type { Cursor, Opened, Side } from "./cursor.ts";
 import type { InputMode } from "./keymap.ts";
 import type { BackStack, Peek, ReadingPosition, Restore } from "./navigation.ts";
@@ -8,8 +9,9 @@ import type { ReviewView } from "./walkthrough.ts";
  * Where a reader left a session: its view, the captured target expanded over it with that file's
  * opened lines, the open peek and the places Back returns to, its input mode, Vim cursor, the hidden
  * lines it opened (a place inside them exists only once they open again), its folded files (a
- * place inside a file exists only while it is unfolded) and what was at the panel's top: a reading
- * position, or an overview's offset.
+ * place inside a file exists only while it is unfolded), whether it showed the author's explanation
+ * with the range commits read for it (an offset into the panel's header counts them) and what was at
+ * the panel's top: a reading position, or an offset above the first file.
  */
 export type ReadingPlace = {
   review: ReviewView;
@@ -21,6 +23,7 @@ export type ReadingPlace = {
   cursor: Cursor | undefined;
   opened: Map<string, Map<number, Opened>>;
   folded: ReadonlySet<string>;
+  author: { shown: boolean; commits: RangeCommits["read"] };
   top: Restore | undefined;
 };
 
@@ -31,8 +34,9 @@ export type ReadingPlace = {
  * file whose hunks the refresh left exactly as they were, its fold included. In another file the top
  * position and the cursor move with a hunk that survived exactly, whatever its line numbers; else
  * only the file at the top, and a cursor on its header, are kept, and the file is folded exactly when
- * the new snapshot records it Generated and no kept position is on one of its lines. An expanded reference and Back belong to the snapshot they
- * were read in.
+ * the new snapshot records it Generated and no kept position is on one of its lines. An expanded
+ * reference, Back and the author's explanation belong to the snapshot they were read in, and so does
+ * an offset taken while that explanation was shown.
  */
 const places = new Map<
   string,
@@ -92,10 +96,14 @@ export const recall = (
       ? { file, side: undefined, line: undefined }
       : { file, side, line: moved };
   };
-  const { review, inputMode, cursor, opened, folded, top } = saved.place;
+  const { review, inputMode, cursor, opened, folded, author, top } = saved.place;
   const cursorAfter = cursor && cursorNow(cursor);
   const topAfter =
-    top !== undefined && "position" in top ? { position: topNow(top.position) } : top;
+    top !== undefined && "position" in top
+      ? { position: topNow(top.position) }
+      : author.shown
+        ? undefined
+        : top;
   // A folded file has no lines, so a file still holding the reader's line stays unfolded.
   const reading = new Set<string>();
   if (cursorAfter?.kind === "line") reading.add(cursorAfter.file);
@@ -114,6 +122,7 @@ export const recall = (
       ...[...folded].filter(unchanged),
       ...[...generated].filter((file) => !unchanged(file) && !reading.has(file)),
     ]),
+    author: { shown: false, commits: undefined },
     top: topAfter,
   };
 };

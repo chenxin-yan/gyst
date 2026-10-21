@@ -14,6 +14,7 @@ const placeAt = (path: string, file: string | undefined): ReadingPlace => ({
   cursor: undefined,
   opened: new Map(),
   folded: new Set(),
+  author: { shown: false, commits: undefined },
   top: file === undefined ? undefined : { position: { file, side: undefined, line: undefined } },
 });
 
@@ -124,6 +125,26 @@ describe("reading memory", () => {
     const overview: ReadingPlace = { ...placeAt("", undefined), top: { scrollTop: 40 } };
     remember("d", "new", [x], overview);
     expect(recall("d", "newer", [moved], none)).toEqual(overview);
+  });
+
+  it("keeps the author's explanation shown with its read commits for the same snapshot, and not past a refresh", () => {
+    const commits = {
+      commits: [{ id: "a".repeat(40), message: "Why" }],
+      total: 2,
+      next: "a".repeat(40),
+    };
+    const reading: ReadingPlace = {
+      ...placeAt("", undefined),
+      author: { shown: true, commits },
+      top: { scrollTop: 650 },
+    };
+    remember("g", "old", [x], reading);
+    expect(recall("g", "old", [x], none)).toEqual(reading);
+    // The offset was into the explanation, which the refreshed reader starts without.
+    expect(recall("g", "new", [x], none)).toEqual(placeAt("", undefined));
+    const inFile: ReadingPlace = { ...placeAt("", "lib/x.ts"), author: { shown: true, commits } };
+    remember("g", "old", [x], inFile);
+    expect(recall("g", "new", [x], none)).toEqual(placeAt("", "lib/x.ts"));
   });
 
   it("keeps a refresh's unchanged files folded as the reader left them, and folds changed Generated ones", () => {
