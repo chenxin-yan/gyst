@@ -6,7 +6,9 @@ import type { CapturedRange, Note } from "./guidance.ts";
 import type { SnapshotLines } from "./mapping.ts";
 import {
   type FreshSnapshot,
+  keepsFile,
   pinnedSnapshotIds,
+  retainedFiles,
   refresh,
   refreshSession,
   type RefreshRequest,
@@ -530,6 +532,10 @@ const thread = (id: string, anchor: CapturedRange, extra: Partial<Thread> = {}):
   ...extra,
 });
 const pinnedTo = (snapshotId: string): CapturedRange => ({ ...pin("a.ts", "new", 1), snapshotId });
+const oldPinnedTo = (snapshotId: string, path: string): CapturedRange => ({
+  ...pin(path, "old", 1),
+  snapshotId,
+});
 
 describe("refreshSession conversations", () => {
   it("maps a code thread line by line through its changed hunk, else keeps it on its original code", () => {
@@ -656,6 +662,39 @@ describe("refreshSession conversations", () => {
         "draft-note-code",
       ].toSorted(),
     );
+  });
+
+  it("keeps every file of the current and draft-begun snapshots, and only the pinned files of others", () => {
+    const resolved = thread("resolved", oldPinnedTo("s0", "thread.ts"), {
+      resolved: true,
+      messages: [
+        {
+          ...asked("h"),
+          references: [oldPinnedTo("s0", "linked.ts")],
+          wording: { markdown: "w", references: [], anchor: oldPinnedTo("s0", "note.ts") },
+        },
+      ],
+    });
+    const kept = retainedFiles({
+      ...session(),
+      overview: { markdown: "Overview.", references: [oldPinnedTo("s0", "overview.ts")] },
+      groups: [],
+      threads: [resolved],
+      drafts: [{ id: "d", snapshotId: "s-begun", anchor: oldPinnedTo("s-draft", "draft.ts") }],
+    });
+    expect(kept).toEqual(
+      new Map<string, unknown>([
+        ["s1", "all"],
+        ["s-begun", "all"],
+        ["s0", new Set(["thread.ts", "linked.ts", "note.ts", "overview.ts"])],
+        ["s-draft", new Set(["draft.ts"])],
+      ]),
+    );
+    const withDraft = { ...session(), threads: [resolved] };
+    expect(keepsFile(withDraft, "s0", "thread.ts")).toBe(true);
+    expect(keepsFile(withDraft, "s0", "other.ts")).toBe(false);
+    expect(keepsFile(withDraft, "s1", "other.ts")).toBe(true);
+    expect(keepsFile(withDraft, "gone", "thread.ts")).toBe(false);
   });
 });
 
