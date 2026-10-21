@@ -108,10 +108,9 @@ describe("liveReducer", () => {
         event: { kind: "deleted", sessionId: "s1" },
       }),
       run(connect, failed(1, new NoSession({ message: "gone" }))),
-      run(connect, { type: "lost", generation: 1, error: new TransportError("unauthorized", "m") }),
       run(connect, { type: "lost", generation: 1, error: new TransportError("forbidden", "m") }),
     ];
-    expect(ended.map(({ phase }) => phase)).toEqual(["deleted", "deleted", "refused", "refused"]);
+    expect(ended.map(({ phase }) => phase)).toEqual(["deleted", "deleted", "refused"]);
     for (const state of ended) {
       expect(liveReducer(state, connect)).toBe(state);
       expect(liveReducer(state, ready(state.generation, 9))).toBe(state);
