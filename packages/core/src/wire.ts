@@ -58,7 +58,29 @@ export {
   type StackMembership,
   StackMembershipSchema,
 } from "./github.ts";
-export { type Commit, type ContentSide, type ManifestFile, sameSide } from "./content.ts";
+export {
+  type Commit,
+  type ContentSide,
+  type ManifestFile,
+  type Provenance,
+  sameSide,
+} from "./content.ts";
+export {
+  disclosedSides,
+  type ExportPayload,
+  ExportPayloadSchema,
+  type ExportPreviewPayload,
+  ExportPreviewPayloadSchema,
+  noTextReason,
+  notCaptured,
+  provenanceLines,
+  type PinnedSide,
+  readinessProblems,
+  type UnavailableTarget,
+  type Walkthrough,
+  type WalkthroughExport,
+  WalkthroughExportSchema,
+} from "./export.ts";
 export {
   anchoredHunkIds,
   type CapturedRange,
@@ -494,6 +516,21 @@ const reviewRequests = [
     snapshotId: SnapshotIdSchema,
     requestId: Schema.String,
   }),
+  /**
+   * What exporting the walkthrough would share, and the `approval` naming exactly that state. It
+   * reads captured content only, and changes nothing.
+   */
+  Schema.Struct({ command: Schema.Literal("preview"), ...exact }),
+  /**
+   * Generates the standalone walkthrough a human approved in its `preview`. Any change since to
+   * the snapshot, guidance or included content changes the approval, so this one is refused as
+   * stale and a new preview must be approved. Export is its own operation family, on both
+   * surfaces: the CLI asks a person at an interactive terminal, the browser in its export dialog.
+   * Neither transport can tell a person from a same-user process (ADR 0002), so it is the CLI's
+   * terminal gate, not the transport, that keeps an agent's harness from exporting; carrying it
+   * only over HTTP would not.
+   */
+  Schema.Struct({ command: Schema.Literal("export"), ...exact, approval: Schema.String }),
 ] as const;
 
 /** A Pending human message as its author last read it, which an edit or deletion must still find. */
@@ -502,7 +539,8 @@ const SeenMessageSchema = Schema.Struct({ markdown: MarkdownSchema, kind: Messag
 /**
  * The operations a browser may request: exact saved-session ids and read filters only. Checkout
  * paths, Git input, PATHs, executables, add-on locations and caller roles are not expressible.
- * Human actions exist only here, so they reach the daemon only through its HTTP adapter.
+ * Human actions exist only here, so they reach the daemon only through its HTTP adapter; `export`,
+ * which the CLI offers a person at a terminal too, is shared with the socket.
  */
 export const BrowserRequestSchema = Schema.Union([
   Schema.Struct({ command: Schema.Literal("open"), ...exact }),
@@ -637,7 +675,8 @@ export type BrowserRequest = typeof BrowserRequestSchema.Type;
 
 /**
  * The operations the CLI sends over the daemon socket, one validated operation per session
- * command; CLI flags and argv never cross it, and neither does any human action.
+ * command; CLI flags and argv never cross it, and neither does any human action except `export`,
+ * whose approval the CLI takes from a person at an interactive terminal.
  */
 export const RequestSchema = Schema.Union([
   /**

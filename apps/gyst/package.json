@@ -28,7 +28,8 @@
     "runtime": "node",
     "artifact": "package",
     "include": [
-      "dist/web-ui"
+      "dist/web-ui",
+      "dist/export"
     ]
   },
   "dependencies": {
