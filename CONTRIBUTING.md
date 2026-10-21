@@ -102,6 +102,10 @@ standalone reader in `apps/web/dist-export/`; build it once with `pnpm build` (o
 This is for trying changes by hand. It does not replace `pnpm test`, which tests the packed npm
 install.
 
+A change to the authoring instructions in `apps/gyst/skills/gyst/`, or to what authoring
+validation accepts, also needs the guidance cases in
+[`docs/guidance-cases/`](docs/guidance-cases/README.md) regenerated and judged by a human.
+
 ## Build
 
 ```sh
