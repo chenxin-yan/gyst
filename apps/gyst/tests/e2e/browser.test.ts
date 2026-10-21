@@ -1359,7 +1359,14 @@ describe("installed gyst in a sandboxed browser", () => {
   }, 30_000);
 
   it("loads hundreds of changed files a bounded few at a time, far scrolls included, and navigates loaded files without reads", async () => {
-    const id = await openRange("stress~1...stress");
+    // Capturing 400 changed files is serial Git work: about 5 s at 2 or 16 CPUs, past the 15 s
+    // default once a small runner is loaded, so this open alone gets longer.
+    const opened = await run(installed.bin, ["session", "open", "stress~1...stress"], {
+      cwd: repo,
+      env,
+      timeout: 40_000,
+    });
+    const id: string = json(opened).session.id;
     onTestFinished(() =>
       gyst("session", "delete", "--session", id, "--request-id", randomBytes(16).toString("hex")),
     );
