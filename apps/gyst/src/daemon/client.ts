@@ -29,6 +29,7 @@ import {
   FileSystem,
   Layer,
   Option,
+  Predicate,
   Schedule,
   Schema,
   Stream,
@@ -92,10 +93,14 @@ const startupPolls = Schedule.max([Schedule.spaced("20 millis"), Schedule.recurs
  * A hang-up after connecting does not prove whether the daemon read the frame; resending a
  * handshake is safe by protocol instead: `daemon.info` is read-only, and the daemon admits
  * `daemon.restart` only for its own instance, a newer version and unchanged saved reviews, then
- * drains, so a repeat is refused.
+ * drains, so a repeat is refused. A connect reset before it opened (an exiting daemon closed its
+ * listener with the connect still queued) never sent the frame, so it is redialled too.
  */
 const handshakeHungUp = (error: { readonly _tag: string }) =>
-  Socket.isSocketError(error) && error.reason._tag !== "SocketOpenError";
+  Socket.isSocketError(error) &&
+  (error.reason._tag !== "SocketOpenError" ||
+    (Predicate.hasProperty(error.reason.cause, "code") &&
+      error.reason.cause.code === "ECONNRESET"));
 
 const compatibilityError = (message: string) =>
   new DaemonUnreachable({

@@ -10,22 +10,50 @@ import { DaemonClient } from "./client.ts";
 import { Paths } from "./paths.ts";
 import { daemonVersion } from "./protocol.ts";
 
-/** Zero-based client dials whose daemon side is destroyed after connecting and before the client writes. */
+/**
+ * Zero-based client dials whose daemon side is destroyed after connecting and before the client
+ * writes (`hungUp`), or whose listener stops while the connect is still queued (`reset`).
+ */
 const dials = vi.hoisted(() => ({
   count: 0,
   hungUp: new Set<number>(),
+  reset: new Set<number>(),
   server: undefined as Server | undefined,
 }));
 
 vi.mock("@effect/platform-node/NodeSocket", async (importOriginal) => {
   const NodeSocket = await importOriginal<typeof import("@effect/platform-node/NodeSocket")>();
-  const { createConnection } = await import("node:net");
+  const { createConnection, createServer: createListener } = await import("node:net");
   const { EventEmitter } = await import("node:events");
   const effect = await import("effect");
+  const Socket = await import("effect/socket/Socket");
   return {
     ...NodeSocket,
     makeNet: (options: { readonly path: string }) => {
-      if (!dials.hungUp.has(dials.count++)) return NodeSocket.makeNet(options);
+      const dial = dials.count++;
+      if (dials.reset.has(dial))
+        // A paused listener closed right after the connect: Node reports ECONNRESET before
+        // `connect`, which makeNet fails as a SocketOpenError, as an old daemon exiting does.
+        return NodeSocket.fromDuplex(
+          effect.Effect.flatMap(
+            effect.Effect.promise(async () => {
+              const path = `${options.path}.reset`;
+              const listener = createListener({ pauseOnConnect: true });
+              await new Promise<void>((resolve) => listener.listen(path, resolve));
+              const conn = createConnection(path);
+              listener.close();
+              const [cause] = await EventEmitter.once(conn, "error");
+              return cause;
+            }),
+            (cause) =>
+              effect.Effect.fail(
+                new Socket.SocketError({
+                  reason: new Socket.SocketOpenError({ kind: "Unknown", cause }),
+                }),
+              ),
+          ),
+        );
+      if (!dials.hungUp.has(dial)) return NodeSocket.makeNet(options);
       // The peer's fd is closed before this resolves, so the client's first write gets EPIPE.
       return NodeSocket.fromDuplex(
         effect.Effect.promise(async () => {
@@ -123,6 +151,7 @@ afterEach(async () => {
   await closeFakeDaemon();
   dials.count = 0;
   dials.hungUp.clear();
+  dials.reset.clear();
   lostHandshakes = 0;
 });
 
@@ -140,6 +169,22 @@ describe("DaemonClient", () => {
       _tag: "no_session",
     });
     expect(commands).toEqual(["daemon.info", "status"]);
+  });
+
+  it("redials a handshake whose connect was reset because the daemon stopped listening meanwhile", async () => {
+    socketPath = join(dataDir, "handshake-reset.sock");
+    commands = [];
+    await fakeDaemon((socket) =>
+      socket.end(
+        `${JSON.stringify({ ok: false, error: { code: "no_session", message: "none" } })}\n`,
+      ),
+    );
+    dials.reset.add(0);
+    expect(await request({ command: "status", session: "s1" })).toMatchObject({
+      _tag: "no_session",
+    });
+    expect(commands).toEqual(["daemon.info", "status"]);
+    expect(dials.count).toBe(3);
   });
 
   it("redials a handshake whose reply was lost because the daemon hung up after reading it", async () => {

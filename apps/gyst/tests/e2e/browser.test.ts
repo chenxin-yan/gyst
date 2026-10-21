@@ -1359,7 +1359,14 @@ describe("installed gyst in a sandboxed browser", () => {
   }, 30_000);
 
   it("loads hundreds of changed files a bounded few at a time, far scrolls included, and navigates loaded files without reads", async () => {
-    const id = await openRange("stress~1...stress");
+    // Capturing 400 changed files is serial Git work: about 5 s at 2 or 16 CPUs, past the 15 s
+    // default once a small runner is loaded, so this open alone gets longer.
+    const opened = await run(installed.bin, ["session", "open", "stress~1...stress"], {
+      cwd: repo,
+      env,
+      timeout: 40_000,
+    });
+    const id: string = json(opened).session.id;
     onTestFinished(() =>
       gyst("session", "delete", "--session", id, "--request-id", randomBytes(16).toString("hex")),
     );
@@ -1368,6 +1375,7 @@ describe("installed gyst in a sandboxed browser", () => {
     const started = { code: 0, files: 0 };
     const inFlight = { code: 0, files: 0 };
     const most = { code: 0, files: 0 };
+    const codeFiles: string[] = [];
     const settle = (request: PageRequest) => {
       const command: unknown = operationOf(request)?.command;
       if (command === "code" || command === "files") inFlight[command]--;
@@ -1378,6 +1386,7 @@ describe("installed gyst in a sandboxed browser", () => {
       const command: unknown = route.request().postDataJSON()?.command;
       if (command === "code" || command === "files") {
         started[command]++;
+        if (command === "code") codeFiles.push(route.request().postDataJSON().file);
         const count = ++inFlight[command];
         most[command] = Math.max(most[command], count);
         // A little latency, so concurrent requests overlap and are counted.
@@ -1405,8 +1414,10 @@ describe("installed gyst in a sandboxed browser", () => {
     // Only the window and a few nearby files loaded, not the whole session.
     expect(started.code).toBeLessThan(100);
 
-    // Moving between loaded files reads nothing more.
-    const before = started.code;
+    // Moving between loaded files reads none of them again. The window follows the reader, so the
+    // file `]f` brings into the nearby window may load once the scroll there lands.
+    const loaded = new Set(codeFiles);
+    const before = codeFiles.length;
     const at = await statusLine(page).textContent();
     await keys(page, "]", "f");
     await waitFor(async () => (await statusLine(page).textContent()) !== at, "the next file");
@@ -1416,19 +1427,21 @@ describe("installed gyst in a sandboxed browser", () => {
       "the first file again",
     );
     await new Promise((resolve) => setTimeout(resolve, 300));
-    expect(started.code).toBe(before);
+    expect(codeFiles.slice(before).filter((file) => loaded.has(file))).toEqual([]);
+    await scrollSettled();
 
     // A far jump loads the files it lands on, still within the bounds.
+    const beforeJump = started.code;
     await pane.evaluate((main) => {
       const scroller = [...main.querySelectorAll("*")].find(
         (element) => element.scrollHeight > element.clientHeight * 10,
       )!;
       scroller.scrollTop = scroller.scrollHeight / 2;
     });
-    await waitFor(async () => started.code > before, "reads for the files landed on");
+    await waitFor(async () => started.code > beforeJump, "reads for the files landed on");
     await scrollSettled();
     await pane.getByText("7 unmodified lines").first().waitFor();
-    expect(started.code).toBeLessThan(before + 100);
+    expect(started.code).toBeLessThan(beforeJump + 100);
     expect(most.code).toBeLessThanOrEqual(4);
     expect(most.files).toBeLessThanOrEqual(1);
   }, 60_000);
