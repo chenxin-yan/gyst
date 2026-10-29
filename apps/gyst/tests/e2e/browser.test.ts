@@ -4328,9 +4328,10 @@ describe("installed gyst in a sandboxed browser", () => {
   it("says Group viewed is saving until the daemon has it, offers the next group only then, and says a refused one", async () => {
     const walk = await openWalk();
     await publishWalk(walk);
-    const page = await newPage(context, { responses: ["/api/operation 503"] });
+    const page = await newPage(context, { responses: ["/api/operation 403"] });
     await page.setViewportSize({ width: 1280, height: 800 });
-    // Each Viewed write waits for the test; while `refuse`, its answer is a 503.
+    // Each Viewed write waits for the test; while `refuse`, gyst refuses it for certain (403). A
+    // 503 may have applied, so the reader resends it on its own once the connection is live.
     const gates: PromiseWithResolvers<void>[] = [];
     let refuse = true;
     await page.route(isOperationUrl, async (route) => {
@@ -4338,7 +4339,7 @@ describe("installed gyst in a sandboxed browser", () => {
       const gate = Promise.withResolvers<void>();
       gates.push(gate);
       await gate.promise;
-      await (refuse ? route.fulfill({ status: 503, body: "" }) : route.fallback());
+      await (refuse ? route.fulfill({ status: 403, body: "" }) : route.fallback());
     });
     await page.goto(`${one.origin}/session/${walk.id}`);
     const pane = page.getByRole("main");
