@@ -85,13 +85,20 @@ export function WalkthroughNav(props: {
                   aria-label={`${group.title}, ${words}${outdated ? ", Outdated" : ""}`}
                   title={group.title}
                   onClick={() => props.onView({ kind: "group", id: group.id })}
-                  {...stylex.props(nav.row, selected && nav.selected)}
+                  {...stylex.props(
+                    nav.row,
+                    selected && nav.selected,
+                    props.viewed !== undefined && (progress.done ? nav.faded : nav.inked),
+                  )}
                 >
-                  <span {...stylex.props(nav.check, progress.done && nav.checkDone)} aria-hidden>
-                    {props.viewed !== undefined && progress.done ? "✓" : ""}
-                  </span>
+                  {props.viewed === undefined && <span {...stylex.props(nav.check)} aria-hidden />}
                   <span {...stylex.props(nav.title)}>{group.title}</span>
                   {outdated && outdatedMark}
+                  {props.viewed !== undefined && progress.done && (
+                    <span {...stylex.props(nav.tick)} aria-hidden>
+                      ✓
+                    </span>
+                  )}
                   <span {...stylex.props(nav.count)} aria-hidden>
                     {props.viewed === undefined
                       ? progress.total
@@ -132,8 +139,12 @@ const nav = stylex.create({
     backgroundColor: { default: null, ":hover": theme.select },
   },
   selected: { color: theme.ink, backgroundColor: theme.select },
-  check: { flexShrink: 0, width: "12px", color: theme.faint, fontSize: "11px" },
-  checkDone: { color: theme.add },
+  // A standalone walkthrough's empty leading column, which keeps its titles where they were.
+  check: { flexShrink: 0, width: "12px" },
+  // With Viewed shown, a group fades when done, with ✓ beside its count: ink is what is left.
+  inked: { color: theme.ink },
+  faded: { color: { default: theme.faint, ":hover": theme.muted } },
+  tick: { flexShrink: 0, fontSize: "13px", color: theme.faint },
   title: {
     flex: "1",
     minWidth: 0,

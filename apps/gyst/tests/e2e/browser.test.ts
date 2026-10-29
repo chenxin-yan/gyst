@@ -310,6 +310,14 @@ const letterOf = async (row: Locator) =>
   )
     .join("")
     .trim();
+/** A sidebar row's text colour: a tree row's name, or a walkthrough row. */
+const tone = (row: Locator) =>
+  row.evaluate(
+    (element) =>
+      getComputedStyle(element.querySelector('[data-item-section="content"]') ?? element).color,
+  );
+/** A tree row's colour and the letter after its name. */
+const looks = async (row: Locator) => `${await tone(row)} ${await letterOf(row)}`;
 /** Opens the sidebar's Files tab: All changes and the snapshot-wide tree. */
 const filesTab = (page: Page) => page.getByRole("tab", { name: "Files" }).click();
 /** Opens the sidebar's Walkthrough tab: the overview, the groups and their files. */
@@ -4165,6 +4173,69 @@ describe("installed gyst in a sandboxed browser", () => {
     );
     expect(await focusedRow(page)).toBe("b.ts");
     expect(await selectedTab()).toBe("Files");
+  }, 60_000);
+
+  it("fades what is done in the sidebar: a viewed file faint with \u2713 before its letter, a folder with nothing left, an unchanged file and a done group, and back at full ink once unmarked", async () => {
+    const walk = await openWalk();
+    await publishWalk(walk);
+    const page = await newPage();
+    await page.setViewportSize({ width: 1280, height: 900 });
+    await page.goto(`${one.origin}/session/${walk.id}`);
+    const side = page.getByRole("navigation", { name: "gyst" });
+    const [ink, faint] = ["rgb(205, 214, 244)", "rgb(127, 132, 156)"];
+    const rowIn = (label: string, name: string) =>
+      side.locator(`[aria-label="${label}"]`).getByRole("treeitem", { name, exact: true });
+    const core = "Files in Parse the config";
+    const edge = "Files in Handle the edge";
+    const coreRow = side.getByRole("button", { name: /^Parse the config/ });
+
+    // Everything is left to read: files, folders and groups at full ink, letters after the name.
+    await coreRow.click();
+    // Off the rows, whose hover tone differs.
+    await page.mouse.move(1, 1);
+    await headingsAre(page, ["walk/b.ts", "walk/a.ts"]);
+    await waitFor(async () => (await looks(rowIn(core, "b.ts"))) === `${ink} M`, "b.ts to read");
+    expect(await tone(rowIn(core, "walk"))).toBe(ink);
+    expect(await tone(coreRow)).toBe(ink);
+
+    // Group viewed: the group's files, its folder and its row fade; ✓ comes before the letter.
+    await keys(page, "Shift+A");
+    await side
+      .getByRole("button", { name: "Parse the config, all 3 of 3 hunks viewed", exact: true })
+      .waitFor();
+    await waitFor(
+      async () => (await looks(rowIn(core, "b.ts"))) === `${faint} \u2713\u2002M`,
+      "b.ts faded",
+    );
+    expect(await looks(rowIn(core, "a.ts"))).toBe(`${faint} \u2713\u2002M`);
+    expect(await tone(rowIn(core, "walk"))).toBe(faint);
+    expect(await tone(coreRow)).toBe(faint);
+    expect((await coreRow.innerText()).replaceAll(/\s+/g, " ")).toBe("Parse the config \u2713 3/3");
+    // Each tree counts its own hunks: a.ts still has edge's hunk to read there.
+    expect(await looks(rowIn(edge, "a.ts"))).toBe(`${ink} M`);
+    expect(await tone(rowIn(edge, "walk"))).toBe(ink);
+    // The Files tree counts all of a file's hunks; an unchanged file is faint too.
+    await filesTab(page);
+    await waitFor(
+      async () => (await looks(treeRow(page, "b.ts"))) === `${faint} \u2713\u2002M`,
+      "b.ts faded in Files",
+    );
+    expect(await looks(treeRow(page, "a.ts"))).toBe(`${ink} M`);
+    expect(await looks(treeRow(page, "README.md"))).toBe(`${faint} `);
+
+    // Unmarking brings them back to full ink.
+    await keys(page, "Shift+A");
+    await waitFor(
+      async () => (await looks(treeRow(page, "b.ts"))) === `${ink} M`,
+      "b.ts unmarked in Files",
+    );
+    await walkthroughTab(page);
+    await side
+      .getByRole("button", { name: "Parse the config, 0 of 3 hunks viewed", exact: true })
+      .waitFor();
+    expect(await looks(rowIn(core, "b.ts"))).toBe(`${ink} M`);
+    expect(await tone(rowIn(core, "walk"))).toBe(ink);
+    expect(await tone(coreRow)).toBe(ink);
   }, 60_000);
 
   it("reads a walkthrough from the bar above the reader: each view's size and progress, a group's place, its overview opened, scrolled and closed, Group viewed and the overview's references", async () => {

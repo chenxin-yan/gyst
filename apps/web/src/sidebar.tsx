@@ -61,6 +61,8 @@ export function Sidebar(props: {
       <GroupTree
         label={`Files in ${group.title}`}
         files={filesOf(group.files)}
+        hunkIds={new Set(group.hunkIds)}
+        viewed={props.viewed}
         selected={review.kind === "group" && review.id === group.id ? current : undefined}
         onOpen={(path) => props.onGroupFile(group, path)}
       />
@@ -75,21 +77,34 @@ export function Sidebar(props: {
     hunks.some(({ id }) => !grouped.has(id)),
   );
   const outsideViewed = outside.filter(({ id }) => props.viewed?.has(id)).length;
+  const outsideDone = outsideViewed === outside.length;
+  const viewedShown = props.viewed !== undefined;
   const ungrouped = status.groups.length > 0 && outsideFiles.length > 0 && (
     <li>
       <p
         aria-label={`Not in a group, ${outside.length} ${outside.length === 1 ? "hunk" : "hunks"}`}
-        {...stylex.props(styles.row)}
+        {...stylex.props(
+          styles.row,
+          viewedShown && styles.marked,
+          viewedShown && (outsideDone ? styles.faded : styles.inked),
+        )}
       >
         <span {...stylex.props(styles.title)}>Not in a group</span>
+        {viewedShown && outsideDone && (
+          <span aria-hidden {...stylex.props(styles.tick)}>
+            ✓
+          </span>
+        )}
         <span aria-hidden {...stylex.props(styles.count)}>
-          {props.viewed === undefined ? outside.length : `${outsideViewed}/${outside.length}`}
+          {viewedShown ? `${outsideViewed}/${outside.length}` : outside.length}
         </span>
       </p>
       <div {...stylex.props(styles.tree)}>
         <GroupTree
           label="Files not in a group"
           files={outsideFiles}
+          hunkIds={new Set(outside.map(({ id }) => id))}
+          viewed={props.viewed}
           selected={review.kind === "files" && files.has(review.path) ? review.path : undefined}
           onOpen={(path) => props.onView({ kind: "files", path })}
         />
@@ -161,6 +176,7 @@ export function Sidebar(props: {
             <SnapshotTree
               paths={props.paths}
               files={files}
+              viewed={props.viewed}
               selection={review.kind === "files" ? review.path : undefined}
               onSelect={(path) => props.onView({ kind: "files", path })}
             />
@@ -231,4 +247,10 @@ const styles = stylex.create({
     whiteSpace: "nowrap",
   },
   count: { flexShrink: 0, fontFamily: theme["--mono"], fontSize: "11px", color: theme.faint },
+  // With Viewed shown, "Not in a group" fades when done as a group row does, without the leading
+  // column a standalone walkthrough keeps.
+  marked: { paddingLeft: "10px" },
+  inked: { color: theme.ink },
+  faded: { color: theme.faint },
+  tick: { flexShrink: 0, fontSize: "13px", color: theme.faint },
 });
