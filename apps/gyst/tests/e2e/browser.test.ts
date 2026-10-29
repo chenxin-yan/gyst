@@ -4243,6 +4243,43 @@ describe("installed gyst in a sandboxed browser", () => {
     expect(Math.abs((await steady(() => panelTop(page)))! - again!)).toBeLessThan(40);
   }, 30_000);
 
+  it("keeps a group's place when the reader leaves it from a reference expanded over it", async () => {
+    const walk = await openWalk();
+    await publishWalk(walk);
+    await walk.publish(1, "reference", [
+      {
+        type: "group.update",
+        id: "core",
+        overview: "Reads over [the constants](gyst:new/src/long.ts#L10-L12).",
+      },
+    ]);
+    const page = await newPage();
+    await page.setViewportSize({ width: 1280, height: 600 });
+    await page.goto(`${one.origin}/session/${walk.id}`);
+    const pane = page.getByRole("main");
+    const side = page.getByRole("navigation", { name: "gyst" });
+    await side.getByRole("button", { name: /^Parse the config/ }).click();
+    await headingsAre(page, ["walk/b.ts", "walk/a.ts"]);
+    await keys(page, "]", "f", "]", "c", "]", "c");
+    await says(page, "a.ts:20 \u00b7 new");
+    const left = await steady(() => panelTop(page));
+    expect(left).toBeGreaterThan(0);
+    await pane
+      .locator("[data-group-overview]")
+      .getByRole("button", { name: "the constants" })
+      .click();
+    await pane
+      .getByRole("region", { name: "Captured file" })
+      .getByText("src/long.ts", { exact: true })
+      .waitFor();
+    await side.getByRole("button", { name: /^Handle the edge/ }).click();
+    await headingsAre(page, ["walk/c.ts", "walk/a.ts"]);
+    await side.getByRole("button", { name: /^Parse the config/ }).click();
+    await headingsAre(page, ["walk/b.ts", "walk/a.ts"]);
+    await says(page, "a.ts:20 \u00b7 new");
+    expect(Math.abs((await steady(() => panelTop(page)))! - left!)).toBeLessThan(40);
+  }, 30_000);
+
   it("says Group viewed is saving until the daemon has it, offers the next group only then, and says a refused one", async () => {
     const walk = await openWalk();
     await publishWalk(walk);

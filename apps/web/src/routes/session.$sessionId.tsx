@@ -1505,9 +1505,15 @@ function SessionReader(props: {
     else setRefocus({ origin: peek.origin, target: peek.target });
   };
 
-  /** Shows a peek's target in the main panel; Back returns to this place and this peek. */
+  /**
+   * Shows a peek's target in the main panel; Back returns to this place and this peek. Leaving the
+   * view, it keeps the view's place as choosing another view would.
+   */
   const expand = (target: CapturedRange) => {
-    const at = viewer.current?.position() ?? { position: undefined, scrollTop: 0 };
+    const shownAt = viewer.current?.position();
+    if (captured === undefined && shownAt)
+      views.set(shownView, { top: restoreFor(undefined, shownAt), cursor: current });
+    const at = shownAt ?? { position: undefined, scrollTop: 0 };
     const origin: Place = {
       review,
       captured,
