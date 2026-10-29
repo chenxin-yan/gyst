@@ -4343,6 +4343,20 @@ describe("installed gyst in a sandboxed browser", () => {
     await headingsAre(page, ["walk/b.ts", "walk/a.ts"]);
     await says(page, "a.ts:20 \u00b7 new");
     expect(Math.abs((await steady(() => panelTop(page)))! - left!)).toBeLessThan(2);
+
+    // Choosing the group the reference was expanded over resumes it the same way.
+    await pane
+      .locator("[data-group-overview]")
+      .getByRole("button", { name: "the constants" })
+      .click();
+    await pane
+      .getByRole("region", { name: "Captured file" })
+      .getByText("src/long.ts", { exact: true })
+      .waitFor();
+    await side.getByRole("button", { name: /^Parse the config/ }).click();
+    await headingsAre(page, ["walk/b.ts", "walk/a.ts"]);
+    await says(page, "a.ts:20 \u00b7 new");
+    expect(Math.abs((await steady(() => panelTop(page)))! - left!)).toBeLessThan(2);
   }, 30_000);
 
   it("keeps each group's overview open or closed across a visit to another session", async () => {

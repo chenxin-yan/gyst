@@ -1422,7 +1422,9 @@ function SessionReader(props: {
     const leaving = to !== shownView;
     const left = captured === undefined && leaving ? viewer.current?.position() : undefined;
     if (left) views.set(shownView, { top: restoreFor(undefined, left), cursor: current });
-    const saved = at === undefined && leaving ? views.get(to) : undefined;
+    // An expanded reference keeps the view it was expanded over, which is left all the same.
+    const saved =
+      at === undefined && (leaving || captured !== undefined) ? views.get(to) : undefined;
     const enters =
       at === undefined &&
       saved === undefined &&
