@@ -25,17 +25,21 @@ import {
 } from "./walkthrough.ts";
 
 /**
- * The sidebar's walkthrough: its overview row and its groups in the agent's order, each with a
+ * The sidebar's walkthrough tab: its overview row and its groups in the agent's order, each with a
  * checkmark and count derived from Viewed hunks, in words as well as marks, and Outdated where a
- * refresh left it so. An incomplete walkthrough says what it still lacks; a plain diff session
- * needs none. Without `viewed` (a standalone walkthrough has no reading progress) a group shows
- * its hunk count alone.
+ * refresh left it so, then its files. An incomplete walkthrough says what it still lacks; a plain
+ * diff session needs none. Without `viewed` (a standalone walkthrough has no reading progress) a
+ * group shows its hunk count alone.
  */
 export function WalkthroughNav(props: {
   status: StatusPayload;
   viewed: ReadonlySet<string> | undefined;
   view: ReviewView;
   onView: (view: ReviewView) => void;
+  /** A group's files, below its row. */
+  groupFiles: (group: StatusGroup) => ReactNode;
+  /** A last entry, for the hunks in no group. */
+  ungrouped: ReactNode;
 }) {
   const { status, view } = props;
   const coverage = coverageOf(status);
@@ -45,7 +49,6 @@ export function WalkthroughNav(props: {
   const outdatedMark = <span {...stylex.props(nav.outdated)}>Outdated</span>;
   return (
     <>
-      <p {...stylex.props(nav.head)}>Walkthrough</p>
       {plain ? (
         <p {...stylex.props(nav.note)}>No walkthrough for this session yet.</p>
       ) : (
@@ -95,9 +98,11 @@ export function WalkthroughNav(props: {
                       : `${progress.viewed}/${progress.total}`}
                   </span>
                 </button>
+                {props.groupFiles(group)}
               </li>
             );
           })}
+          {props.ungrouped}
         </ul>
       )}
       {coverage && (
@@ -112,12 +117,6 @@ export function WalkthroughNav(props: {
 }
 
 const nav = stylex.create({
-  head: {
-    padding: "4px 10px 8px",
-    fontSize: "12px",
-    fontWeight: 500,
-    color: theme.muted,
-  },
   note: { padding: "0 10px", fontSize: "12px", color: theme.faint },
   list: { display: "grid", gridTemplateColumns: "minmax(0, 1fr)", gap: "1px" },
   row: {
