@@ -4,7 +4,7 @@ import type { StatusPayload } from "@gyst/core/wire";
 import * as stylex from "@stylexjs/stylex";
 import { useId, useRef, useState } from "react";
 import type { ReaderFile } from "./reader.ts";
-import { theme } from "./tokens.stylex.ts";
+import { media, theme } from "./tokens.stylex.ts";
 import { GroupTree, SnapshotTree } from "./trees.tsx";
 import type { ReviewView, StatusGroup } from "./walkthrough.ts";
 import { WalkthroughNav } from "./walkthrough.tsx";
@@ -232,7 +232,15 @@ const styles = stylex.create({
     color: { default: theme.ink, ":hover": theme.ink },
     borderBottomColor: theme.muted,
   },
-  panel: { flex: "1 1 0", minHeight: 0, display: "flex", flexDirection: "column" },
+  // Narrow, the sidebar is as tall as its content up to a cap, which leaves a flexed panel no
+  // height: the panel takes a fixed one, about six rows, for the Files tree to fill and scroll in.
+  panel: {
+    flex: { default: "1 1 0", [media.narrow]: "none" },
+    height: { default: null, [media.narrow]: "160px" },
+    minHeight: 0,
+    display: "flex",
+    flexDirection: "column",
+  },
   scroll: { overflowY: "auto", overscrollBehavior: "none" },
   // A group's tree sits under its title, its rows a step in.
   tree: { paddingLeft: "16px", paddingBlock: "1px 6px" },

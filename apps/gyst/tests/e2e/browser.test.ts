@@ -4396,6 +4396,41 @@ describe("installed gyst in a sandboxed browser", () => {
     expect(rows).toBeLessThan(100);
   }, 60_000);
 
+  it("keeps the sidebar's Files tree usable at phone width, its first rows shown and scrolling inside the tab", async () => {
+    // main...bulk adds 400 one-line files in one folder.
+    const launched = await launchFor(await freshSession("main...bulk"));
+    const page = await newPage();
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.goto(launched.url);
+    await page
+      .getByRole("main")
+      .getByRole("heading", { name: "bulk/000.txt", exact: true })
+      .waitFor();
+    const side = page.getByRole("navigation", { name: "gyst" });
+    /** Whether a tree row lies whole inside the part of the sidebar on screen. */
+    const shown = async (name: string) => {
+      const row = treeRow(page, name);
+      if ((await row.count()) === 0) return false;
+      const [box, bounds] = await Promise.all([row.boundingBox(), side.boundingBox()]);
+      return (
+        box !== null &&
+        bounds !== null &&
+        box.height > 0 &&
+        box.y >= bounds.y &&
+        box.y + box.height <= bounds.y + bounds.height
+      );
+    };
+    await waitFor(
+      async () => (await shown("bulk")) && (await shown("000.txt")) && (await shown("001.txt")),
+      "the tree's first rows shown",
+    );
+    // The tree scrolls inside the tab, a later file coming into view.
+    const tree = await side.locator('[aria-label="Snapshot files"]').boundingBox();
+    await page.mouse.move(tree!.x + tree!.width / 2, tree!.y + 10);
+    await page.mouse.wheel(0, 600);
+    await waitFor(() => shown("024.txt"), "a later file scrolled into view");
+  }, 60_000);
+
   it("keeps the Files tree's folders as the reader left them while later pages of files arrive: an unchanged folder opened stays open, a changed folder closed stays closed", async () => {
     const cwd = join(root, "folders");
     await mkdir(join(cwd, "docs"), { recursive: true });
