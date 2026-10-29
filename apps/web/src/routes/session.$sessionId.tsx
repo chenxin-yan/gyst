@@ -722,7 +722,7 @@ function SessionReader(props: {
         : viewFiles(review, files, status),
     [captured, capturedFile, capturedEntry, review, files, status],
   );
-  const disclosure = useGroupOverview(inView.group);
+  const disclosure = useGroupOverview(inView.group, recalled?.overviewsClosed);
   const shown = inView.files;
   const shownPaths = useMemo(() => shown.map((file) => file.path), [shown]);
   const shownByPath = useMemo(() => new Map(shown.map((file) => [file.path, file])), [shown]);
@@ -962,6 +962,7 @@ function SessionReader(props: {
     author: { shown: authorShown, commits: rangeCommits.read },
     top: recalled?.top,
     views,
+    overviewsClosed: disclosure.closed,
   });
   readingPlace.current = {
     ...readingPlace.current,
@@ -975,6 +976,7 @@ function SessionReader(props: {
     folds,
     expandedFolded,
     author: { shown: authorShown, commits: rangeCommits.read },
+    overviewsClosed: disclosure.closed,
   };
   useEffect(() => remember(session.id, snapshotId, hunks, readingPlace.current));
   const returning = useRef(recalled !== undefined);

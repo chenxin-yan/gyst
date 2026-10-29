@@ -17,10 +17,13 @@ const counted = (count: number, word: string) => `${count} ${word}${count === 1 
 
 /**
  * The group overview's disclosure: open on a group's first visit, then as the reader left it for
- * the page's life, and the capped region it scrolls in.
+ * the page's life (`closed`, kept with the reading place), and the capped region it scrolls in.
  */
-export function useGroupOverview(group: StatusGroup | undefined) {
-  const [closed, setClosed] = useState<ReadonlySet<string>>(new Set());
+export function useGroupOverview(
+  group: StatusGroup | undefined,
+  recalled: ReadonlySet<string> | undefined,
+) {
+  const [closed, setClosed] = useState<ReadonlySet<string>>(() => recalled ?? new Set());
   const region = useRef<HTMLDivElement | null>(null);
   // Set by the key that opens it, so the keyboard scrolls it from then on.
   const focus = useRef(false);
@@ -36,6 +39,7 @@ export function useGroupOverview(group: StatusGroup | undefined) {
     return true;
   };
   return {
+    closed,
     open,
     region,
     focus,

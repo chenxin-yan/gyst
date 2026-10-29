@@ -12,7 +12,7 @@ import type { ReviewView } from "./walkthrough.ts";
  * and in the expanded reference (a place inside a file exists only while it is unfolded), whether it
  * showed the author's explanation with the range commits read for it (an offset into the panel's
  * header counts them), what was at the panel's top: a reading position, or an offset above the
- * first file, and where it left each other view it read.
+ * first file, where it left each other view it read, and the groups whose overview it closed.
  */
 export type ReadingPlace = {
   review: ReviewView;
@@ -28,6 +28,8 @@ export type ReadingPlace = {
   author: { shown: boolean; commits: RangeCommits["read"] };
   top: Restore | undefined;
   views: ReadonlyMap<string, ViewPlace>;
+  /** Group ids. */
+  overviewsClosed: ReadonlySet<string>;
 };
 
 /** Where the reader left a view, by `viewKey`: what was at the panel's top, and the cursor. */
@@ -50,7 +52,7 @@ export const viewKey = (view: ReviewView) =>
  * file is folded exactly when the new snapshot records it Generated and, in the view the reader was
  * in, no kept position is on one of its lines. An expanded reference, Back and the author's
  * explanation belong to the snapshot they were read in, and so does an offset taken while that
- * explanation was shown.
+ * explanation was shown. A group's closed overview stays closed: the group outlives a refresh by id.
  */
 const places = new Map<
   string,
@@ -110,7 +112,8 @@ export const recall = (
       ? { file, side: undefined, line: undefined }
       : { file, side, line: moved };
   };
-  const { review, inputMode, cursor, opened, folds, author, top, views } = saved.place;
+  const { review, inputMode, cursor, opened, folds, author, top, views, overviewsClosed } =
+    saved.place;
   const cursorAfter = cursor && cursorNow(cursor);
   const restoreNow = (restore: Restore | undefined) =>
     restore !== undefined && "position" in restore
@@ -161,5 +164,6 @@ export const recall = (
           : [[key, { top: placeTop, cursor: place.cursor && cursorNow(place.cursor) }]];
       }),
     ),
+    overviewsClosed,
   };
 };

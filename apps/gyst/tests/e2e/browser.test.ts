@@ -4300,6 +4300,31 @@ describe("installed gyst in a sandboxed browser", () => {
     expect(Math.abs((await steady(() => panelTop(page)))! - left!)).toBeLessThan(40);
   }, 30_000);
 
+  it("keeps each group's overview open or closed across a visit to another session", async () => {
+    const walk = await openWalk();
+    await publishWalk(walk);
+    const other = await freshSession();
+    const page = await newPage();
+    await page.setViewportSize({ width: 1280, height: 800 });
+    await page.goto(`${one.origin}/session/${walk.id}`);
+    const pane = page.getByRole("main");
+    const side = page.getByRole("navigation", { name: "gyst" });
+    const toggle = pane.getByRole("button", { name: /^Overview/ });
+    await side.getByRole("button", { name: /^Parse the config/ }).click();
+    await headingsAre(page, ["walk/b.ts", "walk/a.ts"]);
+    expect(await toggle.getAttribute("aria-expanded")).toBe("true");
+    await toggle.click();
+    await waitFor(async () => (await toggle.getAttribute("aria-expanded")) === "false", "closed");
+
+    await toSessionAndBack(page, other);
+    await pane.getByText("Group 1 of 2", { exact: true }).waitFor();
+    expect(await toggle.getAttribute("aria-expanded")).toBe("false");
+    // A group not closed still opens on its first visit.
+    await side.getByRole("button", { name: /^Handle the edge/ }).click();
+    await headingsAre(page, ["walk/c.ts", "walk/a.ts"]);
+    expect(await toggle.getAttribute("aria-expanded")).toBe("true");
+  }, 30_000);
+
   it("says Group viewed is saving until the daemon has it, offers the next group only then, and says a refused one", async () => {
     const walk = await openWalk();
     await publishWalk(walk);
