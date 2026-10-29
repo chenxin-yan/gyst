@@ -30,6 +30,8 @@ Open the walkthrough overview with the model the reader needs before any code: w
 
 Choose the smallest representation that works: a sentence, a short list, a compact table, a fenced snippet, or a diagram when a flow or state change is hard to follow in words. A diagram must clarify, not decorate.
 
+A group overview may end with a short **Verify** list of concrete questions the reader should be able to answer, each with a link to the captured code that answers it; write it with the overview, because editing an overview unviews its group's hunks.
+
 ## Notes and their ranges
 
 A note explains a logical step, not every hunk or line; obvious mechanical changes speak for themselves. Notes sit beside the code in code order, so do not restate the code.
