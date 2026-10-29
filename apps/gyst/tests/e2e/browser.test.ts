@@ -4254,6 +4254,43 @@ describe("installed gyst in a sandboxed browser", () => {
     expect(await tone(coreRow)).toBe(ink);
   }, 60_000);
 
+  it("keeps few rows in the page for a Files tree of a thousand files, which virtualizes", async () => {
+    const cwd = join(root, "thousand");
+    await mkdir(join(cwd, "many"), { recursive: true });
+    const inRepo = (...args: string[]) => execFileSync("git", args, { cwd, env, stdio: "ignore" });
+    inRepo("init", "-q", "-b", "main");
+    inRepo("config", "user.email", "t@gyst.invalid");
+    inRepo("config", "user.name", "t");
+    const names = Array.from({ length: 1000 }, (_, i) => `${String(i).padStart(4, "0")}.txt`);
+    await Promise.all(names.map((name) => writeFile(join(cwd, "many", name), `${name}\n`)));
+    inRepo("add", ".");
+    inRepo("commit", "-qm", "init");
+    // One change inside the folder, so it starts open.
+    await writeFile(join(cwd, "many", "0000.txt"), "changed\n");
+    const launched = await launchIn(cwd);
+    onTestFinished(async () => {
+      await gyst("session", "delete", "--session", launched.id, "--request-id", randomUUID());
+      await rm(cwd, { recursive: true, force: true });
+    });
+
+    const page = await newPage();
+    await page.setViewportSize({ width: 1280, height: 800 });
+    await page.goto(`${launched.origin}${launched.path}`);
+    await headingsAre(page, ["many/0000.txt"]);
+    // Every page of the snapshot's files arrived: the tree counts the folder's thousand files.
+    await waitFor(
+      async () => (await treeRow(page, "0000.txt").getAttribute("aria-setsize")) === "1000",
+      "a thousand files in the tree",
+    );
+    const rows = await page
+      .getByRole("navigation", { name: "gyst" })
+      .locator('[aria-label="Snapshot files"]')
+      .getByRole("treeitem")
+      .count();
+    expect(rows).toBeGreaterThan(10);
+    expect(rows).toBeLessThan(100);
+  }, 60_000);
+
   it("reads a walkthrough from the bar above the reader: each view's size and progress, a group's place, its overview opened, scrolled and closed, Group viewed and the overview's references", async () => {
     const walk = await openWalk();
     await publishWalk(walk);
