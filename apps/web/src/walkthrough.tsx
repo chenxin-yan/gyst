@@ -168,12 +168,11 @@ export function useRefocus(
 }
 
 /**
- * The overview above a view's diff: the walkthrough's above the whole snapshot, or a group's above
- * its files. Never a heading, which would join the file headers' outline.
+ * A view's overview: the walkthrough's above the whole snapshot, or a group's in the group bar.
+ * Never a heading, which would join the file headers' outline.
  */
 export function OverviewCard(props: {
   label: string;
-  title?: string | undefined;
   overview: StatusGroup["overview"];
   /** Why the overview, or the group it introduces, is Outdated; `outdatedReason`'s words. */
   outdated?: string | undefined;
@@ -184,12 +183,17 @@ export function OverviewCard(props: {
   peek?: ReactNode;
   /** A reference whose peek just closed, focused again: Back rebuilds the overview it was in. */
   refocus?: CapturedRange | undefined;
+  /** Without its own frame or top margin, inside the group bar's. */
+  frameless?: boolean;
 }) {
   const box = useRef<HTMLElement>(null);
   useRefocus(box, props.refocus);
   return (
-    <section ref={box} aria-label={props.label} {...stylex.props(card.box)}>
-      {props.title !== undefined && <p {...stylex.props(card.title)}>{props.title}</p>}
+    <section
+      ref={box}
+      aria-label={props.label}
+      {...stylex.props(card.box, props.frameless && card.frameless)}
+    >
       {props.outdated && (
         <p role="note" {...stylex.props(outdatedStyles.line)}>
           {props.outdated}
@@ -219,7 +223,7 @@ const card = stylex.create({
     boxShadow: `0 0 0 1px ${theme.line}`,
     fontFamily: theme.sans,
   },
-  title: { marginBottom: "6px", fontSize: "14px", fontWeight: 600, color: theme.ink },
+  frameless: { marginTop: 0, padding: "2px 0 0", backgroundColor: null, boxShadow: "none" },
   missing: { fontSize: "12px", color: theme.faint },
 });
 

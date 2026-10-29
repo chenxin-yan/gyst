@@ -69,6 +69,24 @@ export function groupProgress(group: Pick<StatusGroup, "hunkIds">, viewed: Reado
   return { viewed: count, total, done: total > 0 && count === total };
 }
 
+const counted = (count: number, word: string) => `${count} ${word}${count === 1 ? "" : "s"}`;
+
+/**
+ * What Group viewed writes: every hunk of the group Viewed, or once all are, none. It says what it
+ * changed, counting only the hunks whose state changes and the files they are in.
+ */
+export function groupViewedChange(
+  group: Pick<StatusGroup, "hunkIds">,
+  files: readonly ReaderFile[],
+  viewed: ReadonlySet<string>,
+) {
+  const { done } = groupProgress(group, viewed);
+  const changing = new Set(group.hunkIds.filter((id) => viewed.has(id) === done));
+  const touched = files.filter((file) => file.hunks.some(({ id }) => changing.has(id))).length;
+  const scope = `${counted(changing.size, "hunk")} in ${counted(touched, "file")}`;
+  return { viewed: !done, said: done ? `Unmarked ${scope}.` : `Marked ${scope} Viewed.` };
+}
+
 /**
  * What an incomplete walkthrough still lacks, in words, or undefined when it is plain or complete.
  * Ungrouped hunks stay readable under Files; there is no separate list of them.

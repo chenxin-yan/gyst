@@ -96,6 +96,8 @@ Author for a reviewer who knows the language but may not know the subsystem: sho
 
 Viewed belongs to each current hunk and is shared across every view. A file header has a binary checkbox: checked iff all hunks of that file **in the current view** are Viewed. Checking marks that set, folds the file and advances to the next unviewed file; unchecking clears only that set. The snapshot-wide file view covers all changed hunks in the file. A walkthrough-row checkmark is derived from its hunks, not a group obligation. Empty retained Outdated groups are not complete by vacuous truth.
 
+**Group viewed** (`Shift+A`, live sessions only) marks every hunk of the shown group Viewed through the same Viewed write. While the write is pending it says so; only once saved does it say how many hunks in how many files it changed and offer the next group without going there, and a failed write is said instead. It folds nothing. Once the whole group is Viewed it reads Unmark group and clears that set.
+
 | Event                                                                      | Effect on Viewed                                                        |
 | -------------------------------------------------------------------------- | ----------------------------------------------------------------------- |
 | Add, edit or remove a note                                                 | Unview its anchored hunks, globally                                     |
@@ -148,6 +150,8 @@ The agent can explicitly revalidate unchanged wording after checking current sup
 
 Preserve the accepted prototype's Catppuccin with lavender as sole accent, Inter + JetBrains Mono, inset main reading panel, compact inset-bar file headers, and sidebar with walkthrough above the snapshot-wide file tree. Selecting a file outside a group or a folder opens all changes under that path. No inbox, persistent snapshot badge, dedicated Guide me mode or separate comments pane.
 
+A bar between the header and the reader appears on every reading view except an expanded captured file, and keeps its height while the reader scrolls below it. It names the view and its size in files and hunks (on the whole snapshot, also its groups and the hunks in none), with an n/m viewed meter in a live session; with groups, the whole snapshot offers Start with group 1. In a group it says Group n of m, the title, Outdated where it applies and the sizes, moves to the previous or next group, holds Group viewed and holds the group's overview, frameless, as a disclosure capped at about a quarter of the window: a fade and a more control say when it hides more below. Each group keeps its overview open or closed for the page's life. Entering a group lands at its start, below the bar.
+
 The header shows the exact scope and compact PR-layer switcher when applicable. Gyst's wordmark uses the code face; a borderless GitHub link may show the release-baked/daily-cached star count, not a startup network request. Display snapshot/side at the code location where it matters rather than restoring the removed permanent badge.
 
 A file's hunks read as one continuous diff over captured full contents. Touching hunks have no artificial gap. Each hidden range displays its line count and expands independently. A hidden range with other groups' hunks says “N lines, with changes from another group”; expansion shows those as real changes, never fake unchanged lines. Notes collapse to a bare chevron chip, without an “Agent note” heading or Ask button.
@@ -163,7 +167,7 @@ Two modes, selectable in the status line/command menu:
 - **Vim:** visible side-specific accent bar/tint cursor walking code, file headers, hidden ranges, notes and threads. Follow with scrolloff and retargetable scrolling; manual scrolling pulls the cursor back onscreen.
 - **Mouse:** no cursor highlight; line-hover + and dragging select code/ranges. Movement keys scroll rather than expose a second focus model.
 
-Disable review shortcuts while typing. Provide discoverable controls, visible keyboard focus, labelled actions and non-color-only status indications. Preserve logical cursor, selection and position across responsive reflow, folds, live updates and virtualization.
+Disable review shortcuts while typing. Provide discoverable controls, visible keyboard focus, labelled actions and non-color-only status indications. Preserve logical cursor, selection and position across responsive reflow, folds, live updates and virtualization. Each view keeps its own position and cursor for the page's life, so a return to a group or path resumes where it was left. While the group overview has focus, movement keys scroll it. The input mode is the one browser setting kept across reloads.
 
 | Keys                                               | Action                                                                                                            |
 | -------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------- |
@@ -176,6 +180,8 @@ Disable review shortcuts while typing. Provide discoverable controls, visible ke
 | `x`                                                | Resolve/reopen open thread, human only                                                                            |
 | `]c` / `[c`, `]n` / `[n`, `]t` / `[t`, `]f` / `[f` | Next/previous change, note, open thread, file                                                                     |
 | `J` / `K`                                          | Next/previous group                                                                                               |
+| `O`                                                | Group overview: open it, then show more of it, then close it                                                      |
+| `A`                                                | Group viewed, or Unmark group; live sessions only                                                                 |
 | `Enter` / `zo`                                     | Open one level: hidden range, note, replies/thread; Enter on file header toggles file                             |
 | `Esc` / `zc`                                       | Close one level; Esc cancels active draft/selection first, without discarding saved draft; Esc never folds a file |
 | `za`, `zR` / `zM`                                  | Toggle at cursor; unfold/fold every file                                                                          |
@@ -194,7 +200,7 @@ Context-specific interaction wins over global keys: in the navigation selector `
 
 ### Captured links and semantic results
 
-An authored link or selected semantic result opens an inline peek at its origin, **not a modal**. It spans both split columns: preview left, vertical symbol/location selector right, stacked at narrow widths. Keep compact Expand beside Close. No file-wide navigation controls, “Choose another symbol” action or special “Comment on highlighted range” button.
+An authored link or selected semantic result opens an inline peek at its origin, **not a modal**. In the group bar's overview a link to current changed code goes to its line in the diff, and one to supporting or earlier-snapshot code opens Expand, with Back; links in notes keep the peek. It spans both split columns: preview left, vertical symbol/location selector right, stacked at narrow widths. Keep compact Expand beside Close. No file-wide navigation controls, “Choose another symbol” action or special “Comment on highlighted range” button.
 
 Right-click targets the exact symbol; `gd`/`gr` operate from the current line, offering valid identifiers including declaration parameters. `j`/`k` updates preview; Enter expands a single location or opens location selection for multiple results. Escape and repeat the query to choose another symbol. Preserve engine symbol-under-cursor semantics: an imported alias can have fewer usages than the original symbol; do not add custom alias expansion or claim an exhaustive call graph.
 
