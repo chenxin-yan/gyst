@@ -4,7 +4,7 @@
 import type { FileTreeRowDecoration, FileTreeRowDecorationRenderer } from "@pierre/trees";
 import { FileTree, useFileTree, useFileTreeSelector } from "@pierre/trees/react";
 import * as stylex from "@stylexjs/stylex";
-import { type FocusEvent, useEffect, useMemo, useRef, useState } from "react";
+import { type FocusEvent, type MouseEvent, useEffect, useMemo, useRef, useState } from "react";
 import { agentOrder } from "./order.ts";
 import { type ReaderFile, statusOf } from "./reader.ts";
 import { theme } from "./tokens.stylex.ts";
@@ -168,18 +168,6 @@ export function SnapshotTree(props: {
     ...treeOptions,
     paths,
     initialExpandedPaths: opened(),
-    onSelectionChange: (selected) => {
-      // A directory's canonical path ends in "/"; the reader's paths don't.
-      const path = selected.length === 1 ? selected[0]!.replace(/\/$/, "") : undefined;
-      if (path === undefined || path === latest.current.selection) return;
-      latest.current.onSelect(path);
-      // A click both selects and toggles a folder, so opening an open folder's changes would
-      // close it; a newly selected folder opens again. Clicking it once selected still closes it.
-      queueMicrotask(() => {
-        const item = model.getItem(selected[0]!);
-        if (item && "expand" in item && !item.isExpanded()) item.expand();
-      });
-    },
     gitStatus: look.gitStatus,
     renderRowDecoration: look.renderRowDecoration,
   });
@@ -193,6 +181,18 @@ export function SnapshotTree(props: {
   useViewedUpdates(model, look);
   useSelected(model, props.selection === "" ? undefined : props.selection);
   const announcement = useRowAnnouncement(model, marks);
+  const onClick = (event: MouseEvent) => {
+    const row = chosenRow(model, event);
+    if (row === undefined) return;
+    // A directory's canonical path ends in "/"; the reader's paths don't.
+    const path = row.replace(/\/$/, "");
+    // A click both selects and toggles a folder, so opening an open folder's changes would close
+    // it; a newly chosen folder opens again. Choosing it once selected still closes it.
+    const item = model.getItem(row);
+    if (path !== latest.current.selection && item && "expand" in item && !item.isExpanded())
+      item.expand();
+    latest.current.onSelect(path);
+  };
 
   return (
     <>
@@ -201,6 +201,7 @@ export function SnapshotTree(props: {
         // TODO: Name the tree itself once its role="tree" takes a label (raised on
         // https://github.com/pierrecomputer/pierre/issues/1187); this label lands on the host element.
         aria-label="Snapshot files"
+        onClick={onClick}
         {...announcement.hostProps}
         {...stylex.props(styles.tree, viewed !== undefined && styles.inked, styles.fill)}
       />
@@ -250,12 +251,7 @@ export function GroupTree(props: {
     // Every row is in view, so the first render draws them all.
     initialVisibleRowCount: paths.length * 2,
     onSelectionChange: (selected) => {
-      const [path] = selected;
-      const { selected: current, onOpen } = latest.current;
-      if (selected.length === 1 && !path!.endsWith("/")) {
-        if (path !== current) onOpen(path!);
-        return;
-      }
+      if (selected.length === 1 && !selected[0]!.endsWith("/")) return;
       // A folder only opens or closes here; the selection goes back to the current file once the
       // tree's own click handling is done.
       queueMicrotask(() => syncSelected(model, latest.current.selected));
@@ -267,6 +263,10 @@ export function GroupTree(props: {
   useViewedUpdates(model, look);
   useSelected(model, props.selected);
   const announcement = useRowAnnouncement(model, marks);
+  const onClick = (event: MouseEvent) => {
+    const row = chosenRow(model, event);
+    if (row !== undefined && !row.endsWith("/")) latest.current.onOpen(row);
+  };
 
   const rows = useFileTreeSelector(model, (tree) => tree.getVisibleCount());
   return (
@@ -276,12 +276,26 @@ export function GroupTree(props: {
         // TODO: Name the tree itself once @pierre/trees can (issues/1187); see SnapshotTree.
         aria-label={props.label}
         style={{ height: rows * model.getItemHeight() }}
+        onClick={onClick}
         {...announcement.hostProps}
         {...stylex.props(styles.tree, viewed !== undefined && styles.inked, styles.group)}
       />
       {announcement.region}
     </>
   );
+}
+
+/**
+ * The row a plain click chose, a directory's path ending in "/", or undefined for a click off the
+ * rows. A row is a button, so Enter clicks it too. Selection changes can't tell it: choosing the
+ * selected row again, to land at it or to leave an expanded reference, changes nothing.
+ */
+function chosenRow(model: Model, event: MouseEvent) {
+  if (event.shiftKey || event.ctrlKey || event.metaKey) return undefined;
+  // The innermost target: the tree's shadow root retargets `target` to its host.
+  const [inner] = event.nativeEvent.composedPath();
+  if (!(inner instanceof Element && inner.closest('[role="treeitem"]'))) return undefined;
+  return model.getFocusedPath() ?? undefined;
 }
 
 /** Makes `path` (a file or folder) the tree's one selected row, or selects nothing. */
