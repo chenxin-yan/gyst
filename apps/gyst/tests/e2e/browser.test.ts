@@ -4232,6 +4232,59 @@ describe("installed gyst in a sandboxed browser", () => {
     expect(Math.abs((await steady(() => panelTop(page)))! - bottom!)).toBeLessThan(40);
   }, 30_000);
 
+  it("says Group viewed is saving until the daemon has it, offers the next group only then, and says a refused one", async () => {
+    const walk = await openWalk();
+    await publishWalk(walk);
+    const page = await newPage(context, { responses: ["/api/operation 503"] });
+    await page.setViewportSize({ width: 1280, height: 800 });
+    // Each Viewed write waits for the test; while `refuse`, its answer is a 503.
+    const gates: PromiseWithResolvers<void>[] = [];
+    let refuse = true;
+    await page.route(isOperationUrl, async (route) => {
+      if (route.request().postDataJSON()?.command !== "viewed") return route.fallback();
+      const gate = Promise.withResolvers<void>();
+      gates.push(gate);
+      await gate.promise;
+      await (refuse ? route.fulfill({ status: 503, body: "" }) : route.fallback());
+    });
+    await page.goto(`${one.origin}/session/${walk.id}`);
+    const pane = page.getByRole("main");
+    const text = (exact: string) => pane.getByText(exact, { exact: true });
+    const saving = text("Saving\u2026");
+    const marked = text("Marked 3 hunks in 2 files Viewed.");
+    const next = pane.getByRole("button", { name: /^Next group: / });
+    const silent = async () => {
+      expect(await marked.count()).toBe(0);
+      expect(await next.count()).toBe(0);
+    };
+    try {
+      await pane.getByRole("button", { name: /^Start with group 1/ }).click();
+      await text("Group 1 of 2").waitFor();
+      await keys(page, "Shift+A");
+      await waitFor(() => gates.length === 1, "the write held");
+      await saving.waitFor();
+      await silent();
+      gates[0]!.resolve();
+      await pane.getByText(/^Couldn't save Group viewed/).waitFor();
+      await silent();
+      expect(await viewedIn(walk.id)).toEqual(new Set());
+
+      // Its retry, held then accepted: only now does it say it marked and offer the next group.
+      refuse = false;
+      await keys(page, "Shift+A");
+      await waitFor(() => gates.length === 2, "the retry held");
+      await saving.waitFor();
+      await silent();
+      gates[1]!.resolve();
+      await marked.waitFor();
+      await next.waitFor();
+      expect(await saving.count()).toBe(0);
+      await expect.poll(() => viewedIn(walk.id)).toEqual(new Set([walk.a10, walk.a20, walk.b5]));
+    } finally {
+      for (const gate of gates) gate.resolve();
+    }
+  }, 60_000);
+
   it("keeps every control of the group bar whole inside a phone-width panel, wrapping its rows", async () => {
     const walk = await openWalk();
     await publishWalk(walk);

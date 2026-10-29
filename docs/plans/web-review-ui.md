@@ -96,7 +96,7 @@ Author for a reviewer who knows the language but may not know the subsystem: sho
 
 Viewed belongs to each current hunk and is shared across every view. A file header has a binary checkbox: checked iff all hunks of that file **in the current view** are Viewed. Checking marks that set, folds the file and advances to the next unviewed file; unchecking clears only that set. The snapshot-wide file view covers all changed hunks in the file. A walkthrough-row checkmark is derived from its hunks, not a group obligation. Empty retained Outdated groups are not complete by vacuous truth.
 
-**Group viewed** (`Shift+A`, live sessions only) marks every hunk of the shown group Viewed through the same Viewed write, says how many hunks in how many files it changed and offers the next group without going there. It folds nothing. Once the whole group is Viewed it reads Unmark group and clears that set.
+**Group viewed** (`Shift+A`, live sessions only) marks every hunk of the shown group Viewed through the same Viewed write. While the write is pending it says so; only once saved does it say how many hunks in how many files it changed and offer the next group without going there, and a failed write is said instead. It folds nothing. Once the whole group is Viewed it reads Unmark group and clears that set.
 
 | Event                                                                      | Effect on Viewed                                                        |
 | -------------------------------------------------------------------------- | ----------------------------------------------------------------------- |

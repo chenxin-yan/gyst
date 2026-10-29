@@ -137,8 +137,15 @@ export function GroupBar(props: {
         : box?.notice?.kind === "reload"
           ? "Progress can't be read again; reload the session."
           : undefined;
-  const said = unsaved ?? props.marked?.said;
-  const offer = unsaved === undefined && props.marked?.viewed === true;
+  // Said only once the daemon has it, so neither the change nor Next is offered before it saved.
+  const pending =
+    box?.pending === "sending"
+      ? "Saving…"
+      : box?.pending === "rereading"
+        ? "Reading progress again…"
+        : undefined;
+  const said = pending ?? unsaved ?? props.marked?.said;
+  const offer = pending === undefined && unsaved === undefined && props.marked?.viewed === true;
   return (
     <div {...stylex.props(bar.box)}>
       <div {...stylex.props(bar.row)}>
