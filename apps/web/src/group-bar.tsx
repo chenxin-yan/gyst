@@ -24,6 +24,8 @@ export function useGroupOverview(group: StatusGroup | undefined) {
   const region = useRef<HTMLDivElement | null>(null);
   // Set by the key that opens it, so the keyboard scrolls it from then on.
   const focus = useRef(false);
+  // The offset Back gives the region it shows again.
+  const top = useRef<number>(undefined);
   const open = group !== undefined && !closed.has(group.id);
   /** Scrolls the region on to what it hides below, a region less a line at a time. */
   const showMore = () => {
@@ -37,6 +39,7 @@ export function useGroupOverview(group: StatusGroup | undefined) {
     open,
     region,
     focus,
+    top,
     showMore,
     /** Opens or closes it; the key (`byKey`) first shows more of an open one while it hides any. */
     toggle(byKey = false) {
@@ -270,6 +273,10 @@ function CappedOverview(props: { id: string; disclosure: GroupOverview; children
         ref={(node) => {
           region.current = node;
           disclosure.region.current = node;
+          if (node !== null && disclosure.top.current !== undefined) {
+            node.scrollTop = disclosure.top.current;
+            disclosure.top.current = undefined;
+          }
           if (node === null || !disclosure.focus.current) return;
           disclosure.focus.current = false;
           node.focus({ preventScroll: true });

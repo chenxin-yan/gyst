@@ -46,6 +46,8 @@ export type Place = {
   folded: ReadonlySet<string>;
   restore: Restore;
   peek: Peek | undefined;
+  /** The group bar's reference Expand was followed from, focused again at the bar overview's offset. */
+  barReference?: { target: CapturedRange; overviewTop: number };
 };
 
 /** How to scroll back to a place left from `peek`: an overview's offset, or the reading position. */

@@ -710,6 +710,7 @@ function SessionReader(props: {
         : viewFiles(review, files, status),
     [captured, capturedFile, capturedEntry, review, files, status],
   );
+  const disclosure = useGroupOverview(inView.group);
   const shown = inView.files;
   const shownPaths = useMemo(() => shown.map((file) => file.path), [shown]);
   const shownByPath = useMemo(() => new Map(shown.map((file) => [file.path, file])), [shown]);
@@ -1494,10 +1495,11 @@ function SessionReader(props: {
   };
 
   /**
-   * Shows a peek's target in the main panel; Back returns to this place and this peek. Leaving the
-   * view, it keeps the view's place as choosing another view would.
+   * Shows a peek's target in the main panel; Back returns to this place and this peek, or to the
+   * group bar's reference it was followed from (`fromBar`). Leaving the view, it keeps the view's
+   * place as choosing another view would.
    */
-  const expand = (target: CapturedRange) => {
+  const expand = (target: CapturedRange, fromBar = false) => {
     const shownAt = viewer.current?.position();
     if (captured === undefined && shownAt)
       views.set(shownView, { top: restoreFor(undefined, shownAt), cursor: current });
@@ -1510,6 +1512,9 @@ function SessionReader(props: {
       folded,
       restore: restoreFor(peek, at),
       peek,
+      ...(fromBar && {
+        barReference: { target, overviewTop: disclosure.region.current?.scrollTop ?? 0 },
+      }),
     };
     setBack((stack) => pushed(stack, origin));
     expandedOpened.current = new Map();
@@ -1540,6 +1545,9 @@ function SessionReader(props: {
     setExpandedFolded(to.folded);
     setPeek(to.peek);
     setPanel(({ key }) => ({ key: key + 1, restore: to.restore }));
+    if (to.barReference === undefined) return;
+    disclosure.top.current = to.barReference.overviewTop;
+    setRefocus({ origin: { kind: "overview" }, target: to.barReference.target });
   };
 
   // An expanded target scrolls into view once its file's lines are there to show; a place Back
@@ -1657,7 +1665,7 @@ function SessionReader(props: {
       label="Group overview"
       overview={inView.group.overview}
       outdated={outdatedReason(inView.group.overview?.outdated, inView.group.hunkIds.length === 0)}
-      onReference={(target) => jumpTo(target) || expand(target)}
+      onReference={(target) => jumpTo(target) || expand(target, true)}
       frameless
       earlierNotes={
         earlierNotes.length > 0 && (
@@ -1694,7 +1702,6 @@ function SessionReader(props: {
         refocus={refocus?.origin.kind === "overview" ? refocus.target : undefined}
       />
     );
-  const disclosure = useGroupOverview(inView.group);
 
   // A refresh whose reply did not arrive is sent again under its own id, so a lost acknowledgement
   // gets the recorded result instead of refreshing twice; any reply settles it.
