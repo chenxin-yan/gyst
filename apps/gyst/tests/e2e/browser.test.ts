@@ -4232,6 +4232,62 @@ describe("installed gyst in a sandboxed browser", () => {
     expect(Math.abs((await steady(() => panelTop(page)))! - bottom!)).toBeLessThan(40);
   }, 30_000);
 
+  it("keeps every control of the group bar whole inside a phone-width panel, wrapping its rows", async () => {
+    const walk = await openWalk();
+    await publishWalk(walk);
+    await walk.publish(1, "long-title", [
+      {
+        type: "group.update",
+        id: "edge",
+        title: "Handle the edge where the unused constant at the end of the long file is dropped",
+      },
+    ]);
+    const page = await newPage();
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.goto(`${one.origin}/session/${walk.id}`);
+    const pane = page.getByRole("main");
+    const text = (exact: string) => pane.getByText(exact, { exact: true });
+    const whole = async (controls: Locator[]) => {
+      for (const [at, control] of controls.entries())
+        await waitFor(async () => {
+          const [box, bounds] = await Promise.all([control.boundingBox(), pane.boundingBox()]);
+          return (
+            box !== null &&
+            bounds !== null &&
+            box.x >= Math.max(bounds.x, 0) &&
+            box.y >= bounds.y &&
+            box.x + box.width <= Math.min(bounds.x + bounds.width, 390) &&
+            box.y + box.height <= bounds.y + bounds.height
+          );
+        }, `bar control ${at} inside the panel and the page`);
+    };
+    await whole([
+      text("Walkthrough"),
+      text("2 groups \u00b7 3 files \u00b7 5 hunks"),
+      text("0/5 viewed"),
+      pane.getByRole("button", { name: /^Start with group 1/ }),
+    ]);
+    await keys(page, "Shift+J");
+    await text("Group 1 of 2").waitFor();
+    await keys(page, "Shift+A");
+    await text("Marked 3 hunks in 2 files Viewed.").waitFor();
+    await whole([
+      text("Group 1 of 2"),
+      text("Parse the config"),
+      text("2 files \u00b7 3 hunks"),
+      text("3/3 viewed"),
+      pane.getByRole("button", { name: /^Overview/ }),
+      pane.getByRole("button", { name: "Previous group", exact: true }),
+      pane.getByRole("button", { name: "Next group", exact: true }),
+      pane.getByRole("button", { name: /^Unmark group/ }),
+      text("Marked 3 hunks in 2 files Viewed."),
+      pane.getByRole("button", { name: /^Next group: Handle the edge/ }),
+    ]);
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(
+      true,
+    );
+  }, 30_000);
+
   it("walks notes that share a line one by one, and opens and closes the note at the cursor", async () => {
     const walk = await openWalk();
     await publishWalk(walk);
