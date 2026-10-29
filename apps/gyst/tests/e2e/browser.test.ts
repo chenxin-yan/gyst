@@ -4230,6 +4230,17 @@ describe("installed gyst in a sandboxed browser", () => {
     await side.getByRole("button", { name: "walk/a.ts (modified)", exact: true }).click();
     await says(page, reading);
     expect(Math.abs((await steady(() => panelTop(page)))! - bottom!)).toBeLessThan(40);
+    // Through a view with no changes to show, which has no reader to keep a place in, too.
+    await side.getByRole("button", { name: /^Parse the config/ }).click();
+    await says(page, "a.ts:20 \u00b7 new");
+    const again = await steady(() => panelTop(page));
+    expect(again).toBeGreaterThan(0);
+    await side.getByRole("button", { name: "app.ts", exact: true }).click();
+    await page.getByRole("main").getByText("No captured changes under app.ts.").waitFor();
+    await side.getByRole("button", { name: /^Parse the config/ }).click();
+    await headingsAre(page, ["walk/b.ts", "walk/a.ts"]);
+    await says(page, "a.ts:20 \u00b7 new");
+    expect(Math.abs((await steady(() => panelTop(page)))! - again!)).toBeLessThan(40);
   }, 30_000);
 
   it("says Group viewed is saving until the daemon has it, offers the next group only then, and says a refused one", async () => {

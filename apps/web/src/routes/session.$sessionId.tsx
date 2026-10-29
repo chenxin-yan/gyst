@@ -1445,7 +1445,9 @@ function SessionReader(props: {
       });
       setCursor({ file: at.file, kind: "line", side: at.side, line: at.line });
     }
-    if (captured === undefined) return (restore !== undefined || enters) && setLanding({ restore });
+    // A view with nothing to show has no reader to land: the next one starts at the place.
+    if (captured === undefined && viewer.current !== null)
+      return (restore !== undefined || enters) && setLanding({ restore });
     setCaptured(undefined);
     setPanel(({ key }) => ({ key: key + 1, restore }));
   };
