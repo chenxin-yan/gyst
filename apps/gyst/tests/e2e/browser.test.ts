@@ -3988,6 +3988,7 @@ describe("installed gyst in a sandboxed browser", () => {
         overview: [
           "Reads **every** value once, as [the five](gyst:new/walk/b.ts#L5-L5) shows, over [the constants](gyst:new/src/long.ts#L10-L12).",
           ...steps,
+          "Last, [the tail](gyst:new/src/long.ts#L40-L44) closes it.",
         ].join("\n\n"),
       },
     ]);
@@ -4085,6 +4086,19 @@ describe("installed gyst in a sandboxed browser", () => {
     await keys(page, "Backspace");
     await headingsAre(page, ["walk/b.ts", "walk/a.ts"]);
     await text("Group 1 of 2").waitFor();
+    // One below the overview's first screen, followed and returned from by key: Back scrolls the
+    // overview to it again and focuses it.
+    const tail = region.getByRole("button", { name: "the tail" });
+    await tail.scrollIntoViewIfNeeded();
+    const scrolled = await steady(() => scrollTopAround(region));
+    expect(scrolled).toBeGreaterThan(0);
+    await tail.focus();
+    await page.keyboard.press("Enter");
+    await captured.getByText("src/long.ts", { exact: true }).waitFor();
+    await page.keyboard.press("Backspace");
+    await text("Group 1 of 2").waitFor();
+    await waitFor(() => hasFocus(tail), "the reference focused again");
+    expect(Math.abs((await steady(() => scrollTopAround(region))) - scrolled)).toBeLessThan(2);
     await region.getByRole("button", { name: "the five" }).click();
     await says(page, "b.ts:5 \u00b7 new");
     expect(await peekOf(page).count()).toBe(0);
