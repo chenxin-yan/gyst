@@ -4150,8 +4150,12 @@ describe("installed gyst in a sandboxed browser", () => {
     );
 
     // Arrow keys, Home and End move from the focused tab and open the tab they reach; only the
-    // open tab's content is there.
-    await tab("Walkthrough").focus();
+    // open tab's content is there. From Files focused while Walkthrough is open, ArrowRight wraps
+    // to Walkthrough, where counting from the open tab would reach Files.
+    await tab("Files").focus();
+    await page.keyboard.press("ArrowRight");
+    expect(await selectedTab()).toBe("Walkthrough");
+    expect(await focusedRow(page)).toBe("Walkthrough");
     for (const [key, reached] of [
       ["ArrowRight", "Files"],
       ["ArrowRight", "Walkthrough"],
