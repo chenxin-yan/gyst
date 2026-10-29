@@ -4214,6 +4214,22 @@ describe("installed gyst in a sandboxed browser", () => {
     // Each tree counts its own hunks: a.ts still has edge's hunk to read there.
     expect(await looks(rowIn(edge, "a.ts"))).toBe(`${ink} M`);
     expect(await tone(rowIn(edge, "walk"))).toBe(ink);
+    // A screen reader hears the focused row's path, status and Viewed from a polite live region as
+    // tree focus moves; a tree without focus says nothing.
+    const said = (label: string) =>
+      side.locator(`[aria-label="${label}"] + [aria-live="polite"]`).textContent();
+    expect(await said(core)).toBe("");
+    await rowIn(core, "b.ts").click();
+    await page.mouse.move(1, 1);
+    await page.keyboard.press("ArrowDown");
+    await waitFor(
+      async () => (await said(core)) === "walk/a.ts, modified, viewed",
+      "a.ts announced",
+    );
+    await page.keyboard.press("ArrowUp");
+    await page.keyboard.press("ArrowUp");
+    await waitFor(async () => (await said(core)) === "walk, folder", "walk announced");
+    expect(await said(edge)).toBe("");
     // The Files tree counts all of a file's hunks; an unchanged file is faint too.
     await filesTab(page);
     await waitFor(
