@@ -4261,6 +4261,41 @@ describe("installed gyst in a sandboxed browser", () => {
     expect(await regionTop()).toBe(200);
   }, 30_000);
 
+  it("shows a group's overview where it was left once a tall diagram in it has rendered again", async () => {
+    const walk = await openWalk();
+    await publishWalk(walk);
+    // One source line, so the placeholder before the diagram renders is short.
+    const chain = Array.from({ length: 30 }, (_, i) => `n${i}`).join(" --> ");
+    await walk.publish(1, "tall", [
+      {
+        type: "group.update",
+        id: "core",
+        overview: `Reads it.\n\n${fence(`flowchart TD\n  ${chain}`)}`,
+      },
+    ]);
+    const page = await newPage();
+    await page.setViewportSize({ width: 1280, height: 800 });
+    await page.goto(`${one.origin}/session/${walk.id}`);
+    const pane = page.getByRole("main");
+    const region = pane.locator("[data-group-overview]");
+    const diagram = region.getByRole("img", { name: "Diagram" }).locator("svg");
+    const regionTop = () => steady(() => scrollTopAround(region));
+    await page
+      .getByRole("navigation", { name: "gyst" })
+      .getByRole("button", { name: /^Parse the config/ })
+      .click();
+    await headingsAre(page, ["walk/b.ts", "walk/a.ts"]);
+    await diagram.waitFor();
+    await region.evaluate((element) => element.scrollTo({ top: 500 }));
+    expect(await regionTop()).toBe(500);
+    await keys(page, "Shift+J");
+    await headingsAre(page, ["walk/c.ts", "walk/a.ts"]);
+    await keys(page, "Shift+K");
+    await headingsAre(page, ["walk/b.ts", "walk/a.ts"]);
+    await diagram.waitFor();
+    expect(await regionTop()).toBe(500);
+  }, 30_000);
+
   it("returns to a group or path where the reader left it, with its cursor", async () => {
     const walk = await openWalk();
     await publishWalk(walk);
