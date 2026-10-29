@@ -196,7 +196,7 @@ export function SnapshotTree(props: {
     model.resetPaths(paths, { initialExpandedPaths: [...kept, ...added] });
   }, [model, paths]);
   useViewedUpdates(model, look);
-  useSelected(model, props.selection === "" ? undefined : props.selection, tree);
+  useSelected(model, props.selection === "" ? undefined : props.selection, tree, true);
   const announcement = useRowAnnouncement(model, marks, tree);
   const onClick = (event: MouseEvent) => {
     const row = chosenRow(model, event);
@@ -272,14 +272,14 @@ export function GroupTree(props: {
       if (selected.length === 1 && !selected[0]!.endsWith("/")) return;
       // A folder only opens or closes here; the selection goes back to the current file once the
       // tree's own click handling is done.
-      queueMicrotask(() => syncSelected(model, latest.current.selected, tree));
+      queueMicrotask(() => syncSelected(model, latest.current.selected, tree, false));
     },
     gitStatus: look.gitStatus,
     renderRowDecoration: look.renderRowDecoration,
   });
 
   useViewedUpdates(model, look);
-  useSelected(model, props.selected, tree);
+  useSelected(model, props.selected, tree, false);
   const announcement = useRowAnnouncement(model, marks, tree);
   const onClick = (event: MouseEvent) => {
     const row = chosenRow(model, event);
@@ -317,22 +317,25 @@ function chosenRow(model: Model, event: MouseEvent) {
 }
 
 /**
- * Makes `path` (a file or folder) the tree's one selected row, or selects nothing. A file replaced
- * by a folder (see `treeRows`) has both rows, and the one already selected stays.
+ * Makes `path` the tree's one selected row, or selects nothing. With `orFolder` the path may be a
+ * folder's: a file replaced by a folder (see `treeRows`) then has both rows, and the one already
+ * selected stays. Without it the path is a file's, the one being read.
  */
-function syncSelected(model: Model, path: string | undefined, tree: Rows) {
+function syncSelected(model: Model, path: string | undefined, tree: Rows, orFolder: boolean) {
   const rows =
     path === undefined
       ? []
-      : [model.getItem(tree.rowOf(path)), model.getItem(`${path}/`)].filter((row) => row !== null);
+      : [model.getItem(tree.rowOf(path)), orFolder ? model.getItem(`${path}/`) : null].filter(
+          (row) => row !== null,
+        );
   const target = rows.find((row) => row.isSelected()) ?? rows[0];
   for (const each of model.getSelectedPaths())
     if (each !== target?.getPath()) model.getItem(each)?.deselect();
   if (target && !target.isSelected()) target.select();
 }
 
-const useSelected = (model: Model, path: string | undefined, tree: Rows) =>
-  useEffect(() => syncSelected(model, path, tree), [model, path, tree]);
+const useSelected = (model: Model, path: string | undefined, tree: Rows, orFolder: boolean) =>
+  useEffect(() => syncSelected(model, path, tree, orFolder), [model, path, tree, orFolder]);
 
 const styles = stylex.create({
   // Public theming: the tree's documented --trees-*-override variables, set on its host.

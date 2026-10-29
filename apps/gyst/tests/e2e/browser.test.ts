@@ -4548,6 +4548,16 @@ describe("installed gyst in a sandboxed browser", () => {
     await headingsAre(page, ["src/a.ts", "src"]);
     await waitFor(async () => (await ariaSelected(fileIn(group))) === "true", "src selected");
     expect(await ariaSelected(addedIn(group))).toBe("false");
+    // Closing and opening the folder of the same name leaves the file being read selected.
+    for (const expanded of ["false", "true"]) {
+      await folderIn(group).click();
+      await waitFor(
+        async () => (await folderIn(group).getAttribute("aria-expanded")) === expanded,
+        `the folder's aria-expanded ${expanded}`,
+      );
+      await waitFor(async () => (await ariaSelected(fileIn(group))) === "true", "src kept");
+      expect(await ariaSelected(folderIn(group))).toBe("false");
+    }
     await viewedBox(page, "src").check();
     await waitFor(async () => (await letterOf(fileIn(group))) === "\u2713\u2002D", "src viewed");
     expect(await letterOf(addedIn(group))).toBe("A");
