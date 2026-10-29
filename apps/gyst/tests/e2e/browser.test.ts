@@ -4084,6 +4084,47 @@ describe("installed gyst in a sandboxed browser", () => {
     await atStart("Group 2 of 2", "c.ts");
   }, 30_000);
 
+  it("scrolls the group overview with movement keys while it has focus, leaving the cursor", async () => {
+    const walk = await openWalk();
+    await publishWalk(walk);
+    const steps = Array.from({ length: 40 }, (_, i) => `Step ${i + 1} reads a value.`);
+    await walk.publish(1, "long", [
+      { type: "group.update", id: "core", overview: steps.join("\n\n") },
+    ]);
+    const page = await newPage();
+    await page.setViewportSize({ width: 1280, height: 800 });
+    await page.goto(`${one.origin}/session/${walk.id}`);
+    const pane = page.getByRole("main");
+    const side = page.getByRole("navigation", { name: "gyst" });
+    await side.getByRole("button", { name: /^Parse the config/ }).click();
+    await headingsAre(page, ["walk/b.ts", "walk/a.ts"]);
+    await says(page, "b.ts \u00b7 file");
+    const region = pane.locator("[data-group-overview]");
+    await pane.getByRole("button", { name: /^Overview/ }).click();
+    await waitFor(async () => (await region.count()) === 0, "the overview closed");
+    await keys(page, "Shift+O");
+    await region.waitFor();
+    expect(await hasFocus(region)).toBe(true);
+    const regionTop = () => steady(() => scrollTopAround(region));
+    // Pressed where focus is, as a reader does: the overview, not the page.
+    await page.keyboard.press("j");
+    const line = await regionTop();
+    expect(line).toBeGreaterThan(0);
+    await page.keyboard.press("Control+d");
+    const half = await regionTop();
+    expect(half).toBeGreaterThan(line + 40);
+    await page.keyboard.press("k");
+    expect(await regionTop()).toBeLessThan(half);
+    await page.keyboard.press("Control+u");
+    expect(await regionTop()).toBe(0);
+    await says(page, "b.ts \u00b7 file");
+    // Once focus leaves it, the keys move the cursor again.
+    await keys(page, "j");
+    await statusLine(page)
+      .getByText(/^b\.ts:\d+ \u00b7 /)
+      .waitFor();
+  }, 30_000);
+
   it("returns to a group or path where the reader left it, with its cursor", async () => {
     const walk = await openWalk();
     await publishWalk(walk);

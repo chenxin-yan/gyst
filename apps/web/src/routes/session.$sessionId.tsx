@@ -2119,6 +2119,15 @@ function SessionReader(props: {
       if (searchShown) return closeSearch();
       return peek !== undefined ? closePeek() : setExpandedThread(undefined);
     }
+    // While the group overview has focus, movement scrolls it rather than the code behind it.
+    const overview = disclosure.region.current;
+    if (
+      overview?.contains(document.activeElement) &&
+      (id === "down" || id === "up" || id === "halfDown" || id === "halfUp")
+    ) {
+      const step = id === "down" || id === "up" ? lineStep : overview.clientHeight / 2;
+      return overview.scrollBy({ top: (id === "down" || id === "halfDown" ? 1 : -1) * step });
+    }
     if (!vim) {
       // Mouse mode: movement scrolls; folds and Viewed act on the file at the top of the panel.
       const height = view?.height() ?? 0;
