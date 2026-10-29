@@ -18,6 +18,7 @@ const placeAt = (path: string, file: string | undefined): ReadingPlace => ({
   author: { shown: false, commits: undefined },
   top: file === undefined ? undefined : { position: { file, side: undefined, line: undefined } },
   views: new Map(),
+  overviewsClosed: new Set(),
 });
 
 const hunk = (file: string, id: string, patch: string): Hunk => ({
@@ -158,12 +159,15 @@ describe("reading memory", () => {
         ["group:core", { top: topAt(9), cursor: inX }],
         ["files:lib/y.ts", { top: { scrollTop: 30 }, cursor: undefined }],
       ]),
+      overviewsClosed: new Set(["core"]),
     };
     remember("v", "old", [wide, y], left);
     expect(recall("v", "old", [wide, y], none)).toEqual(left);
     // The hunk moved two lines down: the core group's place and cursor move with it.
     const header = "@@ -8,3 +10,4 @@";
     const moved = { ...wide, header, patch: wide.patch.replace("@@ -8,3 +8,4 @@", header) };
+    // A group's overview closed stays closed: the group outlives a refresh by its id.
+    expect(recall("v", "new", [moved, y], none)?.overviewsClosed).toEqual(new Set(["core"]));
     expect(recall("v", "new", [moved, y], none)?.views).toEqual(
       new Map([
         ["group:core", { top: topAt(11), cursor: { ...inX, line: 12 } }],
