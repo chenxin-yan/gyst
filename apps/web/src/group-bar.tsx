@@ -151,8 +151,13 @@ export function GroupBar(props: {
       : box?.pending === "rereading"
         ? "Reading progress again…"
         : undefined;
-  const said = pending ?? unsaved ?? props.marked?.said;
-  const offer = pending === undefined && unsaved === undefined && props.marked?.viewed === true;
+  // What it changed, only while the daemon holds the group as it was asked: a refused write that a
+  // file's own write replaced leaves no failure to say, and must not say it marked the group.
+  const { marked } = props;
+  const saved =
+    marked !== undefined && group.hunkIds.every((id) => props.viewed.has(id) === marked.viewed);
+  const said = pending ?? unsaved ?? (saved ? marked.said : undefined);
+  const offer = pending === undefined && unsaved === undefined && saved && marked.viewed;
   return (
     <div {...stylex.props(bar.box)}>
       <div {...stylex.props(bar.row)}>

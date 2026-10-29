@@ -4371,14 +4371,24 @@ describe("installed gyst in a sandboxed browser", () => {
       await silent();
       expect(await viewedIn(walk.id)).toEqual(new Set());
 
-      // Its retry, held then accepted: only now does it say it marked and offer the next group.
+      // One file's own write replaces the refused one: the group's hunks are not all saved, so the
+      // bar says neither that it marked them nor offers the next group.
       refuse = false;
+      await viewedBox(page, "walk/b.ts").click();
+      await waitFor(() => gates.length === 2, "the file's write held");
+      gates[1]!.resolve();
+      await expect.poll(() => viewedIn(walk.id)).toEqual(new Set([walk.b5]));
+      await pane.getByText(/^Couldn't save Group viewed/).waitFor({ state: "detached" });
+      await silent();
+      expect(await text("Marked 2 hunks in 1 file Viewed.").count()).toBe(0);
+
+      // Its retry, held then accepted: only now does it say it marked and offer the next group.
       await keys(page, "Shift+A");
-      await waitFor(() => gates.length === 2, "the retry held");
+      await waitFor(() => gates.length === 3, "the retry held");
       await saving.waitFor();
       await silent();
-      gates[1]!.resolve();
-      await marked.waitFor();
+      gates[2]!.resolve();
+      await text("Marked 2 hunks in 1 file Viewed.").waitFor();
       await next.waitFor();
       expect(await saving.count()).toBe(0);
       await expect.poll(() => viewedIn(walk.id)).toEqual(new Set([walk.a10, walk.a20, walk.b5]));
