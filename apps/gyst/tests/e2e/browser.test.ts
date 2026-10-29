@@ -4268,6 +4268,18 @@ describe("installed gyst in a sandboxed browser", () => {
     const said = (label: string) =>
       side.locator(`[aria-label="${label}"] + [aria-live="polite"]`).textContent();
     expect(await said(core)).toBe("");
+    // Focus tabbing into a tree says the row it reaches, its first, and says it again on each
+    // return.
+    await coreRow.focus();
+    for (const _ of ["enter", "return"]) {
+      await page.keyboard.press("Tab");
+      await waitFor(
+        async () => (await said(core)) === "walk, folder",
+        "the row tabbed to announced",
+      );
+      await page.keyboard.press("Shift+Tab");
+      await waitFor(async () => (await said(core)) === "", "nothing said once focus left");
+    }
     await rowIn(core, "b.ts").click();
     await page.mouse.move(1, 1);
     await page.keyboard.press("ArrowDown");

@@ -4,7 +4,7 @@
 import type { FileTreeRowDecoration, FileTreeRowDecorationRenderer } from "@pierre/trees";
 import { FileTree, useFileTree, useFileTreeSelector } from "@pierre/trees/react";
 import * as stylex from "@stylexjs/stylex";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { type FocusEvent, useEffect, useMemo, useRef, useState } from "react";
 import { agentOrder } from "./order.ts";
 import { type ReaderFile, statusOf } from "./reader.ts";
 import { theme } from "./tokens.stylex.ts";
@@ -88,8 +88,9 @@ const useViewedUpdates = (model: Model, look: ReturnType<typeof useViewedLook>) 
 
 /**
  * What a polite live region says as tree focus moves: the focused row's path, then a file's status
- * and Viewed, or that it is a folder. Nothing while the tree has no focus, so a selection the
- * reader syncs says nothing.
+ * and Viewed, or that it is a folder. Focus entering the tree says its row, each time. Nothing
+ * while the tree has no focus, so a selection the reader syncs says nothing. `hostProps` go on the
+ * tree's host, which sees focus enter and leave its shadow root.
  */
 // TODO: Remove once https://github.com/pierrecomputer/pierre/issues/1187 gives a row an accessible
 // description; at 1.0.0-beta.6 a row is named by its basename only.
@@ -97,21 +98,35 @@ function useRowAnnouncement(model: Model, marks: ReadonlyMap<string, FileMark>) 
   const [said, setSaid] = useState("");
   const latest = useRef(marks);
   latest.current = marks;
-  useEffect(() => {
-    let focused = model.getFocusedPath();
-    return model.subscribe(() => {
-      const path = model.getFocusedPath();
-      if (path === focused) return;
-      focused = path;
-      if (path !== null && model.getFileTreeContainer()?.matches(":focus-within"))
-        setSaid(rowAnnouncement(path, latest.current.get(path)));
-    });
-  }, [model]);
-  return (
+  const within = useRef(false);
+  const saidPath = useRef<string | null>(null);
+  const say = () => {
+    const path = model.getFocusedPath();
+    if (path === null || path === saidPath.current) return;
+    saidPath.current = path;
+    setSaid(rowAnnouncement(path, latest.current.get(path)));
+  };
+  useEffect(() => model.subscribe(() => within.current && say()), [model]);
+  const hostProps = {
+    onFocus: () => {
+      if (within.current) return;
+      within.current = true;
+      say();
+    },
+    onBlur: (event: FocusEvent<HTMLElement>) => {
+      if (event.currentTarget.contains(event.relatedTarget)) return;
+      within.current = false;
+      // Emptied, so the same row coming back is new text the region says again.
+      saidPath.current = null;
+      setSaid("");
+    },
+  };
+  const region = (
     <p aria-live="polite" {...stylex.props(styles.said)}>
       {said}
     </p>
   );
+  return { region, hostProps };
 }
 
 /**
@@ -186,9 +201,10 @@ export function SnapshotTree(props: {
         // TODO: Name the tree itself once its role="tree" takes a label (raised on
         // https://github.com/pierrecomputer/pierre/issues/1187); this label lands on the host element.
         aria-label="Snapshot files"
+        {...announcement.hostProps}
         {...stylex.props(styles.tree, viewed !== undefined && styles.inked, styles.fill)}
       />
-      {announcement}
+      {announcement.region}
     </>
   );
 }
@@ -260,9 +276,10 @@ export function GroupTree(props: {
         // TODO: Name the tree itself once @pierre/trees can (issues/1187); see SnapshotTree.
         aria-label={props.label}
         style={{ height: rows * model.getItemHeight() }}
+        {...announcement.hostProps}
         {...stylex.props(styles.tree, viewed !== undefined && styles.inked, styles.group)}
       />
-      {announcement}
+      {announcement.region}
     </>
   );
 }
