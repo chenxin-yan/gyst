@@ -1,5 +1,6 @@
 // How the sidebar's trees show Viewed: fade when done. A row with nothing left to read fades and a
-// viewed file carries ✓, so the files left to read are the only ones at full ink.
+// viewed file carries ✓, so the files left to read are the only ones at full ink. Also the rows'
+// paths, which a tree requires to be a file's or a folder's, never both.
 import type { GitStatus, GitStatusEntry } from "@pierre/trees";
 
 /** A changed file in one tree: its letter, and whether every hunk the tree counts is Viewed. */
@@ -28,6 +29,32 @@ export const foldersOf = (path: string) => {
     folders.push(`${path.slice(0, slash)}/`);
   return folders;
 };
+
+/**
+ * A tree's row paths for the reader's paths, deduplicated, and the way between them. A snapshot can
+ * delete a file and add a folder at its path, or the reverse, and a tree throws on a file whose path
+ * is a folder's. Such a file's row takes zero-width spaces after its name, so it shows under the
+ * same name beside the folder.
+ */
+export function treeRows(paths: readonly string[]) {
+  const unique = new Set(paths);
+  const folders = new Set([...unique].flatMap(foldersOf));
+  const taken = new Set(unique);
+  const rowOfPath = new Map<string, string>();
+  for (const path of unique) {
+    let row = path;
+    while (folders.has(`${row}/`) || (row !== path && taken.has(row))) row += "\u200B";
+    taken.add(row);
+    rowOfPath.set(path, row);
+  }
+  const pathOfRow = new Map([...rowOfPath].map(([path, row]) => [row, path]));
+  return {
+    rows: [...rowOfPath.values()],
+    rowOf: (path: string) => rowOfPath.get(path) ?? path,
+    /** A folder's row, ending in "/", is its own path. */
+    pathOf: (row: string) => pathOfRow.get(row) ?? row,
+  };
+}
 
 /**
  * One tree's git statuses. Without Viewed (a standalone walkthrough) they are the real statuses,

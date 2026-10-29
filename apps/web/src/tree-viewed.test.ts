@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vite-plus/test";
-import { type FileMark, rowAnnouncement, viewedStatuses } from "./tree-viewed.ts";
+import { type FileMark, rowAnnouncement, treeRows, viewedStatuses } from "./tree-viewed.ts";
 
 const marks = new Map<string, FileMark>([
   ["src/a.ts", { letter: "M", viewed: true }],
@@ -39,6 +39,32 @@ describe("viewedStatuses", () => {
       { path: "lib/index.ts", status: "modified" },
       { path: "test/index.ts", status: "modified" },
     ]);
+  });
+});
+
+describe("treeRows", () => {
+  it("keeps a file deleted where a folder was added apart from that folder, under the same name", () => {
+    const tree = treeRows(["src", "src/a.ts", "lib/b.ts", "src"]);
+    expect(tree.rows).toEqual(["src\u200B", "src/a.ts", "lib/b.ts"]);
+    expect(tree.rowOf("src")).toBe("src\u200B");
+    expect(tree.pathOf("src\u200B")).toBe("src");
+    expect(tree.rowOf("src/a.ts")).toBe("src/a.ts");
+    expect(tree.pathOf("src/a.ts")).toBe("src/a.ts");
+    // A folder's row ends in "/", and is no file's.
+    expect(tree.pathOf("src/")).toBe("src/");
+  });
+
+  it("keeps the reverse too, a file added where a nested folder was deleted", () => {
+    const tree = treeRows(["a/b/c.ts", "a/b"]);
+    expect(tree.rows).toEqual(["a/b/c.ts", "a/b\u200B"]);
+    expect(tree.pathOf("a/b\u200B")).toBe("a/b");
+  });
+
+  it("never gives a row a path another file already has", () => {
+    const replaced = ["src", "src/a.ts", "src\u200B", "src\u200B/b.ts"];
+    const tree = treeRows(replaced);
+    expect(new Set(tree.rows).size).toBe(4);
+    expect(tree.rows.map(tree.pathOf)).toEqual(replaced);
   });
 });
 
