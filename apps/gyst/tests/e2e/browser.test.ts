@@ -2965,6 +2965,8 @@ describe("installed gyst in a sandboxed browser", () => {
     // The target range is highlighted, lines 40 to 44.
     const range = pane.locator("[data-range]");
     await range.waitFor();
+    // The expand smooth-scrolls to its target; boxes read while it lands come from different frames.
+    await steady(() => panelTop(page));
     const [box, from, to] = await Promise.all([
       range.boundingBox(),
       pane.getByText("export const line40 = 40;", { exact: true }).boundingBox(),
