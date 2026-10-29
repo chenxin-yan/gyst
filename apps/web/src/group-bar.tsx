@@ -270,10 +270,17 @@ function CappedOverview(props: {
   const region = useRef<HTMLDivElement | null>(null);
   // Mounted once per group, by its key; its offset is placed when its element first attaches.
   const placed = useRef(false);
+  // The offset to place, held while content rendering late (a diagram) grows it into reach.
+  const target = useRef<number>(undefined);
   const measure = () => {
     const node = region.current;
+    if (node !== null && target.current !== undefined) {
+      node.scrollTop = target.current;
+      if (Math.abs(node.scrollTop - target.current) <= 1) target.current = undefined;
+    }
     setBelow(node !== null && node.scrollHeight - node.clientHeight - node.scrollTop > 1);
-    if (node !== null) disclosure.offsets.current.set(props.group, node.scrollTop);
+    if (node !== null)
+      disclosure.offsets.current.set(props.group, target.current ?? node.scrollTop);
   };
   useEffect(() => {
     const node = region.current;
@@ -282,7 +289,18 @@ function CappedOverview(props: {
     const observer = new ResizeObserver(measure);
     observer.observe(node);
     for (const child of node.children) observer.observe(child);
-    return () => observer.disconnect();
+    // The reader scrolling or pressing a key takes over from the offset still being placed.
+    const release = () => {
+      target.current = undefined;
+    };
+    const scrolls = ["wheel", "touchstart", "pointerdown"] as const;
+    for (const type of scrolls) node.addEventListener(type, release, { passive: true });
+    window.addEventListener("keydown", release, { capture: true });
+    return () => {
+      observer.disconnect();
+      for (const type of scrolls) node.removeEventListener(type, release);
+      window.removeEventListener("keydown", release, { capture: true });
+    };
   }, []);
   return (
     <div {...stylex.props(bar.capped)}>
@@ -297,8 +315,9 @@ function CappedOverview(props: {
           disclosure.region.current = node;
           if (node !== null && !placed.current) {
             placed.current = true;
-            node.scrollTop =
+            target.current =
               disclosure.top.current ?? disclosure.offsets.current.get(props.group) ?? 0;
+            node.scrollTop = target.current;
             disclosure.top.current = undefined;
           }
           if (node === null || !disclosure.focus.current) return;
