@@ -4120,6 +4120,41 @@ describe("installed gyst in a sandboxed browser", () => {
     await atStart("Group 2 of 2", "c.ts");
   }, 30_000);
 
+  it("works the group bar in Mouse mode: group starts and returns, the overview and Group viewed", async () => {
+    const walk = await openWalk();
+    await publishWalk(walk);
+    const page = await newPage();
+    await page.setViewportSize({ width: 1280, height: 600 });
+    await page.goto(`${one.origin}/session/${walk.id}`);
+    const pane = page.getByRole("main");
+    await page
+      .getByRole("radiogroup", { name: "Input mode" })
+      .getByRole("radio", { name: "Mouse" })
+      .check();
+    await pane.getByRole("button", { name: /^Start with group 1/ }).click();
+    await headingsAre(page, ["walk/b.ts", "walk/a.ts"]);
+    expect(await steady(() => panelTop(page))).toBe(0);
+    await keys(page, "Control+d");
+    const read = await steady(() => panelTop(page));
+    expect(read).toBeGreaterThan(0);
+    await keys(page, "Shift+J");
+    await headingsAre(page, ["walk/c.ts", "walk/a.ts"]);
+    expect(await steady(() => panelTop(page))).toBe(0);
+    await keys(page, "Shift+K");
+    await headingsAre(page, ["walk/b.ts", "walk/a.ts"]);
+    expect(Math.abs((await steady(() => panelTop(page)))! - read!)).toBeLessThan(40);
+    // A short overview hides nothing, so its key closes it, then opens it again.
+    const toggle = pane.getByRole("button", { name: /^Overview/ });
+    await keys(page, "Shift+O");
+    await waitFor(async () => (await toggle.getAttribute("aria-expanded")) === "false", "closed");
+    await keys(page, "Shift+O");
+    await waitFor(async () => (await toggle.getAttribute("aria-expanded")) === "true", "open");
+    await keys(page, "Shift+A");
+    await pane.getByText("Marked 3 hunks in 2 files Viewed.", { exact: true }).waitFor();
+    await expect.poll(() => viewedIn(walk.id)).toEqual(new Set([walk.a10, walk.a20, walk.b5]));
+    expect(await cursorBar(page).isVisible()).toBe(false);
+  }, 30_000);
+
   it("scrolls the group overview with movement keys while it has focus, leaving the cursor", async () => {
     const walk = await openWalk();
     await publishWalk(walk);
