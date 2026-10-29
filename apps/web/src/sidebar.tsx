@@ -13,6 +13,9 @@ type Tab = "walkthrough" | "files";
 const tabs: readonly Tab[] = ["walkthrough", "files"];
 const tabNames: Record<Tab, string> = { walkthrough: "Walkthrough", files: "Files" };
 
+/** A group tree's key: its files are fixed for its life (see GroupTree), so new ones remount it. */
+const pathsKey = (treeFiles: readonly ReaderFile[]) => treeFiles.map(({ path }) => path).join("\n");
+
 /** The tab last chosen, kept for the page's life: across a refresh's new snapshot and sessions. */
 let chosenTab: Tab | undefined;
 
@@ -56,18 +59,22 @@ export function Sidebar(props: {
   const tabButtons = useRef<Partial<Record<Tab, HTMLButtonElement | null>>>({});
   const filesOf = (paths: readonly string[]) => paths.flatMap((path) => files.get(path) ?? []);
 
-  const groupTree = (group: StatusGroup) => (
-    <div {...stylex.props(styles.tree)}>
-      <GroupTree
-        label={`Files in ${group.title}`}
-        files={filesOf(group.files)}
-        hunkIds={new Set(group.hunkIds)}
-        viewed={props.viewed}
-        selected={review.kind === "group" && review.id === group.id ? current : undefined}
-        onOpen={(path) => props.onGroupFile(group, path)}
-      />
-    </div>
-  );
+  const groupTree = (group: StatusGroup) => {
+    const groupFiles = filesOf(group.files);
+    return (
+      <div {...stylex.props(styles.tree)}>
+        <GroupTree
+          key={pathsKey(groupFiles)}
+          label={`Files in ${group.title}`}
+          files={groupFiles}
+          hunkIds={new Set(group.hunkIds)}
+          viewed={props.viewed}
+          selected={review.kind === "group" && review.id === group.id ? current : undefined}
+          onOpen={(path) => props.onGroupFile(group, path)}
+        />
+      </div>
+    );
+  };
 
   const grouped = new Set(status.groups.flatMap(({ hunkIds }) => hunkIds));
   const outside = [...files.values()].flatMap(({ hunks }) =>
@@ -101,6 +108,7 @@ export function Sidebar(props: {
       </p>
       <div {...stylex.props(styles.tree)}>
         <GroupTree
+          key={pathsKey(outsideFiles)}
           label="Files not in a group"
           files={outsideFiles}
           hunkIds={new Set(outside.map(({ id }) => id))}

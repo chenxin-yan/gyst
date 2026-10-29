@@ -200,7 +200,10 @@ export function SnapshotTree(props: {
  */
 export function GroupTree(props: {
   label: string;
-  /** The group's changed files, in the agent's order. */
+  /**
+   * The group's changed files, in the agent's order. Their paths are fixed for the tree's life,
+   * since its sort is fixed when it is made: a caller keys the tree by them.
+   */
   files: readonly ReaderFile[];
   /** The hunks this tree counts toward a file's Viewed mark. */
   hunkIds: ReadonlySet<string>;
@@ -211,7 +214,7 @@ export function GroupTree(props: {
 }) {
   const latest = useRef(props);
   latest.current = props;
-  const paths = useMemo(() => [...new Set(props.files.map(({ path }) => path))], [props.files]);
+  const [paths] = useState(() => [...new Set(props.files.map(({ path }) => path))]);
   const { viewed, hunkIds } = props;
   const marks = new Map(
     props.files.map((file): [string, FileMark] => {
@@ -245,14 +248,8 @@ export function GroupTree(props: {
     renderRowDecoration: look.renderRowDecoration,
   });
 
-  const first = useRef(true);
-  useEffect(() => {
-    if (first.current) return void (first.current = false);
-    model.resetPaths(paths);
-  }, [model, paths]);
   useViewedUpdates(model, look);
   useSelected(model, props.selected);
-
   const announcement = useRowAnnouncement(model, marks);
 
   const rows = useFileTreeSelector(model, (tree) => tree.getVisibleCount());

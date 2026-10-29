@@ -4118,6 +4118,36 @@ describe("installed gyst in a sandboxed browser", () => {
       "nothing selected in edge",
     );
     expect(await selectedTab()).toBe("Walkthrough");
+    // A folder closed in a group's tree stays closed while the reader moves on.
+    const coreFolder = rowIn("Files in Parse the config", "walk");
+    await coreFolder.click();
+    await waitFor(
+      async () => (await coreFolder.getAttribute("aria-expanded")) === "false",
+      "closed",
+    );
+    const before = await statusLine(page)
+      .getByText(/ \u00b7 |:\d/)
+      .first()
+      .textContent();
+    await keys(page, "j", "j");
+    await waitFor(
+      async () =>
+        (await statusLine(page)
+          .getByText(/ \u00b7 |:\d/)
+          .first()
+          .textContent()) !== before,
+      "the cursor moved",
+    );
+    expect(await coreFolder.getAttribute("aria-expanded")).toBe("false");
+    // A new file order for the group reorders its tree.
+    await walk.publish(2, "reorder", [
+      { type: "group.update", id: "core", files: ["walk/a.ts", "walk/b.ts"] },
+    ]);
+    await waitFor(
+      async () =>
+        JSON.stringify(await rowsOf("Files in Parse the config")) === '["walk","a.ts","b.ts"]',
+      "core's tree in its new order",
+    );
 
     // Arrow keys, Home and End move from the focused tab and open the tab they reach; only the
     // open tab's content is there.
