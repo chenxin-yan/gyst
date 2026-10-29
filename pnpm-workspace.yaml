@@ -7,6 +7,7 @@ catalog:
   "@effect/platform-node": 4.0.0-rc.118
   "@effect/platform-node-shared": 4.0.0-rc.118
   "@pierre/diffs": 1.4.3
+  "@pierre/trees": 1.0.0-beta.6
   effect: 4.0.0-rc.118
   # Managed by `vp migrate`: Vite+ replaces Vite and pins the Vitest it drives.
   vite: npm:@voidzero-dev/vite-plus-core@1.0.0-rc.1

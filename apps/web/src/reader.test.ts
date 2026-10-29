@@ -14,8 +14,6 @@ import {
   PagingStopped,
   splitMinWidth,
   statusOf,
-  treeKey,
-  treeOf,
   wholeFileType,
 } from "./reader.ts";
 
@@ -315,58 +313,7 @@ describe("layoutOf", () => {
   });
 });
 
-describe("treeOf and isUnder", () => {
-  it("compacts single-folder chains into one row", () => {
-    expect(treeOf(["packages/core/src/a.ts", "packages/core/src/b/c.ts", "x.ts"])).toEqual([
-      {
-        kind: "folder",
-        name: "packages/core/src",
-        path: "packages/core/src",
-        children: [
-          {
-            kind: "folder",
-            name: "b",
-            path: "packages/core/src/b",
-            children: [{ kind: "file", name: "c.ts", path: "packages/core/src/b/c.ts" }],
-          },
-          { kind: "file", name: "a.ts", path: "packages/core/src/a.ts" },
-        ],
-      },
-      { kind: "file", name: "x.ts", path: "x.ts" },
-    ]);
-  });
-
-  it("nests paths with folders first, by name", () => {
-    expect(treeOf(["b.ts", "src/z.ts", "src/lib/a.ts", "a.ts", "src/b.ts", "a.ts"])).toEqual([
-      {
-        kind: "folder",
-        name: "src",
-        path: "src",
-        children: [
-          {
-            kind: "folder",
-            name: "lib",
-            path: "src/lib",
-            children: [{ kind: "file", name: "a.ts", path: "src/lib/a.ts" }],
-          },
-          { kind: "file", name: "b.ts", path: "src/b.ts" },
-          { kind: "file", name: "z.ts", path: "src/z.ts" },
-        ],
-      },
-      { kind: "file", name: "a.ts", path: "a.ts" },
-      { kind: "file", name: "b.ts", path: "b.ts" },
-    ]);
-  });
-
-  it("keys a deleted file and an added folder at the same path apart", () => {
-    const nodes = treeOf(["src", "src/a.ts"]);
-    expect(nodes.map((node) => [node.kind, node.path])).toEqual([
-      ["folder", "src"],
-      ["file", "src"],
-    ]);
-    expect(new Set(nodes.map(treeKey)).size).toBe(2);
-  });
-
+describe("isUnder", () => {
   it("selects a file, a folder's descendants or everything", () => {
     expect(isUnder("src/a.ts", "")).toBe(true);
     expect(isUnder("src/a.ts", "src")).toBe(true);

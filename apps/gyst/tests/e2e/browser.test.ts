@@ -296,6 +296,35 @@ const fileHeadings = (page: Page) =>
     .getByRole("heading", { level: 2 })
     .evaluateAll((headings) => headings.map((heading) => heading.getAttribute("aria-label")));
 
+/** A sidebar tree's row, named by its file or folder (a compacted folder chain joins its names). */
+const treeRow = (page: Page, name: string) =>
+  page.getByRole("navigation", { name: "gyst" }).getByRole("treeitem", { name, exact: true });
+/** Whether a tree row is selected, as "true" or "false". */
+const ariaSelected = (row: Locator) => row.getAttribute("aria-selected");
+/** Whether a tree's folder row is open, as "true" or "false". */
+const ariaExpanded = (row: Locator) => row.getAttribute("aria-expanded");
+/** A tree row's status letter, with ✓ once Viewed: the text after its name. */
+const letterOf = async (row: Locator) =>
+  (
+    await row
+      .locator('[data-item-section="decoration"], [data-item-section="git"]')
+      .allTextContents()
+  )
+    .join("")
+    .trim();
+/** A sidebar row's text colour: a tree row's name, or a walkthrough row. */
+const tone = (row: Locator) =>
+  row.evaluate(
+    (element) =>
+      getComputedStyle(element.querySelector('[data-item-section="content"]') ?? element).color,
+  );
+/** A tree row's colour and the letter after its name. */
+const looks = async (row: Locator) => `${await tone(row)} ${await letterOf(row)}`;
+/** Opens the sidebar's Files tab: All changes and the snapshot-wide tree. */
+const filesTab = (page: Page) => page.getByRole("tab", { name: "Files" }).click();
+/** Opens the sidebar's Walkthrough tab: the overview, the groups and their files. */
+const walkthroughTab = (page: Page) => page.getByRole("tab", { name: "Walkthrough" }).click();
+
 /** The status line, which names the Vim cursor's place, the selection and Viewed progress. */
 const statusLine = (page: Page) => page.getByRole("contentinfo");
 /** Waits for the status line to say exactly `text`, such as `long.ts:97 · new`. */
@@ -595,6 +624,13 @@ const scrollTopAround = (inside: Locator) =>
     return at!.scrollTop;
   });
 const focusedText = (page: Page) => page.evaluate(() => document.activeElement?.textContent);
+/** The focused element's name, inside a shadow root (a sidebar tree's row) too. */
+const focusedRow = (page: Page) =>
+  page.evaluate(() => {
+    let focused = document.activeElement;
+    while (focused?.shadowRoot?.activeElement) focused = focused.shadowRoot.activeElement;
+    return focused?.getAttribute("aria-label") ?? focused?.textContent;
+  });
 /** Chromium's console error for an image the viewer's Content-Security-Policy refuses. */
 const blockedImage = (url: string) =>
   expect.stringMatching(
@@ -1092,10 +1128,15 @@ describe("installed gyst in a sandboxed browser", () => {
     // change without captured text says why instead of showing content.
     expect(await fileHeadings(page)).toEqual(["README.md", "app.ts", "logo.bin", "src/long.ts"]);
     await pane.getByText("New side not captured: binary.").waitFor();
-    // The snapshot-wide tree lists the unchanged supporting file too; changes carry a status word.
-    const tree = page.getByRole("navigation", { name: "gyst" });
-    for (const name of ["app.ts (modified)", "logo.bin (added)", "feature.ts", "src/"])
-      await tree.getByRole("button", { name, exact: true }).waitFor();
+    // The snapshot-wide tree lists the unchanged supporting file too; changes carry their letter.
+    await filesTab(page);
+    for (const [name, letter] of [
+      ["app.ts", "M"],
+      ["logo.bin", "A"],
+      ["feature.ts", ""],
+      ["src", ""],
+    ] as const)
+      expect(await letterOf(treeRow(page, name))).toBe(letter);
   }, 30_000);
 
   it("loads visible files' captured sides eagerly, a bounded few at a time, so every hidden range shows its exact count", async () => {
@@ -1221,20 +1262,19 @@ describe("installed gyst in a sandboxed browser", () => {
     });
     await page.goto(`${one.origin}${one.path}`);
     const pane = page.getByRole("main");
-    const tree = page.getByRole("navigation", { name: "gyst" });
     const readsOf = (file: string) => codes.filter((code) => code.file === file).length;
     try {
       await waitFor(async () => readsOf("src/long.ts") === 2, "src/long.ts's eager reads");
       // Its leading range opens while its read is held: the renderer's request joins that read.
       await pane.getByText("96 unmodified lines").first().click();
       // The reader leaves for an unchanged file before the read lands; the renderer drops it.
-      await tree.getByRole("button", { name: "feature.ts", exact: true }).click();
+      await treeRow(page, "feature.ts").click();
       await pane.getByText("No captured changes under feature.ts.").waitFor();
     } finally {
       release();
     }
     await waitFor(async () => landed === 2, "src/long.ts's held reads to land");
-    await tree.getByRole("button", { name: "src/", exact: true }).click();
+    await treeRow(page, "src").click();
     // Without a click it loads again.
     await waitFor(async () => readsOf("src/long.ts") === 4, "src/long.ts read again");
     // Its trailing range (lines 184-300), below the panel, shows its count once scrolled to.
@@ -1271,14 +1311,13 @@ describe("installed gyst in a sandboxed browser", () => {
     });
     await page.goto(`${one.origin}/session/${id}`);
     const pane = page.getByRole("main");
-    const tree = page.getByRole("navigation", { name: "gyst" });
     const pagesOf = (file: string, later: boolean) =>
       codes.filter((code) => code.file === file && (code.offset !== undefined) === later).length;
     try {
       await waitFor(async () => pagesOf("big.ts", false) === 2, "big.ts's first pages");
       // Its leading range opens while they are held: the renderer's request joins that read.
       await pane.getByText("1496 unmodified lines").first().click();
-      await tree.getByRole("button", { name: "small.ts (modified)", exact: true }).click();
+      await treeRow(page, "small.ts").click();
       await waitFor(
         async () => JSON.stringify(await fileHeadings(page)) === '["small.ts"]',
         "small.ts selected",
@@ -1293,7 +1332,7 @@ describe("installed gyst in a sandboxed browser", () => {
     expect(pagesOf("big.ts", true)).toBe(0);
     expect(await page.getByRole("alert").count()).toBe(0);
 
-    await tree.getByRole("button", { name: "big.ts (modified)", exact: true }).click();
+    await treeRow(page, "big.ts").click();
     // Without a click it loads again, every page, and its trailing range (lines 1504-3000) shows
     // its count.
     await waitFor(async () => pagesOf("big.ts", true) === 2, "big.ts's second pages");
@@ -1316,19 +1355,18 @@ describe("installed gyst in a sandboxed browser", () => {
     const page = await newPage();
     await page.goto(`${one.origin}${one.path}`);
     const pane = page.getByRole("main");
-    const tree = page.getByRole("navigation", { name: "gyst" });
     await pane.getByText("uncommitted-edit").waitFor();
     const select = async (name: string) => {
-      const button = tree.getByRole("button", { name, exact: true });
-      await button.click();
-      expect(await button.getAttribute("aria-current")).toBe("true");
+      const row = treeRow(page, name);
+      await row.click();
+      expect(await row.getAttribute("aria-selected")).toBe("true");
     };
-    await select("src/");
+    await select("src");
     await waitFor(
       async () => JSON.stringify(await fileHeadings(page)) === '["src/long.ts"]',
       "the folder's changes",
     );
-    await select("app.ts (modified)");
+    await select("app.ts");
     await waitFor(
       async () => JSON.stringify(await fileHeadings(page)) === '["app.ts"]',
       "the file's changes",
@@ -1336,7 +1374,9 @@ describe("installed gyst in a sandboxed browser", () => {
     expect(await pane.getByText(hostile).count()).toBe(1);
     await select("feature.ts");
     await pane.getByText("No captured changes under feature.ts.").waitFor();
-    await select("All changes");
+    const all = page.getByRole("button", { name: /^All changes/ });
+    await all.click();
+    expect(await all.getAttribute("aria-current")).toBe("true");
     await waitFor(async () => (await fileHeadings(page)).length === 4, "every changed file");
   }, 30_000);
 
@@ -1359,7 +1399,7 @@ describe("installed gyst in a sandboxed browser", () => {
     await auto("split").waitFor();
 
     // Read from a context line inside src/long.ts's hunk, then switch layouts both ways.
-    await page.getByRole("button", { name: "src/", exact: true }).click();
+    await treeRow(page, "src").click();
     const line = pane.getByText("export const line112 = 112;").first();
     await line.evaluate((element) => element.scrollIntoView({ block: "start" }));
     // Out from under the sticky file header, so the line is the first one in view.
@@ -1656,10 +1696,13 @@ describe("installed gyst in a sandboxed browser", () => {
     await page.setViewportSize({ width: 1280, height: 800 });
     await page.goto(`${one.origin}${one.path}`);
     const pane = page.getByRole("main");
-    const tree = page.getByRole("navigation", { name: "gyst" });
     await pane.getByText("uncommitted-edit").waitFor();
     const select = async (name: string, headings: string[]) => {
-      await tree.getByRole("button", { name, exact: true }).click();
+      await (
+        name === "All changes"
+          ? page.getByRole("button", { name: /^All changes/ })
+          : treeRow(page, name)
+      ).click();
       await waitFor(
         async () => JSON.stringify(await fileHeadings(page)) === JSON.stringify(headings),
         `${name} selected`,
@@ -1681,12 +1724,12 @@ describe("installed gyst in a sandboxed browser", () => {
           : null;
       });
     // A layout switch on a file too short to scroll restores it at the very top.
-    await select("app.ts (modified)", ["app.ts"]);
+    await select("app.ts", ["app.ts"]);
     await page
       .getByRole("radiogroup", { name: "Diff layout" })
       .getByRole("radio", { name: "Stacked", exact: true })
       .check();
-    await select("README.md (modified)", ["README.md"]);
+    await select("README.md", ["README.md"]);
     // README.md, now being read, is what the whole snapshot returns to, not the earlier app.ts.
     await select("All changes", ["README.md", "app.ts", "logo.bin", "src/long.ts"]);
     await waitFor(async () => (await topFile()) === "README.md", "README.md at the top");
@@ -1727,13 +1770,13 @@ describe("installed gyst in a sandboxed browser", () => {
     );
 
     // The file view reads the same Viewed hunks; unchecking there clears only that section.
-    await tree.getByRole("button", { name: "README.md (modified)", exact: true }).click();
+    await treeRow(page, "README.md").click();
     expect(await viewedBox(page, "README.md").isChecked()).toBe(true);
     await viewedBox(page, "README.md").uncheck();
     await says(page, "0/1 hunk viewed in 1 file");
     expect(writes[1]).toMatchObject({ hunkIds: idsOf("README.md"), viewed: false });
     expect(writes[1].requestId).not.toBe(writes[0].requestId);
-    await tree.getByRole("button", { name: "All changes", exact: true }).click();
+    await tree.getByRole("button", { name: /^All changes/ }).click();
     await says(page, "0/3 hunks viewed in 4 files");
     expect(await viewedBox(page, "README.md").isChecked()).toBe(false);
 
@@ -1870,7 +1913,7 @@ describe("installed gyst in a sandboxed browser", () => {
     await keys(page, "]", "f", "[", "f");
     await says(page, "app.ts · file");
 
-    await page.getByRole("button", { name: "src/", exact: true }).click();
+    await treeRow(page, "src").click();
     await pane.getByRole("heading", { name: "src/long.ts" }).waitFor();
     await keys(page, "g", "g", "j");
     await says(page, "long.ts · hidden lines");
@@ -2075,7 +2118,7 @@ describe("installed gyst in a sandboxed browser", () => {
     await says(page, "0/3 hunks viewed in 3 files");
 
     // A folder's view starts it folded too.
-    await side.getByRole("button", { name: "vendor/", exact: true }).click();
+    await treeRow(page, "vendor").click();
     await headingsAre(page, ["vendor/lib.js"]);
     expect(await expanded("vendor/lib.js")).toBe("false");
     expect(await generated("vendor/lib.js").count()).toBe(1);
@@ -2100,6 +2143,8 @@ describe("installed gyst in a sandboxed browser", () => {
       groupedHunks: 3,
       totalHunks: 3,
     });
+    // A plain session opened on Files, which stays open once the walkthrough arrives.
+    await walkthroughTab(page);
     await side.getByRole("button", { name: /^Rebuild the bundle/ }).click();
     await headingsAre(page, paths);
     expect(await expanded("app.js")).toBe("true");
@@ -2130,7 +2175,8 @@ describe("installed gyst in a sandboxed browser", () => {
     expect(await peekOf(page).count()).toBe(0);
 
     // It unfolds like any other file, and its Viewed counts.
-    await side.getByRole("button", { name: "All changes", exact: true }).click();
+    await filesTab(page);
+    await side.getByRole("button", { name: /^All changes/ }).click();
     await headingsAre(page, paths);
     await foldToggle(page, "dist/bundle.js").click();
     await waitFor(async () => (await expanded("dist/bundle.js")) === "true", "bundle unfolded");
@@ -2349,14 +2395,14 @@ describe("installed gyst in a sandboxed browser", () => {
     await barOn(page, `const b = '${hostile}';`);
 
     // Another view runs the query again over its own files.
-    await page.getByRole("button", { name: "src/", exact: true }).click();
+    await treeRow(page, "src").click();
     await headingsAre(page, ["src/long.ts"]);
     await says(page, "No matches");
-    await page.getByRole("button", { name: "All changes", exact: true }).click();
+    await page.getByRole("button", { name: /^All changes/ }).click();
     await says(page, "1/2");
 
     // Lines in a hidden range are found once the reader opens them.
-    await page.getByRole("button", { name: "src/", exact: true }).click();
+    await treeRow(page, "src").click();
     await headingsAre(page, ["src/long.ts"]);
     await keys(page, "/");
     await page.keyboard.type("line12 =");
@@ -2424,7 +2470,7 @@ describe("installed gyst in a sandboxed browser", () => {
     await page.setViewportSize({ width: 1280, height: 800 });
     await page.goto(`${one.origin}${one.path}`);
     const pane = page.getByRole("main");
-    await page.getByRole("button", { name: "src/", exact: true }).click();
+    await treeRow(page, "src").click();
     await pane.getByRole("heading", { name: "src/long.ts" }).waitFor();
     await page
       .getByRole("radiogroup", { name: "Input mode" })
@@ -2507,7 +2553,7 @@ describe("installed gyst in a sandboxed browser", () => {
     };
     const panel = async () => (await pane.boundingBox())!;
 
-    await page.getByRole("button", { name: "src/", exact: true }).click();
+    await treeRow(page, "src").click();
     await pane.getByRole("heading", { name: "src/long.ts" }).waitFor();
     await keys(page, "g", "g", "j");
     await says(page, "long.ts · hidden lines");
@@ -2703,10 +2749,17 @@ describe("installed gyst in a sandboxed browser", () => {
     await statusLine(page).getByRole("alert").getByText("This session was refreshed.").waitFor();
     expect(await page.getByRole("button", { name: "Retry loading files" }).count()).toBe(0);
     await tree.getByRole("button", { name: "Reload session" }).click();
-    // The last unchanged file arrives with the later page; the changed one was listed from the start.
-    await tree.getByRole("button", { name: "Expand bulk" }).click();
-    await tree.getByRole("button", { name: "bulk/399.txt", exact: true }).waitFor();
-    await tree.getByRole("button", { name: "paged.ts (added)" }).waitFor();
+    // The changed file was listed from the start; the last unchanged files arrive with the later
+    // page, which the virtualized tree counts in its rows' set size.
+    await waitFor(
+      async () => (await letterOf(treeRow(page, "paged.ts"))) === "A",
+      "paged.ts added",
+    );
+    await treeRow(page, "bulk").click();
+    await waitFor(
+      async () => (await treeRow(page, "000.txt").getAttribute("aria-setsize")) === "400",
+      "every bulk file",
+    );
     expect(await page.getByRole("alert").count()).toBe(0);
     expect(
       await page.getByRole("button", { name: /Retry loading files|Reload session/ }).count(),
@@ -2794,10 +2847,10 @@ describe("installed gyst in a sandboxed browser", () => {
     await page.goto(`${one.origin}/session/${id}`);
     await waitFor(async () => held === 2, "paged.ts's eager reads");
     files.resolve();
-    await page
-      .getByRole("navigation", { name: "gyst" })
-      .getByRole("button", { name: "paged.ts (added)" })
-      .waitFor();
+    await waitFor(
+      async () => (await letterOf(treeRow(page, "paged.ts"))) === "A",
+      "paged.ts added",
+    );
     release.resolve();
     await settled(page);
     await new Promise((resolve) => setTimeout(resolve, 300));
@@ -3235,6 +3288,10 @@ describe("installed gyst in a sandboxed browser", () => {
     const pane = page.getByRole("main");
     const side = page.getByRole("navigation", { name: "gyst" });
     await headingsAre(page, ["walk/a.ts", "walk/b.ts", "walk/c.ts"]);
+    // The sidebar opens on its Files tab, with nothing to walk through.
+    const filesSelected = page.getByRole("tab", { name: "Files" }).getAttribute("aria-selected");
+    expect(await filesSelected).toBe("true");
+    await walkthroughTab(page);
     await side.getByText("No walkthrough for this session yet.", { exact: true }).waitFor();
     expect(await side.getByRole("list", { name: "Walkthrough" }).count()).toBe(0);
     expect(await side.getByLabel("Walkthrough coverage").count()).toBe(0);
@@ -3257,6 +3314,7 @@ describe("installed gyst in a sandboxed browser", () => {
     const pane = page.getByRole("main");
     const side = page.getByRole("navigation", { name: "gyst" });
     const coverage = side.getByLabel("Walkthrough coverage");
+    await walkthroughTab(page);
     await side.getByText("No walkthrough for this session yet.", { exact: true }).waitFor();
 
     const first = await walk.publish(0, "first", [
@@ -3484,7 +3542,8 @@ describe("installed gyst in a sandboxed browser", () => {
       .getByRole("button", { name: "Parse the config, all 3 of 3 hunks viewed", exact: true })
       .waitFor();
     // The snapshot view reads the same hunks: a.ts's third, another group's, is not Viewed.
-    await side.getByRole("button", { name: "All changes", exact: true }).click();
+    await filesTab(page);
+    await side.getByRole("button", { name: /^All changes/ }).click();
     await says(page, "3/5 hunks viewed in 3 files");
     expect(await viewedBox(page, "walk/a.ts").isChecked()).toBe(false);
     expect(await viewedBox(page, "walk/b.ts").isChecked()).toBe(true);
@@ -3974,7 +4033,7 @@ describe("installed gyst in a sandboxed browser", () => {
     await side.getByRole("button", { name: /^Handle the edge/ }).click();
     await headingsAre(page, ["walk/c.ts", "walk/a.ts"]);
     expect(await expanded()).toBe("true");
-    await side.getByRole("button", { name: "All changes", exact: true }).click();
+    await side.getByRole("button", { name: "Overview", exact: true }).click();
     await says(page, "0/5 hunks viewed in 3 files");
     await keys(page, "g", "g");
     expect(await expanded()).toBe("true");
@@ -3983,6 +4042,544 @@ describe("installed gyst in a sandboxed browser", () => {
     await headingsAre(page, ["walk/b.ts", "walk/a.ts"]);
     expect(await expanded()).toBe("false");
   }, 30_000);
+
+  it("reads the sidebar in Walkthrough and Files tabs: tab keys, a tab kept across views and keys, each group's files as a tree in the agent's order, a shared file selected in its current group only, the hunks in no group, a Files folder kept open, and Enter on a tree row beside the review keys", async () => {
+    const walk = await openWalk();
+    await walk.publish(0, "core", [
+      { type: "walkthrough.update", overview: walkOverview },
+      coreGroup(walk),
+    ]);
+    const page = await newPage();
+    await page.setViewportSize({ width: 1280, height: 900 });
+    await page.goto(`${one.origin}/session/${walk.id}`);
+    const side = page.getByRole("navigation", { name: "gyst" });
+    const tab = (name: string) => page.getByRole("tab", { name, exact: true });
+    const selectedTab = async () =>
+      (await page.getByRole("tab", { selected: true }).allTextContents()).join();
+    const rowsOf = (label: string) =>
+      side
+        .locator(`[aria-label="${label}"]`)
+        .getByRole("treeitem")
+        .evaluateAll((rows) => rows.map((row) => row.getAttribute("aria-label")));
+    const rowIn = (label: string, name: string) =>
+      side.locator(`[aria-label="${label}"]`).getByRole("treeitem", { name, exact: true });
+
+    // A walkthrough session opens on its Walkthrough tab: a tablist whose tab controls the panel.
+    await headingsAre(page, ["walk/a.ts", "walk/b.ts", "walk/c.ts"]);
+    expect(await selectedTab()).toBe("Walkthrough");
+    expect(await tab("Walkthrough").getAttribute("tabindex")).toBe("0");
+    expect(await tab("Files").getAttribute("tabindex")).toBe("-1");
+    const panel = page.getByRole("tabpanel");
+    expect(await tab("Walkthrough").getAttribute("aria-controls")).toBe(
+      await panel.getAttribute("id"),
+    );
+    expect(await panel.getAttribute("aria-labelledby")).toBe(
+      await tab("Walkthrough").getAttribute("id"),
+    );
+    // A group's files keep the agent's order inside their folder; the rest are in no group.
+    await waitFor(
+      async () =>
+        JSON.stringify(await rowsOf("Files in Parse the config")) === '["walk","b.ts","a.ts"]',
+      "core's tree in the agent's order",
+    );
+    const notInGroup = side.getByRole("paragraph").filter({ hasText: "Not in a group" });
+    await notInGroup.waitFor();
+    expect(await rowsOf("Files not in a group")).toEqual(["walk", "a.ts", "c.ts"]);
+    // A file in no group opens its own view, and the tab stays.
+    await rowIn("Files not in a group", "c.ts").click();
+    await headingsAre(page, ["walk/c.ts"]);
+    expect(await ariaSelected(rowIn("Files not in a group", "c.ts"))).toBe("true");
+    expect(await selectedTab()).toBe("Walkthrough");
+    // "Not in a group" reads its Viewed progress as text, its visible n/m and ✓ hidden.
+    const heard = async () => (await notInGroup.ariaSnapshot()).replaceAll('"', "");
+    expect(await heard()).toBe("- paragraph: Not in a group, 0 of 2 hunks viewed");
+    await viewedBox(page, "walk/c.ts").check();
+    await waitFor(
+      async () => (await heard()) === "- paragraph: Not in a group, 1 of 2 hunks viewed",
+      "c.ts's hunk heard as viewed",
+    );
+    await viewedBox(page, "walk/c.ts").uncheck();
+    await waitFor(
+      async () => (await heard()) === "- paragraph: Not in a group, 0 of 2 hunks viewed",
+      "c.ts's hunk heard as unviewed",
+    );
+
+    // Once every hunk is in a group, a.ts is in both groups' trees and "Not in a group" is gone.
+    // The two Viewed writes above were revisions 2 and 3.
+    await walk.publish(3, "edge", [edgeGroup(walk)]);
+    await waitFor(
+      async () =>
+        JSON.stringify(await rowsOf("Files in Handle the edge")) === '["walk","c.ts","a.ts"]',
+      "edge's tree in the agent's order",
+    );
+    expect(await notInGroup.count()).toBe(0);
+    // Choosing a group's file enters that group at the file, selected in that group's tree only.
+    await side.getByRole("button", { name: /^Parse the config/ }).click();
+    await headingsAre(page, ["walk/b.ts", "walk/a.ts"]);
+    await waitFor(
+      async () => (await ariaSelected(rowIn("Files in Parse the config", "b.ts"))) === "true",
+      "core's current file selected",
+    );
+    await rowIn("Files in Handle the edge", "a.ts").click();
+    await headingsAre(page, ["walk/c.ts", "walk/a.ts"]);
+    await says(page, "a.ts \u00b7 file");
+    await waitFor(
+      async () => (await ariaSelected(rowIn("Files in Handle the edge", "a.ts"))) === "true",
+      "a.ts selected in edge",
+    );
+    expect(await ariaSelected(rowIn("Files in Parse the config", "a.ts"))).toBe("false");
+    await keys(page, "Shift+K");
+    await headingsAre(page, ["walk/b.ts", "walk/a.ts"]);
+    await waitFor(
+      async () => (await ariaSelected(rowIn("Files in Handle the edge", "a.ts"))) === "false",
+      "nothing selected in edge",
+    );
+    expect(await selectedTab()).toBe("Walkthrough");
+    // A folder closed in a group's tree stays closed while the reader moves on.
+    const coreFolder = rowIn("Files in Parse the config", "walk");
+    await coreFolder.click();
+    await waitFor(
+      async () => (await coreFolder.getAttribute("aria-expanded")) === "false",
+      "closed",
+    );
+    const before = await statusLine(page)
+      .getByText(/ \u00b7 |:\d/)
+      .first()
+      .textContent();
+    await keys(page, "j", "j");
+    await waitFor(
+      async () =>
+        (await statusLine(page)
+          .getByText(/ \u00b7 |:\d/)
+          .first()
+          .textContent()) !== before,
+      "the cursor moved",
+    );
+    expect(await coreFolder.getAttribute("aria-expanded")).toBe("false");
+    // A new file order for the group reorders its tree.
+    await walk.publish(4, "reorder", [
+      { type: "group.update", id: "core", files: ["walk/a.ts", "walk/b.ts"] },
+    ]);
+    await waitFor(
+      async () =>
+        JSON.stringify(await rowsOf("Files in Parse the config")) === '["walk","a.ts","b.ts"]',
+      "core's tree in its new order",
+    );
+
+    // Arrow keys, Home and End move from the focused tab and open the tab they reach; only the
+    // open tab's content is there. From Files focused while Walkthrough is open, ArrowRight wraps
+    // to Walkthrough, where counting from the open tab would reach Files.
+    await tab("Files").focus();
+    await page.keyboard.press("ArrowRight");
+    expect(await selectedTab()).toBe("Walkthrough");
+    expect(await focusedRow(page)).toBe("Walkthrough");
+    for (const [key, reached] of [
+      ["ArrowRight", "Files"],
+      ["ArrowRight", "Walkthrough"],
+      ["End", "Files"],
+      ["Home", "Walkthrough"],
+      ["ArrowLeft", "Files"],
+    ] as const) {
+      await page.keyboard.press(key);
+      expect(await selectedTab()).toBe(reached);
+      expect(await focusedRow(page)).toBe(reached);
+    }
+    expect(await tab("Files").getAttribute("tabindex")).toBe("0");
+    expect(await side.getByRole("list", { name: "Walkthrough" }).count()).toBe(0);
+    // Group keys and All changes leave the Files tab open.
+    await keys(page, "Shift+J");
+    await headingsAre(page, ["walk/c.ts", "walk/a.ts"]);
+    await side.getByRole("button", { name: /^All changes/ }).click();
+    await headingsAre(page, ["walk/a.ts", "walk/b.ts", "walk/c.ts"]);
+    expect(await selectedTab()).toBe("Files");
+
+    // A selected folder opens its changes and stays open.
+    await treeRow(page, "walk").click();
+    await headingsAre(page, ["walk/a.ts", "walk/b.ts", "walk/c.ts"]);
+    await waitFor(
+      async () => (await treeRow(page, "walk").getAttribute("aria-expanded")) === "true",
+      "walk open",
+    );
+    expect(await ariaSelected(treeRow(page, "walk"))).toBe("true");
+    await treeRow(page, "b.ts").waitFor();
+
+    // From the clicked folder's row, the tree keeps its own arrows, Enter on a row chooses its
+    // file, and j still moves the Vim cursor.
+    await waitFor(async () => (await focusedRow(page)) === "walk", "walk focused");
+    await page.keyboard.press("ArrowDown");
+    await waitFor(async () => (await focusedRow(page)) === "a.ts", "a.ts focused");
+    await page.keyboard.press("Enter");
+    await headingsAre(page, ["walk/a.ts"]);
+    await says(page, "a.ts \u00b7 file");
+    await page.keyboard.press("ArrowDown");
+    await waitFor(async () => (await focusedRow(page)) === "b.ts", "b.ts focused");
+    await says(page, "a.ts \u00b7 file");
+    await page.keyboard.press("j");
+    await waitFor(
+      async () =>
+        (await statusLine(page)
+          .getByText(/^a\.ts/)
+          .textContent()) !== "a.ts \u00b7 file",
+      "the cursor moved on",
+    );
+    expect(await focusedRow(page)).toBe("b.ts");
+    expect(await selectedTab()).toBe("Files");
+  }, 60_000);
+
+  it("opens a sidebar tree's selected row again when chosen again: the current group file lands at its header, and a Files row leaves an expanded reference for its own view", async () => {
+    const walk = await openWalk();
+    await publishWalk(walk);
+    await walk.publish(1, "refs", referenceOps);
+    const page = await newPage();
+    await page.setViewportSize({ width: 1280, height: 900 });
+    await page.goto(`${one.origin}/session/${walk.id}`);
+    const pane = page.getByRole("main");
+    const side = page.getByRole("navigation", { name: "gyst" });
+    const coreFile = side
+      .locator('[aria-label="Files in Parse the config"]')
+      .getByRole("treeitem", { name: "b.ts", exact: true });
+
+    // The group's current file, folded and so already selected, opens at its header when chosen.
+    await side.getByRole("button", { name: /^Parse the config/ }).click();
+    await headingsAre(page, ["walk/b.ts", "walk/a.ts"]);
+    await foldToggle(page, "walk/b.ts").click();
+    await waitFor(
+      async () => (await foldToggle(page, "walk/b.ts").getAttribute("aria-expanded")) === "false",
+      "b.ts folded",
+    );
+    await waitFor(async () => (await ariaSelected(coreFile)) === "true", "b.ts selected");
+    await coreFile.click();
+    await waitFor(
+      async () => (await foldToggle(page, "walk/b.ts").getAttribute("aria-expanded")) === "true",
+      "b.ts unfolded",
+    );
+    await says(page, "b.ts \u00b7 file");
+
+    // A Files row stays selected under an expanded reference; choosing it goes back to its view.
+    await filesTab(page);
+    await treeRow(page, "b.ts").click();
+    await headingsAre(page, ["walk/b.ts"]);
+    await pane.locator("[data-note=b-note]").getByRole("button", { name: "line 40" }).click();
+    await peekOf(page).getByRole("button", { name: "Expand" }).click();
+    await headingsAre(page, ["src/long.ts"]);
+    expect(await ariaSelected(treeRow(page, "b.ts"))).toBe("true");
+    await treeRow(page, "b.ts").click();
+    await headingsAre(page, ["walk/b.ts"]);
+    expect(await pane.getByRole("region", { name: "Captured file" }).count()).toBe(0);
+  }, 30_000);
+
+  it("fades what is done in the sidebar: a viewed file faint with \u2713 before its letter, a folder with nothing left, an unchanged file and a done group, and back at full ink once unmarked", async () => {
+    const walk = await openWalk();
+    await publishWalk(walk);
+    const page = await newPage();
+    await page.setViewportSize({ width: 1280, height: 900 });
+    await page.goto(`${one.origin}/session/${walk.id}`);
+    const side = page.getByRole("navigation", { name: "gyst" });
+    const [ink, faint] = ["rgb(205, 214, 244)", "rgb(127, 132, 156)"];
+    const rowIn = (label: string, name: string) =>
+      side.locator(`[aria-label="${label}"]`).getByRole("treeitem", { name, exact: true });
+    const core = "Files in Parse the config";
+    const edge = "Files in Handle the edge";
+    const coreRow = side.getByRole("button", { name: /^Parse the config/ });
+
+    // Everything is left to read: files, folders and groups at full ink, letters after the name.
+    await coreRow.click();
+    // Off the rows, whose hover tone differs.
+    await page.mouse.move(1, 1);
+    await headingsAre(page, ["walk/b.ts", "walk/a.ts"]);
+    await waitFor(async () => (await looks(rowIn(core, "b.ts"))) === `${ink} M`, "b.ts to read");
+    expect(await tone(rowIn(core, "walk"))).toBe(ink);
+    expect(await tone(coreRow)).toBe(ink);
+
+    // Group viewed: the group's files, its folder and its row fade; ✓ comes before the letter.
+    await keys(page, "Shift+A");
+    await side
+      .getByRole("button", { name: "Parse the config, all 3 of 3 hunks viewed", exact: true })
+      .waitFor();
+    await waitFor(
+      async () => (await looks(rowIn(core, "b.ts"))) === `${faint} \u2713\u2002M`,
+      "b.ts faded",
+    );
+    expect(await looks(rowIn(core, "a.ts"))).toBe(`${faint} \u2713\u2002M`);
+    expect(await tone(rowIn(core, "walk"))).toBe(faint);
+    expect(await tone(coreRow)).toBe(faint);
+    expect((await coreRow.innerText()).replaceAll(/\s+/g, " ")).toBe("Parse the config \u2713 3/3");
+    // Each tree counts its own hunks: a.ts still has edge's hunk to read there.
+    expect(await looks(rowIn(edge, "a.ts"))).toBe(`${ink} M`);
+    expect(await tone(rowIn(edge, "walk"))).toBe(ink);
+    // A screen reader hears the focused row's path, status and Viewed from a polite live region as
+    // tree focus moves; a tree without focus says nothing.
+    const said = (label: string) =>
+      side.locator(`[aria-label="${label}"] + [aria-live="polite"]`).textContent();
+    expect(await said(core)).toBe("");
+    // Focus tabbing into a tree says the row it reaches, its first, and says it again on each
+    // return.
+    await coreRow.focus();
+    for (const _ of ["enter", "return"]) {
+      await page.keyboard.press("Tab");
+      await waitFor(
+        async () => (await said(core)) === "walk, folder",
+        "the row tabbed to announced",
+      );
+      await page.keyboard.press("Shift+Tab");
+      await waitFor(async () => (await said(core)) === "", "nothing said once focus left");
+    }
+    await rowIn(core, "b.ts").click();
+    await page.mouse.move(1, 1);
+    await page.keyboard.press("ArrowDown");
+    await waitFor(
+      async () => (await said(core)) === "walk/a.ts, modified, viewed",
+      "a.ts announced",
+    );
+    await page.keyboard.press("ArrowUp");
+    await page.keyboard.press("ArrowUp");
+    await waitFor(async () => (await said(core)) === "walk, folder", "walk announced");
+    expect(await said(edge)).toBe("");
+    // The Files tree counts all of a file's hunks; an unchanged file is faint too.
+    await filesTab(page);
+    await waitFor(
+      async () => (await looks(treeRow(page, "b.ts"))) === `${faint} \u2713\u2002M`,
+      "b.ts faded in Files",
+    );
+    expect(await looks(treeRow(page, "a.ts"))).toBe(`${ink} M`);
+    expect(await looks(treeRow(page, "README.md"))).toBe(`${faint} `);
+
+    // Unmarking brings them back to full ink.
+    await keys(page, "Shift+A");
+    await waitFor(
+      async () => (await looks(treeRow(page, "b.ts"))) === `${ink} M`,
+      "b.ts unmarked in Files",
+    );
+    await walkthroughTab(page);
+    await side
+      .getByRole("button", { name: "Parse the config, 0 of 3 hunks viewed", exact: true })
+      .waitFor();
+    expect(await looks(rowIn(core, "b.ts"))).toBe(`${ink} M`);
+    expect(await tone(rowIn(core, "walk"))).toBe(ink);
+    expect(await tone(coreRow)).toBe(ink);
+  }, 60_000);
+
+  it("keeps few rows in the page for a Files tree of a thousand files, which virtualizes", async () => {
+    const cwd = join(root, "thousand");
+    await mkdir(join(cwd, "many"), { recursive: true });
+    const inRepo = (...args: string[]) => execFileSync("git", args, { cwd, env, stdio: "ignore" });
+    inRepo("init", "-q", "-b", "main");
+    inRepo("config", "user.email", "t@gyst.invalid");
+    inRepo("config", "user.name", "t");
+    const names = Array.from({ length: 1000 }, (_, i) => `${String(i).padStart(4, "0")}.txt`);
+    await Promise.all(names.map((name) => writeFile(join(cwd, "many", name), `${name}\n`)));
+    inRepo("add", ".");
+    inRepo("commit", "-qm", "init");
+    // One change inside the folder, so it starts open.
+    await writeFile(join(cwd, "many", "0000.txt"), "changed\n");
+    const launched = await launchIn(cwd);
+    onTestFinished(async () => {
+      await gyst("session", "delete", "--session", launched.id, "--request-id", randomUUID());
+      await rm(cwd, { recursive: true, force: true });
+    });
+
+    const page = await newPage();
+    await page.setViewportSize({ width: 1280, height: 800 });
+    await page.goto(`${launched.origin}${launched.path}`);
+    await headingsAre(page, ["many/0000.txt"]);
+    // Every page of the snapshot's files arrived: the tree counts the folder's thousand files.
+    await waitFor(
+      async () => (await treeRow(page, "0000.txt").getAttribute("aria-setsize")) === "1000",
+      "a thousand files in the tree",
+    );
+    const rows = await page
+      .getByRole("navigation", { name: "gyst" })
+      .locator('[aria-label="Snapshot files"]')
+      .getByRole("treeitem")
+      .count();
+    expect(rows).toBeGreaterThan(10);
+    expect(rows).toBeLessThan(100);
+  }, 60_000);
+
+  it("keeps the sidebar's Files tree usable at phone width, its first rows shown and scrolling inside the tab", async () => {
+    // main...bulk adds 400 one-line files in one folder.
+    const launched = await launchFor(await freshSession("main...bulk"));
+    const page = await newPage();
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.goto(launched.url);
+    await page
+      .getByRole("main")
+      .getByRole("heading", { name: "bulk/000.txt", exact: true })
+      .waitFor();
+    const side = page.getByRole("navigation", { name: "gyst" });
+    /** Whether a tree row lies whole inside the part of the sidebar on screen. */
+    const shown = async (name: string) => {
+      const row = treeRow(page, name);
+      if ((await row.count()) === 0) return false;
+      const [box, bounds] = await Promise.all([row.boundingBox(), side.boundingBox()]);
+      return (
+        box !== null &&
+        bounds !== null &&
+        box.height > 0 &&
+        box.y >= bounds.y &&
+        box.y + box.height <= bounds.y + bounds.height
+      );
+    };
+    await waitFor(
+      async () => (await shown("bulk")) && (await shown("000.txt")) && (await shown("001.txt")),
+      "the tree's first rows shown",
+    );
+    // The tree scrolls inside the tab, a later file coming into view.
+    const tree = await side.locator('[aria-label="Snapshot files"]').boundingBox();
+    await page.mouse.move(tree!.x + tree!.width / 2, tree!.y + 10);
+    await page.mouse.wheel(0, 600);
+    await waitFor(() => shown("024.txt"), "a later file scrolled into view");
+  }, 60_000);
+
+  it("keeps the Files tree's folders as the reader left them while later pages of files arrive: an unchanged folder opened stays open, a changed folder closed stays closed", async () => {
+    const cwd = join(root, "folders");
+    await mkdir(join(cwd, "docs"), { recursive: true });
+    await mkdir(join(cwd, "many"));
+    const inRepo = (...args: string[]) => execFileSync("git", args, { cwd, env, stdio: "ignore" });
+    inRepo("init", "-q", "-b", "main");
+    inRepo("config", "user.email", "t@gyst.invalid");
+    inRepo("config", "user.name", "t");
+    await writeFile(join(cwd, "docs", "notes.md"), "notes\n");
+    // Enough files for several pages; zz.txt sorts after them all, so it comes on the last.
+    const names = Array.from({ length: 1000 }, (_, i) => `${String(i).padStart(4, "0")}.txt`);
+    await Promise.all(names.map((name) => writeFile(join(cwd, "many", name), `${name}\n`)));
+    await writeFile(join(cwd, "zz.txt"), "last\n");
+    inRepo("add", ".");
+    inRepo("commit", "-qm", "init");
+    // One change inside many, so it starts open; docs holds none, so it starts closed.
+    await writeFile(join(cwd, "many", "0000.txt"), "changed\n");
+    const launched = await launchIn(cwd);
+    onTestFinished(async () => {
+      await gyst("session", "delete", "--session", launched.id, "--request-id", randomUUID());
+      await rm(cwd, { recursive: true, force: true });
+    });
+
+    const page = await newPage();
+    await page.setViewportSize({ width: 1280, height: 800 });
+    // Every later files page waits until the reader has changed the folders.
+    const { promise: released, resolve: release } = Promise.withResolvers<void>();
+    await page.route(isOperationUrl, async (route) => {
+      const request = route.request().postDataJSON();
+      if (request?.command === "files" && request.after) await released;
+      await route.continue();
+    });
+    await page.goto(`${launched.origin}${launched.path}`);
+    await headingsAre(page, ["many/0000.txt"]);
+    const [many, docs] = [treeRow(page, "many"), treeRow(page, "docs")];
+    await waitFor(async () => (await ariaExpanded(many)) === "true", "many open");
+    expect(await ariaExpanded(docs)).toBe("false");
+    // Chosen, many opens its changes and stays open; chosen again, it closes.
+    await many.click();
+    await headingsAre(page, ["many/0000.txt"]);
+    await many.click();
+    await waitFor(async () => (await ariaExpanded(many)) === "false", "many closed");
+    await docs.click();
+    await waitFor(async () => (await ariaExpanded(docs)) === "true", "docs open");
+    // The top level counts docs and many until zz.txt lands, which an open many would push out of
+    // the virtualized rows.
+    expect(await docs.getAttribute("aria-setsize")).toBe("2");
+
+    release();
+    await waitFor(
+      async () => (await docs.getAttribute("aria-setsize")) === "3",
+      "zz.txt in the tree",
+    );
+    expect(await ariaExpanded(many)).toBe("false");
+    expect(await ariaExpanded(docs)).toBe("true");
+    expect(await ariaSelected(docs)).toBe("true");
+  }, 60_000);
+
+  it("shows a file replaced by a folder of the same name in both tabs: the deleted file beside the folder, with its own letter, Viewed and changes", async () => {
+    const cwd = join(root, "replaced");
+    await mkdir(cwd, { recursive: true });
+    const inRepo = (...args: string[]) => execFileSync("git", args, { cwd, env, stdio: "ignore" });
+    inRepo("init", "-q", "-b", "main");
+    inRepo("config", "user.email", "t@gyst.invalid");
+    inRepo("config", "user.name", "t");
+    await writeFile(join(cwd, "src"), "was a file\n");
+    inRepo("add", ".");
+    inRepo("commit", "-qm", "init");
+    await rm(join(cwd, "src"));
+    await mkdir(join(cwd, "src"));
+    await writeFile(join(cwd, "src", "a.ts"), "export const a = 1;\n");
+    const launched = await launchIn(cwd);
+    onTestFinished(async () => {
+      await gyst("session", "delete", "--session", launched.id, "--request-id", randomUUID());
+      await rm(cwd, { recursive: true, force: true });
+    });
+    const { hunks, snapshotId } = await gyst("session", "diff", "--session", launched.id);
+    await applyBatch(launched.id, {
+      revision: 0,
+      snapshotId,
+      idempotencyKey: randomUUID(),
+      ops: [
+        { type: "walkthrough.update", overview: "Moves src into a folder." },
+        {
+          type: "group.create",
+          id: "move",
+          title: "Move src into a folder",
+          overview: "The file becomes a folder.",
+          memberHunkIds: hunks.map(({ id }: { id: string }) => id),
+          files: ["src/a.ts", "src"],
+        },
+      ],
+    });
+
+    const page = await newPage();
+    await page.setViewportSize({ width: 1280, height: 900 });
+    await page.goto(`${launched.origin}${launched.path}`);
+    const side = page.getByRole("navigation", { name: "gyst" });
+    const rowsIn = (label: string) => side.locator(`[aria-label="${label}"]`).getByRole("treeitem");
+    const folderIn = (label: string) =>
+      rowsIn(label).and(side.locator("[aria-expanded]")).filter({ hasText: "src" });
+    const fileIn = (label: string) =>
+      rowsIn(label).and(side.locator(":not([aria-expanded])")).filter({ hasText: "src" });
+    const addedIn = (label: string) =>
+      side.locator(`[aria-label="${label}"]`).getByRole("treeitem", { name: "a.ts", exact: true });
+
+    // The group's tree holds the folder, its added file and the deleted file of the same name.
+    const group = "Files in Move src into a folder";
+    await waitFor(async () => (await rowsIn(group).count()) === 3, "the group's three rows");
+    expect(await folderIn(group).count()).toBe(1);
+    await waitFor(async () => (await letterOf(fileIn(group))) === "D", "src's letter");
+    expect(await letterOf(addedIn(group))).toBe("A");
+    // The deleted file opens itself in its group, and Viewed marks it alone.
+    await fileIn(group).click();
+    await headingsAre(page, ["src/a.ts", "src"]);
+    await waitFor(async () => (await ariaSelected(fileIn(group))) === "true", "src selected");
+    expect(await ariaSelected(addedIn(group))).toBe("false");
+    // Closing and opening the folder of the same name leaves the file being read selected.
+    for (const expanded of ["false", "true"]) {
+      await folderIn(group).click();
+      await waitFor(
+        async () => (await folderIn(group).getAttribute("aria-expanded")) === expanded,
+        `the folder's aria-expanded ${expanded}`,
+      );
+      await waitFor(async () => (await ariaSelected(fileIn(group))) === "true", "src kept");
+      expect(await ariaSelected(folderIn(group))).toBe("false");
+    }
+    await viewedBox(page, "src").check();
+    await waitFor(async () => (await letterOf(fileIn(group))) === "\u2713\u2002D", "src viewed");
+    expect(await letterOf(addedIn(group))).toBe("A");
+
+    // The Files tab's tree holds both too: each row opens its own path's changes.
+    await filesTab(page);
+    const files = "Snapshot files";
+    await waitFor(async () => (await rowsIn(files).count()) === 3, "the snapshot's three rows");
+    expect(await letterOf(fileIn(files))).toBe("\u2713\u2002D");
+    await addedIn(files).click();
+    await headingsAre(page, ["src/a.ts"]);
+    await fileIn(files).click();
+    await headingsAre(page, ["src", "src/a.ts"]);
+    await waitFor(async () => (await ariaSelected(fileIn(files))) === "true", "src selected");
+    expect(await ariaSelected(folderIn(files))).toBe("false");
+    // Heard by its own path and status, as the reader names it.
+    await side.getByText("src, deleted, viewed", { exact: true }).waitFor({ state: "attached" });
+    await folderIn(files).click();
+    await headingsAre(page, ["src", "src/a.ts"]);
+    await waitFor(async () => (await ariaSelected(folderIn(files))) === "true", "the folder");
+    expect(await ariaSelected(fileIn(files))).toBe("false");
+  }, 60_000);
 
   it("reads a walkthrough from the bar above the reader: each view's size and progress, a group's place, its overview opened, scrolled and closed, Group viewed and the overview's references", async () => {
     const walk = await openWalk();
@@ -4318,25 +4915,31 @@ describe("installed gyst in a sandboxed browser", () => {
     // Kept as the line at the panel's top and how far below the file header it sat: the same pixels.
     expect(Math.abs((await steady(() => panelTop(page)))! - left!)).toBeLessThan(2);
     // A path's view too: a.ts's own view, left at its last change, is that change on return.
-    await side.getByRole("button", { name: "walk/a.ts (modified)", exact: true }).click();
+    await filesTab(page);
+    await treeRow(page, "a.ts").click();
     await headingsAre(page, ["walk/a.ts"]);
     await keys(page, "Shift+G");
     const bottom = await steady(() => panelTop(page));
     const reading = (await statusLine(page)
       .getByText(/^a\.ts/)
       .textContent())!;
+    await walkthroughTab(page);
     await side.getByRole("button", { name: /^Handle the edge/ }).click();
     await says(page, "c.ts \u00b7 file");
-    await side.getByRole("button", { name: "walk/a.ts (modified)", exact: true }).click();
+    await filesTab(page);
+    await treeRow(page, "a.ts").click();
     await says(page, reading);
     expect(Math.abs((await steady(() => panelTop(page)))! - bottom!)).toBeLessThan(2);
     // Through a view with no changes to show, which has no reader to keep a place in, too.
+    await walkthroughTab(page);
     await side.getByRole("button", { name: /^Parse the config/ }).click();
     await says(page, "a.ts:20 \u00b7 new");
     const again = await steady(() => panelTop(page));
     expect(again).toBeGreaterThan(0);
-    await side.getByRole("button", { name: "app.ts", exact: true }).click();
+    await filesTab(page);
+    await treeRow(page, "app.ts").click();
     await page.getByRole("main").getByText("No captured changes under app.ts.").waitFor();
+    await walkthroughTab(page);
     await side.getByRole("button", { name: /^Parse the config/ }).click();
     await headingsAre(page, ["walk/b.ts", "walk/a.ts"]);
     await says(page, "a.ts:20 \u00b7 new");
@@ -6057,6 +6660,8 @@ describe("installed gyst in a sandboxed browser", () => {
       await headingsAre(page, ["walk/a.ts", "walk/b.ts", "walk/c.ts"]);
     };
     const status = () => gyst("session", "status", "--session", walk.id);
+    // A plain session opens on Files.
+    await walkthroughTab(page);
     await side.getByText("No walkthrough for this session yet.", { exact: true }).waitFor();
 
     const [span, bNote] = [walkNotes.slice(0, 1), walkNotes.slice(1, 2)];
@@ -6076,6 +6681,8 @@ describe("installed gyst in a sandboxed browser", () => {
     expect(mixed.detail.map(({ opIndex }: { opIndex: number }) => opIndex)).toEqual([3]);
     expect(await status()).toMatchObject({ revision: 0, overview: null, groups: [] });
     await reload();
+    // A plain session opens on Files.
+    await walkthroughTab(page);
     await side.getByText("No walkthrough for this session yet.", { exact: true }).waitFor();
     expect(await page.getByRole("main").getByRole("region").count()).toBe(0);
 
@@ -6158,7 +6765,8 @@ describe("installed gyst in a sandboxed browser", () => {
     });
 
     // Every hunk Viewed, from the snapshot view.
-    await side.getByRole("button", { name: "All changes", exact: true }).click();
+    await filesTab(page);
+    await side.getByRole("button", { name: /^All changes/ }).click();
     // A box refuses a click while another file's write is unanswered, so each waits for the last.
     await viewedBox(page, "walk/a.ts").check();
     await says(page, "3/5 hunks viewed in 3 files");
@@ -7261,15 +7869,17 @@ describe("installed gyst in a sandboxed browser", () => {
     await page.goto(b.url);
     await page.getByRole("main").getByText("b two").waitFor();
 
-    // The entry sits above the walkthrough, which this plain diff session doesn't have yet.
+    // The entry sits above the sidebar's tabs, open on Files: this plain diff session has no
+    // walkthrough yet.
     const side = page.getByRole("navigation", { name: "gyst" });
     expect((await side.innerText()).split("\n").filter(Boolean).slice(0, 5)).toEqual([
       "gyst",
       "Description",
       "#2 on GitHub",
       "Walkthrough",
-      "No walkthrough for this session yet.",
+      "Files",
     ]);
+    await side.getByRole("button", { name: /^All changes/ }).waitFor();
     const onGitHub = side.getByRole("link", { name: "#2 on GitHub" });
     expect(
       await onGitHub.evaluate((anchor) =>

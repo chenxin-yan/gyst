@@ -163,10 +163,6 @@ import {
   lineStats,
   type ReaderFile,
   splitMinWidth,
-  statusOf,
-  type TreeNode,
-  treeKey,
-  treeOf,
   wholeFileType,
 } from "../reader.ts";
 import {
@@ -193,6 +189,7 @@ import {
 import { SearchField, type SearchSource, useSearchScan } from "../search.tsx";
 import type { CodeSide, SemanticAsk } from "../semantic.ts";
 import { SemanticPeekView, semanticKey, useSemanticNavigation } from "../semantic.tsx";
+import { Sidebar } from "../sidebar.tsx";
 import { StackSwitcher } from "../stack.tsx";
 import { standalone } from "../standalone.ts";
 import { media, theme } from "../tokens.stylex.ts";
@@ -221,13 +218,7 @@ import {
   viewFiles,
   type ViewFiles,
 } from "../walkthrough.ts";
-import {
-  EarlierNoteCard,
-  ForeignHunkLabel,
-  NoteCard,
-  OverviewCard,
-  WalkthroughNav,
-} from "../walkthrough.tsx";
+import { EarlierNoteCard, ForeignHunkLabel, NoteCard, OverviewCard } from "../walkthrough.tsx";
 
 export const Route = createFileRoute("/session/$sessionId")({
   loader: async ({ params: { sessionId } }) => {
@@ -989,8 +980,8 @@ function SessionReader(props: {
     [session.id, snapshotId, hunks],
   );
 
-  const tree = useMemo(
-    () => treeOf([...manifest.map((file) => file.path), ...files.map((file) => file.path)]),
+  const treePaths = useMemo(
+    () => [...manifest.map((file) => file.path), ...files.map((file) => file.path)],
     [manifest, files],
   );
   // A view's Viewed sections: a file's hunks in a files view, the group's own in a group view.
@@ -1412,12 +1403,15 @@ function SessionReader(props: {
   // ─── captured-code navigation ───
   /**
    * A view the reader picks: it leaves any expanded reference, and Back starts over. The view left
-   * keeps its place and cursor, where a return resumes. A reference followed to a line lands there,
-   * its file unfolded in that view. A group first entered starts at its top, the cursor on its first
+   * keeps its place and cursor, where a return resumes. A reference followed to a line, or a group's
+   * file chosen in the sidebar, lands there, its file unfolded in that view. A group first entered starts at its top, the cursor on its first
    * file: keeping the position or the cursor in a file it shares with the view left would land
    * mid-group.
    */
-  const chooseView = (view: ReviewView, at?: { file: string; side: Side; line: number }) => {
+  const chooseView = (
+    view: ReviewView,
+    at?: { file: string; side: Side; line: number | undefined },
+  ) => {
     const to = viewKey(view);
     const leaving = to !== shownView;
     const left = captured === undefined && leaving ? viewer.current?.position() : undefined;
@@ -1450,7 +1444,11 @@ function SessionReader(props: {
         after.delete(at.file);
         return new Map(before).set(to, after);
       });
-      setCursor({ file: at.file, kind: "line", side: at.side, line: at.line });
+      setCursor(
+        at.line === undefined
+          ? { file: at.file, kind: "header", side: at.side }
+          : { file: at.file, kind: "line", side: at.side, line: at.line },
+      );
     }
     // A view with nothing to show has no reader to land: the next one starts at the place.
     if (captured === undefined && viewer.current !== null)
@@ -2310,7 +2308,10 @@ function SessionReader(props: {
     (event) => {
       if (event.defaultPrevented || event.isComposing || !typed(step, event)) return;
       if (single && completesSequence(event, keysSeen.current.previous, event.timeStamp)) return;
-      const target = event.target instanceof Element ? event.target : null;
+      // The innermost target: a shadow root (a sidebar tree's) retargets `target` to its host, and
+      // a tree row's Enter must keep its own activation.
+      const [inner] = event.composedPath();
+      const target = inner instanceof Element ? inner : null;
       if (target?.closest("dialog") || isTextEntry(target)) return;
       if (document.querySelector("dialog[open]")) return;
       // A focused control keeps its own Enter and Space.
@@ -2447,20 +2448,20 @@ function SessionReader(props: {
               />
             )
           )}
-          <WalkthroughNav
+          <Sidebar
             status={status}
             viewed={standalone ? undefined : progress.state.viewed}
-            view={review}
-            onView={chooseView}
-          />
-          <p {...stylex.props(styles.sideHead, styles.filesHead)}>
-            Files <span {...stylex.props(styles.muted)}>{files.length} changed</span>
-          </p>
-          <FileTree
-            nodes={tree}
+            review={review}
+            paths={treePaths}
             files={byPath}
-            selection={review.kind === "files" ? review.path : undefined}
-            onSelect={(path) => chooseView({ kind: "files", path })}
+            current={captured === undefined ? current?.file : undefined}
+            onView={chooseView}
+            onGroupFile={(group, file) =>
+              chooseView(
+                { kind: "group", id: group.id },
+                { file, side: "additions", line: undefined },
+              )
+            }
           />
           <MoreFiles
             sessionId={session.id}
@@ -2799,18 +2800,8 @@ function SessionReader(props: {
 }
 
 const styles = stylex.create({
-  muted: { color: theme.muted },
   ink: { color: theme.ink },
   grow: { flex: "1" },
-  sideHead: {
-    display: "flex",
-    justifyContent: "space-between",
-    padding: "4px 10px 8px",
-    fontSize: "12px",
-    fontWeight: 500,
-    color: theme.muted,
-  },
-  filesHead: { marginTop: "14px" },
   empty: { padding: { default: "24px 32px", [media.narrow]: "16px 12px" }, color: theme.muted },
   emptyHeader: { paddingInline: { default: "32px", [media.narrow]: "12px" } },
   earlierNotes: { display: "grid", gap: "8px", marginTop: "10px" },
@@ -4084,176 +4075,6 @@ const switchStyles = stylex.create({
   option: { display: "inline-flex", alignItems: "center", gap: "4px", cursor: "pointer" },
   checked: { color: theme.ink },
   input: { margin: 0, accentColor: theme["--accent"] },
-});
-
-// ─── file tree ───────────────────────────────────────────────────────────
-
-const statusNames = { A: "added", D: "deleted", M: "modified", R: "renamed" } as const;
-
-/**
- * The snapshot-wide file tree: every loaded captured path, changed or not. Selecting the root, a
- * folder or a file shows all captured changes under it. Folders holding changes start open.
- */
-function FileTree(props: {
-  nodes: readonly TreeNode[];
-  files: ReadonlyMap<string, ReaderFile>;
-  /** The selected path; undefined while a walkthrough group is shown. */
-  selection: string | undefined;
-  onSelect: (path: string) => void;
-}) {
-  const [toggled, setToggled] = useState<ReadonlySet<string>>(new Set());
-  const changedFolders = useMemo(() => {
-    const folders = new Set<string>();
-    for (const path of props.files.keys())
-      for (let slash = path.indexOf("/"); slash >= 0; slash = path.indexOf("/", slash + 1))
-        folders.add(path.slice(0, slash));
-    return folders;
-  }, [props.files]);
-  const isOpen = (path: string) => changedFolders.has(path) !== toggled.has(path);
-  const toggle = (path: string) =>
-    setToggled((before) => {
-      const next = new Set(before);
-      if (!next.delete(path)) next.add(path);
-      return next;
-    });
-
-  const rows = (nodes: readonly TreeNode[], depth: number) =>
-    nodes.map((node) => {
-      const selected = props.selection === node.path;
-      if (node.kind === "folder") {
-        const open = isOpen(node.path);
-        return (
-          <li key={treeKey(node)}>
-            <div {...stylex.props(treeStyles.row, selected && treeStyles.selected)}>
-              <button
-                type="button"
-                {...stylex.props(treeStyles.chevron, treeStyles.indent(depth))}
-                aria-expanded={open}
-                aria-label={`${open ? "Collapse" : "Expand"} ${node.path}`}
-                onClick={() => toggle(node.path)}
-              >
-                <span {...stylex.props(treeStyles.mark, open && treeStyles.markOpen)} />
-              </button>
-              <button
-                type="button"
-                {...stylex.props(treeStyles.label)}
-                aria-label={`${node.path}/`}
-                aria-current={selected || undefined}
-                onClick={() => props.onSelect(node.path)}
-              >
-                {node.name}
-              </button>
-            </div>
-            {open && <ul>{rows(node.children, depth + 1)}</ul>}
-          </li>
-        );
-      }
-      const file = props.files.get(node.path);
-      const status = file && statusOf(file);
-      return (
-        <li key={treeKey(node)}>
-          <button
-            type="button"
-            {...stylex.props(
-              treeStyles.row,
-              treeStyles.file,
-              treeStyles.indent(depth + 1),
-              selected && treeStyles.selected,
-              file === undefined && treeStyles.unchanged,
-            )}
-            aria-label={status ? `${node.path} (${statusNames[status]})` : node.path}
-            aria-current={selected || undefined}
-            onClick={() => props.onSelect(node.path)}
-          >
-            <span {...stylex.props(treeStyles.fileName)}>{node.name}</span>
-            {status && (
-              <span
-                {...stylex.props(treeStyles.status, treeStyles[status])}
-                title={statusNames[status]}
-              >
-                {status}
-              </span>
-            )}
-          </button>
-        </li>
-      );
-    });
-
-  return (
-    <div {...stylex.props(treeStyles.tree)}>
-      <button
-        type="button"
-        {...stylex.props(
-          treeStyles.row,
-          treeStyles.file,
-          treeStyles.indent(0),
-          props.selection === "" && treeStyles.selected,
-        )}
-        aria-current={props.selection === "" || undefined}
-        onClick={() => props.onSelect("")}
-      >
-        All changes
-      </button>
-      <ul aria-label="Snapshot files">{rows(props.nodes, 0)}</ul>
-    </div>
-  );
-}
-
-const treeStyles = stylex.create({
-  tree: {
-    display: "grid",
-    gridTemplateColumns: "minmax(0, 1fr)",
-    gap: "1px",
-    alignContent: "start",
-  },
-  row: {
-    display: "flex",
-    alignItems: "center",
-    width: "100%",
-    minHeight: "26px",
-    borderRadius: "6px",
-    color: { default: theme.muted, ":hover": theme.ink },
-    backgroundColor: { default: null, ":hover": theme.select },
-  },
-  selected: { color: theme.ink, backgroundColor: theme.select },
-  file: { gap: "8px", paddingRight: "10px", textAlign: "left" },
-  unchanged: { color: { default: theme.faint, ":hover": theme.ink } },
-  indent: (depth: number) => ({ paddingLeft: `${10 + depth * 14}px` }),
-  chevron: { display: "grid", placeItems: "center", alignSelf: "stretch", paddingRight: "4px" },
-  mark: {
-    width: "5px",
-    height: "5px",
-    borderRightWidth: "1.5px",
-    borderRightStyle: "solid",
-    borderRightColor: theme.faint,
-    borderBottomWidth: "1.5px",
-    borderBottomStyle: "solid",
-    borderBottomColor: theme.faint,
-    transform: "rotate(-45deg)",
-  },
-  markOpen: { transform: "rotate(45deg)" },
-  label: {
-    flex: "1",
-    minWidth: 0,
-    paddingRight: "10px",
-    overflow: "hidden",
-    textOverflow: "ellipsis",
-    whiteSpace: "nowrap",
-    alignSelf: "stretch",
-    textAlign: "left",
-  },
-  fileName: {
-    flex: "1",
-    minWidth: 0,
-    overflow: "hidden",
-    textOverflow: "ellipsis",
-    whiteSpace: "nowrap",
-  },
-  status: { fontFamily: theme["--mono"], fontSize: "11px", fontWeight: 500 },
-  A: { color: theme.add },
-  D: { color: theme.del },
-  M: { color: theme.changed },
-  R: { color: theme.changed },
 });
 
 /**
