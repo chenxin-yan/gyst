@@ -525,8 +525,11 @@ function SessionReader(props: {
   const [cursor, setCursor] = useState<Cursor | undefined>(recalled?.cursor);
   const [lines, setLines] = useState<CodeViewLineSelection | null>(null);
   // Folds belong to the view they were made in, and an expanded reference folds on its own. A
-  // return keeps the folds it left.
-  const [folds, setViewFolds] = useState<Folds>(() => recalled?.folds ?? new Map());
+  // return keeps the folds it left. A view holds its folds from when it is first shown, so a refresh
+  // carries what the reader saw rather than the new snapshot's Generated files.
+  const [folds, setViewFolds] = useState<Folds>(
+    () => recalled?.folds ?? new Map([[viewKey(review), generatedOf(props.status)]]),
+  );
   const [expandedFolded, setExpandedFolded] = useState<ReadonlySet<string>>(
     () => recalled?.expandedFolded ?? new Set(),
   );
@@ -600,7 +603,7 @@ function SessionReader(props: {
   // From status as well as pages: it is complete when the reader starts.
   const generated = useMemo(() => generatedOf(status), [status]);
   const shownView = viewKey(review);
-  // A view the reader hasn't folded in yet starts with its Generated files folded.
+  // A view not shown before starts with its Generated files folded.
   const folded = captured ? expandedFolded : (folds.get(shownView) ?? generated);
   const byPath = useMemo(() => new Map(files.map((file) => [file.path, file])), [files]);
   // Memoized: a new list makes the renderer reconcile its items and restore the reading position.
@@ -1107,6 +1110,10 @@ function SessionReader(props: {
   /** A view the reader picks: it leaves any expanded reference, and Back starts over. */
   const chooseView = (view: ReviewView) => {
     setReview(view);
+    const chosen = viewKey(view);
+    setViewFolds((before) =>
+      before.has(chosen) ? before : new Map(before).set(chosen, generated),
+    );
     setPeek(undefined);
     setBack([]);
     if (captured === undefined) return;

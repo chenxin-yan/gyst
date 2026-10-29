@@ -1966,6 +1966,53 @@ describe("installed gyst in a sandboxed browser", () => {
     expect(await expanded()).toBe("true");
   }, 30_000);
 
+  it("keeps a view's folds over a refresh that only changed which files are Generated", async () => {
+    const cwd = join(root, "generated-flag-refresh");
+    await mkdir(join(cwd, "dist"), { recursive: true });
+    const inRepo = (...args: string[]) => execFileSync("git", args, { cwd, env, stdio: "ignore" });
+    inRepo("init", "-q", "-b", "main");
+    inRepo("config", "user.email", "t@gyst.invalid");
+    inRepo("config", "user.name", "t");
+    await writeFile(join(cwd, ".gitattributes"), "dist/** linguist-generated\n");
+    const paths = ["app.js", "dist/bundle.js"];
+    for (const path of paths) await writeFile(join(cwd, path), `${path} one\n`);
+    inRepo("add", ".");
+    inRepo("commit", "-qm", "init");
+    for (const path of paths) await writeFile(join(cwd, path), `${path} two\n`);
+    const launched = await launchIn(cwd);
+    onTestFinished(async () => {
+      await gyst("session", "delete", "--session", launched.id, "--request-id", randomUUID());
+      await rm(cwd, { recursive: true, force: true });
+    });
+
+    const page = await newPage();
+    await page.setViewportSize({ width: 1280, height: 800 });
+    await page.goto(`${launched.origin}${launched.path}`);
+    const expanded = (path: string) => foldToggle(page, path).getAttribute("aria-expanded");
+    await headingsAre(page, paths);
+    expect(await expanded("app.js")).toBe("true");
+    expect(await expanded("dist/bundle.js")).toBe("false");
+    await keys(page, "g", "g", "]", "c");
+    await says(page, "app.js:1 · new");
+
+    // Git's own attributes swap which file is Generated; neither file's diff changes.
+    await writeFile(
+      join(cwd, ".git", "info", "attributes"),
+      "app.js linguist-generated\ndist/** -linguist-generated\n",
+    );
+    await keys(page, "Shift+R");
+    await page
+      .getByRole("main")
+      .getByRole("heading", { name: "app.js", exact: true })
+      .locator("xpath=..")
+      .getByText("Generated", { exact: true })
+      .waitFor();
+    // The reader saw app.js open and the bundle folded, and so they stay.
+    await says(page, "app.js:1 · new");
+    expect(await expanded("app.js")).toBe("true");
+    expect(await expanded("dist/bundle.js")).toBe("false");
+  }, 30_000);
+
   it("scrolls with movement keys in Mouse mode, without a cursor, and selects lines with the hover + and by dragging", async () => {
     const page = await newPage();
     await page.setViewportSize({ width: 1280, height: 800 });
