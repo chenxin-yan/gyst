@@ -3028,7 +3028,12 @@ function ContinuousDiff(props: {
       const top = viewer.getTopForItem(id);
       if (top === undefined || seen < top || seen >= top + instance.height) continue;
       const anchor = instance.getNumericScrollAnchor(seen - top);
-      position.current = { file: id, side: anchor?.side, line: anchor?.lineNumber };
+      position.current = {
+        file: id,
+        side: anchor?.side,
+        line: anchor?.lineNumber,
+        ...(anchor && { offset: anchor.top - (seen - top) }),
+      };
       latest.current.onPosition({ position: position.current });
       return;
     }
@@ -3612,6 +3617,7 @@ function ContinuousDiff(props: {
             lineNumber: at.line,
             ...(at.side && { side: at.side }),
             align: "start",
+            offset: at.offset ?? 0,
           },
     );
     // Queued after the renderer's frame for that scroll, so its post-render captures are skipped.
