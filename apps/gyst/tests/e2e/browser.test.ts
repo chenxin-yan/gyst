@@ -4454,6 +4454,88 @@ describe("installed gyst in a sandboxed browser", () => {
     expect(await ariaSelected(docs)).toBe("true");
   }, 60_000);
 
+  it("shows a file replaced by a folder of the same name in both tabs: the deleted file beside the folder, with its own letter, Viewed and changes", async () => {
+    const cwd = join(root, "replaced");
+    await mkdir(cwd, { recursive: true });
+    const inRepo = (...args: string[]) => execFileSync("git", args, { cwd, env, stdio: "ignore" });
+    inRepo("init", "-q", "-b", "main");
+    inRepo("config", "user.email", "t@gyst.invalid");
+    inRepo("config", "user.name", "t");
+    await writeFile(join(cwd, "src"), "was a file\n");
+    inRepo("add", ".");
+    inRepo("commit", "-qm", "init");
+    await rm(join(cwd, "src"));
+    await mkdir(join(cwd, "src"));
+    await writeFile(join(cwd, "src", "a.ts"), "export const a = 1;\n");
+    const launched = await launchIn(cwd);
+    onTestFinished(async () => {
+      await gyst("session", "delete", "--session", launched.id, "--request-id", randomUUID());
+      await rm(cwd, { recursive: true, force: true });
+    });
+    const { hunks, snapshotId } = await gyst("session", "diff", "--session", launched.id);
+    await applyBatch(launched.id, {
+      revision: 0,
+      snapshotId,
+      idempotencyKey: randomUUID(),
+      ops: [
+        { type: "walkthrough.update", overview: "Moves src into a folder." },
+        {
+          type: "group.create",
+          id: "move",
+          title: "Move src into a folder",
+          overview: "The file becomes a folder.",
+          memberHunkIds: hunks.map(({ id }: { id: string }) => id),
+          files: ["src/a.ts", "src"],
+        },
+      ],
+    });
+
+    const page = await newPage();
+    await page.setViewportSize({ width: 1280, height: 900 });
+    await page.goto(`${launched.origin}${launched.path}`);
+    const side = page.getByRole("navigation", { name: "gyst" });
+    const rowsIn = (label: string) => side.locator(`[aria-label="${label}"]`).getByRole("treeitem");
+    const folderIn = (label: string) =>
+      rowsIn(label).and(side.locator("[aria-expanded]")).filter({ hasText: "src" });
+    const fileIn = (label: string) =>
+      rowsIn(label).and(side.locator(":not([aria-expanded])")).filter({ hasText: "src" });
+    const addedIn = (label: string) =>
+      side.locator(`[aria-label="${label}"]`).getByRole("treeitem", { name: "a.ts", exact: true });
+
+    // The group's tree holds the folder, its added file and the deleted file of the same name.
+    const group = "Files in Move src into a folder";
+    await waitFor(async () => (await rowsIn(group).count()) === 3, "the group's three rows");
+    expect(await folderIn(group).count()).toBe(1);
+    await waitFor(async () => (await letterOf(fileIn(group))) === "D", "src's letter");
+    expect(await letterOf(addedIn(group))).toBe("A");
+    // The deleted file opens itself in its group, and Viewed marks it alone.
+    await fileIn(group).click();
+    await headingsAre(page, ["src/a.ts", "src"]);
+    await waitFor(async () => (await ariaSelected(fileIn(group))) === "true", "src selected");
+    expect(await ariaSelected(addedIn(group))).toBe("false");
+    await viewedBox(page, "src").check();
+    await waitFor(async () => (await letterOf(fileIn(group))) === "\u2713\u2002D", "src viewed");
+    expect(await letterOf(addedIn(group))).toBe("A");
+
+    // The Files tab's tree holds both too: each row opens its own path's changes.
+    await filesTab(page);
+    const files = "Snapshot files";
+    await waitFor(async () => (await rowsIn(files).count()) === 3, "the snapshot's three rows");
+    expect(await letterOf(fileIn(files))).toBe("\u2713\u2002D");
+    await addedIn(files).click();
+    await headingsAre(page, ["src/a.ts"]);
+    await fileIn(files).click();
+    await headingsAre(page, ["src", "src/a.ts"]);
+    await waitFor(async () => (await ariaSelected(fileIn(files))) === "true", "src selected");
+    expect(await ariaSelected(folderIn(files))).toBe("false");
+    // Heard by its own path and status, as the reader names it.
+    await side.getByText("src, deleted, viewed", { exact: true }).waitFor({ state: "attached" });
+    await folderIn(files).click();
+    await headingsAre(page, ["src", "src/a.ts"]);
+    await waitFor(async () => (await ariaSelected(folderIn(files))) === "true", "the folder");
+    expect(await ariaSelected(fileIn(files))).toBe("false");
+  }, 60_000);
+
   it("reads a walkthrough from the bar above the reader: each view's size and progress, a group's place, its overview opened, scrolled and closed, Group viewed and the overview's references", async () => {
     const walk = await openWalk();
     await publishWalk(walk);

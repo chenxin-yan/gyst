@@ -8,7 +8,13 @@ import { type FocusEvent, type MouseEvent, useEffect, useMemo, useRef, useState 
 import { agentOrder } from "./order.ts";
 import { type ReaderFile, statusOf } from "./reader.ts";
 import { theme } from "./tokens.stylex.ts";
-import { type FileMark, foldersOf, rowAnnouncement, viewedStatuses } from "./tree-viewed.ts";
+import {
+  type FileMark,
+  foldersOf,
+  rowAnnouncement,
+  treeRows,
+  viewedStatuses,
+} from "./tree-viewed.ts";
 import { sectionViewed } from "./viewed.ts";
 
 /** Every tree's rows: compact, folders compacted, no file icon and no folder dot. */
@@ -28,6 +34,7 @@ const treeOptions = {
 } as const;
 
 type Model = ReturnType<typeof useFileTree>["model"];
+type Rows = ReturnType<typeof treeRows>;
 
 const letterWords = { A: "Added", D: "Deleted", M: "Modified", R: "Renamed" } as const;
 
@@ -94,17 +101,17 @@ const useViewedUpdates = (model: Model, look: ReturnType<typeof useViewedLook>) 
  */
 // TODO: Remove once https://github.com/pierrecomputer/pierre/issues/1187 gives a row an accessible
 // description; at 1.0.0-beta.6 a row is named by its basename only.
-function useRowAnnouncement(model: Model, marks: ReadonlyMap<string, FileMark>) {
+function useRowAnnouncement(model: Model, marks: ReadonlyMap<string, FileMark>, tree: Rows) {
   const [said, setSaid] = useState("");
-  const latest = useRef(marks);
-  latest.current = marks;
+  const latest = useRef({ marks, tree });
+  latest.current = { marks, tree };
   const within = useRef(false);
   const saidPath = useRef<string | null>(null);
   const say = () => {
     const path = model.getFocusedPath();
     if (path === null || path === saidPath.current) return;
     saidPath.current = path;
-    setSaid(rowAnnouncement(path, latest.current.get(path)));
+    setSaid(rowAnnouncement(latest.current.tree.pathOf(path), latest.current.marks.get(path)));
   };
   useEffect(() => model.subscribe(() => within.current && say()), [model]);
   const hostProps = {
@@ -146,12 +153,13 @@ export function SnapshotTree(props: {
   latest.current = props;
   // The reader lists a changed file's path from its manifest page and from its hunks, and the
   // tree throws on a duplicate path.
-  const paths = useMemo(() => [...new Set(props.paths)], [props.paths]);
+  const tree = useMemo(() => treeRows(props.paths), [props.paths]);
+  const paths = tree.rows;
   const opened = () => [...new Set([...latest.current.files.keys()].flatMap(foldersOf))];
   const { viewed } = props;
   const marks = new Map(
     [...props.files.values()].map((file): [string, FileMark] => [
-      file.path,
+      tree.rowOf(file.path),
       {
         letter: statusOf(file),
         viewed:
@@ -188,13 +196,13 @@ export function SnapshotTree(props: {
     model.resetPaths(paths, { initialExpandedPaths: [...kept, ...added] });
   }, [model, paths]);
   useViewedUpdates(model, look);
-  useSelected(model, props.selection === "" ? undefined : props.selection);
-  const announcement = useRowAnnouncement(model, marks);
+  useSelected(model, props.selection === "" ? undefined : props.selection, tree);
+  const announcement = useRowAnnouncement(model, marks, tree);
   const onClick = (event: MouseEvent) => {
     const row = chosenRow(model, event);
     if (row === undefined) return;
     // A directory's canonical path ends in "/"; the reader's paths don't.
-    const path = row.replace(/\/$/, "");
+    const path = tree.pathOf(row).replace(/\/$/, "");
     // A click both selects and toggles a folder, so opening an open folder's changes would close
     // it; a newly chosen folder opens again. Choosing it once selected still closes it.
     const item = model.getItem(row);
@@ -240,13 +248,14 @@ export function GroupTree(props: {
 }) {
   const latest = useRef(props);
   latest.current = props;
-  const [paths] = useState(() => [...new Set(props.files.map(({ path }) => path))]);
+  const [tree] = useState(() => treeRows(props.files.map(({ path }) => path)));
+  const paths = tree.rows;
   const { viewed, hunkIds } = props;
   const marks = new Map(
     props.files.map((file): [string, FileMark] => {
       const own = file.hunks.flatMap(({ id }) => (hunkIds.has(id) ? [id] : []));
       return [
-        file.path,
+        tree.rowOf(file.path),
         { letter: statusOf(file), viewed: viewed !== undefined && sectionViewed(own, viewed) },
       ];
     }),
@@ -263,21 +272,21 @@ export function GroupTree(props: {
       if (selected.length === 1 && !selected[0]!.endsWith("/")) return;
       // A folder only opens or closes here; the selection goes back to the current file once the
       // tree's own click handling is done.
-      queueMicrotask(() => syncSelected(model, latest.current.selected));
+      queueMicrotask(() => syncSelected(model, latest.current.selected, tree));
     },
     gitStatus: look.gitStatus,
     renderRowDecoration: look.renderRowDecoration,
   });
 
   useViewedUpdates(model, look);
-  useSelected(model, props.selected);
-  const announcement = useRowAnnouncement(model, marks);
+  useSelected(model, props.selected, tree);
+  const announcement = useRowAnnouncement(model, marks, tree);
   const onClick = (event: MouseEvent) => {
     const row = chosenRow(model, event);
-    if (row !== undefined && !row.endsWith("/")) latest.current.onOpen(row);
+    if (row !== undefined && !row.endsWith("/")) latest.current.onOpen(tree.pathOf(row));
   };
 
-  const rows = useFileTreeSelector(model, (tree) => tree.getVisibleCount());
+  const rows = useFileTreeSelector(model, (state) => state.getVisibleCount());
   return (
     <>
       <FileTree
@@ -307,17 +316,23 @@ function chosenRow(model: Model, event: MouseEvent) {
   return model.getFocusedPath() ?? undefined;
 }
 
-/** Makes `path` (a file or folder) the tree's one selected row, or selects nothing. */
-function syncSelected(model: Model, path: string | undefined) {
-  const target =
-    path === undefined ? undefined : (model.getItem(path) ?? model.getItem(`${path}/`));
+/**
+ * Makes `path` (a file or folder) the tree's one selected row, or selects nothing. A file replaced
+ * by a folder (see `treeRows`) has both rows, and the one already selected stays.
+ */
+function syncSelected(model: Model, path: string | undefined, tree: Rows) {
+  const rows =
+    path === undefined
+      ? []
+      : [model.getItem(tree.rowOf(path)), model.getItem(`${path}/`)].filter((row) => row !== null);
+  const target = rows.find((row) => row.isSelected()) ?? rows[0];
   for (const each of model.getSelectedPaths())
     if (each !== target?.getPath()) model.getItem(each)?.deselect();
   if (target && !target.isSelected()) target.select();
 }
 
-const useSelected = (model: Model, path: string | undefined) =>
-  useEffect(() => syncSelected(model, path), [model, path]);
+const useSelected = (model: Model, path: string | undefined, tree: Rows) =>
+  useEffect(() => syncSelected(model, path, tree), [model, path, tree]);
 
 const styles = stylex.create({
   // Public theming: the tree's documented --trees-*-override variables, set on its host.
