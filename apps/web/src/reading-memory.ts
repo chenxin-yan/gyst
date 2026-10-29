@@ -25,7 +25,7 @@ export type ReadingPlace = {
   top: Restore | undefined;
 };
 
-/** The files folded in each view the reader folded in, by `viewKey`; any other view folds its Generated files. */
+/** The files folded in each view the reader was shown, by `viewKey`; a view never shown folds its Generated files. */
 export type Folds = ReadonlyMap<string, ReadonlySet<string>>;
 
 export const viewKey = (view: ReviewView) =>
@@ -115,7 +115,7 @@ export const recall = (
       ...[...generated].filter((file) => !unchanged(file) && !kept.has(file)),
     ]);
   const here = viewKey(review);
-  // The view the reader was in may not have folded yet: it starts from its Generated files.
+  // A place without its view's folds starts that view from its Generated files.
   const foldsBefore = new Map(folds).set(here, folds.get(here) ?? generated);
   return {
     review,

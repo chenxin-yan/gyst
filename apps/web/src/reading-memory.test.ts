@@ -183,5 +183,16 @@ describe("reading memory", () => {
     expect(recall("f", "new", [x, y, z, wChanged], generated)?.folds).toEqual(
       new Map([["files:", new Set(["dist/z.js"])]]),
     );
+    // Only Generated flags changed: x.ts became Generated and z.js stopped, with the cursor in
+    // x.ts. Every file reads the same, so each stays as the reader saw it.
+    const cursor = { file: "lib/x.ts", kind: "line", side: "additions", line: 9 } as const;
+    remember("f", "old", [x, y, z, w], {
+      ...placeAt("", undefined),
+      cursor,
+      folds: new Map([["files:", new Set(["dist/z.js"])]]),
+    });
+    const flagsOnly = recall("f", "new", [x, y, z, w], new Set(["lib/x.ts"]));
+    expect(flagsOnly?.cursor).toEqual(cursor);
+    expect(flagsOnly?.folds).toEqual(new Map([["files:", new Set(["dist/z.js"])]]));
   });
 });
