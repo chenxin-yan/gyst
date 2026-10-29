@@ -186,60 +186,7 @@ export const splitMinWidth = 120 * 7.5;
 export const layoutOf = (mode: LayoutMode, width: number): "split" | "stacked" =>
   mode !== "auto" ? mode : width >= splitMinWidth ? "split" : "stacked";
 
-// ─── tree and selection ──────────────────────────────────────────────────
-
-export type TreeNode =
-  | { kind: "folder"; name: string; path: string; children: TreeNode[] }
-  | { kind: "file"; name: string; path: string };
-
-/**
- * Paths as a folder tree; each level lists folders first, then files, by name. A folder whose only
- * child is a folder merges with it into one row named `a/b`, as editors compact them.
- */
-export function treeOf(paths: Iterable<string>): TreeNode[] {
-  const root: TreeNode[] = [];
-  const folders = new Map<string, TreeNode[]>([["", root]]);
-  const childrenOf = (path: string): TreeNode[] => {
-    let children = folders.get(path);
-    if (children === undefined) {
-      const slash = path.lastIndexOf("/");
-      children = [];
-      folders.set(path, children);
-      childrenOf(path.slice(0, Math.max(slash, 0))).push({
-        kind: "folder",
-        name: path.slice(slash + 1),
-        path,
-        children,
-      });
-    }
-    return children;
-  };
-  for (const path of new Set(paths)) {
-    const slash = path.lastIndexOf("/");
-    childrenOf(path.slice(0, Math.max(slash, 0))).push({
-      kind: "file",
-      name: path.slice(slash + 1),
-      path,
-    });
-  }
-  const order = (a: TreeNode, b: TreeNode) =>
-    a.kind !== b.kind ? (a.kind === "folder" ? -1 : 1) : a.name < b.name ? -1 : 1;
-  for (const children of folders.values()) children.sort(order);
-  const compact = (node: TreeNode): TreeNode => {
-    if (node.kind === "file") return node;
-    let folder = node;
-    while (folder.children.length === 1) {
-      const [only] = folder.children;
-      if (only?.kind !== "folder") break;
-      folder = { ...only, name: `${folder.name}/${only.name}` };
-    }
-    return { ...folder, children: folder.children.map(compact) };
-  };
-  return root.map(compact);
-}
-
-/** A tree node's React key: a deleted file and an added folder can share a path. */
-export const treeKey = (node: TreeNode) => `${node.kind}:${node.path}`;
+// ─── selection ───────────────────────────────────────────────────────────
 
 /** Whether `path` is the selected file or under the selected folder; "" selects everything. */
 export const isUnder = (path: string, selection: string) =>
