@@ -301,6 +301,8 @@ const treeRow = (page: Page, name: string) =>
   page.getByRole("navigation", { name: "gyst" }).getByRole("treeitem", { name, exact: true });
 /** Whether a tree row is selected, as "true" or "false". */
 const ariaSelected = (row: Locator) => row.getAttribute("aria-selected");
+/** Whether a tree's folder row is open, as "true" or "false". */
+const ariaExpanded = (row: Locator) => row.getAttribute("aria-expanded");
 /** A tree row's status letter, with ✓ once Viewed: the text after its name. */
 const letterOf = async (row: Locator) =>
   (
@@ -4392,6 +4394,64 @@ describe("installed gyst in a sandboxed browser", () => {
       .count();
     expect(rows).toBeGreaterThan(10);
     expect(rows).toBeLessThan(100);
+  }, 60_000);
+
+  it("keeps the Files tree's folders as the reader left them while later pages of files arrive: an unchanged folder opened stays open, a changed folder closed stays closed", async () => {
+    const cwd = join(root, "folders");
+    await mkdir(join(cwd, "docs"), { recursive: true });
+    await mkdir(join(cwd, "many"));
+    const inRepo = (...args: string[]) => execFileSync("git", args, { cwd, env, stdio: "ignore" });
+    inRepo("init", "-q", "-b", "main");
+    inRepo("config", "user.email", "t@gyst.invalid");
+    inRepo("config", "user.name", "t");
+    await writeFile(join(cwd, "docs", "notes.md"), "notes\n");
+    // Enough files for several pages; zz.txt sorts after them all, so it comes on the last.
+    const names = Array.from({ length: 1000 }, (_, i) => `${String(i).padStart(4, "0")}.txt`);
+    await Promise.all(names.map((name) => writeFile(join(cwd, "many", name), `${name}\n`)));
+    await writeFile(join(cwd, "zz.txt"), "last\n");
+    inRepo("add", ".");
+    inRepo("commit", "-qm", "init");
+    // One change inside many, so it starts open; docs holds none, so it starts closed.
+    await writeFile(join(cwd, "many", "0000.txt"), "changed\n");
+    const launched = await launchIn(cwd);
+    onTestFinished(async () => {
+      await gyst("session", "delete", "--session", launched.id, "--request-id", randomUUID());
+      await rm(cwd, { recursive: true, force: true });
+    });
+
+    const page = await newPage();
+    await page.setViewportSize({ width: 1280, height: 800 });
+    // Every later files page waits until the reader has changed the folders.
+    const { promise: released, resolve: release } = Promise.withResolvers<void>();
+    await page.route(isOperationUrl, async (route) => {
+      const request = route.request().postDataJSON();
+      if (request?.command === "files" && request.after) await released;
+      await route.continue();
+    });
+    await page.goto(`${launched.origin}${launched.path}`);
+    await headingsAre(page, ["many/0000.txt"]);
+    const [many, docs] = [treeRow(page, "many"), treeRow(page, "docs")];
+    await waitFor(async () => (await ariaExpanded(many)) === "true", "many open");
+    expect(await ariaExpanded(docs)).toBe("false");
+    // Chosen, many opens its changes and stays open; chosen again, it closes.
+    await many.click();
+    await headingsAre(page, ["many/0000.txt"]);
+    await many.click();
+    await waitFor(async () => (await ariaExpanded(many)) === "false", "many closed");
+    await docs.click();
+    await waitFor(async () => (await ariaExpanded(docs)) === "true", "docs open");
+    // The top level counts docs and many until zz.txt lands, which an open many would push out of
+    // the virtualized rows.
+    expect(await docs.getAttribute("aria-setsize")).toBe("2");
+
+    release();
+    await waitFor(
+      async () => (await docs.getAttribute("aria-setsize")) === "3",
+      "zz.txt in the tree",
+    );
+    expect(await ariaExpanded(many)).toBe("false");
+    expect(await ariaExpanded(docs)).toBe("true");
+    expect(await ariaSelected(docs)).toBe("true");
   }, 60_000);
 
   it("reads a walkthrough from the bar above the reader: each view's size and progress, a group's place, its overview opened, scrolled and closed, Group viewed and the overview's references", async () => {

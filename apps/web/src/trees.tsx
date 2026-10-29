@@ -172,11 +172,20 @@ export function SnapshotTree(props: {
     renderRowDecoration: look.renderRowDecoration,
   });
 
-  // The model ignores later options; more snapshot pages arrive through its own methods.
-  const first = useRef(true);
+  // The model ignores later options; more snapshot pages arrive through its own methods. A reset
+  // rebuilds every folder, so a folder already there keeps its open state and only a new one
+  // takes the default.
+  const shown = useRef(paths);
   useEffect(() => {
-    if (first.current) return void (first.current = false);
-    model.resetPaths(paths, { initialExpandedPaths: opened() });
+    if (shown.current === paths) return;
+    const before = new Set(shown.current.flatMap(foldersOf));
+    shown.current = paths;
+    const kept = [...before].filter((folder) => {
+      const item = model.getItem(folder);
+      return item !== null && "expand" in item && item.isExpanded();
+    });
+    const added = opened().filter((folder) => !before.has(folder));
+    model.resetPaths(paths, { initialExpandedPaths: [...kept, ...added] });
   }, [model, paths]);
   useViewedUpdates(model, look);
   useSelected(model, props.selection === "" ? undefined : props.selection);
