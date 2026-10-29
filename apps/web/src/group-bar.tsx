@@ -212,9 +212,10 @@ export function GroupBar(props: {
               <button
                 type="button"
                 onClick={() => props.onView({ kind: "group", id: next.id })}
-                {...stylex.props(bar.button, bar.primary)}
+                {...stylex.props(bar.button, bar.primary, bar.offer)}
               >
-                Next group: {next.title} › <Keys command={command("nextGroup")} />
+                <span {...stylex.props(bar.clip)}>Next group: {next.title}</span> ›
+                <Keys command={command("nextGroup")} />
               </button>
             )}
             {offer && !next && <span>That was the last group.</span>}
@@ -297,7 +298,15 @@ const bar = stylex.create({
     backgroundColor: theme.surface,
     padding: "8px 16px 8px 32px",
   },
-  row: { display: "flex", alignItems: "center", gap: "12px", minWidth: 0, minHeight: "28px" },
+  // Wraps rather than clips, so a narrow panel keeps every control on more rows.
+  row: {
+    display: "flex",
+    flexWrap: "wrap",
+    alignItems: "center",
+    gap: "6px 12px",
+    minWidth: 0,
+    minHeight: "28px",
+  },
   chip: {
     flexShrink: 0,
     padding: "2px 8px",
@@ -349,6 +358,9 @@ const bar = stylex.create({
     backgroundColor: { default: null, ":hover": theme.select },
   },
   primary: { color: theme.ink, backgroundColor: { default: theme.select, ":hover": theme.line } },
+  // A long next title is cut, not the panel.
+  offer: { maxWidth: "100%", minWidth: 0 },
+  clip: { minWidth: 0, overflow: "hidden", textOverflow: "ellipsis" },
   chevron: { display: "inline-block", width: "10px", transition: "transform 120ms" },
   chevronOpen: { transform: "rotate(90deg)" },
   arrows: { display: "inline-flex", gap: "2px", flexShrink: 0 },
@@ -363,8 +375,9 @@ const bar = stylex.create({
   },
   said: {
     display: "flex",
+    flexWrap: "wrap",
     alignItems: "center",
-    gap: "12px",
+    gap: "6px 12px",
     marginTop: "6px",
     fontSize: "12px",
     color: theme.ink,
