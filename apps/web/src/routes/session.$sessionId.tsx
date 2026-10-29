@@ -114,6 +114,7 @@ import {
 import { CapturedHeader, useWholeSides } from "../expanded.tsx";
 import { ExportDialog, StandaloneTitle } from "../export.tsx";
 import { GroupBar, useGroupOverview } from "../group-bar.tsx";
+import { storedInputMode, storeInputMode } from "../input-mode.ts";
 import { contentLoader, hydrationConcurrency, hydrationWindow, nearbyItems } from "../hydration.ts";
 import {
   type Command,
@@ -575,7 +576,10 @@ function SessionReader(props: {
   const [mode, setMode] = useState<LayoutMode>("auto");
   const [width, setWidth] = useState(0);
   const [loads, setLoads] = useState<ReadonlyMap<string, FileLoad>>(new Map());
-  const [inputMode, setInputMode] = useState<InputMode>(recalled?.inputMode ?? "vim");
+  const [inputMode, setInputMode] = useState<InputMode>(
+    () => recalled?.inputMode ?? storedInputMode() ?? "vim",
+  );
+  useEffect(() => storeInputMode(inputMode), [inputMode]);
   const [cursor, setCursor] = useState<Cursor | undefined>(recalled?.cursor);
   const [lines, setLines] = useState<CodeViewLineSelection | null>(null);
   // Folds belong to the view they were made in, and an expanded reference folds on its own. A

@@ -171,6 +171,17 @@ async function newPage(
 ) {
   const page = await from.newPage();
   page.setDefaultTimeout(15_000);
+  // The pages of a test share a profile with every other test's, so each tab starts with the input
+  // mode stored by none of them, and keeps its own across its reloads.
+  await page.addInitScript(() => {
+    try {
+      if (sessionStorage.getItem("gyst-test-tab") !== null) return;
+      sessionStorage.setItem("gyst-test-tab", "");
+      localStorage.clear();
+    } catch {
+      // A page without storage, such as about:blank, has nothing to clear.
+    }
+  });
   const seen = { responses: [] as string[], problems: [] as string[] };
   page.on("response", (response) => {
     if (response.status() >= 400)
@@ -2443,6 +2454,31 @@ describe("installed gyst in a sandboxed browser", () => {
     await says(page, "3 lines selected");
     await keys(page, "Escape");
     await statusLine(page).getByText("3 lines selected").waitFor({ state: "detached" });
+  }, 30_000);
+
+  it("keeps the input mode across a reload as its one stored setting, ignoring a bad stored value", async () => {
+    const page = await newPage();
+    await page.goto(`${one.origin}${one.path}`);
+    const modes = page.getByRole("radiogroup", { name: "Input mode" });
+    const reloaded = async () => {
+      await page.reload();
+      await page.getByRole("main").getByRole("heading", { level: 2 }).first().waitFor();
+    };
+    await modes.getByRole("radio", { name: "Mouse" }).check();
+    await reloaded();
+    expect(await modes.getByRole("radio", { name: "Mouse" }).isChecked()).toBe(true);
+    const stored = () =>
+      page.evaluate(() =>
+        Object.fromEntries(
+          Array.from({ length: localStorage.length }, (_, at) => localStorage.key(at)!).map(
+            (name) => [name, localStorage.getItem(name)],
+          ),
+        ),
+      );
+    expect(await stored()).toEqual({ "gyst:input-mode": "mouse" });
+    await page.evaluate(() => localStorage.setItem("gyst:input-mode", "emacs"));
+    await reloaded();
+    expect(await modes.getByRole("radio", { name: "Vim" }).isChecked()).toBe(true);
   }, 30_000);
 
   it("resumes a session's reading place inside opened hidden lines and in Mouse mode after leaving it", async () => {
