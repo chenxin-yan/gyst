@@ -4084,6 +4084,42 @@ describe("installed gyst in a sandboxed browser", () => {
     await atStart("Group 2 of 2", "c.ts");
   }, 30_000);
 
+  it("returns to a group or path where the reader left it, with its cursor", async () => {
+    const walk = await openWalk();
+    await publishWalk(walk);
+    const page = await newPage();
+    await page.setViewportSize({ width: 1280, height: 600 });
+    await page.goto(`${one.origin}/session/${walk.id}`);
+    const side = page.getByRole("navigation", { name: "gyst" });
+    await side.getByRole("button", { name: /^Parse the config/ }).click();
+    await headingsAre(page, ["walk/b.ts", "walk/a.ts"]);
+    await keys(page, "]", "f", "]", "c", "]", "c");
+    await says(page, "a.ts:20 \u00b7 new");
+    const left = await steady(() => panelTop(page));
+    expect(left).toBeGreaterThan(0);
+    await keys(page, "Shift+J");
+    await headingsAre(page, ["walk/c.ts", "walk/a.ts"]);
+    await says(page, "c.ts \u00b7 file");
+    await keys(page, "Shift+K");
+    await headingsAre(page, ["walk/b.ts", "walk/a.ts"]);
+    await says(page, "a.ts:20 \u00b7 new");
+    // Kept as the line at the panel's top, so it comes back within a line or so.
+    expect(Math.abs((await steady(() => panelTop(page)))! - left!)).toBeLessThan(40);
+    // A path's view too: a.ts's own view, left at its last change, is that change on return.
+    await side.getByRole("button", { name: "walk/a.ts (modified)", exact: true }).click();
+    await headingsAre(page, ["walk/a.ts"]);
+    await keys(page, "Shift+G");
+    const bottom = await steady(() => panelTop(page));
+    const reading = (await statusLine(page)
+      .getByText(/^a\.ts/)
+      .textContent())!;
+    await side.getByRole("button", { name: /^Handle the edge/ }).click();
+    await says(page, "c.ts \u00b7 file");
+    await side.getByRole("button", { name: "walk/a.ts (modified)", exact: true }).click();
+    await says(page, reading);
+    expect(Math.abs((await steady(() => panelTop(page)))! - bottom!)).toBeLessThan(40);
+  }, 30_000);
+
   it("walks notes that share a line one by one, and opens and closes the note at the cursor", async () => {
     const walk = await openWalk();
     await publishWalk(walk);

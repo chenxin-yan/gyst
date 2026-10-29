@@ -168,7 +168,14 @@ import {
   treeOf,
   wholeFileType,
 } from "../reader.ts";
-import { type Folds, type ReadingPlace, recall, remember, viewKey } from "../reading-memory.ts";
+import {
+  type Folds,
+  type ReadingPlace,
+  recall,
+  remember,
+  viewKey,
+  type ViewPlace,
+} from "../reading-memory.ts";
 import {
   diffText,
   type Hit,
@@ -584,6 +591,8 @@ function SessionReader(props: {
   // Hidden lines opened per file. They live here, not in the renderer, which forgets them with
   // an item it drops; bumping the version re-reads the cursor model after the renderer opened some.
   const [opened] = useState(() => recalled?.opened ?? new Map<string, Map<number, Opened>>());
+  // Where the reader left each other view, so a return resumes there; kept in place, as `opened`.
+  const [views] = useState(() => new Map<string, ViewPlace>(recalled?.views));
   const [openedVersion, setOpenedVersion] = useState(0);
   const viewer = useRef<Viewer>(null);
   // The main panel's scroller while the view has no changes to show, so no viewer.
@@ -947,6 +956,7 @@ function SessionReader(props: {
     expandedFolded,
     author: { shown: authorShown, commits: rangeCommits.read },
     top: recalled?.top,
+    views,
   });
   readingPlace.current = {
     ...readingPlace.current,
@@ -1392,16 +1402,23 @@ function SessionReader(props: {
 
   // ─── captured-code navigation ───
   /**
-   * A view the reader picks: it leaves any expanded reference, and Back starts over. A reference
-   * followed to a line lands there, its file unfolded in that view. A group is entered at its start,
-   * the cursor on its first file: keeping the position or the cursor in a file it shares with the
-   * view left would land mid-group.
+   * A view the reader picks: it leaves any expanded reference, and Back starts over. The view left
+   * keeps its place and cursor, where a return resumes. A reference followed to a line lands there,
+   * its file unfolded in that view. A group first entered starts at its top, the cursor on its first
+   * file: keeping the position or the cursor in a file it shares with the view left would land
+   * mid-group.
    */
   const chooseView = (view: ReviewView, at?: { file: string; side: Side; line: number }) => {
+    const to = viewKey(view);
+    const leaving = to !== shownView;
+    const left = captured === undefined && leaving ? viewer.current?.position() : undefined;
+    if (left) views.set(shownView, { top: restoreFor(undefined, left), cursor: current });
+    const saved = at === undefined && leaving ? views.get(to) : undefined;
     const enters =
       at === undefined &&
+      saved === undefined &&
       view.kind === "group" &&
-      (captured !== undefined || viewKey(view) !== shownView);
+      (captured !== undefined || leaving);
     setReview(view);
     const chosen = viewKey(view);
     setViewFolds((before) =>
@@ -1411,20 +1428,20 @@ function SessionReader(props: {
     setBack([]);
     setMarked(undefined);
     returning.current = false;
-    if (enters) setCursor(undefined);
-    const restore: Restore | undefined = at && { position: at };
+    if (saved) setCursor(saved.cursor);
+    else if (enters) setCursor(undefined);
+    const restore: Restore | undefined = at ? { position: at } : saved?.top;
     if (at) {
-      const key = viewKey(view);
       setViewFolds((before) => {
-        const there = before.get(key) ?? generated;
+        const there = before.get(to) ?? generated;
         if (!there.has(at.file)) return before;
         const after = new Set(there);
         after.delete(at.file);
-        return new Map(before).set(key, after);
+        return new Map(before).set(to, after);
       });
       setCursor({ file: at.file, kind: "line", side: at.side, line: at.line });
     }
-    if (captured === undefined) return (at !== undefined || enters) && setLanding({ restore });
+    if (captured === undefined) return (restore !== undefined || enters) && setLanding({ restore });
     setCaptured(undefined);
     setPanel(({ key }) => ({ key: key + 1, restore }));
   };

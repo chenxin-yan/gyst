@@ -11,8 +11,8 @@ import type { ReviewView } from "./walkthrough.ts";
  * lines it opened (a place inside them exists only once they open again), its folded files per view
  * and in the expanded reference (a place inside a file exists only while it is unfolded), whether it
  * showed the author's explanation with the range commits read for it (an offset into the panel's
- * header counts them) and what was at the panel's top: a reading position, or an offset above the
- * first file.
+ * header counts them), what was at the panel's top: a reading position, or an offset above the
+ * first file, and where it left each other view it read.
  */
 export type ReadingPlace = {
   review: ReviewView;
@@ -27,7 +27,11 @@ export type ReadingPlace = {
   expandedFolded: ReadonlySet<string>;
   author: { shown: boolean; commits: RangeCommits["read"] };
   top: Restore | undefined;
+  views: ReadonlyMap<string, ViewPlace>;
 };
+
+/** Where the reader left a view, by `viewKey`: what was at the panel's top, and the cursor. */
+export type ViewPlace = { top: Restore; cursor: Cursor | undefined };
 
 /** The files folded in each view the reader was shown, by `viewKey`; a view never shown folds its Generated files. */
 export type Folds = ReadonlyMap<string, ReadonlySet<string>>;
@@ -106,14 +110,15 @@ export const recall = (
       ? { file, side: undefined, line: undefined }
       : { file, side, line: moved };
   };
-  const { review, inputMode, cursor, opened, folds, author, top } = saved.place;
+  const { review, inputMode, cursor, opened, folds, author, top, views } = saved.place;
   const cursorAfter = cursor && cursorNow(cursor);
-  const topAfter =
-    top !== undefined && "position" in top
-      ? { position: topNow(top.position) }
+  const restoreNow = (restore: Restore | undefined) =>
+    restore !== undefined && "position" in restore
+      ? { position: topNow(restore.position) }
       : author.shown
         ? undefined
-        : top;
+        : restore;
+  const topAfter = restoreNow(top);
   // A folded file has no lines, so a file still holding the reader's line stays unfolded.
   const reading = new Set<string>();
   if (cursorAfter?.kind === "line") reading.add(cursorAfter.file);
@@ -148,5 +153,13 @@ export const recall = (
     expandedFolded: new Set(),
     author: { shown: false, commits: undefined },
     top: topAfter,
+    views: new Map(
+      [...views].flatMap(([key, place]) => {
+        const placeTop = restoreNow(place.top);
+        return placeTop === undefined
+          ? []
+          : [[key, { top: placeTop, cursor: place.cursor && cursorNow(place.cursor) }]];
+      }),
+    ),
   };
 };

@@ -17,6 +17,7 @@ const placeAt = (path: string, file: string | undefined): ReadingPlace => ({
   expandedFolded: new Set(),
   author: { shown: false, commits: undefined },
   top: file === undefined ? undefined : { position: { file, side: undefined, line: undefined } },
+  views: new Map(),
 });
 
 const hunk = (file: string, id: string, patch: string): Hunk => ({
@@ -27,6 +28,9 @@ const hunk = (file: string, id: string, patch: string): Hunk => ({
   contentHash: id,
 });
 const none: ReadonlySet<string> = new Set();
+const topAt = (line: number) => ({
+  position: { file: "lib/x.ts", side: "additions" as const, line },
+});
 const x = hunk("lib/x.ts", "x1", "@@ -9 +9 @@\n-a\n+b");
 const y = hunk("lib/y.ts", "y1", "@@ -3 +3 @@\n-c\n+d");
 
@@ -142,6 +146,44 @@ describe("reading memory", () => {
     const overview: ReadingPlace = { ...placeAt("", undefined), top: { scrollTop: 40 } };
     remember("d", "new", [x], overview);
     expect(recall("d", "newer", [moved], none)).toEqual(overview);
+  });
+
+  it("keeps where the reader left each other view, moved with the hunks a refresh kept", () => {
+    // x.ts's hunk covers new lines 8-11.
+    const wide = hunk("lib/x.ts", "x1", "@@ -8,3 +8,4 @@\n c8\n-a\n+b\n+b2\n c10");
+    const inX: Cursor = { file: "lib/x.ts", kind: "line", side: "additions", line: 10 };
+    const left: ReadingPlace = {
+      ...placeAt("", "lib/y.ts"),
+      views: new Map([
+        ["group:core", { top: topAt(9), cursor: inX }],
+        ["files:lib/y.ts", { top: { scrollTop: 30 }, cursor: undefined }],
+      ]),
+    };
+    remember("v", "old", [wide, y], left);
+    expect(recall("v", "old", [wide, y], none)).toEqual(left);
+    // The hunk moved two lines down: the core group's place and cursor move with it.
+    const header = "@@ -8,3 +10,4 @@";
+    const moved = { ...wide, header, patch: wide.patch.replace("@@ -8,3 +8,4 @@", header) };
+    expect(recall("v", "new", [moved, y], none)?.views).toEqual(
+      new Map([
+        ["group:core", { top: topAt(11), cursor: { ...inX, line: 12 } }],
+        ["files:lib/y.ts", { top: { scrollTop: 30 }, cursor: undefined }],
+      ]),
+    );
+    // An edited hunk keeps only its file, and an offset taken under the author's explanation goes.
+    const edited = hunk("lib/x.ts", "x2", "@@ -8,3 +8,4 @@\n c8\n-a\n+B\n+b2\n c10");
+    remember("v", "old", [wide, y], { ...left, author: { shown: true, commits: undefined } });
+    expect(recall("v", "new", [edited, y], none)?.views).toEqual(
+      new Map([
+        [
+          "group:core",
+          {
+            top: { position: { file: "lib/x.ts", side: undefined, line: undefined } },
+            cursor: undefined,
+          },
+        ],
+      ]),
+    );
   });
 
   it("keeps the author's explanation shown with its read commits for the same snapshot, and not past a refresh", () => {
