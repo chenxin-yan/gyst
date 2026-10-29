@@ -29,6 +29,8 @@ export function useGroupOverview(
   const focus = useRef(false);
   // The offset Back gives the region it shows again.
   const top = useRef<number>(undefined);
+  // Each group's open overview's offset, so a group visited again shows it where it was left.
+  const offsets = useRef(new Map<string, number>());
   const open = group !== undefined && !closed.has(group.id);
   /** Scrolls the region on to what it hides below, a region less a line at a time. */
   const showMore = () => {
@@ -44,12 +46,15 @@ export function useGroupOverview(
     region,
     focus,
     top,
+    offsets,
     showMore,
     /** Opens or closes it; the key (`byKey`) first shows more of an open one while it hides any. */
     toggle(byKey = false) {
       if (group === undefined) return;
       if (byKey && open && showMore()) return;
       focus.current = byKey && !open;
+      // Opened again, it starts at its top, so the key can scroll it through once more.
+      if (open) offsets.current.delete(group.id);
       setClosed((before) => {
         const after = new Set(before);
         if (!after.delete(group.id)) after.add(group.id);
@@ -242,7 +247,7 @@ export function GroupBar(props: {
         )}
       </p>
       {disclosure.open && (
-        <CappedOverview id={regionId} disclosure={disclosure}>
+        <CappedOverview key={group.id} id={regionId} group={group.id} disclosure={disclosure}>
           {props.overview}
         </CappedOverview>
       )}
@@ -254,13 +259,21 @@ export function GroupBar(props: {
  * The overview, capped and scrolling inside the bar. While it hides more below, a fade and "more ↓"
  * say so; that button or the key scrolls the rest into view.
  */
-function CappedOverview(props: { id: string; disclosure: GroupOverview; children: ReactNode }) {
+function CappedOverview(props: {
+  id: string;
+  group: string;
+  disclosure: GroupOverview;
+  children: ReactNode;
+}) {
   const { disclosure } = props;
   const [below, setBelow] = useState(false);
   const region = useRef<HTMLDivElement | null>(null);
+  // Mounted once per group, by its key; its offset is placed when its element first attaches.
+  const placed = useRef(false);
   const measure = () => {
     const node = region.current;
     setBelow(node !== null && node.scrollHeight - node.clientHeight - node.scrollTop > 1);
+    if (node !== null) disclosure.offsets.current.set(props.group, node.scrollTop);
   };
   useEffect(() => {
     const node = region.current;
@@ -282,8 +295,10 @@ function CappedOverview(props: { id: string; disclosure: GroupOverview; children
         ref={(node) => {
           region.current = node;
           disclosure.region.current = node;
-          if (node !== null && disclosure.top.current !== undefined) {
-            node.scrollTop = disclosure.top.current;
+          if (node !== null && !placed.current) {
+            placed.current = true;
+            node.scrollTop =
+              disclosure.top.current ?? disclosure.offsets.current.get(props.group) ?? 0;
             disclosure.top.current = undefined;
           }
           if (node === null || !disclosure.focus.current) return;

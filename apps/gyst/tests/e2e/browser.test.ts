@@ -4224,6 +4224,43 @@ describe("installed gyst in a sandboxed browser", () => {
       .waitFor();
   }, 30_000);
 
+  it("shows each group's overview from its top on a first visit and where it was left after that", async () => {
+    const walk = await openWalk();
+    await publishWalk(walk);
+    const steps = Array.from({ length: 40 }, (_, i) => `Step ${i + 1} reads a value.`);
+    await walk.publish(1, "long", [
+      { type: "group.update", id: "core", overview: steps.join("\n\n") },
+      { type: "group.update", id: "edge", overview: steps.join("\n\n") },
+    ]);
+    const page = await newPage();
+    await page.setViewportSize({ width: 1280, height: 800 });
+    await page.goto(`${one.origin}/session/${walk.id}`);
+    const pane = page.getByRole("main");
+    const region = pane.locator("[data-group-overview]");
+    const regionTop = () => steady(() => scrollTopAround(region));
+    const scrollTo = async (top: number) => {
+      await region.evaluate((element, to) => element.scrollTo({ top: to }), top);
+      expect(await regionTop()).toBe(top);
+    };
+    await page
+      .getByRole("navigation", { name: "gyst" })
+      .getByRole("button", { name: /^Parse the config/ })
+      .click();
+    await headingsAre(page, ["walk/b.ts", "walk/a.ts"]);
+    await region.waitFor();
+    await scrollTo(500);
+    await keys(page, "Shift+J");
+    await headingsAre(page, ["walk/c.ts", "walk/a.ts"]);
+    expect(await regionTop()).toBe(0);
+    await scrollTo(200);
+    await keys(page, "Shift+K");
+    await headingsAre(page, ["walk/b.ts", "walk/a.ts"]);
+    expect(await regionTop()).toBe(500);
+    await keys(page, "Shift+J");
+    await headingsAre(page, ["walk/c.ts", "walk/a.ts"]);
+    expect(await regionTop()).toBe(200);
+  }, 30_000);
+
   it("returns to a group or path where the reader left it, with its cursor", async () => {
     const walk = await openWalk();
     await publishWalk(walk);
