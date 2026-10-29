@@ -195,4 +195,32 @@ describe("reading memory", () => {
     expect(flagsOnly?.cursor).toEqual(cursor);
     expect(flagsOnly?.folds).toEqual(new Map([["files:", new Set(["dist/z.js"])]]));
   });
+
+  it("opens the file holding the reader's line after a refresh from an expanded reference, though its view had it folded", () => {
+    const z = hunk("dist/z.js", "z1", "@@ -1 +1 @@\n-e\n+f");
+    // The reader expanded a reference into z.js, which All changes and the core group both fold.
+    const cursor = { file: "dist/z.js", kind: "line", side: "additions", line: 1 } as const;
+    remember("g", "old", [x, y, z], {
+      ...placeAt("", undefined),
+      captured: { snapshotId: "old", path: "dist/z.js", side: "new", startLine: 1, endLine: 1 },
+      cursor,
+      folds: new Map([
+        ["files:", new Set(["dist/z.js"])],
+        ["group:core", new Set(["dist/z.js"])],
+      ]),
+      top: { position: { file: "dist/z.js", side: "additions", line: 1 } },
+    });
+    // y.ts changed, z.js reads the same: the refresh drops the reference and keeps the line, so
+    // the view it returns to must show z.js. The core group, where the reader isn't, keeps its fold.
+    const yChanged = { ...y, patch: "@@ -3 +3 @@\n-c\n+e" };
+    const after = recall("g", "new", [x, yChanged, z], new Set(["dist/z.js"]));
+    expect(after?.captured).toBeUndefined();
+    expect(after?.cursor).toEqual(cursor);
+    expect(after?.folds).toEqual(
+      new Map([
+        ["files:", new Set()],
+        ["group:core", new Set(["dist/z.js"])],
+      ]),
+    );
+  });
 });

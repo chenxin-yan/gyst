@@ -35,7 +35,8 @@ export const viewKey = (view: ReviewView) =>
  * Each session's reading place for this page's lifetime, so switching between stack layers (or any
  * sessions) and back resumes where the reader was. Kept per session ID, so one session's place never
  * leaks into another. After a refresh the view and the input mode carry over, and everything in a
- * file whose hunks the refresh left exactly as they were, its fold in each view included. In another
+ * file whose hunks the refresh left exactly as they were, its fold in each view included, except that
+ * the view the reader was in never keeps folded a file holding the reader's line. In another
  * file the top position and the cursor move with a hunk that survived exactly, whatever its line
  * numbers; else only the file at the top, and a cursor on its header, are kept, and in each view the
  * file is folded exactly when the new snapshot records it Generated and, in the view the reader was
@@ -109,11 +110,14 @@ export const recall = (
   if (cursorAfter?.kind === "line") reading.add(cursorAfter.file);
   if (topAfter !== undefined && "position" in topAfter && topAfter.position.line !== undefined)
     reading.add(topAfter.position.file);
+  // Kept lines can sit in a file the view folds: one read through an expanded reference.
   const foldedNow = (folded: ReadonlySet<string>, kept: ReadonlySet<string>) =>
-    new Set([
-      ...[...folded].filter(unchanged),
-      ...[...generated].filter((file) => !unchanged(file) && !kept.has(file)),
-    ]);
+    new Set(
+      [
+        ...[...folded].filter(unchanged),
+        ...[...generated].filter((file) => !unchanged(file)),
+      ].filter((file) => !kept.has(file)),
+    );
   const here = viewKey(review);
   // A place without its view's folds starts that view from its Generated files.
   const foldsBefore = new Map(folds).set(here, folds.get(here) ?? generated);
