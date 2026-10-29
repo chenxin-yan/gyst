@@ -4162,7 +4162,7 @@ describe("installed gyst in a sandboxed browser", () => {
     expect(await steady(() => panelTop(page))).toBe(0);
     await keys(page, "Shift+K");
     await headingsAre(page, ["walk/b.ts", "walk/a.ts"]);
-    expect(Math.abs((await steady(() => panelTop(page)))! - read!)).toBeLessThan(40);
+    expect(Math.abs((await steady(() => panelTop(page)))! - read!)).toBeLessThan(2);
     // A short overview hides nothing, so its key closes it, then opens it again.
     const toggle = pane.getByRole("button", { name: /^Overview/ });
     await keys(page, "Shift+O");
@@ -4235,8 +4235,8 @@ describe("installed gyst in a sandboxed browser", () => {
     await keys(page, "Shift+K");
     await headingsAre(page, ["walk/b.ts", "walk/a.ts"]);
     await says(page, "a.ts:20 \u00b7 new");
-    // Kept as the line at the panel's top, so it comes back within a line or so.
-    expect(Math.abs((await steady(() => panelTop(page)))! - left!)).toBeLessThan(40);
+    // Kept as the line at the panel's top and how far below the file header it sat: the same pixels.
+    expect(Math.abs((await steady(() => panelTop(page)))! - left!)).toBeLessThan(2);
     // A path's view too: a.ts's own view, left at its last change, is that change on return.
     await side.getByRole("button", { name: "walk/a.ts (modified)", exact: true }).click();
     await headingsAre(page, ["walk/a.ts"]);
@@ -4249,7 +4249,7 @@ describe("installed gyst in a sandboxed browser", () => {
     await says(page, "c.ts \u00b7 file");
     await side.getByRole("button", { name: "walk/a.ts (modified)", exact: true }).click();
     await says(page, reading);
-    expect(Math.abs((await steady(() => panelTop(page)))! - bottom!)).toBeLessThan(40);
+    expect(Math.abs((await steady(() => panelTop(page)))! - bottom!)).toBeLessThan(2);
     // Through a view with no changes to show, which has no reader to keep a place in, too.
     await side.getByRole("button", { name: /^Parse the config/ }).click();
     await says(page, "a.ts:20 \u00b7 new");
@@ -4260,7 +4260,7 @@ describe("installed gyst in a sandboxed browser", () => {
     await side.getByRole("button", { name: /^Parse the config/ }).click();
     await headingsAre(page, ["walk/b.ts", "walk/a.ts"]);
     await says(page, "a.ts:20 \u00b7 new");
-    expect(Math.abs((await steady(() => panelTop(page)))! - again!)).toBeLessThan(40);
+    expect(Math.abs((await steady(() => panelTop(page)))! - again!)).toBeLessThan(2);
   }, 30_000);
 
   it("keeps a group's place when the reader leaves it from a reference expanded over it", async () => {
@@ -4297,7 +4297,7 @@ describe("installed gyst in a sandboxed browser", () => {
     await side.getByRole("button", { name: /^Parse the config/ }).click();
     await headingsAre(page, ["walk/b.ts", "walk/a.ts"]);
     await says(page, "a.ts:20 \u00b7 new");
-    expect(Math.abs((await steady(() => panelTop(page)))! - left!)).toBeLessThan(40);
+    expect(Math.abs((await steady(() => panelTop(page)))! - left!)).toBeLessThan(2);
   }, 30_000);
 
   it("keeps each group's overview open or closed across a visit to another session", async () => {
