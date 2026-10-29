@@ -4804,12 +4804,15 @@ describe("installed gyst in a sandboxed browser", () => {
     await says(page, reading);
     expect(Math.abs((await steady(() => panelTop(page)))! - bottom!)).toBeLessThan(2);
     // Through a view with no changes to show, which has no reader to keep a place in, too.
+    await walkthroughTab(page);
     await side.getByRole("button", { name: /^Parse the config/ }).click();
     await says(page, "a.ts:20 \u00b7 new");
     const again = await steady(() => panelTop(page));
     expect(again).toBeGreaterThan(0);
-    await side.getByRole("button", { name: "app.ts", exact: true }).click();
+    await filesTab(page);
+    await treeRow(page, "app.ts").click();
     await page.getByRole("main").getByText("No captured changes under app.ts.").waitFor();
+    await walkthroughTab(page);
     await side.getByRole("button", { name: /^Parse the config/ }).click();
     await headingsAre(page, ["walk/b.ts", "walk/a.ts"]);
     await says(page, "a.ts:20 \u00b7 new");
