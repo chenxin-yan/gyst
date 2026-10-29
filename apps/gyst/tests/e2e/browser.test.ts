@@ -4224,6 +4224,48 @@ describe("installed gyst in a sandboxed browser", () => {
     expect(await selectedTab()).toBe("Files");
   }, 60_000);
 
+  it("opens a sidebar tree's selected row again when chosen again: the current group file lands at its header, and a Files row leaves an expanded reference for its own view", async () => {
+    const walk = await openWalk();
+    await publishWalk(walk);
+    await walk.publish(1, "refs", referenceOps);
+    const page = await newPage();
+    await page.setViewportSize({ width: 1280, height: 900 });
+    await page.goto(`${one.origin}/session/${walk.id}`);
+    const pane = page.getByRole("main");
+    const side = page.getByRole("navigation", { name: "gyst" });
+    const coreFile = side
+      .locator('[aria-label="Files in Parse the config"]')
+      .getByRole("treeitem", { name: "b.ts", exact: true });
+
+    // The group's current file, folded and so already selected, opens at its header when chosen.
+    await side.getByRole("button", { name: /^Parse the config/ }).click();
+    await headingsAre(page, ["walk/b.ts", "walk/a.ts"]);
+    await foldToggle(page, "walk/b.ts").click();
+    await waitFor(
+      async () => (await foldToggle(page, "walk/b.ts").getAttribute("aria-expanded")) === "false",
+      "b.ts folded",
+    );
+    await waitFor(async () => (await ariaSelected(coreFile)) === "true", "b.ts selected");
+    await coreFile.click();
+    await waitFor(
+      async () => (await foldToggle(page, "walk/b.ts").getAttribute("aria-expanded")) === "true",
+      "b.ts unfolded",
+    );
+    await says(page, "b.ts \u00b7 file");
+
+    // A Files row stays selected under an expanded reference; choosing it goes back to its view.
+    await filesTab(page);
+    await treeRow(page, "b.ts").click();
+    await headingsAre(page, ["walk/b.ts"]);
+    await pane.locator("[data-note=b-note]").getByRole("button", { name: "line 40" }).click();
+    await peekOf(page).getByRole("button", { name: "Expand" }).click();
+    await headingsAre(page, ["src/long.ts"]);
+    expect(await ariaSelected(treeRow(page, "b.ts"))).toBe("true");
+    await treeRow(page, "b.ts").click();
+    await headingsAre(page, ["walk/b.ts"]);
+    expect(await pane.getByRole("region", { name: "Captured file" }).count()).toBe(0);
+  }, 30_000);
+
   it("fades what is done in the sidebar: a viewed file faint with \u2713 before its letter, a folder with nothing left, an unchanged file and a done group, and back at full ink once unmarked", async () => {
     const walk = await openWalk();
     await publishWalk(walk);
