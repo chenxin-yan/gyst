@@ -4080,22 +4080,37 @@ describe("installed gyst in a sandboxed browser", () => {
         JSON.stringify(await rowsOf("Files in Parse the config")) === '["walk","b.ts","a.ts"]',
       "core's tree in the agent's order",
     );
-    await side.getByText("Not in a group", { exact: true }).waitFor();
+    const notInGroup = side.getByRole("paragraph").filter({ hasText: "Not in a group" });
+    await notInGroup.waitFor();
     expect(await rowsOf("Files not in a group")).toEqual(["walk", "a.ts", "c.ts"]);
     // A file in no group opens its own view, and the tab stays.
     await rowIn("Files not in a group", "c.ts").click();
     await headingsAre(page, ["walk/c.ts"]);
     expect(await ariaSelected(rowIn("Files not in a group", "c.ts"))).toBe("true");
     expect(await selectedTab()).toBe("Walkthrough");
+    // "Not in a group" reads its Viewed progress as text, its visible n/m and ✓ hidden.
+    const heard = async () => (await notInGroup.ariaSnapshot()).replaceAll('"', "");
+    expect(await heard()).toBe("- paragraph: Not in a group, 0 of 2 hunks viewed");
+    await viewedBox(page, "walk/c.ts").check();
+    await waitFor(
+      async () => (await heard()) === "- paragraph: Not in a group, 1 of 2 hunks viewed",
+      "c.ts's hunk heard as viewed",
+    );
+    await viewedBox(page, "walk/c.ts").uncheck();
+    await waitFor(
+      async () => (await heard()) === "- paragraph: Not in a group, 0 of 2 hunks viewed",
+      "c.ts's hunk heard as unviewed",
+    );
 
     // Once every hunk is in a group, a.ts is in both groups' trees and "Not in a group" is gone.
-    await walk.publish(1, "edge", [edgeGroup(walk)]);
+    // The two Viewed writes above were revisions 2 and 3.
+    await walk.publish(3, "edge", [edgeGroup(walk)]);
     await waitFor(
       async () =>
         JSON.stringify(await rowsOf("Files in Handle the edge")) === '["walk","c.ts","a.ts"]',
       "edge's tree in the agent's order",
     );
-    expect(await side.getByText("Not in a group", { exact: true }).count()).toBe(0);
+    expect(await notInGroup.count()).toBe(0);
     // Choosing a group's file enters that group at the file, selected in that group's tree only.
     await side.getByRole("button", { name: /^Parse the config/ }).click();
     await headingsAre(page, ["walk/b.ts", "walk/a.ts"]);
@@ -4140,7 +4155,7 @@ describe("installed gyst in a sandboxed browser", () => {
     );
     expect(await coreFolder.getAttribute("aria-expanded")).toBe("false");
     // A new file order for the group reorders its tree.
-    await walk.publish(2, "reorder", [
+    await walk.publish(4, "reorder", [
       { type: "group.update", id: "core", files: ["walk/a.ts", "walk/b.ts"] },
     ]);
     await waitFor(

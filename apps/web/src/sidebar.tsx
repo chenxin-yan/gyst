@@ -86,17 +86,24 @@ export function Sidebar(props: {
   const outsideViewed = outside.filter(({ id }) => props.viewed?.has(id)).length;
   const outsideDone = outsideViewed === outside.length;
   const viewedShown = props.viewed !== undefined;
+  // Said in one piece, as a group row's name is; the row's title, n/m and ✓ are only seen.
+  const hunks = `${outside.length} ${outside.length === 1 ? "hunk" : "hunks"}`;
+  const words = !viewedShown
+    ? hunks
+    : `${outsideDone ? "all " : ""}${outsideViewed} of ${hunks} viewed`;
   const ungrouped = status.groups.length > 0 && outsideFiles.length > 0 && (
     <li>
       <p
-        aria-label={`Not in a group, ${outside.length} ${outside.length === 1 ? "hunk" : "hunks"}`}
         {...stylex.props(
           styles.row,
           viewedShown && styles.marked,
           viewedShown && (outsideDone ? styles.faded : styles.inked),
         )}
       >
-        <span {...stylex.props(styles.title)}>Not in a group</span>
+        <span {...stylex.props(styles.heard)}>Not in a group, {words}</span>
+        <span aria-hidden {...stylex.props(styles.title)}>
+          Not in a group
+        </span>
         {viewedShown && outsideDone && (
           <span aria-hidden {...stylex.props(styles.tick)}>
             ✓
@@ -261,4 +268,12 @@ const styles = stylex.create({
   inked: { color: theme.ink },
   faded: { color: theme.faint },
   tick: { flexShrink: 0, fontSize: "13px", color: theme.faint },
+  heard: {
+    position: "absolute",
+    width: "1px",
+    height: "1px",
+    overflow: "hidden",
+    clipPath: "inset(50%)",
+    whiteSpace: "nowrap",
+  },
 });
