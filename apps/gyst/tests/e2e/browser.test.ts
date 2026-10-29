@@ -3407,11 +3407,12 @@ describe("installed gyst in a sandboxed browser", () => {
     await keys(page, "[", "n");
     await says(page, "a.ts:20 · new");
     await says(page, "4/4");
-    // The next group's view: c.ts and a.ts's three hunks.
+    // The next group's view, entered at its start: c.ts and a.ts's three hunks.
     await keys(page, "Shift+J");
     await headingsAre(page, ["walk/c.ts", "walk/a.ts"]);
+    await says(page, "c.ts · file");
     await says(page, "3/3");
-    await keys(page, "Shift+N");
+    await keys(page, "n");
     await says(page, "a.ts:10 · new");
     await says(page, "1/3");
   }, 30_000);
@@ -4048,6 +4049,40 @@ describe("installed gyst in a sandboxed browser", () => {
     await pane.locator("[data-note=span]").getByRole("button", { name: "the five" }).click();
     await peekOf(page).waitFor();
   }, 60_000);
+
+  it("enters a group at its start, below the bar, though the cursor's file is in it too", async () => {
+    const walk = await openWalk();
+    await publishWalk(walk);
+    const page = await newPage();
+    await page.setViewportSize({ width: 1280, height: 600 });
+    await page.goto(`${one.origin}/session/${walk.id}`);
+    const pane = page.getByRole("main");
+    const atStart = async (chip: string, first: string) => {
+      await says(page, `${first} · file`);
+      expect(await steady(() => panelTop(page))).toBe(0);
+      const [bar, heading] = await Promise.all([
+        pane.getByText(chip, { exact: true }).boundingBox(),
+        pane.getByRole("heading", { name: `walk/${first}`, exact: true }).boundingBox(),
+      ]);
+      expect(heading!.y).toBeGreaterThan(bar!.y + bar!.height);
+    };
+    // a.ts is in every view here: from a change in it, each group entered still starts at its top.
+    await says(page, "0/5 hunks viewed in 3 files");
+    await keys(page, "]", "c");
+    await statusLine(page)
+      .getByText(/^a\.ts:\d+ · /)
+      .waitFor();
+    await pane.getByRole("button", { name: /^Start with group 1/ }).click();
+    await headingsAre(page, ["walk/b.ts", "walk/a.ts"]);
+    await atStart("Group 1 of 2", "b.ts");
+    await keys(page, "]", "f", "]", "c");
+    await statusLine(page)
+      .getByText(/^a\.ts:\d+ · /)
+      .waitFor();
+    await keys(page, "Shift+J");
+    await headingsAre(page, ["walk/c.ts", "walk/a.ts"]);
+    await atStart("Group 2 of 2", "c.ts");
+  }, 30_000);
 
   it("walks notes that share a line one by one, and opens and closes the note at the cursor", async () => {
     const walk = await openWalk();

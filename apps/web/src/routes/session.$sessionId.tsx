@@ -1393,9 +1393,15 @@ function SessionReader(props: {
   // ─── captured-code navigation ───
   /**
    * A view the reader picks: it leaves any expanded reference, and Back starts over. A reference
-   * followed to a line lands there, its file unfolded in that view.
+   * followed to a line lands there, its file unfolded in that view. A group is entered at its start,
+   * the cursor on its first file: keeping the position or the cursor in a file it shares with the
+   * view left would land mid-group.
    */
   const chooseView = (view: ReviewView, at?: { file: string; side: Side; line: number }) => {
+    const enters =
+      at === undefined &&
+      view.kind === "group" &&
+      (captured !== undefined || viewKey(view) !== shownView);
     setReview(view);
     const chosen = viewKey(view);
     setViewFolds((before) =>
@@ -1404,6 +1410,8 @@ function SessionReader(props: {
     setPeek(undefined);
     setBack([]);
     setMarked(undefined);
+    returning.current = false;
+    if (enters) setCursor(undefined);
     const restore: Restore | undefined = at && { position: at };
     if (at) {
       const key = viewKey(view);
@@ -1416,7 +1424,7 @@ function SessionReader(props: {
       });
       setCursor({ file: at.file, kind: "line", side: at.side, line: at.line });
     }
-    if (captured === undefined) return at && setLanding({ restore });
+    if (captured === undefined) return (at !== undefined || enters) && setLanding({ restore });
     setCaptured(undefined);
     setPanel(({ key }) => ({ key: key + 1, restore }));
   };
@@ -3557,6 +3565,8 @@ function ContinuousDiff(props: {
   useLayoutEffect(() => {
     if (props.landing !== landed.current) {
       landed.current = props.landing;
+      // A smooth scroll still on its way, from a key pressed just before, would carry on past it.
+      root.current?.scrollTo({ top: root.current.scrollTop, behavior: "instant" });
       const target = props.landing?.restore;
       position.current = target && "position" in target ? target.position : undefined;
       restoreTop.current = target && "scrollTop" in target ? target.scrollTop : undefined;
