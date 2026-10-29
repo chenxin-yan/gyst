@@ -3430,6 +3430,30 @@ describe("installed gyst in a sandboxed browser", () => {
     await pane.getByText("export const a20 = 20 * 2;", { exact: true }).waitFor();
   }, 30_000);
 
+  it("keeps a fold to the view it was made in, so a file two groups share stays open in the other", async () => {
+    const walk = await openWalk();
+    await publishWalk(walk);
+    const page = await newPage();
+    await page.goto(`${one.origin}/session/${walk.id}`);
+    const side = page.getByRole("navigation", { name: "gyst" });
+    const expanded = () => foldToggle(page, "walk/a.ts").getAttribute("aria-expanded");
+    await side.getByRole("button", { name: /^Parse the config/ }).click();
+    await headingsAre(page, ["walk/b.ts", "walk/a.ts"]);
+    await foldToggle(page, "walk/a.ts").click();
+    await waitFor(async () => (await expanded()) === "false", "a.ts folded in core");
+
+    await side.getByRole("button", { name: /^Handle the edge/ }).click();
+    await headingsAre(page, ["walk/c.ts", "walk/a.ts"]);
+    expect(await expanded()).toBe("true");
+    await side.getByRole("button", { name: "All changes", exact: true }).click();
+    await says(page, "0/5 hunks viewed in 3 files");
+    expect(await expanded()).toBe("true");
+
+    await side.getByRole("button", { name: /^Parse the config/ }).click();
+    await headingsAre(page, ["walk/b.ts", "walk/a.ts"]);
+    expect(await expanded()).toBe("false");
+  }, 30_000);
+
   it("walks notes that share a line one by one, and opens and closes the note at the cursor", async () => {
     const walk = await openWalk();
     await publishWalk(walk);

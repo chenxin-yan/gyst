@@ -136,7 +136,7 @@ import {
   treeOf,
   wholeFileType,
 } from "../reader.ts";
-import { type ReadingPlace, recall, remember } from "../reading-memory.ts";
+import { type Folds, type ReadingPlace, recall, remember, viewKey } from "../reading-memory.ts";
 import { StackSwitcher } from "../stack.tsx";
 import { media, theme } from "../tokens.stylex.ts";
 import {
@@ -524,10 +524,11 @@ function SessionReader(props: {
   const [inputMode, setInputMode] = useState<InputMode>(recalled?.inputMode ?? "vim");
   const [cursor, setCursor] = useState<Cursor | undefined>(recalled?.cursor);
   const [lines, setLines] = useState<CodeViewLineSelection | null>(null);
-  // Generated files start folded in every view; the fold state is shared, so they unfold as usual.
-  // A return keeps the folds it left.
-  const [folded, setFolded] = useState<ReadonlySet<string>>(
-    () => recalled?.folded ?? generatedOf(props.status),
+  // Folds belong to the view they were made in, and an expanded reference folds on its own. A
+  // return keeps the folds it left.
+  const [folds, setViewFolds] = useState<Folds>(() => recalled?.folds ?? new Map());
+  const [expandedFolded, setExpandedFolded] = useState<ReadonlySet<string>>(
+    () => recalled?.expandedFolded ?? new Set(),
   );
   const [dialog, setDialog] = useState<"menu" | "help">();
   // Hidden lines opened per file. They live here, not in the renderer, which forgets them with
@@ -598,6 +599,9 @@ function SessionReader(props: {
   const files = useMemo(() => changedFiles(hunks, manifest), [hunks, manifest]);
   // From status as well as pages: it is complete when the reader starts.
   const generated = useMemo(() => generatedOf(status), [status]);
+  const shownView = viewKey(review);
+  // A view the reader hasn't folded in yet starts with its Generated files folded.
+  const folded = captured ? expandedFolded : (folds.get(shownView) ?? generated);
   const byPath = useMemo(() => new Map(files.map((file) => [file.path, file])), [files]);
   // Memoized: a new list makes the renderer reconcile its items and restore the reading position.
   // An expanded reference shows its one file: every hunk of a changed one, with no Viewed section.
@@ -808,7 +812,8 @@ function SessionReader(props: {
     inputMode,
     cursor,
     opened,
-    folded,
+    folds,
+    expandedFolded,
     top: recalled?.top,
   });
   readingPlace.current = {
@@ -820,7 +825,8 @@ function SessionReader(props: {
     back,
     inputMode,
     cursor,
-    folded,
+    folds,
+    expandedFolded,
   };
   useEffect(() => remember(session.id, snapshotId, hunks, readingPlace.current));
   const returning = useRef(recalled !== undefined);
@@ -971,10 +977,18 @@ function SessionReader(props: {
     if (mark) viewer.current?.reveal(mark, how);
   };
 
+  /** Changes the shown panel's folds: the expanded reference's, else the view's own. */
+  const changeFolded = (next: (before: ReadonlySet<string>) => ReadonlySet<string>) => {
+    if (captured) return setExpandedFolded(next);
+    setViewFolds((before) =>
+      new Map(before).set(shownView, next(before.get(shownView) ?? generated)),
+    );
+  };
+
   /** Folds or unfolds files, then (in Vim) keeps the cursor's new place in view. */
   const setFolds = (paths: readonly string[], fold: boolean, then?: Cursor) => {
     flushSync(() => {
-      setFolded((before) => {
+      changeFolded((before) => {
         const next = new Set(before);
         for (const path of paths) {
           if (fold) next.add(path);
@@ -1027,7 +1041,7 @@ function SessionReader(props: {
     );
     const side = here?.side ?? "additions";
     flushSync(() => {
-      setFolded((before) => {
+      changeFolded((before) => {
         const after = new Set(before).add(path);
         if (next) after.delete(next);
         return after;
@@ -1096,7 +1110,6 @@ function SessionReader(props: {
     setPeek(undefined);
     setBack([]);
     if (captured === undefined) return;
-    if (back[0]) setFolded(back[0].folded);
     setCaptured(undefined);
     setPanel(({ key }) => ({ key: key + 1, restore: undefined }));
   };
@@ -1134,7 +1147,7 @@ function SessionReader(props: {
     };
     setBack((stack) => pushed(stack, origin));
     expandedOpened.current = new Map();
-    setFolded(new Set());
+    setExpandedFolded(new Set());
     setCaptured(target);
     setPeek(undefined);
     setLines(null);
@@ -1158,7 +1171,7 @@ function SessionReader(props: {
     setCaptured(to.captured);
     setCursor(to.cursor);
     setLines(to.lines);
-    setFolded(to.folded);
+    setExpandedFolded(to.folded);
     setPeek(to.peek);
     setPanel(({ key }) => ({ key: key + 1, restore: to.restore }));
   };

@@ -2,7 +2,7 @@ import type { CapturedRange, Hunk } from "@gyst/core/wire";
 import { describe, expect, it } from "vite-plus/test";
 import type { Cursor } from "./cursor.ts";
 import type { Place } from "./navigation.ts";
-import { type ReadingPlace, recall, remember } from "./reading-memory.ts";
+import { type ReadingPlace, recall, remember, viewKey } from "./reading-memory.ts";
 
 const placeAt = (path: string, file: string | undefined): ReadingPlace => ({
   review: { kind: "files", path },
@@ -13,7 +13,8 @@ const placeAt = (path: string, file: string | undefined): ReadingPlace => ({
   inputMode: "vim",
   cursor: undefined,
   opened: new Map(),
-  folded: new Set(),
+  folds: new Map([[viewKey({ kind: "files", path }), new Set()]]),
+  expandedFolded: new Set(),
   top: file === undefined ? undefined : { position: { file, side: undefined, line: undefined } },
 });
 
@@ -35,7 +36,7 @@ describe("reading memory", () => {
       inputMode: "mouse",
       cursor: { file: "src/b.ts", kind: "line", side: "additions", line: 12 },
       opened: new Map([["src/b.ts", new Map([[0, { fromStart: 20, fromEnd: 0 }]])]]),
-      folded: new Set(["src/a.ts"]),
+      folds: new Map([["files:src", new Set(["src/a.ts"])]]),
       top: { position: { file: "src/b.ts", side: "additions", line: 9 } },
     };
     remember("b", "snap-b", [], b);
@@ -67,6 +68,7 @@ describe("reading memory", () => {
       review: origin.review,
       captured: target,
       expandedOpened: new Map([["lib/x.ts", new Map([[1, { fromStart: 3, fromEnd: 0 }]])]]),
+      expandedFolded: new Set(["lib/x.ts"]),
       peek: { target, origin: { kind: "overview" } },
       back: [origin],
       cursor: { file: "lib/x.ts", kind: "line", side: "additions", line: 5 },
@@ -101,14 +103,29 @@ describe("reading memory", () => {
       top: { position: { file: "lib/x.ts", side: "deletions", line: 10 } },
     } satisfies ReadingPlace;
     expect(recall("d", "new", [moved, y], none)).toEqual(shifted);
-    // A Generated file the reader is inside stays unfolded, so the place is there to return to.
+    // A Generated file the reader is inside stays unfolded, so the place is there to return to;
+    // another view it was open in folds it.
     const xGenerated = new Set(["lib/x.ts"]);
     expect(recall("d", "new", [moved, y], xGenerated)).toEqual(shifted);
+    remember("d", "old", [wide, y], {
+      ...deep,
+      folds: new Map([...deep.folds, ["group:core", new Set<string>()]]),
+    });
+    expect(recall("d", "new", [moved, y], xGenerated)?.folds).toEqual(
+      new Map([
+        ["files:lib", new Set()],
+        ["group:core", xGenerated],
+      ]),
+    );
+    remember("d", "old", [wide, y], deep);
     // A changed hunk, or a line outside every hunk, keeps nothing to stand on: the file's top.
     const edited = hunk("lib/x.ts", "x2", "@@ -8,3 +8,4 @@\n c8\n-a\n+B\n+b2\n c10");
     const fileTop = { ...placeAt("lib", "lib/x.ts"), inputMode: "mouse" as const };
     expect(recall("d", "new", [edited, y], none)).toEqual(fileTop);
-    expect(recall("d", "new", [edited, y], xGenerated)).toEqual({ ...fileTop, folded: xGenerated });
+    expect(recall("d", "new", [edited, y], xGenerated)).toEqual({
+      ...fileTop,
+      folds: new Map([["files:lib", xGenerated]]),
+    });
     remember("d", "old", [wide, y], {
       ...deep,
       cursor: { file: "lib/x.ts", kind: "line", side: "additions", line: 20 },
@@ -126,22 +143,45 @@ describe("reading memory", () => {
     expect(recall("d", "newer", [moved], none)).toEqual(overview);
   });
 
-  it("keeps a refresh's unchanged files folded as the reader left them, and folds changed Generated ones", () => {
+  it("keeps a refresh's unchanged files folded as the reader left them in each view, and folds changed Generated ones", () => {
     const z = hunk("dist/z.js", "z1", "@@ -1 +1 @@\n-e\n+f");
     const w = hunk("dist/w.js", "w1", "@@ -1 +1 @@\n-g\n+h");
-    // The reader unfolded Generated z.js and folded x.ts; y.ts and w.js are open.
+    // In All changes the reader unfolded Generated z.js and folded x.ts; y.ts and w.js are open.
+    // In the core group only z.js is folded.
     remember("f", "old", [x, y, z, w], {
       ...placeAt("", undefined),
-      folded: new Set(["lib/x.ts"]),
+      folds: new Map([
+        ["files:", new Set(["lib/x.ts"])],
+        ["group:core", new Set(["dist/z.js"])],
+      ]),
     });
-    // z.js still reads the same, so it stays open; w.js changed and is Generated now, so it folds.
+    // z.js still reads the same, so it stays as each view left it; w.js changed and is Generated
+    // now, so it folds in both.
     const wChanged = { ...w, patch: "@@ -1 +1 @@\n-g\n+i" };
     const generated = new Set(["dist/z.js", "dist/w.js"]);
-    expect(recall("f", "new", [x, y, z, wChanged], generated)?.folded).toEqual(
-      new Set(["lib/x.ts", "dist/w.js"]),
+    expect(recall("f", "new", [x, y, z, wChanged], generated)?.folds).toEqual(
+      new Map([
+        ["files:", new Set(["lib/x.ts", "dist/w.js"])],
+        ["group:core", new Set(["dist/z.js", "dist/w.js"])],
+      ]),
     );
     // A folded file whose diff changed takes the new snapshot's default: not Generated, unfolded.
     const xChanged = { ...x, patch: "@@ -9 +9 @@\n-a\n+c" };
-    expect(recall("f", "new", [xChanged, y, z, w], none)?.folded).toEqual(new Set());
+    expect(recall("f", "new", [xChanged, y, z, w], none)?.folds).toEqual(
+      new Map([
+        ["files:", new Set()],
+        ["group:core", new Set(["dist/z.js"])],
+      ]),
+    );
+    // A view the reader was in but never folded in starts from the Generated files, but one
+    // holding the reader's line stays open.
+    remember("f", "old", [x, y, z, w], {
+      ...placeAt("", "dist/w.js"),
+      folds: new Map(),
+      top: { position: { file: "dist/w.js", side: "additions", line: 1 } },
+    });
+    expect(recall("f", "new", [x, y, z, wChanged], generated)?.folds).toEqual(
+      new Map([["files:", new Set(["dist/z.js"])]]),
+    );
   });
 });

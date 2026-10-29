@@ -28,7 +28,10 @@ export type Place = {
   /** The cursor, whose side is the split column it walked. */
   cursor: Cursor | undefined;
   lines: CodeViewLineSelection | null;
-  /** The files folded there; an expanded file starts unfolded and folds on its own. */
+  /**
+   * The files folded there. Back restores them to an expanded file, which starts unfolded and folds
+   * on its own; a view keeps its own folds.
+   */
   folded: ReadonlySet<string>;
   restore: Restore;
   peek: Peek | undefined;

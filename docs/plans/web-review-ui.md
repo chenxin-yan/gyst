@@ -152,7 +152,7 @@ The header shows the exact scope and compact PR-layer switcher when applicable. 
 
 A file's hunks read as one continuous diff over captured full contents. Touching hunks have no artificial gap. Each hidden range displays its line count and expands independently. A hidden range with other groups' hunks says “N lines, with changes from another group”; expansion shows those as real changes, never fake unchanged lines. Notes collapse to a bare chevron chip, without an “Agent note” heading or Ask button.
 
-A file the snapshot records as generated or vendored starts folded in every view, labelled Generated, and unfolds like any other file. It stays part of grouping, Viewed and preparation completeness; the agent groups it like any other change.
+A file the snapshot records as generated or vendored starts folded in every view, labelled Generated, and unfolds like any other file. It stays part of grouping, Viewed and preparation completeness; the agent groups it like any other change. Folds belong to the view they were made in, so folding a file in one group, folder or All changes leaves it as it was in every other view, where a Generated file still starts folded.
 
 Layouts: split, stacked and auto; auto uses the existing roughly 120-column split threshold based on available diff width. Notes and inline navigation span the appropriate reading width, including both columns for peek. Keep narrow layouts usable.
 
