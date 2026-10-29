@@ -4,11 +4,11 @@
 import type { FileTreeRowDecoration, FileTreeRowDecorationRenderer } from "@pierre/trees";
 import { FileTree, useFileTree, useFileTreeSelector } from "@pierre/trees/react";
 import * as stylex from "@stylexjs/stylex";
-import { useEffect, useMemo, useRef } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { agentOrder } from "./order.ts";
 import { type ReaderFile, statusOf } from "./reader.ts";
 import { theme } from "./tokens.stylex.ts";
-import { type FileMark, foldersOf, viewedStatuses } from "./tree-viewed.ts";
+import { type FileMark, foldersOf, rowAnnouncement, viewedStatuses } from "./tree-viewed.ts";
 import { sectionViewed } from "./viewed.ts";
 
 /** Every tree's rows: compact, folders compacted, no file icon and no folder dot. */
@@ -87,6 +87,34 @@ const useViewedUpdates = (model: Model, look: ReturnType<typeof useViewedLook>) 
   }, [model, look.key]);
 
 /**
+ * What a polite live region says as tree focus moves: the focused row's path, then a file's status
+ * and Viewed, or that it is a folder. Nothing while the tree has no focus, so a selection the
+ * reader syncs says nothing.
+ */
+// TODO: Remove once https://github.com/pierrecomputer/pierre/issues/1187 gives a row an accessible
+// description; at 1.0.0-beta.6 a row is named by its basename only.
+function useRowAnnouncement(model: Model, marks: ReadonlyMap<string, FileMark>) {
+  const [said, setSaid] = useState("");
+  const latest = useRef(marks);
+  latest.current = marks;
+  useEffect(() => {
+    let focused = model.getFocusedPath();
+    return model.subscribe(() => {
+      const path = model.getFocusedPath();
+      if (path === focused) return;
+      focused = path;
+      if (path !== null && model.getFileTreeContainer()?.matches(":focus-within"))
+        setSaid(rowAnnouncement(path, latest.current.get(path)));
+    });
+  }, [model]);
+  return (
+    <p aria-live="polite" {...stylex.props(styles.said)}>
+      {said}
+    </p>
+  );
+}
+
+/**
  * Every loaded captured path, changed or not. Selecting a folder or a file opens all changes under
  * it; a changed file carries its A/M/D/R letter and its Viewed mark.
  */
@@ -149,15 +177,19 @@ export function SnapshotTree(props: {
   }, [model, paths]);
   useViewedUpdates(model, look);
   useSelected(model, props.selection === "" ? undefined : props.selection);
+  const announcement = useRowAnnouncement(model, marks);
 
   return (
-    <FileTree
-      model={model}
-      // TODO: Name the tree itself once its role="tree" takes a label (raised on
-      // https://github.com/pierrecomputer/pierre/issues/1187); this label lands on the host element.
-      aria-label="Snapshot files"
-      {...stylex.props(styles.tree, viewed !== undefined && styles.inked, styles.fill)}
-    />
+    <>
+      <FileTree
+        model={model}
+        // TODO: Name the tree itself once its role="tree" takes a label (raised on
+        // https://github.com/pierrecomputer/pierre/issues/1187); this label lands on the host element.
+        aria-label="Snapshot files"
+        {...stylex.props(styles.tree, viewed !== undefined && styles.inked, styles.fill)}
+      />
+      {announcement}
+    </>
   );
 }
 
@@ -221,15 +253,20 @@ export function GroupTree(props: {
   useViewedUpdates(model, look);
   useSelected(model, props.selected);
 
+  const announcement = useRowAnnouncement(model, marks);
+
   const rows = useFileTreeSelector(model, (tree) => tree.getVisibleCount());
   return (
-    <FileTree
-      model={model}
-      // TODO: Name the tree itself once @pierre/trees can (issues/1187); see SnapshotTree.
-      aria-label={props.label}
-      style={{ height: rows * model.getItemHeight() }}
-      {...stylex.props(styles.tree, viewed !== undefined && styles.inked, styles.group)}
-    />
+    <>
+      <FileTree
+        model={model}
+        // TODO: Name the tree itself once @pierre/trees can (issues/1187); see SnapshotTree.
+        aria-label={props.label}
+        style={{ height: rows * model.getItemHeight() }}
+        {...stylex.props(styles.tree, viewed !== undefined && styles.inked, styles.group)}
+      />
+      {announcement}
+    </>
   );
 }
 
@@ -278,4 +315,13 @@ const styles = stylex.create({
   // The Files tab's tree fills the tab, scrolling (and virtualizing) inside it.
   fill: { flex: "1 1 0", minHeight: 0 },
   group: { flexShrink: 0 },
+  // Heard, not seen.
+  said: {
+    position: "absolute",
+    width: "1px",
+    height: "1px",
+    overflow: "hidden",
+    clipPath: "inset(50%)",
+    whiteSpace: "nowrap",
+  },
 });

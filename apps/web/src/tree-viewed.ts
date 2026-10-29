@@ -12,6 +12,17 @@ const gitStatusOf = {
   R: "renamed",
 } as const satisfies Record<FileMark["letter"], GitStatus>;
 
+const statusWords = { A: "added", D: "deleted", M: "modified", R: "renamed" } as const;
+
+/**
+ * What a tree row says when focus reaches it: a file's path, status and Viewed, or a folder's path
+ * (a directory's canonical path ends in "/").
+ */
+export const rowAnnouncement = (path: string, mark: FileMark | undefined) =>
+  path.endsWith("/")
+    ? `${path.slice(0, -1)}, folder`
+    : `${path}, ${mark ? statusWords[mark.letter] : "unchanged"}${mark?.viewed ? ", viewed" : ""}`;
+
 /** The folders above `path`, each ending in "/", the tree's canonical form of a directory. */
 export const foldersOf = (path: string) => {
   const folders: string[] = [];
