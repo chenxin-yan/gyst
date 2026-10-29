@@ -4014,14 +4014,20 @@ describe("installed gyst in a sandboxed browser", () => {
     expect(await toggle.getAttribute("aria-expanded")).toBe("true");
     await region.getByText("Step 40 reads a value.").waitFor({ state: "attached" });
     // Capped: a fade and more say it hides more below, until Shift+O has scrolled it all in.
+    const fade = region.locator("xpath=../span[@aria-hidden='true']");
     await more.waitFor();
     expect(await scrollTopAround(region)).toBe(0);
+    const [faded, capped] = await Promise.all([fade.boundingBox(), region.boundingBox()]);
+    expect(faded!.height).toBe(40);
+    expect(faded!.width).toBeGreaterThan(capped!.width / 2);
+    expect(Math.abs(faded!.y + faded!.height - (capped!.y + capped!.height))).toBeLessThan(2);
     for (let presses = 0; (await more.count()) > 0; presses++) {
       expect(presses).toBeLessThan(20);
       await keys(page, "Shift+O");
       await pause(page, 400);
     }
     expect(await scrollTopAround(region)).toBeGreaterThan(0);
+    expect(await fade.count()).toBe(0);
     expect(await region.evaluate((node) => node.parentElement!.children.length)).toBe(1);
     await keys(page, "Shift+O");
     await waitFor(async () => (await region.count()) === 0, "the overview closed");
