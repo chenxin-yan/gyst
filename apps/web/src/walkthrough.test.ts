@@ -6,6 +6,7 @@ import {
   coverageOf,
   outdatedReason,
   groupProgress,
+  groupViewedChange,
   noteLine,
   noteSequence,
   noteStep,
@@ -130,6 +131,31 @@ describe("groupProgress", () => {
       done: true,
     });
     expect(groupProgress({ hunkIds: [] }, new Set())).toEqual({ viewed: 0, total: 0, done: false });
+  });
+});
+
+describe("groupViewedChange", () => {
+  it("marks the group's unviewed hunks and counts only those and their files", () => {
+    expect(groupViewedChange(core, files, new Set())).toEqual({
+      viewed: true,
+      said: "Marked 3 hunks in 2 files Viewed.",
+    });
+    // a3 is edge's: viewed or not, it is not core's to count.
+    expect(groupViewedChange(core, files, new Set(["a1", "a2", "a3"]))).toEqual({
+      viewed: true,
+      said: "Marked 1 hunk in 1 file Viewed.",
+    });
+  });
+
+  it("unmarks a group once every hunk of it is Viewed, and never marks an empty one done", () => {
+    expect(groupViewedChange(core, files, new Set(["a1", "a2", "b1", "c1"]))).toEqual({
+      viewed: false,
+      said: "Unmarked 3 hunks in 2 files.",
+    });
+    expect(groupViewedChange({ hunkIds: [] }, files, new Set())).toEqual({
+      viewed: true,
+      said: "Marked 0 hunks in 0 files Viewed.",
+    });
   });
 });
 
