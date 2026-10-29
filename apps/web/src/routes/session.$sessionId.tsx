@@ -1167,9 +1167,11 @@ function SessionReader(props: {
         model.rows(top.file).some((row) => row.kind === "line" && lineOn(row, side) === top.line));
     if (ready) {
       returning.current = false;
-      const mark = { file: top.file, side, ...(top.line !== undefined && { line: top.line }) };
-      // After the renderer's next frame, which lays out the lines it has just opened again.
-      requestAnimationFrame(() => requestAnimationFrame(() => viewer.current?.reveal(mark, "top")));
+      // After the renderer's next frame, which lays out the lines it has just opened again. Landed
+      // as a view's own return is, so the line keeps how far below the file header it was left.
+      requestAnimationFrame(() =>
+        requestAnimationFrame(() => setLanding({ restore: { position: top } })),
+      );
     } else if (!fileRevealed.current) {
       fileRevealed.current = true;
       view.reveal({ file: top.file, side }, "top");

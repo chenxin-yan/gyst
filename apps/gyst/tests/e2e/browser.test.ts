@@ -325,7 +325,15 @@ const barOn = (page: Page, text: string) =>
 /** The number of the first src/long.ts line wholly below the sticky file header at the panel's top. */
 const topLine = async (page: Page) => {
   const pane = page.getByRole("main");
-  const panel = (await pane.boundingBox())!;
+  // The scrolling panel, not the pane: a group bar above it takes the pane's top.
+  const panel = await pane
+    .locator("h2")
+    .first()
+    .evaluate((element) => {
+      let at: Element | null = element;
+      while (at && getComputedStyle(at).overflowY !== "auto") at = at.parentElement;
+      return { y: at!.getBoundingClientRect().top };
+    });
   const lines = await pane
     .getByText(/^export const line\d+ = /)
     .evaluateAll((copies) =>
