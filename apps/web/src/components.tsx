@@ -108,7 +108,8 @@ const frame = stylex.create({
     overscrollBehavior: "none",
     padding: { default: "24px 32px 120px", [media.narrow]: "16px 12px 80px" },
   },
-  fill: { padding: 0, overflow: "hidden" },
+  // A column, so a bar above the reader keeps its height and the reader scrolls in the rest.
+  fill: { padding: 0, overflow: "hidden", display: "flex", flexDirection: "column" },
   // Wraps rather than clips: a narrow panel puts the footer's controls on more rows.
   status: {
     display: "flex",

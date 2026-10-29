@@ -113,6 +113,7 @@ import {
 } from "../cursor.ts";
 import { CapturedHeader, useWholeSides } from "../expanded.tsx";
 import { ExportDialog, StandaloneTitle } from "../export.tsx";
+import { GroupBar, useGroupOverview } from "../group-bar.tsx";
 import { contentLoader, hydrationConcurrency, hydrationWindow, nearbyItems } from "../hydration.ts";
 import {
   type Command,
@@ -203,6 +204,7 @@ import {
 import {
   annotationsOf,
   type DiffAnnotation,
+  groupViewedChange,
   type NoteFrom,
   noteSequence,
   noteStep,
@@ -617,6 +619,10 @@ function SessionReader(props: {
     key: 0,
     restore: undefined,
   });
+  // Where the panel lands after a view change, instead of keeping the position it showed.
+  const [landing, setLanding] = useState<{ restore: Restore | undefined }>();
+  // What the last Group viewed changed, said in that group's bar.
+  const [marked, setMarked] = useState<{ group: string; said: string; viewed: boolean }>();
   const [spacer, setSpacer] = useState<HTMLDivElement | null>(null);
   const peekHandle = useRef<PeekHandle>(null);
   // The control a peek was followed from, focused again when the peek closes. The renderer
@@ -1385,8 +1391,11 @@ function SessionReader(props: {
           : `${matchHere ? indexOf(searchResult, matchHere) + 1 : "–"}/${searchResult.total}`;
 
   // ─── captured-code navigation ───
-  /** A view the reader picks: it leaves any expanded reference, and Back starts over. */
-  const chooseView = (view: ReviewView) => {
+  /**
+   * A view the reader picks: it leaves any expanded reference, and Back starts over. A reference
+   * followed to a line lands there, its file unfolded in that view.
+   */
+  const chooseView = (view: ReviewView, at?: { file: string; side: Side; line: number }) => {
     setReview(view);
     const chosen = viewKey(view);
     setViewFolds((before) =>
@@ -1394,9 +1403,54 @@ function SessionReader(props: {
     );
     setPeek(undefined);
     setBack([]);
-    if (captured === undefined) return;
+    setMarked(undefined);
+    const restore: Restore | undefined = at && { position: at };
+    if (at) {
+      const key = viewKey(view);
+      setViewFolds((before) => {
+        const there = before.get(key) ?? generated;
+        if (!there.has(at.file)) return before;
+        const after = new Set(there);
+        after.delete(at.file);
+        return new Map(before).set(key, after);
+      });
+      setCursor({ file: at.file, kind: "line", side: at.side, line: at.line });
+    }
+    if (captured === undefined) return at && setLanding({ restore });
     setCaptured(undefined);
-    setPanel(({ key }) => ({ key: key + 1, restore: undefined }));
+    setPanel(({ key }) => ({ key: key + 1, restore }));
+  };
+
+  /**
+   * Goes from the group bar to a reference's line when it is current changed code: in the shown
+   * group if it holds the file, else in the file's group, else in the file's own view. False for
+   * anything else, which the bar expands instead.
+   */
+  const jumpTo = (target: CapturedRange) => {
+    if (target.snapshotId !== snapshotId || !byPath.has(target.path)) return false;
+    const side: Side = target.side === "old" ? "deletions" : "additions";
+    const line = target.startLine;
+    if (!unfoldedRows(target.path).some((row) => row.kind === "line" && lineOn(row, side) === line))
+      return false;
+    const owner = inView.group?.files.includes(target.path)
+      ? inView.group
+      : status.groups.find((group) => group.files.includes(target.path));
+    chooseView(owner ? { kind: "group", id: owner.id } : { kind: "files", path: target.path }, {
+      file: target.path,
+      side,
+      line,
+    });
+    return true;
+  };
+
+  /** Group viewed: one Viewed write over the shown group's hunks, said in its bar. Folds nothing. */
+  const groupViewed = () => {
+    const group = inView.group;
+    if (group === undefined || group.hunkIds.length === 0) return;
+    const asked = groupViewedChange(group, files, progress.state.viewed);
+    if (!progress.write(`group:${group.id}`, group.hunkIds, asked.viewed))
+      return setNotice("Another Viewed change is still saving; try again.");
+    setMarked({ group: group.id, ...asked });
   };
 
   /** Opens a reference's peek where it was followed, in place of any other. */
@@ -1568,17 +1622,18 @@ function SessionReader(props: {
       )
     );
 
-  // The view's overview: a group's, with its notes on earlier code, or the walkthrough's above the
-  // whole snapshot.
+  // The view's overview: a group's in the group bar, with its notes on earlier code, or the
+  // walkthrough's above the whole snapshot. The bar is too small to read a peek in, so a reference
+  // there goes to its changed line or expands; its notes on earlier code keep their peeks.
   const earlierNotes =
     inView.group?.notes.filter(({ anchor }) => anchor.snapshotId !== snapshotId) ?? [];
-  const overviewHeader = inView.group ? (
+  const groupOverview = inView.group && (
     <OverviewCard
       label="Group overview"
-      title={inView.group.title}
       overview={inView.group.overview}
       outdated={outdatedReason(inView.group.overview?.outdated, inView.group.hunkIds.length === 0)}
-      onReference={(target) => follow(target, { kind: "overview" })}
+      onReference={(target) => jumpTo(target) || expand(target)}
+      frameless
       earlierNotes={
         earlierNotes.length > 0 && (
           <section aria-label="Notes on earlier code" {...stylex.props(styles.earlierNotes)}>
@@ -1600,7 +1655,8 @@ function SessionReader(props: {
       peek={peek?.origin.kind === "overview" && peekOf()}
       refocus={refocus?.origin.kind === "overview" ? refocus.target : undefined}
     />
-  ) : (
+  );
+  const walkthroughOverview = inView.group === undefined &&
     review.kind === "files" &&
     review.path === "" &&
     status.overview && (
@@ -1612,8 +1668,8 @@ function SessionReader(props: {
         peek={peek?.origin.kind === "overview" && peekOf()}
         refocus={refocus?.origin.kind === "overview" ? refocus.target : undefined}
       />
-    )
-  );
+    );
+  const disclosure = useGroupOverview(inView.group);
 
   // A refresh whose reply did not arrive is sent again under its own id, so a lost acknowledgement
   // gets the recorded result instead of refreshing twice; any reply settles it.
@@ -2005,6 +2061,10 @@ function SessionReader(props: {
       const next = groups[id === "nextGroup" ? at + 1 : at === -1 ? groups.length - 1 : at - 1];
       return next && chooseView({ kind: "group", id: next.id });
     }
+    if ((id === "groupOverview" || id === "groupViewed") && inView.group === undefined)
+      return setNotice("Open a walkthrough group first.");
+    if (id === "groupOverview") return disclosure.toggle(true);
+    if (id === "groupViewed") return groupViewed();
     if (id === "toggleNotes") {
       const ids = notes.map(({ note }) => note.id);
       const collapse = ids.some((note) => !collapsedNotes.has(note));
@@ -2442,10 +2502,25 @@ function SessionReader(props: {
         </>
       }
     >
+      {captured === undefined && (
+        <GroupBar
+          status={status}
+          review={review}
+          group={inView.group}
+          files={files}
+          size={{ files: shown.length, hunks: hunkCount, viewed: viewedCount }}
+          viewed={progress.state.viewed}
+          overview={groupOverview}
+          disclosure={disclosure}
+          box={inView.group && checkboxOf(progress.state, `group:${inView.group.id}`, [])}
+          marked={marked?.group === inView.group?.id ? marked : undefined}
+          onView={chooseView}
+          onGroupViewed={groupViewed}
+        />
+      )}
       {shown.length === 0 ? (
         <div ref={alone} {...stylex.props(styles.alone)}>
           {authorCard && <div {...stylex.props(styles.emptyHeader)}>{authorCard}</div>}
-          {inView.group && <div {...stylex.props(styles.emptyHeader)}>{overviewHeader}</div>}
           <p {...stylex.props(styles.empty)}>
             {files.length === 0 ? (
               "This session's snapshot has no changes."
@@ -2486,7 +2561,7 @@ function SessionReader(props: {
                   onRetry={() => wholeSides.load(captured)}
                 />
               ) : (
-                overviewHeader
+                walkthroughOverview
               )}
               {peekPlace &&
                 peekOf({ spacer, extent: () => viewer.current?.extentOf(peekPlace.file) })}
@@ -2497,6 +2572,7 @@ function SessionReader(props: {
           expandUnchanged={captured !== undefined}
           target={captured}
           restore={panel.restore}
+          landing={landing}
           onPaint={() => peekHandle.current?.place()}
           renderAnnotation={(annotation) => {
             if (annotation.kind === "thread") {
@@ -2871,6 +2947,8 @@ function ContinuousDiff(props: {
   target: CapturedRange | undefined;
   /** Where the panel starts, read once when it mounts. */
   restore: Restore | undefined;
+  /** Where the panel lands, each time another is given, instead of keeping its position. */
+  landing: { restore: Restore | undefined } | undefined;
   /** After each repaint of the overlays: the diff may have moved under them. */
   onPaint: () => void;
   loadDiffFiles: FileDiffContentsLoader;
@@ -3470,9 +3548,19 @@ function ContinuousDiff(props: {
     [onWidth, paint],
   );
 
-  // Restore the logical position after a layout switch or a new selection that still holds it.
-  // A layout effect: it reads the position before any capture from the renderer's own re-render.
+  // Restore the logical position after a layout switch or a new selection that still holds it, or
+  // land where the reader was sent. A layout effect: it reads the position before any capture from
+  // the renderer's own re-render. A landing is the renderer's own instant scroll to its row, which
+  // it keeps anchored while it measures the rows above; a smooth scroll would be cut short by that
+  // re-anchoring. The panel sits below the group bar, so its top is already below the bar.
+  const landed = useRef(props.landing);
   useLayoutEffect(() => {
+    if (props.landing !== landed.current) {
+      landed.current = props.landing;
+      const target = props.landing?.restore;
+      position.current = target && "position" in target ? target.position : undefined;
+      restoreTop.current = target && "scrollTop" in target ? target.scrollTop : undefined;
+    }
     const at = position.current;
     pendingTop.current = undefined;
     manualAt.current = -Infinity;
@@ -3509,7 +3597,7 @@ function ContinuousDiff(props: {
       restoredTop.current = view.current?.getInstance()?.getScrollTop();
     });
     return () => cancelAnimationFrame(frame);
-  }, [layout, props.files]);
+  }, [layout, props.files, props.landing]);
   // A note that leaves with its view never reports the pointer leaving it.
   useLayoutEffect(() => {
     highlighted.current = undefined;

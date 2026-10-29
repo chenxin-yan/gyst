@@ -1417,7 +1417,11 @@ describe("installed gyst in a sandboxed browser", () => {
     /** The file whose header is at the top of the panel. */
     const topFile = () =>
       pane.evaluate((main) => {
-        const panel = main.getBoundingClientRect().top;
+        // The diff's own scroller: the bar above it is not part of the panel's top.
+        let scroller = main.querySelector("h2")?.parentElement ?? main;
+        while (scroller !== main && getComputedStyle(scroller).overflowY !== "auto")
+          scroller = scroller.parentElement ?? main;
+        const panel = scroller.getBoundingClientRect().top;
         const below = [...main.querySelectorAll("h2")]
           .map((heading) => ({ heading, y: heading.getBoundingClientRect().top - panel }))
           .filter(({ y }) => y >= -1)
@@ -1644,7 +1648,11 @@ describe("installed gyst in a sandboxed browser", () => {
     };
     const topFile = () =>
       pane.evaluate((main) => {
-        const panel = main.getBoundingClientRect().top;
+        // The diff's own scroller: the bar above it is not part of the panel's top.
+        let scroller = main.querySelector("h2")?.parentElement ?? main;
+        while (scroller !== main && getComputedStyle(scroller).overflowY !== "auto")
+          scroller = scroller.parentElement ?? main;
+        const panel = scroller.getBoundingClientRect().top;
         const below = [...main.querySelectorAll("h2")]
           .map((heading) => ({ heading, y: heading.getBoundingClientRect().top - panel }))
           .filter(({ y }) => y >= -1)
@@ -2086,22 +2094,21 @@ describe("installed gyst in a sandboxed browser", () => {
       await page.getByRole("heading", { name: "Saved sessions" }).waitFor();
       await page.goBack();
     };
-    // A reference expanded onto a Generated file shows it unfolded, and a return keeps it so.
+    // The bar's reference to a Generated file's change goes to it, unfolding it in the group's
+    // view only, and a return keeps it so.
     await pane
       .getByRole("region", { name: "Group overview" })
       .getByRole("button", { name: "its build output" })
       .click();
-    await peekOf(page).getByRole("button", { name: "Expand" }).click();
-    await headingsAre(page, ["dist/bundle.js"]);
     await says(page, "bundle.js:1 · new");
     await pane.getByText("dist/bundle.js two").waitFor();
+    expect(await expanded("dist/bundle.js")).toBe("true");
+    expect(await expanded("vendor/lib.js")).toBe("false");
     await leaveAndReturn();
-    await headingsAre(page, ["dist/bundle.js"]);
+    await headingsAre(page, paths);
     await says(page, "bundle.js:1 · new");
     await pane.getByText("dist/bundle.js two").waitFor();
-    await keys(page, "Backspace");
-    await headingsAre(page, paths);
-    expect(await expanded("dist/bundle.js")).toBe("false");
+    expect(await peekOf(page).count()).toBe(0);
 
     // It unfolds like any other file, and its Viewed counts.
     await side.getByRole("button", { name: "All changes", exact: true }).click();
@@ -3232,8 +3239,10 @@ describe("installed gyst in a sandboxed browser", () => {
 
     await side.getByRole("button", { name: /^Parse the config/ }).click();
     await headingsAre(page, ["walk/b.ts", "walk/a.ts"]);
+    // The group's title is in the bar above the reader, its overview card under it.
     const groupOverview = pane.getByRole("region", { name: "Group overview" });
-    await groupOverview.getByText("Parse the config", { exact: true }).waitFor();
+    await pane.getByText("Group 1 of 1", { exact: true }).waitFor();
+    await pane.getByText("Parse the config", { exact: true }).waitFor();
     expect(await groupOverview.locator("strong").textContent()).toBe("every");
     // a.ts's third hunk is in no group yet: it reads as a labelled change of this group's file.
     await pane.getByText("Not yet in a group", { exact: true }).waitFor();
@@ -3922,12 +3931,123 @@ describe("installed gyst in a sandboxed browser", () => {
     expect(await expanded()).toBe("true");
     await side.getByRole("button", { name: "All changes", exact: true }).click();
     await says(page, "0/5 hunks viewed in 3 files");
+    await keys(page, "g", "g");
     expect(await expanded()).toBe("true");
 
     await side.getByRole("button", { name: /^Parse the config/ }).click();
     await headingsAre(page, ["walk/b.ts", "walk/a.ts"]);
     expect(await expanded()).toBe("false");
   }, 30_000);
+
+  it("reads a walkthrough from the bar above the reader: each view's size and progress, a group's place, its overview opened, scrolled and closed, Group viewed and the overview's references", async () => {
+    const walk = await openWalk();
+    await publishWalk(walk);
+    const steps = Array.from({ length: 40 }, (_, i) => `Step ${i + 1} reads a value.`);
+    await walk.publish(1, "long", [
+      referenceOps[0]!,
+      {
+        type: "group.update",
+        id: "core",
+        overview: [
+          "Reads **every** value once, as [the five](gyst:new/walk/b.ts#L5-L5) shows, over [the constants](gyst:new/src/long.ts#L10-L12).",
+          ...steps,
+        ].join("\n\n"),
+      },
+    ]);
+    const page = await newPage();
+    await page.setViewportSize({ width: 1280, height: 800 });
+    await page.goto(`${one.origin}/session/${walk.id}`);
+    const pane = page.getByRole("main");
+    const text = (exact: string) => pane.getByText(exact, { exact: true });
+    // The whole snapshot: its groups and sizes, how far it is read, and where to start.
+    await text("Walkthrough").waitFor();
+    await text("2 groups \u00b7 3 files \u00b7 5 hunks").waitFor();
+    await text("0/5 viewed").waitFor();
+    await pane.getByRole("button", { name: /^Start with group 1/ }).click();
+
+    // A group: its place, title, sizes and progress, its overview open on a first visit.
+    await headingsAre(page, ["walk/b.ts", "walk/a.ts"]);
+    await text("Group 1 of 2").waitFor();
+    await text("Parse the config").waitFor();
+    await text("2 files \u00b7 3 hunks").waitFor();
+    await text("0/3 viewed").waitFor();
+    const toggle = pane.getByRole("button", { name: /^Overview/ });
+    const region = pane.locator("[data-group-overview]");
+    const more = pane.getByRole("button", { name: "Show more of the overview" });
+    expect(await toggle.getAttribute("aria-expanded")).toBe("true");
+    await region.getByText("Step 40 reads a value.").waitFor({ state: "attached" });
+    // Capped: a fade and more say it hides more below, until Shift+O has scrolled it all in.
+    await more.waitFor();
+    expect(await scrollTopAround(region)).toBe(0);
+    for (let presses = 0; (await more.count()) > 0; presses++) {
+      expect(presses).toBeLessThan(20);
+      await keys(page, "Shift+O");
+      await pause(page, 400);
+    }
+    expect(await scrollTopAround(region)).toBeGreaterThan(0);
+    expect(await region.evaluate((node) => node.parentElement!.children.length)).toBe(1);
+    await keys(page, "Shift+O");
+    await waitFor(async () => (await region.count()) === 0, "the overview closed");
+    expect(await toggle.getAttribute("aria-expanded")).toBe("false");
+    // Opened by its key, it takes focus, so the keyboard scrolls it; each group keeps its own.
+    await keys(page, "Shift+O");
+    await region.waitFor();
+    expect(await region.evaluate((node) => node === document.activeElement)).toBe(true);
+    await toggle.click();
+    await waitFor(async () => (await region.count()) === 0, "the overview closed");
+    expect(
+      await pane.getByRole("button", { name: "Previous group", exact: true }).isDisabled(),
+    ).toBe(true);
+    await pane.getByRole("button", { name: "Next group", exact: true }).click();
+    await text("Group 2 of 2").waitFor();
+    await headingsAre(page, ["walk/c.ts", "walk/a.ts"]);
+    expect(await toggle.getAttribute("aria-expanded")).toBe("true");
+    expect(await pane.getByRole("button", { name: "Next group", exact: true }).isDisabled()).toBe(
+      true,
+    );
+    await pane.getByRole("button", { name: "Previous group", exact: true }).click();
+    await text("Group 1 of 2").waitFor();
+    expect(await toggle.getAttribute("aria-expanded")).toBe("false");
+
+    // Group viewed marks every hunk of the group, folds nothing, stays, and offers the next group.
+    await keys(page, "Shift+A");
+    await text("Marked 3 hunks in 2 files Viewed.").waitFor();
+    await expect.poll(() => viewedIn(walk.id)).toEqual(new Set([walk.a10, walk.a20, walk.b5]));
+    await text("3/3 viewed").waitFor();
+    expect(await foldToggle(page, "walk/b.ts").getAttribute("aria-expanded")).toBe("true");
+    expect(await foldToggle(page, "walk/a.ts").getAttribute("aria-expanded")).toBe("true");
+    await text("Group 1 of 2").waitFor();
+    // Fully viewed, it unmarks the group.
+    await pane.getByRole("button", { name: /^Unmark group/ }).click();
+    await text("Unmarked 3 hunks in 2 files.").waitFor();
+    await expect.poll(() => viewedIn(walk.id)).toEqual(new Set());
+    expect(await pane.getByRole("button", { name: /^Next group: / }).count()).toBe(0);
+    await keys(page, "Shift+A");
+    await pane.getByRole("button", { name: /^Next group: Handle the edge/ }).click();
+    await text("Group 2 of 2").waitFor();
+    await keys(page, "Shift+A");
+    await text("That was the last group.").waitFor();
+    await expect
+      .poll(() => viewedIn(walk.id))
+      .toEqual(new Set([walk.a10, walk.a20, walk.b5, walk.a40, walk.c3]));
+
+    // In the bar, a reference to supporting code expands it, with Back; one to a changed line goes
+    // there; a note's reference keeps its peek.
+    await keys(page, "Shift+K", "Shift+O");
+    await text("Group 1 of 2").waitFor();
+    await region.getByRole("button", { name: "the constants" }).click();
+    const captured = pane.getByRole("region", { name: "Captured file" });
+    await captured.getByText("src/long.ts", { exact: true }).waitFor();
+    expect(await text("Group 1 of 2").count()).toBe(0);
+    await keys(page, "Backspace");
+    await headingsAre(page, ["walk/b.ts", "walk/a.ts"]);
+    await text("Group 1 of 2").waitFor();
+    await region.getByRole("button", { name: "the five" }).click();
+    await says(page, "b.ts:5 \u00b7 new");
+    expect(await peekOf(page).count()).toBe(0);
+    await pane.locator("[data-note=span]").getByRole("button", { name: "the five" }).click();
+    await peekOf(page).waitFor();
+  }, 60_000);
 
   it("walks notes that share a line one by one, and opens and closes the note at the cursor", async () => {
     const walk = await openWalk();
@@ -6884,7 +7004,7 @@ describe("installed gyst in a sandboxed browser", () => {
     await settled(page);
   }, 30_000);
 
-  it("reveals the author's explanation above a group without changes that the reader scrolled down", async () => {
+  it("reveals the author's explanation above a group without changes, whose long overview scrolls in the bar", async () => {
     git("branch", "-f", "peek", "walk");
     const walk = await openWalk("walk~1...peek");
     const overview = Array.from({ length: 80 }, (_, i) => `Step ${i + 1} reads the config.`);
@@ -6913,16 +7033,13 @@ describe("installed gyst in a sandboxed browser", () => {
     await side.getByRole("button", { name: /^Parse the config/ }).click();
     const pane = page.getByRole("main");
     await pane.getByText("This session's snapshot has no changes.", { exact: true }).waitFor();
-    await pane.getByText("Step 80 reads the config.").waitFor();
-    await pane.hover();
-    await page.mouse.wheel(0, 3000);
-    const scrollerTop = () => scrollTopAround(pane.getByText("Step 80 reads the config."));
-    expect(await steady(scrollerTop)).toBeGreaterThan(1000);
+    const region = pane.locator("[data-group-overview]");
+    await region.getByText("Step 80 reads the config.").waitFor();
+    expect(await region.evaluate((node) => node.scrollHeight > node.clientHeight)).toBe(true);
 
     await side.getByRole("button", { name: "Commits" }).click();
     const card = pane.getByRole("region", { name: "Commits" });
     await card.getByText("This range has no commits.", { exact: true }).waitFor();
-    await steady(scrollerTop);
     const box = (await card.boundingBox())!;
     const paneBox = (await pane.boundingBox())!;
     expect(box.y).toBeGreaterThanOrEqual(paneBox.y);
