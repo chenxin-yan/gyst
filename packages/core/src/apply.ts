@@ -246,7 +246,8 @@ export function capturedProblem(captured: CapturedIndex, range: CodeRange): stri
   const target = `${range.side} side of ${range.path}`;
   if (!side || side.kind === "missing") return `${range.path} is not in the captured snapshot`;
   if (side.kind === "absent") return `the ${target} does not exist`;
-  if (side.kind === "unavailable") return `the ${target} is ${side.reason}, not captured text`;
+  if (side.kind === "unavailable")
+    return `the ${target} is ${side.reason === "quota" ? "left out by the snapshot quota" : side.reason}, not captured text`;
   if (range.endLine > side.lines)
     return `lines ${range.startLine}-${range.endLine} are outside the ${target}, which has ${side.lines} lines`;
   return undefined;

@@ -97,13 +97,16 @@ periodic and cached, not a real-time guarantee.
 A snapshot keeps the exact text of every eligible project file, unchanged ones included, so
 reviews keep working after the checkout changes or is removed. `gyst session files --session
 <id> --snapshot <snapshot>` lists the snapshot's files a page at a time, with each side's
-availability (absent, or unavailable as binary, non-UTF-8, a symlink or a submodule). `gyst
+availability (absent, or unavailable as binary, non-UTF-8, a symlink, a submodule or left out by
+a snapshot quota). `gyst
 session code --session <id> --snapshot <snapshot> --file <path> --side old|new` returns up to
 64 KiB of that side's exact text per page, from `--start-line` (optionally to `--end-line`) or
 from the previous page's `next.offset` via `--offset`; a line longer than a page continues on
 the next one. Reads never consult the checkout and name the session's current snapshot, from
-`open`, `status` or `diff`; after a refresh an older one fails with `stale_revision`. On a
-terminal, capturing (`gyst`, `open`, `refresh`) shows its progress on stderr.
+`open`, `status` or `diff`; after a refresh an older one serves only the files the session's
+guidance, conversations and drafts still point at, and anything else fails with
+`stale_revision`. On a terminal, capturing (`gyst`, `open`, `refresh`) shows its progress on
+stderr.
 
 In the viewer, `c` comments on the selected lines or the cursor's line (in Mouse mode, select
 lines with the hover + and press Comment), `r` replies to a note or thread, `x` resolves a thread
@@ -147,6 +150,57 @@ request id and session to get the recorded result; a request id already used for
 another session is rejected.
 
 For CLI options, run `gyst --help` or `gyst session --help`.
+
+## Storage
+
+Sessions and their captured files live in gyst's data directory on the machine running the
+daemon: `GYST_DATA_DIR`, else `$XDG_DATA_HOME/gyst`, else `~/.local/share/gyst`. A file's
+content is stored once however many snapshots and sessions capture it. Saved sessions and their
+review work are never deleted for you, by age or otherwise; only `gyst session delete` (or
+deleting from the viewer's home page) removes one.
+
+Gyst reclaims, in the background, only captured content that nothing needs any more:
+
+- a snapshot a refresh replaced, apart from the files its notes and references, conversations
+  (resolved ones included) and unsent drafts still point at. A draft keeps the whole snapshot it
+  was begun on until you send or discard it, even after the browser closes or the daemon
+  restarts;
+- a deleted session's content, unless another session captured the same files;
+- whatever a failed or interrupted capture, or a source check that found a change, left behind.
+
+It never removes content a read, capture or another session still uses, nor what a saved
+session file this version cannot read names. That is separate from the viewer's and
+navigation's caches (loaded code, navigation's working copies), which are rebuilt from the
+saved content whenever they are dropped; a capture short of space drops navigation's copies that
+no query is using.
+
+There is no built-in size limit. To bound what one snapshot keeps, set `GYST_SNAPSHOT_QUOTA` to
+a size with a unit, such as `500 MiB`, in the environment gyst's daemon starts from:
+
+- The files with reviewed text changes must fit whole, or the capture fails with
+  `source_unavailable` (`quota_exceeded`) and nothing is saved; a review is never published
+  truncated.
+- Every other file's text, unchanged supporting files, mode-only changes and renames included,
+  then fills the rest in path order; a rename keeps or leaves out both its paths together, and is
+  still recorded as a rename. Text left out is never stored, and reads as unavailable with reason
+  `quota`, in `files`, `code`, the viewer and navigation; it is never replaced by the file in
+  your checkout. A source check of uncommitted changes reports `unavailable` while files are left
+  out, since it cannot see whether they changed.
+
+The daemon reads `GYST_SNAPSHOT_QUOTA` when it starts. It stops by itself once no saved session
+remains; otherwise stop it with `SIGTERM` (its PID is in `daemon.pid` in the data directory)
+and the next `gyst` command starts one with the current environment. Snapshots already captured
+keep what they captured until you refresh them.
+
+When a capture fails:
+
+- `quota_exceeded`: raise or unset `GYST_SNAPSHOT_QUOTA` and restart the daemon, or review a
+  smaller scope.
+- `storage_full`: the data directory's disk is full. Gyst has already dropped unused navigation
+  copies, reclaimed what nothing needs and tried once more; free space there, or delete sessions
+  you no longer need, then retry.
+
+A failed capture, refresh or cleanup leaves every saved session as it was.
 
 ## More
 

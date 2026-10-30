@@ -16,6 +16,7 @@ export const notCaptured = {
   "unsupported-encoding": "not UTF-8 text",
   symlink: "symbolic link",
   submodule: "submodule",
+  quota: "left out by the snapshot quota",
 } satisfies Record<Extract<ContentSide, { kind: "unavailable" }>["reason"], string>;
 
 export type Availability =
