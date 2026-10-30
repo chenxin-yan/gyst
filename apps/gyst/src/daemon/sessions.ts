@@ -2,6 +2,7 @@ import {
   applyBatch,
   ApplyEnvelopeSchema,
   BadArgs,
+  type BrowserRequest,
   type CapturedIndex,
   type CapturedSide,
   capturedSideKey,
@@ -60,7 +61,10 @@ import { Git } from "./git.ts";
 import { GitHub, type StackDiscovery } from "./github.ts";
 import { type DeleteReceipt, SessionStore } from "./store.ts";
 type SourceCheck = Omit<SourceCheckPayload, "sessionId" | "revision">;
-type Input<C extends Request["command"]> = Extract<Request, { readonly command: C }>;
+type Operation = Request | BrowserRequest;
+type Input<C extends Operation["command"]> = Extract<Operation, { readonly command: C }>;
+/** An open's reply before the daemon adds its viewer link, which only the daemon's port names. */
+export type Opened = Omit<OpenPayload, "link">;
 type OnProgress = (progress: CaptureProgress) => Effect.Effect<void>;
 /** What a subscriber hears after its `ready` version: one committed change of its session. */
 export type SessionChange = Extract<SubscriptionEvent, { readonly kind: "changed" | "deleted" }>;
@@ -106,10 +110,9 @@ const contextOf = (
 
 const isGitHubReason = Schema.is(GitHubUnavailableReasonSchema);
 
-const opened = (session: Session, created: boolean): OpenPayload => ({
+const opened = (session: Session, created: boolean): Opened => ({
   session: summaryOf(session),
   created,
-  launch: { argv: ["gyst", "--session", session.id] },
 });
 
 /**
@@ -145,7 +148,7 @@ export class Sessions extends Context.Service<
     open(
       request: Input<"open">,
       onProgress?: OnProgress,
-    ): Effect.Effect<OpenPayload, BadArgs | NoSession | SourceUnavailable | InternalError>;
+    ): Effect.Effect<Opened, BadArgs | NoSession | SourceUnavailable | InternalError>;
     readonly list: Effect.Effect<ListPayload>;
     /** A PR session's status also carries its stack context and its opened layers' sessions. */
     status(request: Input<"status">): Effect.Effect<StatusPayload, NoSession>;
@@ -165,7 +168,7 @@ export class Sessions extends Context.Service<
       request: Input<"layer">,
       onProgress?: OnProgress,
     ): Effect.Effect<
-      OpenPayload,
+      Opened,
       BadArgs | NoSession | SourceUnavailable | ValidationFailed | InternalError
     >;
     diff(
