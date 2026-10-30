@@ -2630,6 +2630,7 @@ function SessionReader(props: {
       )}
       {dialog === "comments" && (
         <CommentsList
+          sessionId={session.id}
           threads={conversations.threads}
           drafts={conversations.drafts}
           snapshotId={snapshotId}
