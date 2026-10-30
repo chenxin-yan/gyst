@@ -3,6 +3,7 @@ import * as stylex from "@stylexjs/stylex";
 import { Link, useRouter } from "@tanstack/react-router";
 import { type ComponentProps, type ReactNode, useEffect, useRef, useState } from "react";
 import { isExpectedFailure, newRequestId, operation } from "./api.ts";
+import { standalone } from "./standalone.ts";
 import { media, theme } from "./tokens.stylex.ts";
 
 // ─── layout ──────────────────────────────────────────────────────────────
@@ -19,9 +20,14 @@ export function Frame(props: {
     <div {...stylex.props(frame.app)}>
       <nav {...stylex.props(frame.side)} aria-label="gyst">
         <div {...stylex.props(frame.brand)}>
-          <Link to="/" {...stylex.props(frame.brandName)}>
-            gyst
-          </Link>
+          {/* A standalone walkthrough has no saved sessions to go to. */}
+          {standalone ? (
+            <span {...stylex.props(frame.brandName)}>gyst</span>
+          ) : (
+            <Link to="/" {...stylex.props(frame.brandName)}>
+              gyst
+            </Link>
+          )}
         </div>
         {props.side}
       </nav>
