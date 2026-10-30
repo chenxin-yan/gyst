@@ -128,6 +128,8 @@ describe("commands", () => {
       "newSide",
       "select",
       "open",
+      "definition",
+      "references",
     ]);
   });
 
@@ -154,6 +156,17 @@ describe("commands", () => {
     expect(completesSequence({ key: "N" }, { key: "]", at: 1000 }, 1500)).toBe(false);
     expect(completesSequence({ key: "n" }, { key: "j", at: 1000 }, 1500)).toBe(false);
     expect(completesSequence({ key: "n" }, { key: "]", at: 1000 }, 2500)).toBe(false);
+  });
+
+  // gd and gr ask from the cursor's line; after g, a capital R still refreshes and r ends gr.
+  it("binds gd and gr for definitions and usages beside gg", () => {
+    expect(["definition", "references", "top"].map((id) => label(id, "linux"))).toEqual([
+      ["g d"],
+      ["g r"],
+      ["g g"],
+    ]);
+    expect(completesSequence({ key: "r" }, { key: "g", at: 1000 }, 1500)).toBe(true);
+    expect(completesSequence({ key: "R" }, { key: "g", at: 1000 }, 1500)).toBe(false);
   });
 
   // Caps Lock types `M` without Shift, and another layout types `ь` on the M key.
