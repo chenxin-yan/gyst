@@ -5,6 +5,7 @@ import {
   BadArgs,
   type BrowserRequest,
   navigationAddon,
+  RefreshPayloadSchema,
   type Reply,
   ReplySchema,
   type Request,
@@ -74,6 +75,8 @@ let viewerStart: number;
 let statusHeld: Deferred.Deferred<void>;
 let statusRelease: Deferred.Deferred<void>;
 let progressGate: Deferred.Deferred<void> | undefined;
+/** What the next capture finds; a different patch makes a refresh replace the snapshot. */
+let capturedPatch = patch;
 const files = new Map<string, Session>();
 let launchPaths: Record<string, string> = {};
 
@@ -93,7 +96,7 @@ const git = Layer.succeed(Git, {
       return onProgress({ phase: "capture", done: 0, total: 1, bytes: 0 }).pipe(
         Effect.andThen(gate ? Deferred.await(gate) : Effect.void),
         Effect.andThen(onProgress({ phase: "diff", done: 1, total: 1, bytes: 4 })),
-        Effect.as(manifestOf(patch, scope)),
+        Effect.andThen(Effect.sync(() => manifestOf(capturedPatch, scope))),
       );
     }),
   capturePullRequest: () => Effect.die("no PR captures in this test"),
@@ -571,9 +574,20 @@ describe("DaemonServer", () => {
             expect(navigationCalls).toEqual([{ ...first.queries[3], addon: { kind: "missing" } }]);
 
             navigationCalls.length = 0;
-            const refreshed = yield* send({ command: "refresh", session: first.session });
+            const { snapshotId } = first.queries[3];
+            capturedPatch = patch.replace("+two", "+three");
+            const refreshed = yield* send({
+              command: "refresh",
+              session: first.session,
+              snapshotId,
+              requestId: "r",
+            });
+            capturedPatch = patch;
             if (!refreshed.ok) throw new Error("refresh failed");
-            const current = sessionOf(refreshed.value).snapshotId;
+            const current = Schema.decodeUnknownSync(RefreshPayloadSchema)(
+              refreshed.value,
+            ).snapshotId;
+            expect(current).not.toBe(snapshotId);
             expect(navigationCalls).toEqual([{ retire: first.session, keep: current }]);
             expect(ok(yield* remove(first.session))).toBe(true);
             expect(navigationCalls).toEqual([
@@ -635,10 +649,15 @@ describe("DaemonServer", () => {
         );
         expect(heard).toEqual(progress);
         // Without a handler the interim lines are skipped and the reply still decodes.
-        const refreshed = sessionOf(
-          yield* client.request({ command: "refresh", session: opened.id }),
+        const refreshed = Schema.decodeUnknownSync(RefreshPayloadSchema)(
+          yield* client.request({
+            command: "refresh",
+            session: opened.id,
+            snapshotId: opened.snapshotId,
+            requestId: "progress",
+          }),
         );
-        expect(refreshed.id).toBe(opened.id);
+        expect(refreshed.sessionId).toBe(opened.id);
         // A reuse captures nothing, so it reports nothing.
         heard.length = 0;
         yield* client.request(

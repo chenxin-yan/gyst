@@ -1,7 +1,12 @@
 // The reader's commands and the keys that run them: one typed table, read by the keyboard handler,
 // the command menu and the help. Later tickets add their rows here.
 
-import { type Hotkey, LETTER_KEYS, parseHotkey } from "@tanstack/react-hotkeys";
+import {
+  DEFAULT_SEQUENCE_TIMEOUT,
+  type Hotkey,
+  LETTER_KEYS,
+  parseHotkey,
+} from "@tanstack/react-hotkeys";
 
 export type CommandId =
   | "down"
@@ -35,6 +40,8 @@ export type CommandId =
   | "stacked"
   | "auto"
   | "mode"
+  | "refresh"
+  | "check"
   | "menu"
   | "help";
 
@@ -103,6 +110,8 @@ export const commands: readonly Command[] = [
   { id: "stacked", keys: [["2"]], label: "Stacked diff" },
   { id: "auto", keys: [["0"]], label: "Auto diff layout, by width" },
   { id: "mode", keys: [], label: "Switch between Vim and Mouse mode" },
+  { id: "refresh", keys: [["Shift+R"]], label: "Refresh the session from its source" },
+  { id: "check", keys: [], label: "Check the source for changes without refreshing" },
   { id: "menu", keys: [["Meta+K"], ["Control+K"]], label: "Command menu" },
   { id: "help", keys: [["?"]], label: "Keyboard shortcuts" },
 ];
@@ -110,6 +119,24 @@ export const commands: readonly Command[] = [
 /** The commands an input mode runs, for its keys, its menu and its help alike. */
 export const commandsFor = (mode: InputMode) =>
   mode === "vim" ? commands : commands.filter((command) => !command.vimOnly);
+
+/**
+ * Whether `event` completes a sequence that `previous` started, as `R` does after `z`: it then
+ * belongs to that sequence (`zR`), not to the single-key command bound to it alone (`R`).
+ */
+export function completesSequence(
+  event: Pick<KeyboardEvent, "key">,
+  previous: { readonly key: string; readonly at: number } | undefined,
+  now: number,
+) {
+  if (previous === undefined || now - previous.at > DEFAULT_SEQUENCE_TIMEOUT) return false;
+  return commands.some(({ keys }) =>
+    keys.some(
+      (sequence) =>
+        sequence.length === 2 && typed(sequence[0]!, previous) && typed(sequence[1]!, event),
+    ),
+  );
+}
 
 /** Letters print as typed, Vim-style: `j`, `g g`, `Shift+g`; Backspace as `⌫`. */
 export const keyLabels = {

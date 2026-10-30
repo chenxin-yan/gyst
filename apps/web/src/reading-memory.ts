@@ -1,7 +1,7 @@
-import type { CapturedRange } from "@gyst/core/wire";
-import type { Cursor, Opened } from "./cursor.ts";
+import { type CapturedRange, counterpartLine, type Hunk } from "@gyst/core/wire";
+import type { Cursor, Opened, Side } from "./cursor.ts";
 import type { InputMode } from "./keymap.ts";
-import type { BackStack, Peek, Restore } from "./navigation.ts";
+import type { BackStack, Peek, ReadingPosition, Restore } from "./navigation.ts";
 import type { ReviewView } from "./walkthrough.ts";
 
 /**
@@ -25,15 +25,79 @@ export type ReadingPlace = {
 /**
  * Each session's reading place for this page's lifetime, so switching between stack layers (or any
  * sessions) and back resumes where the reader was. Kept per session ID, so one session's place never
- * leaks into another; a place belongs to the snapshot it was read in, and a refresh starts afresh.
+ * leaks into another. After a refresh the view and the input mode carry over, and everything in a
+ * file whose hunks the refresh left exactly as they were. In another file the top position and the
+ * cursor move with a hunk that survived exactly, whatever its line numbers; else only the file at the
+ * top, and a cursor on its header, are kept. An expanded reference and Back belong to the snapshot
+ * they were read in.
  */
-const places = new Map<string, { snapshotId: string; place: ReadingPlace }>();
+const places = new Map<
+  string,
+  { snapshotId: string; hunks: readonly Hunk[]; place: ReadingPlace }
+>();
 
-export const remember = (sessionId: string, snapshotId: string, place: ReadingPlace) => {
-  places.set(sessionId, { snapshotId, place });
+export const remember = (
+  sessionId: string,
+  snapshotId: string,
+  hunks: readonly Hunk[],
+  place: ReadingPlace,
+) => {
+  places.set(sessionId, { snapshotId, hunks, place });
 };
 
-export const recall = (sessionId: string, snapshotId: string): ReadingPlace | undefined => {
+/** Each file's hunks as one text: identical exactly when the file's diff reads the same. */
+const diffsOf = (hunks: readonly Hunk[]) => {
+  const diffs = new Map<string, string>();
+  for (const { file, id, patch } of hunks)
+    diffs.set(file, `${diffs.get(file) ?? ""}${id}\0${patch}\0`);
+  return diffs;
+};
+
+export const recall = (
+  sessionId: string,
+  snapshotId: string,
+  hunks: readonly Hunk[],
+): ReadingPlace | undefined => {
   const saved = places.get(sessionId);
-  return saved?.snapshotId === snapshotId ? saved.place : undefined;
+  if (saved === undefined || saved.snapshotId === snapshotId) return saved?.place;
+  const before = diffsOf(saved.hunks);
+  const after = diffsOf(hunks);
+  const unchanged = (file: string) => before.has(file) && before.get(file) === after.get(file);
+  // A surviving hunk keeps its id and body, so a line in it is found again by its offset.
+  const now = new Map(hunks.map((hunk) => [hunk.id, hunk]));
+  const lineNow = (file: string, side: Side, line: number) => {
+    for (const hunk of saved.hunks) {
+      const survivor = now.get(hunk.id);
+      if (hunk.file !== file || survivor?.contentHash !== hunk.contentHash) continue;
+      const moved = counterpartLine(hunk, survivor, side === "deletions" ? "old" : "new", line);
+      if (moved !== undefined) return moved;
+    }
+    return undefined;
+  };
+  const cursorNow = (cursor: Cursor): Cursor | undefined => {
+    if (unchanged(cursor.file)) return cursor;
+    if (cursor.kind === "header") return after.has(cursor.file) ? cursor : undefined;
+    if (cursor.kind === "range") return undefined;
+    const line = lineNow(cursor.file, cursor.side, cursor.line);
+    return line === undefined ? undefined : { ...cursor, line };
+  };
+  const topNow = ({ file, side, line }: ReadingPosition): ReadingPosition => {
+    if (unchanged(file) || side === undefined || line === undefined) return { file, side, line };
+    const moved = lineNow(file, side, line);
+    return moved === undefined
+      ? { file, side: undefined, line: undefined }
+      : { file, side, line: moved };
+  };
+  const { review, inputMode, cursor, opened, top } = saved.place;
+  return {
+    review,
+    captured: undefined,
+    expandedOpened: new Map(),
+    peek: undefined,
+    back: [],
+    inputMode,
+    cursor: cursor && cursorNow(cursor),
+    opened: new Map([...opened].filter(([file]) => unchanged(file))),
+    top: top !== undefined && "position" in top ? { position: topNow(top.position) } : top,
+  };
 };
