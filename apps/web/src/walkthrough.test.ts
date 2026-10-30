@@ -93,6 +93,7 @@ const status = (
     ...preparation,
   },
   viewedHunkIds: [],
+  threads: { open: 0, resolved: 0, pending: 0 },
   files: [],
 });
 const both = status([core, edge]);

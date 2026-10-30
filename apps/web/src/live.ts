@@ -8,12 +8,19 @@ import { TransportError } from "./api.ts";
  * A version of the session's committed state, as a status read or an announcement names it. A PR
  * session's `context` changes with its stack context, which never moves the revision.
  */
-export type Version = { snapshotId: string; revision: number; context?: string | undefined };
+export type Version = {
+  snapshotId: string;
+  revision: number;
+  context?: string | undefined;
+  /** The announced identity of the session's conversations; status reads don't carry it. */
+  conversations?: string | undefined;
+};
 
-const versionOf = ({ snapshotId, revision, context }: SessionVersion): Version => ({
+const versionOf = ({ snapshotId, revision, context, conversations }: SessionVersion): Version => ({
   snapshotId,
   revision,
   ...(context !== undefined && { context }),
+  conversations,
 });
 
 export type LivePhase = "connecting" | "live" | "recovering" | "deleted" | "refused";

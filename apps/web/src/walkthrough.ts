@@ -113,11 +113,14 @@ export function outdatedReason(
 }
 
 /**
- * What a diff annotation shows: a note, the owner of a change another group explains, or the row an
- * open reference peek reserves under its note (peek.tsx).
+ * What a diff annotation shows: a note, a thread or composer on code, the owner of a change another
+ * group explains, or the row an open reference peek reserves under its note (peek.tsx).
  */
 export type DiffAnnotation =
   | { kind: "note"; note: StatusNote }
+  /** An open code thread, or a new comment's composer, by id: their state is read when drawn. */
+  | { kind: "thread"; threadId: string }
+  | { kind: "draft"; draftId: string }
   /** `owner` is the owning group's title; undefined while no group has the hunk. */
   | { kind: "foreign"; hunkId: string; owner: string | undefined }
   | { kind: "peek" };
@@ -241,7 +244,7 @@ export type NoteFrom = { fileIndex: number; side: "deletions" | "additions"; lin
  * reader last went to when its place cannot say (Mouse mode scrolls it below the panel's top).
  */
 export function noteStep(
-  sequence: readonly NotePlace[],
+  sequence: readonly Pick<NotePlace, "fileIndex" | "side" | "line">[],
   from: NoteFrom | undefined,
   direction: 1 | -1,
   current?: number,
@@ -258,7 +261,8 @@ export function noteStep(
       ));
   if (on !== undefined && on >= 0) return inRange(on + direction);
   if (from === undefined) return inRange(direction === 1 ? 0 : sequence.length - 1);
-  const order = (place: NotePlace) => place.fileIndex - from.fileIndex || place.line - from.line;
+  const order = (place: (typeof sequence)[number]) =>
+    place.fileIndex - from.fileIndex || place.line - from.line;
   return inRange(
     direction === 1
       ? sequence.findIndex((place) => order(place) > 0)

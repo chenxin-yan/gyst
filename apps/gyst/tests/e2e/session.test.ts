@@ -30,6 +30,7 @@ import {
   isAlive,
   json,
   killDaemon,
+  launchViewer,
   sandbox,
   succeeded,
   waitFor,
@@ -1009,6 +1010,121 @@ describe("gyst session CLI seam", () => {
     expect(updated.groups[0].title).toBe("updated group");
     succeeded(await gyst(cwd, ["session", "delete", ...pinned, "--request-id", "cleanup"]));
   }, 20_000);
+
+  it("hands the agent Pending messages once through threads, replays a lost reply, and takes replies with guidance", async () => {
+    const box = await sandbox();
+    const { gyst } = box;
+    const cwd = await repo(box, "threads");
+    await writeFile(join(cwd, "tracked.txt"), "one\ntwo\nthree\n");
+    // The human's side: browser operations on the link the one-shot command printed.
+    const viewer = await launchViewer([], { cwd, env: box.env });
+    const pinned = ["--session", viewer.id];
+    const { session } = json(await gyst(cwd, ["session", "open", ...pinned]));
+    const human = async (operation: object) => {
+      const reply = await viewer.operation({ session: viewer.id, ...operation });
+      if (!reply.ok) throw new Error(JSON.stringify(reply.error));
+      return reply.value;
+    };
+    const say = async (requestId: string, target: object, markdown: string, kind: string) => {
+      const { draft } = await human({ command: "draft", requestId: `${requestId}-draft`, target });
+      return human({ command: "send", requestId, draft, markdown, kind });
+    };
+    const anchor = {
+      snapshotId: session.snapshotId,
+      path: "tracked.txt",
+      side: "new",
+      startLine: 2,
+      endLine: 3,
+    };
+    const asked = await say("c1", { kind: "comment", anchor }, "Why *three*?", "change");
+    const threads = (...args: string[]) => gyst(cwd, ["session", "threads", ...pinned, ...args]);
+
+    // Status counts it without its body; neither status nor a refused flag set reads it.
+    const counted = json(await gyst(cwd, ["session", "status", ...pinned]));
+    expect(counted.threads).toEqual({ open: 1, resolved: 0, pending: 1 });
+    expect(JSON.stringify(counted)).not.toContain("Why");
+    for (const flags of [[], ["--pending", "--open"]])
+      expect(failed(await threads(...flags, "--request-id", "bad")).code).toBe("bad_args");
+
+    const pickup = await threads("--pending", "--request-id", "p1");
+    const bundle = json(pickup);
+    expect(bundle).toMatchObject({
+      sessionId: viewer.id,
+      progress: { viewed: 0, total: 1 },
+      openThreads: 1,
+      threads: [
+        {
+          id: asked.thread,
+          anchor,
+          code: { kind: "text", lines: ["two", "three"] },
+          unread: [asked.message],
+          messages: [{ author: "human", kind: "change", markdown: "Why *three*?", pending: false }],
+        },
+      ],
+    });
+    // Read means frozen: the human's correction is a new reply.
+    const frozen = await viewer.operation({
+      session: viewer.id,
+      command: "edit",
+      requestId: "e1",
+      message: asked.message,
+      seen: { markdown: "Why *three*?", kind: "change" },
+      markdown: "Edited.",
+    });
+    expect(frozen).toMatchObject({ ok: false, error: { code: "validation_failed" } });
+
+    // The reply was lost and the daemon restarted; a later message arrives meanwhile.
+    await killDaemon(box.data);
+    succeeded(await gyst(cwd, ["session", "status", ...pinned]));
+    const later = await say("c2", { kind: "thread", thread: asked.thread }, "And one?", "question");
+    const replayed = await threads("--pending", "--request-id", "p1");
+    expect(replayed.stdout).toBe(pickup.stdout);
+    expect(failed(await threads("--open", "--request-id", "p1")).message).toBe(
+      "request id reused with a different payload",
+    );
+    const next = json(await threads("--pending", "--request-id", "p2"));
+    expect(next.threads.map(({ unread }: { unread: string[] }) => unread)).toEqual([
+      [later.message],
+    ]);
+
+    // One batch publishes guidance and the answer; agents cannot resolve or speak as the human.
+    const [hunk] = json(await gyst(cwd, ["session", "diff", ...pinned])).hunks;
+    const apply = (batch: object) =>
+      gyst(
+        cwd,
+        ["session", "apply", ...pinned],
+        JSON.stringify({ snapshotId: session.snapshotId, revision: next.revision, ...batch }),
+      );
+    for (const op of [
+      { type: "thread.resolve", thread: asked.thread },
+      { type: "thread.reply", thread: asked.thread, markdown: "Hi.", author: "human" },
+    ])
+      expect(failed(await apply({ idempotencyKey: `bad-${op.type}`, ops: [op] })).code).toBe(
+        "validation_failed",
+      );
+    const answered = json(
+      await apply({
+        idempotencyKey: "answer",
+        ops: [
+          {
+            type: "group.create",
+            id: "g",
+            title: "Lines",
+            overview: "Adds lines.",
+            memberHunkIds: [hunk.id],
+          },
+          { type: "thread.reply", thread: asked.thread, markdown: "Three closes the list." },
+        ],
+      }),
+    );
+    expect(answered).toMatchObject({ groups: [{ id: "g" }], threads: { open: 1, pending: 0 } });
+    const read = await human({ command: "messages", thread: asked.thread });
+    expect(read.messages.at(-1)).toMatchObject({
+      author: "agent",
+      markdown: "Three closes the list.",
+    });
+    succeeded(await gyst(cwd, ["session", "delete", ...pinned, "--request-id", "cleanup"]));
+  }, 60_000);
 
   it("pins references to captured files, refusing live-only paths and stale snapshots", async () => {
     const box = await sandbox();
