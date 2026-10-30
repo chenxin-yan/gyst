@@ -110,6 +110,10 @@ export const ProvenanceSchema = Schema.Union([
 ]);
 export type Provenance = typeof ProvenanceSchema.Type;
 
+/** One commit a recorded range contains: its whole message, subject and body, as UTF-8 text. */
+export const CommitSchema = Schema.Struct({ id: GitObjectIdSchema, message: Schema.String });
+export type Commit = typeof CommitSchema.Type;
+
 /**
  * An immutable captured snapshot: the whole scope's files (unchanged supporting files included) in
  * strictly ascending path order, and text hunks derived from those same bytes. It holds no clock,
@@ -120,7 +124,17 @@ export const SnapshotManifestSchema = Schema.Struct({
   provenance: ProvenanceSchema,
   files: Schema.Array(ManifestFileSchema),
   hunks: Schema.Array(HunkSchema),
+  /**
+   * A recorded range's commits, oldest first, captured with its diff; absent for any other scope.
+   * A PR's description is stack metadata instead.
+   */
+  commits: Schema.optional(Schema.Array(CommitSchema)),
 }).check(
+  Schema.makeFilter(
+    ({ scope, commits }) =>
+      (scope.kind === "range") === (commits !== undefined) ||
+      "commits are captured exactly for a recorded range",
+  ),
   Schema.makeFilter(
     ({ scope, provenance }) =>
       (provenance.kind === scope.kind &&
