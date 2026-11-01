@@ -4164,6 +4164,52 @@ describe("installed gyst in a sandboxed browser", () => {
     await says(page, "a.ts:28 \u00b7 new");
   }, 30_000);
 
+  it("lands a bar reference on hidden lines of a changed file once its late contents open them", async () => {
+    const walk = await openWalk();
+    await publishWalk(walk);
+    await walk.publish(1, "hidden", [
+      {
+        type: "group.update",
+        id: "core",
+        overview: "Reads [the hidden lines](gyst:new/walk/a.ts#L28-L30).",
+      },
+    ]);
+    const page = await newPage();
+    await page.setViewportSize({ width: 1280, height: 500 });
+    // a.ts's contents are held, so its diff is still partial when the link is followed.
+    const { promise: released, resolve: release } = Promise.withResolvers<void>();
+    await page.route(isOperationUrl, async (route) => {
+      const operation = route.request().postDataJSON();
+      if (operation?.command === "code" && operation.file === "walk/a.ts") await released;
+      await route.continue();
+    });
+    await page.goto(`${one.origin}/session/${walk.id}`);
+    const pane = page.getByRole("main");
+    const region = pane.locator("[data-group-overview]");
+    try {
+      await pane.getByRole("button", { name: /^Start with group 1/ }).click();
+      await headingsAre(page, ["walk/b.ts", "walk/a.ts"]);
+      await region.getByRole("button", { name: "the hidden lines" }).click();
+      await says(page, "a.ts:28 \u00b7 new");
+      // Longer than any fixed wait for the lines to show.
+      await page.evaluate(
+        () =>
+          new Promise<void>((done) => {
+            let frames = 90;
+            const step = () => (--frames === 0 ? done() : requestAnimationFrame(step));
+            requestAnimationFrame(step);
+          }),
+      );
+    } finally {
+      release();
+    }
+    await settled(page);
+    for (const line of [28, 29, 30])
+      await pane.getByText(`export const a${line} = ${line};`, { exact: true }).first().waitFor();
+    expect(await steady(() => topLine(page, /^export const a\d+ = /))).toBe(28);
+    await says(page, "a.ts:28 \u00b7 new");
+  }, 30_000);
+
   it("enters a group at its start, below the bar, though the cursor's file is in it too", async () => {
     const walk = await openWalk();
     await publishWalk(walk);

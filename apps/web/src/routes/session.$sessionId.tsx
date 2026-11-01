@@ -1464,6 +1464,12 @@ function SessionReader(props: {
     const side: Side = target.side === "old" ? "deletions" : "additions";
     const line = target.startLine;
     const at = { file: target.path, side, line };
+    const owner = inView.group?.files.includes(target.path)
+      ? inView.group
+      : status.groups.find((group) => group.files.includes(target.path));
+    const view: ReviewView = owner
+      ? { kind: "group", id: owner.id }
+      : { kind: "files", path: target.path };
     if (
       !unfoldedRows(target.path).some((row) => row.kind === "line" && lineOn(row, side) === line)
     ) {
@@ -1479,42 +1485,47 @@ function SessionReader(props: {
       if (range === undefined) return false;
       viewer.current?.expand(target.path, range.index, range.size);
       recordOpened(target.path, range);
-      landOnceShown(at, range.new + line - (side === "deletions" ? range.old : range.new));
+      shownJump.current = {
+        at,
+        view: viewKey(view),
+        newLine: range.new + line - (side === "deletions" ? range.old : range.new),
+      };
     }
-    const owner = inView.group?.files.includes(target.path)
-      ? inView.group
-      : status.groups.find((group) => group.files.includes(target.path));
-    chooseView(owner ? { kind: "group", id: owner.id } : { kind: "files", path: target.path }, at);
+    chooseView(view, at);
     return true;
   };
 
   /**
-   * Lands on a jump's line again once the renderer shows the hidden lines just opened around it
-   * (`newLine` is its new-side number): landed on before, it stops at the range they were hidden in.
-   * An unloaded file shows them once its sides load, so it waits about a second. Not once the reader
-   * has moved the cursor or expanded a reference meanwhile.
+   * A jump into hidden lines it just opened, landed on again once the renderer shows them
+   * (`newLine` is the line's new-side number): landed on before, it stops at the range they were
+   * hidden in. A file whose sides are still loading shows them once they load, which the renderer
+   * reports through `onOpened`. Dropped once the reader moves the cursor, scrolls by hand, chooses
+   * another view or expands a reference.
    */
-  const landOnceShown = (
-    at: { file: string; side: Side; line: number },
-    newLine: number,
-    frames = 60,
-  ) =>
-    requestAnimationFrame(() => {
-      const { captured: expanded, cursor: now } = readingPlace.current;
-      if (
-        expanded !== undefined ||
-        now?.kind !== "line" ||
-        now.file !== at.file ||
-        now.line !== at.line
-      )
-        return;
-      if (!viewer.current?.renders(at.file, newLine)) {
-        if (frames > 0) landOnceShown(at, newLine, frames - 1);
-        return;
-      }
-      // After the renderer's next frame, which lays out the lines it has just opened.
-      requestAnimationFrame(() => setLanding({ restore: { position: at } }));
-    });
+  const shownJump = useRef<{
+    at: { file: string; side: Side; line: number };
+    view: string;
+    newLine: number;
+  }>(undefined);
+  useEffect(() => {
+    const jump = shownJump.current;
+    if (jump === undefined) return;
+    const { at } = jump;
+    if (
+      captured !== undefined ||
+      shownView !== jump.view ||
+      cursor?.kind !== "line" ||
+      cursor.file !== at.file ||
+      cursor.line !== at.line
+    )
+      return void (shownJump.current = undefined);
+    if (!viewer.current?.renders(at.file, jump.newLine)) return;
+    shownJump.current = undefined;
+    // After the renderer's next frame, which lays out the lines it has just opened.
+    requestAnimationFrame(() =>
+      requestAnimationFrame(() => setLanding({ restore: { position: at } })),
+    );
+  });
 
   /** Group viewed: one Viewed write over the shown group's hunks, said in its bar. Folds nothing. */
   const groupViewed = () => {
@@ -2724,6 +2735,7 @@ function SessionReader(props: {
           }}
           onManualScroll={() => {
             returning.current = false;
+            shownJump.current = undefined;
             pullBack();
           }}
           onPosition={onPosition}
@@ -3366,7 +3378,12 @@ function ContinuousDiff(props: {
           ?.getInstance()
           ?.getRenderedItems()
           .find((item) => item.id === file);
-        return rendered?.type === "diff" && rendered.instance.isLineRenderable(line);
+        // A partial diff counts every line renderable, though it shows none of its hidden ones.
+        return (
+          rendered?.type === "diff" &&
+          rendered.instance.fileDiff?.isPartial === false &&
+          rendered.instance.isLineRenderable(line)
+        );
       },
       height: () => node().clientHeight,
       scrollBy(pixels) {
@@ -3412,12 +3429,15 @@ function ContinuousDiff(props: {
   /**
    * Keeps the hidden lines the reader opened and the renderer's own in step after a render: lines
    * the renderer opened (a click) are recorded, and lines it forgot (it dropped and rebuilt the
-   * item) are opened again. Loaded sides only: a partial diff opens nothing yet.
+   * item) are opened again. Loaded sides only: a partial diff opens nothing yet, so lines opened
+   * in it are reported once its sides load and the renderer shows them.
    */
+  const openedWhilePartial = useRef(new Set<string>());
   const syncOpened = useCallback((file: string, instance: FileDiff<DiffAnnotation>) => {
     const diff = instance.fileDiff;
-    if (diff === undefined || diff.isPartial) return;
     const { opened, onOpened } = latest.current;
+    if (diff?.isPartial && opened.has(file)) openedWhilePartial.current.add(file);
+    if (diff === undefined || diff.isPartial) return;
     const byRange = opened.get(file) ?? new Map<number, Opened>();
     let changed = false;
     let reopened = false;
@@ -3442,8 +3462,9 @@ function ContinuousDiff(props: {
       changed = true;
     }
     if (changed) opened.set(file, byRange);
-    // Opened again too: a return to a reading place inside these lines waits for them.
-    if (changed || reopened) onOpened();
+    // Opened again or shown at last too: a return or a jump to a place inside these lines waits
+    // for them.
+    if (openedWhilePartial.current.delete(file) || changed || reopened) onOpened();
   }, []);
 
   // One item per file, reused while its fold and metadata are unchanged so the renderer keeps its
