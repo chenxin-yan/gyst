@@ -30,7 +30,7 @@ const hunk = (file: string, id: string, patch: string): Hunk => ({
 });
 const none: ReadonlySet<string> = new Set();
 const topAt = (line: number) => ({
-  position: { file: "lib/x.ts", side: "additions" as const, line },
+  position: { file: "lib/x.ts", side: "additions" as const, line, offset: 6 },
 });
 const x = hunk("lib/x.ts", "x1", "@@ -9 +9 @@\n-a\n+b");
 const y = hunk("lib/y.ts", "y1", "@@ -3 +3 @@\n-c\n+d");
@@ -92,7 +92,7 @@ describe("reading memory", () => {
       inputMode: "mouse",
       cursor: { file: "lib/x.ts", kind: "line", side: "additions", line: 10 },
       opened: new Map([["lib/x.ts", new Map([[0, { fromStart: 20, fromEnd: 0 }]])]]),
-      top: { position: { file: "lib/x.ts", side: "deletions", line: 9 } },
+      top: { position: { file: "lib/x.ts", side: "deletions", line: 9, offset: 5 } },
     };
     remember("d", "old", [wide, y], deep);
     // Only y.ts changed: x.ts reads the same, so the reader is where they were.
@@ -106,7 +106,7 @@ describe("reading memory", () => {
       ...deep,
       cursor: { file: "lib/x.ts", kind: "line", side: "additions", line: 12 },
       opened: new Map(),
-      top: { position: { file: "lib/x.ts", side: "deletions", line: 10 } },
+      top: { position: { file: "lib/x.ts", side: "deletions", line: 10, offset: 5 } },
     } satisfies ReadingPlace;
     expect(recall("d", "new", [moved, y], none)).toEqual(shifted);
     // A Generated file the reader is inside stays unfolded, so the place is there to return to;
@@ -163,6 +163,12 @@ describe("reading memory", () => {
     };
     remember("v", "old", [wide, y], left);
     expect(recall("v", "old", [wide, y], none)).toEqual(left);
+    // Only y.ts changed: the core group's place keeps its line and the pixel it sat at.
+    const yChanged = { ...y, patch: "@@ -3 +3 @@\n-c\n+e" };
+    expect(recall("v", "new", [wide, yChanged], none)?.views.get("group:core")).toEqual({
+      top: topAt(9),
+      cursor: inX,
+    });
     // The hunk moved two lines down: the core group's place and cursor move with it.
     const header = "@@ -8,3 +10,4 @@";
     const moved = { ...wide, header, patch: wide.patch.replace("@@ -8,3 +8,4 @@", header) };

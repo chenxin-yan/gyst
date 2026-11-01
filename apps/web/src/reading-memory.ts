@@ -105,12 +105,13 @@ export const recall = (
     const line = lineNow(cursor.file, cursor.side, cursor.line);
     return line === undefined ? undefined : { ...cursor, line };
   };
-  const topNow = ({ file, side, line }: ReadingPosition): ReadingPosition => {
-    if (unchanged(file) || side === undefined || line === undefined) return { file, side, line };
+  const topNow = (position: ReadingPosition): ReadingPosition => {
+    const { file, side, line } = position;
+    if (unchanged(file) || side === undefined || line === undefined) return position;
     const moved = lineNow(file, side, line);
     return moved === undefined
       ? { file, side: undefined, line: undefined }
-      : { file, side, line: moved };
+      : { ...position, line: moved };
   };
   const { review, inputMode, cursor, opened, folds, author, top, views, overviewsClosed } =
     saved.place;
