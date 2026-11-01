@@ -16,7 +16,7 @@
     "dompurify": "3.4.16",
     "effect": "catalog:",
     "hast-util-to-jsx-runtime": "2.3.6",
-    "mermaid": "11.17.2",
+    "mermaid": "12.2.0",
     "react": "19.3.1",
     "react-dom": "19.3.1",
     "react-markdown": "10.1.0",

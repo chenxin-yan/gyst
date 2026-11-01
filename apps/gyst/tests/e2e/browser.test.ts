@@ -3504,6 +3504,11 @@ describe("installed gyst in a sandboxed browser", () => {
       await held;
       await route.continue();
     });
+    // Mermaid 12 lays flowcharts out with ELK, which must run under the viewer's policy.
+    const elk: string[] = [];
+    page.on("request", (request) => {
+      if (/\/assets\/elk[^/]*\.js$/.test(request.url())) elk.push(request.url());
+    });
     await page.goto(`${one.origin}/session/${walk.id}`);
     const pane = page.getByRole("main");
     const side = page.getByRole("navigation", { name: "gyst" });
@@ -3523,6 +3528,7 @@ describe("installed gyst in a sandboxed browser", () => {
     await diagram.locator("svg").waitFor();
     await diagram.getByText("parse", { exact: true }).waitFor();
     await diagram.getByText("check", { exact: true }).waitFor();
+    expect(elk.length).toBeGreaterThan(0);
     expect(await card.getByText("flowchart LR", { exact: false }).count()).toBe(0);
     await settled(page);
     // One diagram in the document: none for the group left behind, no copy and no scratch render.
