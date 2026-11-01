@@ -13,7 +13,7 @@
   "devEngines": {
     "runtime": {
       "name": "node",
-      "version": "24.21.0",
+      "version": "26.13.0",
       "onFail": "ignore"
     },
     "packageManager": {
@@ -26,7 +26,7 @@
     "@changesets/changelog-github": "^1.0.1",
     "@changesets/cli": "^3.0.3",
     "@stylexjs/eslint-plugin": "0.19.1",
-    "@types/node": "~24.11.2",
+    "@types/node": "~26.0.1",
     "@types/semver": "7.8.0",
     "pkg-pr-new": "^0.0.88",
     "typescript": "^7.0.2",

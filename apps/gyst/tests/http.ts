@@ -33,7 +33,7 @@ export function send(
   return new Promise((resolve, reject) => {
     const socket = connect({ port, host: address });
     const chunks: Buffer[] = [];
-    socket.on("data", (chunk) => chunks.push(chunk));
+    socket.on("data", (chunk: Buffer) => chunks.push(chunk));
     socket.once("error", reject);
     socket.once("end", () => {
       const text = Buffer.concat(chunks).toString("utf8");

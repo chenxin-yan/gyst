@@ -49,10 +49,10 @@ you and for agents and the skills they run:
   _.path = ["~/dev/gyst/apps/gyst/dev"]
 
   [tools]
-  node = "24" # the shim runs `node` from PATH
+  node = "26" # the shim runs `node` from PATH
   ```
 
-  A test repository's own Node pin still wins over this one; gyst needs Node 24.
+  A test repository's own Node pin still wins over this one; gyst needs Node 26.
 
 - **In any other repository, now and then:** wrap one command, such as `gyst-dev pi`, with
   `gyst-dev() { PATH="$HOME/dev/gyst/apps/gyst/dev:$PATH" "$@"; }` in your shell profile.
