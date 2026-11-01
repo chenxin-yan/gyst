@@ -47,7 +47,6 @@ you and for agents and the skills they run:
   # ~/dev/gyst-playground/mise.toml
   [env]
   _.path = ["~/dev/gyst/apps/gyst/dev"]
-
   [tools]
   node = "26" # the shim runs `node` from PATH
   ```
