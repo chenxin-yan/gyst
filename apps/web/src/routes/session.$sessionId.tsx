@@ -85,14 +85,7 @@ import {
 } from "../cursor.ts";
 import { CapturedHeader, useWholeSides } from "../expanded.tsx";
 import { contentLoader, hydrationConcurrency, hydrationWindow, nearbyItems } from "../hydration.ts";
-import {
-  type Command,
-  type CommandId,
-  commandsFor,
-  completesSequence,
-  type InputMode,
-  typed,
-} from "../keymap.ts";
+import { type Command, type CommandId, commandsFor, type InputMode, typed } from "../keymap.ts";
 import {
   behind,
   initialLive,
@@ -1476,30 +1469,12 @@ function SessionReader(props: {
   // every binding leaves the event alone and this guard decides. It reads the live DOM and `runRef`,
   // not render state: a dialog closes before React renders it closed, and the library syncs
   // callbacks after the render.
-  // The two most recent key presses, recorded before any binding sees them, so a key that ends a
-  // sequence (`z` then `R`) is left to that sequence rather than run as its own command.
-  const keysSeen = useRef<{
-    previous: { key: string; at: number } | undefined;
-    current: { key: string; at: number } | undefined;
-  }>({ previous: undefined, current: undefined });
-  useEffect(() => {
-    const record = (event: KeyboardEvent) => {
-      if (event.repeat || ["Shift", "Control", "Alt", "Meta"].includes(event.key)) return;
-      keysSeen.current = {
-        previous: keysSeen.current.current,
-        current: { key: event.key, at: event.timeStamp },
-      };
-    };
-    document.addEventListener("keydown", record, { capture: true });
-    return () => document.removeEventListener("keydown", record, { capture: true });
-  }, []);
   const runRef = useRef(run);
   runRef.current = run;
   const reviewKey =
-    (id: CommandId, step: HotkeyChord, single: boolean): HotkeyCallback =>
+    (id: CommandId, step: HotkeyChord): HotkeyCallback =>
     (event) => {
       if (event.defaultPrevented || !typed(step, event)) return;
-      if (single && completesSequence(event, keysSeen.current.previous, event.timeStamp)) return;
       const target = event.target instanceof Element ? event.target : null;
       if (target?.closest("dialog") || isTextEntry(target)) return;
       if (document.querySelector("dialog[open]")) return;
@@ -1522,10 +1497,10 @@ function SessionReader(props: {
   useHotkeys(
     bindings.map(({ id, keys }) =>
       keys.length === 1
-        ? { hotkey: keys[0]!, callback: reviewKey(id, keys[0]!, true) }
+        ? { hotkey: keys[0]!, callback: reviewKey(id, keys[0]!) }
         : {
             hotkey: keys,
-            callback: reviewKey(id, keys.at(-1)!, false),
+            callback: reviewKey(id, keys.at(-1)!),
             options: { enabled: dialog === undefined },
           },
     ),

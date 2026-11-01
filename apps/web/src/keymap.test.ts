@@ -5,7 +5,7 @@ import {
   validateHotkey,
 } from "@tanstack/react-hotkeys";
 import { describe, expect, it } from "vite-plus/test";
-import { commands, commandsFor, completesSequence, keyLabels, typed } from "./keymap.ts";
+import { commands, commandsFor, keyLabels, typed } from "./keymap.ts";
 
 const bindings = commands.flatMap((command) => command.keys.map((keys) => ({ ...command, keys })));
 const singles = bindings.filter(({ keys }) => keys.length === 1).map(({ keys }) => keys[0]!);
@@ -36,9 +36,9 @@ describe("commands", () => {
         ).toBe(false);
   });
 
-  // Single keys still run while a sequence is pending, so a single key that is also a step of a
-  // sequence would run with it, unless it ends a two-key sequence just started: `R` refreshes, but
-  // `z` then `R` unfolds every file instead.
+  // The library leaves a key that continues or completes a sequence in progress to that sequence,
+  // but a single key on a sequence's first step still runs as that sequence starts. A single key
+  // may only end a two-key sequence: `R` refreshes, but `z` then `R` unfolds every file instead.
   it("binds no single key that is also a step of a sequence, except one ending a sequence just begun", () => {
     for (const single of singles)
       for (const sequence of sequences)
@@ -48,11 +48,6 @@ describe("commands", () => {
             `${single} in ${sequence.join(" ")}`,
           ).toBe(false);
     expect(keysOf("refresh")).toEqual([["Shift+R"]]);
-    expect(completesSequence({ key: "R" }, { key: "z", at: 1000 }, 1500)).toBe(true);
-    expect(completesSequence({ key: "R" }, { key: "z", at: 1000 }, 2500)).toBe(false);
-    expect(completesSequence({ key: "R" }, { key: "j", at: 1000 }, 1500)).toBe(false);
-    expect(completesSequence({ key: "R" }, undefined, 1500)).toBe(false);
-    expect(completesSequence({ key: "m" }, { key: "z", at: 1000 }, 1500)).toBe(false);
   });
 
   it("has no keys of later tickets yet", () => {

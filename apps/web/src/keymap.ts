@@ -2,7 +2,6 @@
 // the command menu and the help. Later tickets add their rows here.
 
 import {
-  DEFAULT_SEQUENCE_TIMEOUT,
   type HotkeyChord,
   type HotkeySequence,
   LETTER_KEYS,
@@ -120,24 +119,6 @@ export const commands: readonly Command[] = [
 /** The commands an input mode runs, for its keys, its menu and its help alike. */
 export const commandsFor = (mode: InputMode) =>
   mode === "vim" ? commands : commands.filter((command) => !command.vimOnly);
-
-/**
- * Whether `event` completes a sequence that `previous` started, as `R` does after `z`: it then
- * belongs to that sequence (`zR`), not to the single-key command bound to it alone (`R`).
- */
-export function completesSequence(
-  event: Pick<KeyboardEvent, "key">,
-  previous: { readonly key: string; readonly at: number } | undefined,
-  now: number,
-) {
-  if (previous === undefined || now - previous.at > DEFAULT_SEQUENCE_TIMEOUT) return false;
-  return commands.some(({ keys }) =>
-    keys.some(
-      (sequence) =>
-        sequence.length === 2 && typed(sequence[0]!, previous) && typed(sequence[1]!, event),
-    ),
-  );
-}
 
 /** Letters print as typed, Vim-style: `j`, `g g`, `Shift+g`; Backspace as `⌫`. */
 export const keyLabels = {
