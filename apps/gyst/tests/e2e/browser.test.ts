@@ -322,8 +322,8 @@ const barOn = (page: Page, text: string) =>
     }
     return false;
   }, `the cursor bar on ${text}`);
-/** The number of the first src/long.ts line wholly below the sticky file header at the panel's top. */
-const topLine = async (page: Page) => {
+/** The number of the first `lines` line (src/long.ts's) wholly below the sticky file header at the panel's top. */
+const topLine = async (page: Page, lines = /^export const line\d+ = /) => {
   const pane = page.getByRole("main");
   // The scrolling panel, not the pane: a group bar above it takes the pane's top.
   const panel = await pane
@@ -334,15 +334,15 @@ const topLine = async (page: Page) => {
       while (at && getComputedStyle(at).overflowY !== "auto") at = at.parentElement;
       return { y: at!.getBoundingClientRect().top };
     });
-  const lines = await pane
-    .getByText(/^export const line\d+ = /)
+  const tops = await pane
+    .getByText(lines)
     .evaluateAll((copies) =>
       copies.map((copy) => [
-        Number(/line(\d+)/.exec(copy.textContent ?? "")![1]),
+        Number(/(\d+) = /.exec(copy.textContent ?? "")![1]),
         copy.getBoundingClientRect().top,
       ]),
     );
-  const below = lines
+  const below = tops
     .filter(([, top]) => top! >= panel.y + 34 - 2)
     .toSorted(([, a], [, b]) => a! - b!);
   return below[0]?.[0];
@@ -4116,6 +4116,53 @@ describe("installed gyst in a sandboxed browser", () => {
     await pane.locator("[data-note=span]").getByRole("button", { name: "the five" }).click();
     await peekOf(page).waitFor();
   }, 60_000);
+
+  it("opens a bar reference to hidden unchanged lines of a changed file in the diff, and still expands supporting code", async () => {
+    const walk = await openWalk();
+    await publishWalk(walk);
+    await walk.publish(1, "hidden", [
+      {
+        type: "group.update",
+        id: "core",
+        overview:
+          "Reads [the hidden lines](gyst:new/walk/a.ts#L28-L30), over [the constants](gyst:new/src/long.ts#L10-L12).",
+      },
+    ]);
+    const page = await newPage();
+    // Short, so a.ts runs on far enough below line 28 for it to reach the top.
+    await page.setViewportSize({ width: 1280, height: 500 });
+    await page.goto(`${one.origin}/session/${walk.id}`);
+    const pane = page.getByRole("main");
+    const region = pane.locator("[data-group-overview]");
+    const captured = pane.getByRole("region", { name: "Captured file" });
+    await pane.getByRole("button", { name: /^Start with group 1/ }).click();
+    await headingsAre(page, ["walk/b.ts", "walk/a.ts"]);
+    // Line 28 sits in a.ts's collapsed range between its hunks at 20 and 40.
+    expect(await pane.getByText("export const a28 = 28;", { exact: true }).count()).toBe(0);
+
+    // It stays in the diff: the hidden range opens, line 28 lands at the top below the bar, with
+    // the cursor on it, and there is nothing to go back to.
+    await region.getByRole("button", { name: "the hidden lines" }).click();
+    await says(page, "a.ts:28 \u00b7 new");
+    await barOn(page, "export const a28 = 28;");
+    expect(await captured.count()).toBe(0);
+    expect(await pane.getByRole("button", { name: /^Back/ }).count()).toBe(0);
+    for (const line of [28, 29, 30])
+      await pane.getByText(`export const a${line} = ${line};`, { exact: true }).first().waitFor();
+    expect(await steady(() => topLine(page, /^export const a\d+ = /))).toBe(28);
+    const [bar, row] = await Promise.all([
+      pane.getByText("Group 1 of 2", { exact: true }).boundingBox(),
+      pane.getByText("export const a28 = 28;", { exact: true }).first().boundingBox(),
+    ]);
+    expect(row!.y).toBeGreaterThan(bar!.y + bar!.height);
+
+    // A reference to supporting code still expands it, and Back returns to the group at line 28.
+    await region.getByRole("button", { name: "the constants" }).click();
+    await captured.getByText("src/long.ts", { exact: true }).waitFor();
+    await keys(page, "Backspace");
+    await pane.getByText("Group 1 of 2", { exact: true }).waitFor();
+    await says(page, "a.ts:28 \u00b7 new");
+  }, 30_000);
 
   it("enters a group at its start, below the bar, though the cursor's file is in it too", async () => {
     const walk = await openWalk();

@@ -94,6 +94,7 @@ import {
   type Cursor,
   edge,
   fileStep,
+  type HiddenRange,
   hiddenRanges,
   lineOn,
   type Model,
@@ -1201,6 +1202,14 @@ function SessionReader(props: {
     if (then && vim) viewer.current?.reveal({ file: then.file, side: then.side }, "nearest");
   };
 
+  /** Records a hidden range as opened whole, so the cursor model and the renderer show its lines. */
+  const recordOpened = (file: string, range: HiddenRange) => {
+    const byRange = openedNow.get(file) ?? new Map<number, Opened>();
+    byRange.set(range.index, { fromStart: range.size, fromEnd: 0 });
+    openedNow.set(file, byRange);
+    setOpenedVersion((version) => version + 1);
+  };
+
   /** Opens a hidden range whole and puts the cursor on its first line once the sides are loaded. */
   const openRange = (target: Extract<Cursor, { kind: "range" }>) => {
     const diff = diffs.get(target.file);
@@ -1210,10 +1219,7 @@ function SessionReader(props: {
     viewer.current?.expand(target.file, range.index, range.size);
     // A partial diff opens once its sides load; the renderer reports it back after hydration.
     if (diff.isPartial || row?.line === undefined) return;
-    const byRange = openedNow.get(target.file) ?? new Map<number, Opened>();
-    byRange.set(range.index, { fromStart: range.size, fromEnd: 0 });
-    openedNow.set(target.file, byRange);
-    setOpenedVersion((version) => version + 1);
+    recordOpened(target.file, range);
     const offset = row.line - range.new;
     const side = layout === "split" ? target.side : "additions";
     go({
@@ -1448,26 +1454,67 @@ function SessionReader(props: {
   };
 
   /**
-   * Goes from the group bar to a reference's line when it is current changed code: in the shown
-   * group if it holds the file, else in the file's group, else in the file's own view. False for
-   * anything else, which the bar expands instead.
+   * Goes from the group bar to a reference's line when it is in a changed file of the current
+   * snapshot, opening the hidden range it sits in as `zo` would: in the shown group if it holds the
+   * file, else in the file's group, else in the file's own view. False for anything else, which the
+   * bar expands instead.
    */
   const jumpTo = (target: CapturedRange) => {
     if (target.snapshotId !== snapshotId || !byPath.has(target.path)) return false;
     const side: Side = target.side === "old" ? "deletions" : "additions";
     const line = target.startLine;
-    if (!unfoldedRows(target.path).some((row) => row.kind === "line" && lineOn(row, side) === line))
-      return false;
+    const at = { file: target.path, side, line };
+    if (
+      !unfoldedRows(target.path).some((row) => row.kind === "line" && lineOn(row, side) === line)
+    ) {
+      const diff = diffs.get(target.path);
+      const range =
+        diff &&
+        hiddenRanges(diff).find((candidate) => {
+          const start = side === "deletions" ? candidate.old : candidate.new;
+          return line >= start && line < start + candidate.size;
+        });
+      // shortcut: an unloaded file's trailing range has no size yet, so a link into it expands;
+      // read the file's length first if such links turn up.
+      if (range === undefined) return false;
+      viewer.current?.expand(target.path, range.index, range.size);
+      recordOpened(target.path, range);
+      landOnceShown(at, range.new + line - (side === "deletions" ? range.old : range.new));
+    }
     const owner = inView.group?.files.includes(target.path)
       ? inView.group
       : status.groups.find((group) => group.files.includes(target.path));
-    chooseView(owner ? { kind: "group", id: owner.id } : { kind: "files", path: target.path }, {
-      file: target.path,
-      side,
-      line,
-    });
+    chooseView(owner ? { kind: "group", id: owner.id } : { kind: "files", path: target.path }, at);
     return true;
   };
+
+  /**
+   * Lands on a jump's line again once the renderer shows the hidden lines just opened around it
+   * (`newLine` is its new-side number): landed on before, it stops at the range they were hidden in.
+   * An unloaded file shows them once its sides load, so it waits about a second. Not once the reader
+   * has moved the cursor or expanded a reference meanwhile.
+   */
+  const landOnceShown = (
+    at: { file: string; side: Side; line: number },
+    newLine: number,
+    frames = 60,
+  ) =>
+    requestAnimationFrame(() => {
+      const { captured: expanded, cursor: now } = readingPlace.current;
+      if (
+        expanded !== undefined ||
+        now?.kind !== "line" ||
+        now.file !== at.file ||
+        now.line !== at.line
+      )
+        return;
+      if (!viewer.current?.renders(at.file, newLine)) {
+        if (frames > 0) landOnceShown(at, newLine, frames - 1);
+        return;
+      }
+      // After the renderer's next frame, which lays out the lines it has just opened.
+      requestAnimationFrame(() => setLanding({ restore: { position: at } }));
+    });
 
   /** Group viewed: one Viewed write over the shown group's hunks, said in its bar. Folds nothing. */
   const groupViewed = () => {
@@ -1663,7 +1710,7 @@ function SessionReader(props: {
 
   // The view's overview: a group's in the group bar, with its notes on earlier code, or the
   // walkthrough's above the whole snapshot. The bar is too small to read a peek in, so a reference
-  // there goes to its changed line or expands; its notes on earlier code keep their peeks.
+  // there goes to its line in a changed file or expands; its notes on earlier code keep their peeks.
   const earlierNotes =
     inView.group?.notes.filter(({ anchor }) => anchor.snapshotId !== snapshotId) ?? [];
   const groupOverview = inView.group && (

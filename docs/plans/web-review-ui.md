@@ -200,7 +200,7 @@ Context-specific interaction wins over global keys: in the navigation selector `
 
 ### Captured links and semantic results
 
-An authored link or selected semantic result opens an inline peek at its origin, **not a modal**. In the group bar's overview a link to current changed code goes to its line in the diff, and one to supporting or earlier-snapshot code opens Expand, with Back; links in notes keep the peek. It spans both split columns: preview left, vertical symbol/location selector right, stacked at narrow widths. Keep compact Expand beside Close. No file-wide navigation controls, “Choose another symbol” action or special “Comment on highlighted range” button.
+An authored link or selected semantic result opens an inline peek at its origin, **not a modal**. In the group bar's overview a link to code in this change's files goes to its line in the diff, opening hidden unchanged lines if needed, and one to code outside the change or to an earlier snapshot opens Expand, with Back; links in notes keep the peek. It spans both split columns: preview left, vertical symbol/location selector right, stacked at narrow widths. Keep compact Expand beside Close. No file-wide navigation controls, “Choose another symbol” action or special “Comment on highlighted range” button.
 
 Right-click targets the exact symbol; `gd`/`gr` operate from the current line, offering valid identifiers including declaration parameters. `j`/`k` updates preview; Enter expands a single location or opens location selection for multiple results. Escape and repeat the query to choose another symbol. Preserve engine symbol-under-cursor semantics: an imported alias can have fewer usages than the original symbol; do not add custom alias expansion or claim an exhaustive call graph.
 
