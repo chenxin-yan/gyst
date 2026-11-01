@@ -11,7 +11,7 @@ const headRefOid = "b".repeat(40);
 type Canned = { readonly exitCode?: number; readonly stdout?: unknown; readonly stderr?: string };
 type Call = {
   readonly command: string;
-  readonly args: ReadonlyArray<string>;
+  readonly args: ChildProcess.StandardCommand["args"];
   readonly env: unknown;
 };
 

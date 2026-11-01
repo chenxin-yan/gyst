@@ -42,7 +42,6 @@ import {
 } from "@gyst/core";
 import {
   Context,
-  Crypto,
   DateTime,
   Effect,
   Latch,
@@ -54,6 +53,7 @@ import {
   Semaphore,
   Stream,
 } from "effect";
+import { SecureRandom } from "effect/crypto";
 import { createHash } from "node:crypto";
 import { CapturedContent, codePage } from "./content.ts";
 import { Git } from "./git.ts";
@@ -256,7 +256,7 @@ export class Sessions extends Context.Service<
       const github = yield* GitHub;
       const content = yield* CapturedContent;
       const store = yield* SessionStore;
-      const { randomUUIDv4 } = yield* Crypto.Crypto;
+      const { uuidV4 } = yield* SecureRandom.SecureRandom;
       const sessions = new Map<string, Session>();
       const deleteReceipts = new Map<string, DeleteReceipt>();
       const sourceChecks = new Map<string, Effect.Effect<SourceCheck>>();
@@ -361,8 +361,7 @@ export class Sessions extends Context.Service<
             const loaded = saved();
             if (loaded) return opened(loaded, false);
             const now = DateTime.formatIso(yield* DateTime.now);
-            // Like persistence, an id source that cannot produce randomness is an operational defect.
-            const id = yield* Effect.orDie(randomUUIDv4);
+            const id = yield* uuidV4();
             const session: Session = {
               id,
               repoRoot: root,

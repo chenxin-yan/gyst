@@ -3,11 +3,11 @@ packages:
   - packages/*
 
 catalog:
-  # Keep Effect packages aligned: platform-node's ^ range admits incompatible newer RCs.
-  "@effect/platform-node": 4.0.0-rc.118
-  "@effect/platform-node-shared": 4.0.0-rc.118
+  # One version for every Effect package, as upstream requires: platform-node's ^ range on platform-node-shared admits newer releases that raise the effect peer floor.
+  "@effect/platform-node": 4.1.1
+  "@effect/platform-node-shared": 4.1.1
   "@pierre/diffs": 1.4.3
-  effect: 4.0.0-rc.118
+  effect: 4.1.1
   # Managed by `vp migrate`: Vite+ replaces Vite and pins the Vitest it drives.
   vite: npm:@voidzero-dev/vite-plus-core@1.4.0
   vite-plus: 1.4.0

@@ -1,4 +1,5 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vite-plus/test";
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as NodeSocket from "@effect/platform-node/NodeSocket";
 import {
@@ -11,7 +12,6 @@ import {
   SubscriptionEventSchema,
 } from "@gyst/core";
 import {
-  Crypto,
   Deferred,
   Effect,
   Fiber,
@@ -85,13 +85,6 @@ const store = Layer.succeed(SessionStore, {
   loadDeleteReceipts: Effect.succeed([]),
   saveDeleteReceipts: () => Effect.void,
 });
-const crypto = Layer.succeed(
-  Crypto.Crypto,
-  Crypto.make({
-    randomBytes: (size) => globalThis.crypto.getRandomValues(new Uint8Array(size)),
-    digest: (_algorithm, data) => Effect.succeed(data),
-  }),
-);
 const paths = Layer.sync(Paths, () => ({
   dataDir,
   socketPath,
@@ -150,7 +143,9 @@ const serverLayerOver = (platform: Layer.Layer<Layer.Success<typeof NodeServices
   DaemonServer.layer.pipe(
     Layer.provide(
       Sessions.layer.pipe(
-        Layer.provide(Layer.mergeAll(git, noGitHub, store, crypto, publishingContent())),
+        Layer.provide(
+          Layer.mergeAll(git, noGitHub, store, NodeCrypto.layerSecureRandom, publishingContent()),
+        ),
       ),
     ),
     Layer.provide(navigation),

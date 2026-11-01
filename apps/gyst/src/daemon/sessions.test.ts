@@ -19,7 +19,6 @@ import {
 } from "@gyst/core";
 import {
   ConfigProvider,
-  Crypto,
   Deferred,
   Effect,
   Exit,
@@ -31,6 +30,7 @@ import {
   Schema,
   Stream,
 } from "effect";
+import { SecureRandom } from "effect/crypto";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import { execFileSync } from "node:child_process";
 import { mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
@@ -107,11 +107,8 @@ let commits: string[];
 
 // Deterministic bytes: the n-th id is `nnnnnnnn-nnnn-4nnn-8nnn-nnnnnnnnnnnn` in hex.
 const crypto = Layer.succeed(
-  Crypto.Crypto,
-  Crypto.make({
-    randomBytes: (size) => new Uint8Array(size).fill(++nextId),
-    digest: (_algorithm, data) => Effect.succeed(data),
-  }),
+  SecureRandom.SecureRandom,
+  SecureRandom.make((size) => new Uint8Array(size).fill(++nextId)),
 );
 
 const capturing = (scope: Scope) =>

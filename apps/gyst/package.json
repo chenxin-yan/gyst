@@ -33,7 +33,7 @@
   },
   "dependencies": {
     "@crustjs/core": "0.5.5",
-    "@crustjs/effect": "0.2.1",
+    "@crustjs/effect": "0.2.3",
     "@crustjs/extensions": "0.5.5",
     "@crustjs/skills": "0.5.5",
     "@effect/platform-node": "catalog:",
