@@ -49,8 +49,8 @@ importers:
         specifier: 7.8.0
         version: 7.8.0
       pkg-pr-new:
-        specifier: ^0.0.88
-        version: 0.0.88
+        specifier: ^0.0.93
+        version: 0.0.93
       typescript:
         specifier: ^7.0.2
         version: 7.0.2
@@ -2579,8 +2579,8 @@ packages:
     resolution: {integrity: sha512-qcJu88Q2IWqJsDD529JKMdwGm/dvInW4HvQnRwiH9JtihJvzGOscDtHE3x1pBKeUOTysQ8kVmLnJ2kJu7yhcGA==}
     engines: {node: '>=12'}
 
-  pkg-pr-new@0.0.88:
-    resolution: {integrity: sha512-Xc6PMJ2gher0WZP+rtjefFk26hIb7V1PTLL30bmy1Z2vsRmSvqiss7Ag1XUdyplTGYzIlFNJp4L3vMNmK44N6g==}
+  pkg-pr-new@0.0.93:
+    resolution: {integrity: sha512-JH3HEO+m8sNFpalNAeGrNKjdwxNcXT3yuEuGMU/65dvLojPo+Ofnmc8la2v2ceisjXTOKQw/738Pj4KNFY7F+w==}
     hasBin: true
 
   playwright-core@1.64.1:
@@ -5605,7 +5605,7 @@ snapshots:
 
   picomatch@4.0.7: {}
 
-  pkg-pr-new@0.0.88: {}
+  pkg-pr-new@0.0.93: {}
 
   playwright-core@1.64.1: {}
 
