@@ -17,12 +17,7 @@ import {
 } from "@pierre/diffs";
 import { CodeView, type CodeViewHandle, type CodeViewReactOptions } from "@pierre/diffs/react";
 import * as stylex from "@stylexjs/stylex";
-import {
-  type Hotkey,
-  type HotkeyCallback,
-  useHotkeySequences,
-  useHotkeys,
-} from "@tanstack/react-hotkeys";
+import { type HotkeyCallback, type HotkeyChord, useHotkeys } from "@tanstack/react-hotkeys";
 import {
   createFileRoute,
   Link,
@@ -1330,16 +1325,16 @@ function SessionReader(props: {
   };
 
   // Review keys, from anywhere but text entry and the dialogs, which own their own keys. The
-  // library's input filter also skips checkboxes and radios, where these keys must still work, so
+  // library's input filter draws a different line around focused controls than the viewer needs, so
   // every binding leaves the event alone and this guard decides. It reads the live DOM and `runRef`,
   // not render state: a dialog closes before React renders it closed, and the library syncs
   // callbacks after the render.
   const runRef = useRef(run);
   runRef.current = run;
   const reviewKey =
-    (id: CommandId, step: Hotkey): HotkeyCallback =>
+    (id: CommandId, step: HotkeyChord): HotkeyCallback =>
     (event) => {
-      if (event.defaultPrevented || event.isComposing || !typed(step, event)) return;
+      if (event.defaultPrevented || !typed(step, event)) return;
       const target = event.target instanceof Element ? event.target : null;
       if (target?.closest("dialog") || isTextEntry(target)) return;
       if (document.querySelector("dialog[open]")) return;
@@ -1357,19 +1352,19 @@ function SessionReader(props: {
   const bindings = commands.flatMap((command) =>
     command.keys.map((keys) => ({ ...command, keys })),
   );
+  // A sequence is disabled while a dialog is open, so keys typed in it can't start one. `dialog`
+  // lags the DOM by a render, so a sequence's first key just after a dialog closes may be lost.
   useHotkeys(
-    bindings
-      .filter(({ keys }) => keys.length === 1)
-      .map(({ id, keys }) => ({ hotkey: keys[0]!, callback: reviewKey(id, keys[0]!) })),
+    bindings.map(({ id, keys }) =>
+      keys.length === 1
+        ? { hotkey: keys[0]!, callback: reviewKey(id, keys[0]!) }
+        : {
+            hotkey: keys,
+            callback: reviewKey(id, keys.at(-1)!),
+            options: { enabled: dialog === undefined },
+          },
+    ),
     bindingOptions,
-  );
-  // Disabled while a dialog is open, so keys typed in it can't start a sequence. `dialog` lags the
-  // DOM by a render, so a sequence's first key just after a dialog closes may be lost.
-  useHotkeySequences(
-    bindings
-      .filter(({ keys }) => keys.length > 1)
-      .map(({ id, keys }) => ({ sequence: [...keys], callback: reviewKey(id, keys.at(-1)!) })),
-    { ...bindingOptions, enabled: dialog === undefined },
   );
 
   /** Scrolling by hand pulls a cursor that left the panel back onto its first or last line. */

@@ -11,7 +11,7 @@
     "@gyst/core": "workspace:*",
     "@pierre/diffs": "catalog:",
     "@stylexjs/stylex": "0.19.1",
-    "@tanstack/react-hotkeys": "0.12.1",
+    "@tanstack/react-hotkeys": "0.20.1",
     "@tanstack/react-router": "1.170.46",
     "dompurify": "3.4.17",
     "effect": "catalog:",

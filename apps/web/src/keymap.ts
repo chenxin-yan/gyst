@@ -1,7 +1,12 @@
 // The reader's commands and the keys that run them: one typed table, read by the keyboard handler,
 // the command menu and the help. Later tickets add their rows here.
 
-import { type Hotkey, LETTER_KEYS, parseHotkey } from "@tanstack/react-hotkeys";
+import {
+  type HotkeyChord,
+  type HotkeySequence,
+  LETTER_KEYS,
+  parseHotkey,
+} from "@tanstack/react-hotkeys";
 
 export type CommandId =
   | "down"
@@ -45,7 +50,7 @@ export type CommandId =
  */
 export type Command = {
   id: CommandId;
-  keys: readonly (readonly Hotkey[])[];
+  keys: readonly HotkeySequence[];
   label: string;
   vimOnly?: true;
 };
@@ -122,7 +127,7 @@ export const keyLabels = {
  * and falls back to the physical key, so Caps Lock `m` or a layout's `ь` on the M key would match `M`.
  * A Control or Meta chord still takes either case, as Caps Lock + Ctrl+D always paged.
  */
-export function typed(step: Hotkey, event: Pick<KeyboardEvent, "key">) {
+export function typed(step: HotkeyChord, event: Pick<KeyboardEvent, "key">) {
   const { key = "", shift, ctrl, meta } = parseHotkey(step);
   if (ctrl || meta) return event.key.toLowerCase() === key.toLowerCase();
   if ((LETTER_KEYS as ReadonlySet<string>).has(key))
