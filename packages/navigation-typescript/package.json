@@ -32,10 +32,10 @@
     ]
   },
   "dependencies": {
-    "@crustjs/core": "0.5.5",
+    "@crustjs/core": "0.5.6",
     "typescript": "7.0.2"
   },
   "devDependencies": {
-    "@crustjs/crust": "0.5.5"
+    "@crustjs/crust": "0.5.6"
   }
 }
