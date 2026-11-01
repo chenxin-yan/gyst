@@ -2,7 +2,7 @@
 // lines beside its location, with compact Expand and Close. Never a modal. Under a note it spans
 // the whole diff, both split columns; in an overview it reads in flow.
 //
-// TODO(#106): replace with @pierre/diffs' native full-width line slot. 1.4.3 has none (annotations
+// TODO(#106): replace with @pierre/diffs' native full-width line slot. 1.6.2 has none (annotations
 // are side-specific), so the owner-approved workaround on public APIs lives here and only here: a
 // side annotation renders an empty `PeekSpacer`, which the renderer reserves as a row across both
 // split columns, and `InlinePeek` places an app-owned full-width element over it in the panel's

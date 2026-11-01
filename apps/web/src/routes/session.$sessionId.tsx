@@ -2395,7 +2395,7 @@ function ContinuousDiff(props: {
         </>
       )}
       renderCustomHeader={(item) => props.renderHeader(item.id)}
-      renderAnnotation={(annotation) => props.renderAnnotation(annotation.metadata)}
+      renderAnnotation={(...[annotation]) => props.renderAnnotation(annotation.metadata)}
     />
   );
 }
@@ -2403,7 +2403,7 @@ function ContinuousDiff(props: {
 /**
  * The Vim cursor's accent bar and tint over a code line or hidden range: an app-owned element
  * placed from the renderer's public geometry (rendered items, their element boxes and
- * `getLinePosition`), never from inside its shadow roots. @pierre/diffs 1.4.3 has no public
+ * `getLinePosition`), never from inside its shadow roots. @pierre/diffs 1.6.2 has no public
  * per-line decoration hook; replace this overlay with that hook once the renderer offers one.
  */
 function CursorOverlay(props: { ref: Ref<HTMLDivElement> }) {

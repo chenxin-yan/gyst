@@ -34,8 +34,6 @@ export function parseFilePatch(patch: string, path: string): Result.Result<Hunk[
 
 function parsed(patch: string) {
   return Result.try({
-    // TODO: Upgrade once https://github.com/pierrecomputer/pierre/pull/1143 ships.
-    // Git-quoted filenames stay escaped in `file.name`; `parseFilePatch` does not depend on them.
     try: () => parsePatchFiles(patch, undefined, true).flatMap((parsedPatch) => parsedPatch.files),
     catch: (error) =>
       new BadArgs({

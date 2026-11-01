@@ -1,5 +1,5 @@
 import type { CapturedRange } from "@gyst/core/wire";
-import { getSharedHighlighter } from "@pierre/diffs";
+import { getSharedHighlighter, renderTokenLines } from "@pierre/diffs";
 import * as stylex from "@stylexjs/stylex";
 import DOMPurify from "dompurify";
 import { toJsxRuntime } from "hast-util-to-jsx-runtime";
@@ -170,18 +170,19 @@ export function RichText(props: {
 export const codeTheme = "catppuccin-mocha";
 
 /**
- * Shiki tokens for `code` as React nodes, through the diff renderer's public shared highlighter;
- * rejects for a language Shiki does not bundle. Only Shiki's <code> is kept, inside the app's <pre>.
+ * Shiki tokens for `code` as a React `<code>` of lines, through the diff renderer's public shared
+ * highlighter; rejects for a language Shiki does not bundle. The app's `<pre>` wraps it.
  */
 export async function highlightedCode(code: string, lang: string): Promise<ReactNode> {
   const highlighter = await getSharedHighlighter({ themes: [codeTheme], langs: [lang] });
-  const tree = highlighter.codeToHast(code, { lang, theme: codeTheme });
-  return toJsxRuntime(tree, {
-    Fragment,
-    jsx,
-    jsxs,
-    components: { pre: ({ children }) => children },
-  });
+  const { tokens } = highlighter.codeToTokens(code, { lang, theme: codeTheme });
+  const lines = renderTokenLines(tokens, {}).flatMap((line, index) =>
+    index === 0 ? [line] : [{ type: "text" as const, value: "\n" }, line],
+  );
+  return toJsxRuntime(
+    { type: "element", tagName: "code", properties: {}, children: lines },
+    { Fragment, jsx, jsxs },
+  );
 }
 
 /** Fenced code, highlighted once Shiki is ready; plain for an unknown language or a failed load. */
