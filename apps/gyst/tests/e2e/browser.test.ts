@@ -4276,6 +4276,8 @@ describe("installed gyst in a sandboxed browser", () => {
     await page.goto(session.url);
     const pane = page.getByRole("main");
     await headingsAre(page, ["src/crlf.ts", "src/long.ts", "src/math.ts", "src/use.ts"]);
+    // The renderer replaces the line's elements after the file shows; measure those it keeps.
+    await settled(page);
     // Past the renderer's highlighting limit the line is one token, holding both identifiers.
     const { x, y, token } = await pane
       .getByText(line, { exact: true })
