@@ -3,30 +3,15 @@ packages:
   - packages/*
 
 catalog:
-  # Keep Effect packages aligned: platform-node's ^ range admits incompatible newer RCs.
-  "@effect/platform-node": 4.0.0-rc.118
-  "@effect/platform-node-shared": 4.0.0-rc.118
-  "@pierre/diffs": 1.4.3
-  effect: 4.0.0-rc.118
+  # One version for every Effect package, as upstream requires: platform-node's ^ range on platform-node-shared admits newer releases that raise the effect peer floor.
+  "@effect/platform-node": 4.1.1
+  "@effect/platform-node-shared": 4.1.1
+  "@pierre/diffs": 1.6.2
+  effect: 4.1.1
   # Managed by `vp migrate`: Vite+ replaces Vite and pins the Vitest it drives.
-  vite: npm:@voidzero-dev/vite-plus-core@1.0.0-rc.1
-  vite-plus: 1.0.0-rc.1
-  vitest: 5.0.1
-
-# Crust 0.5.5, released within pnpm's minimum release age; remove once it has aged past it.
-minimumReleaseAgeExclude:
-  - "@crustjs/core@0.5.5"
-  - "@crustjs/crust-darwin-arm64@0.5.5"
-  - "@crustjs/crust-darwin-x64@0.5.5"
-  - "@crustjs/crust-linux-arm64-musl@0.5.5"
-  - "@crustjs/crust-linux-arm64@0.5.5"
-  - "@crustjs/crust-linux-x64-musl@0.5.5"
-  - "@crustjs/crust-linux-x64@0.5.5"
-  - "@crustjs/crust-windows-arm64@0.5.5"
-  - "@crustjs/crust-windows-x64@0.5.5"
-  - "@crustjs/crust@0.5.5"
-  - "@crustjs/extensions@0.5.5"
-  - "@crustjs/skills@0.5.5"
+  vite: npm:@voidzero-dev/vite-plus-core@1.4.0
+  vite-plus: 1.4.0
+  vitest: 5.0.5
 
 overrides:
   vite@*: "catalog:"

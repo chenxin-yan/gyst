@@ -1027,7 +1027,8 @@ describe("installed gyst in a sandboxed browser", () => {
     // src/long.ts's trailing range (lines 184-300) shows the renderer's count once its sides load.
     await pane.getByText("117 unmodified lines").first().waitFor();
     await loading.waitFor({ state: "detached" });
-    expect(await pane.getByRole("status").count()).toBe(0);
+    // app.ts's sides can still be in flight after README.md's and src/long.ts's land.
+    await waitFor(async () => (await pane.getByRole("status").count()) === 0, "no loading status");
     // Each changed text file's two sides, read once, from the session's snapshot.
     const { snapshotId } = (await gyst("session", "list")).sessions[0];
     const reads = codes.map(({ file, side, snapshotId: read }) => `${file} ${side} ${read}`);
@@ -3504,6 +3505,11 @@ describe("installed gyst in a sandboxed browser", () => {
       await held;
       await route.continue();
     });
+    // Mermaid 12 lays flowcharts out with ELK, which must run under the viewer's policy.
+    const elk: string[] = [];
+    page.on("request", (request) => {
+      if (/\/assets\/elk[^/]*\.js$/.test(request.url())) elk.push(request.url());
+    });
     await page.goto(`${one.origin}/session/${walk.id}`);
     const pane = page.getByRole("main");
     const side = page.getByRole("navigation", { name: "gyst" });
@@ -3523,6 +3529,7 @@ describe("installed gyst in a sandboxed browser", () => {
     await diagram.locator("svg").waitFor();
     await diagram.getByText("parse", { exact: true }).waitFor();
     await diagram.getByText("check", { exact: true }).waitFor();
+    expect(elk.length).toBeGreaterThan(0);
     expect(await card.getByText("flowchart LR", { exact: false }).count()).toBe(0);
     await settled(page);
     // One diagram in the document: none for the group left behind, no copy and no scratch render.

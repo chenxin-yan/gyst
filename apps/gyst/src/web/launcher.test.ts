@@ -1,4 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it } from "vite-plus/test";
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as NodeSocket from "@effect/platform-node/NodeSocket";
 import {
@@ -7,7 +8,7 @@ import {
   type Session,
   type SnapshotManifest,
 } from "@gyst/core";
-import { Crypto, Effect, Fiber, Layer, Schedule, Tracer } from "effect";
+import { Effect, Fiber, Layer, Schedule, Tracer } from "effect";
 import * as Socket from "effect/socket/Socket";
 import { chmod, mkdtemp, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { connect } from "node:net";
@@ -83,19 +84,14 @@ const content = Layer.effect(
     loadManifest: (id: string) => Effect.sync(() => manifests.get(id)!),
   })),
 ).pipe(Layer.provide(publishingContent()));
-const crypto = Layer.succeed(
-  Crypto.Crypto,
-  Crypto.make({
-    randomBytes: (size) => globalThis.crypto.getRandomValues(new Uint8Array(size)),
-    digest: (_algorithm, data) => Effect.succeed(data),
-  }),
-);
 /** One daemon generation: each build has its own instance id and loads the saved sessions anew. */
 const daemonLayer = DaemonServer.layer.pipe(
   Layer.provideMerge(
     Navigation.layer.pipe(
       Layer.provideMerge(
-        Sessions.layer.pipe(Layer.provide(Layer.mergeAll(git, noGitHub, store, crypto))),
+        Sessions.layer.pipe(
+          Layer.provide(Layer.mergeAll(git, noGitHub, store, NodeCrypto.layerSecureRandom)),
+        ),
       ),
       Layer.provide(content),
     ),

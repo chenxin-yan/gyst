@@ -1034,7 +1034,12 @@ describe("Git.pullRequestRange", () => {
         return ChildProcessSpawner.make((command) => {
           if (command._tag !== "StandardCommand") return live.spawn(command);
           if (command.args.includes("fetch")) fetches += 1;
-          if (held || !command.args.some((arg) => arg.endsWith("/pull/2/base^{commit}")))
+          if (
+            held ||
+            !command.args.some(
+              (arg) => typeof arg === "string" && arg.endsWith("/pull/2/base^{commit}"),
+            )
+          )
             return live.spawn(command);
           held = true;
           paused.resolve();

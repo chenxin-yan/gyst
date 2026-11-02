@@ -217,7 +217,8 @@ const events = Effect.gen(function* () {
 export const browserApp = (launch: Launch, assets: WebAssets, addon: NavigationAddon) =>
   Effect.gen(function* () {
     const request = yield* HttpServerRequest;
-    const raw = NodeHttpServerRequest.toIncomingMessage(request).rawHeaders;
+    const incoming = NodeHttpServerRequest.toIncomingMessage(request);
+    const raw = incoming.rawHeaders;
     const names = raw.filter((_, index) => index % 2 === 0).map((name) => name.toLowerCase());
     /** The value of a header sent exactly once; a missing or repeated header is undefined. */
     const single = (name: string) => {
@@ -228,8 +229,9 @@ export const browserApp = (launch: Launch, assets: WebAssets, addon: NavigationA
     const host = single("host");
     if (!isLaunchHost(launch, host) || names.some(isForwarding)) return status(403);
     // The raw target is checked, not a URL-normalized one: normalization would silently resolve
-    // dot segments and backslashes. Only origin-form paths without them are routed.
-    const path = request.url.split("?", 1)[0]!;
+    // dot segments and backslashes. Only origin-form paths without them are routed. `request.url`
+    // is already normalized for absolute-form targets, so the raw Node target is read instead.
+    const path = incoming.url!.split("?", 1)[0]!;
     if (!path.startsWith("/") || path.startsWith("//") || /\\|%2f|%5c/i.test(path))
       return status(400);
     let decoded: string;

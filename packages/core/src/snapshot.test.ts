@@ -39,6 +39,18 @@ index 1234567..89abcde 100644
     expect(hunks(patch).map((hunk) => hunk.id)).toEqual(ids);
   });
 
+  it("decodes a Git-quoted filename", () => {
+    const patch = `diff --git "a/caf\\303\\251 \\"x\\".txt" "b/caf\\303\\251 \\"x\\".txt"
+index 1234567..89abcde 100644
+--- "a/caf\\303\\251 \\"x\\".txt"
++++ "b/caf\\303\\251 \\"x\\".txt"
+@@ -1 +1 @@
+-old
++new
+`;
+    expect(hunks(patch).map((hunk) => hunk.file)).toEqual(['café "x".txt']);
+  });
+
   it("extracts plain unified hunks by line counts, including header-like content and EOF markers", () => {
     const bodies = [
       "@@ -1,2 +1,2 @@\n--- old content\n+++ new content\n context",

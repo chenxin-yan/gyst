@@ -1,7 +1,7 @@
 import {
   areHotkeysEqual,
   formatForDisplay,
-  type Hotkey,
+  type HotkeyChord,
   validateHotkey,
 } from "@tanstack/react-hotkeys";
 import { describe, expect, it } from "vite-plus/test";
@@ -46,7 +46,7 @@ describe("commands", () => {
   });
 
   it("has no keys of later tickets yet", () => {
-    for (const later of ["C", "R", "X", "N", "Shift+R"] satisfies Hotkey[])
+    for (const later of ["C", "R", "X", "N", "Shift+R"] satisfies HotkeyChord[])
       expect(
         singles.some((single) => areHotkeysEqual(single, later)),
         later,

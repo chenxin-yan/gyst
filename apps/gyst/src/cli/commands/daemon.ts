@@ -1,5 +1,6 @@
 import { defineCommand } from "@crustjs/core";
 import { handler, layer } from "@crustjs/effect";
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { Layer } from "effect";
 import { CapturedContent } from "../../daemon/content.ts";
@@ -25,7 +26,7 @@ const daemonServer = layer(
       ),
     ),
     Layer.provide(Paths.layer),
-    Layer.provide(NodeServices.layer),
+    Layer.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layerSecureRandom)),
   ),
 );
 

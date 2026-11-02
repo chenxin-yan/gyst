@@ -16,7 +16,7 @@
     "directory": ".crust/root"
   },
   "engines": {
-    "node": ">=24"
+    "node": ">=26"
   },
   "bin": {
     "gyst": "src/index.ts"
@@ -32,10 +32,10 @@
     ]
   },
   "dependencies": {
-    "@crustjs/core": "0.5.5",
-    "@crustjs/effect": "0.2.1",
-    "@crustjs/extensions": "0.5.5",
-    "@crustjs/skills": "0.5.5",
+    "@crustjs/core": "0.5.6",
+    "@crustjs/effect": "0.2.3",
+    "@crustjs/extensions": "0.5.6",
+    "@crustjs/skills": "0.5.6",
     "@effect/platform-node": "catalog:",
     "@effect/platform-node-shared": "catalog:",
     "@gyst/core": "workspace:*",
@@ -43,9 +43,9 @@
     "semver": "7.8.5"
   },
   "devDependencies": {
-    "@crustjs/crust": "0.5.5",
+    "@crustjs/crust": "0.5.6",
     "@gyst/web": "workspace:*",
-    "playwright-core": "1.59.1",
+    "playwright-core": "1.64.1",
     "vitest": "catalog:"
   }
 }

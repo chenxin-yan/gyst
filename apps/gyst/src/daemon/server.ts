@@ -104,7 +104,7 @@ export class DaemonServer extends Context.Service<
         const ino = (yield* fs.stat(privatePath)).ino;
         const publishedIno = fs.stat(paths.socketPath).pipe(
           Effect.map((info) => info.ino),
-          Effect.orElseSucceed(() => Option.none<number>()),
+          Effect.orElseSucceed(() => Option.none<bigint>()),
         );
         const ownsSocket = Effect.map(publishedIno, (published) => Equal.equals(published, ino));
         const reclaimStale = Effect.gen(function* () {

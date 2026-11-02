@@ -577,7 +577,7 @@ describe("gyst session CLI seam", () => {
         socket.write(request.slice(0, markerStart + 1));
         setTimeout(() => socket.write(request.slice(markerStart + 1)), 5);
       });
-      socket.on("data", (bytes) => {
+      socket.on("data", (bytes: Buffer) => {
         response += decoder.decode(bytes, { stream: true });
         // Capture progress lines come first; the reply is the line with `ok`.
         const line = response

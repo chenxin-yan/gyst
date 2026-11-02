@@ -1,4 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it } from "vite-plus/test";
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import {
   type AddonDiscovery,
@@ -18,7 +19,7 @@ import {
   Scope,
   Stream,
 } from "effect";
-import { ChildProcessSpawner } from "effect/process";
+import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import { execFileSync } from "node:child_process";
 import { existsSync, realpathSync } from "node:fs";
 import {
@@ -68,7 +69,10 @@ beforeAll(async () => {
 afterAll(() => rm(dir, { recursive: true, force: true }));
 
 /** Every Node process the stack spawned (handshakes and engines), with its arguments. */
-const spawned: Array<{ readonly args: ReadonlyArray<string>; readonly pid: number }> = [];
+const spawned: Array<{
+  readonly args: ChildProcess.StandardCommand["args"];
+  readonly pid: number;
+}> = [];
 const recordingSpawner = Layer.effect(
   ChildProcessSpawner.ChildProcessSpawner,
   Effect.gen(function* () {
@@ -136,7 +140,7 @@ const stack = (dataDir: string, policy: Policy = navigationPolicy) =>
     Layer.provideMerge(gatedContent),
     Layer.provideMerge(Paths.layer),
     Layer.provide(recordingSpawner),
-    Layer.provide(NodeServices.layer),
+    Layer.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layerSecureRandom)),
     Layer.provide(ConfigProvider.layer(ConfigProvider.fromUnknown({ GYST_DATA_DIR: dataDir }))),
   );
 

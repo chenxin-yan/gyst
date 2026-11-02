@@ -11,7 +11,7 @@ commit, or modify your code.
 
 ## Install
 
-Requires Node.js 24 or later on Linux or macOS.
+Requires Node.js 26 or later on Linux or macOS.
 
 ```sh
 npm install -g @gyst/cli
