@@ -36,6 +36,10 @@ const initial = () =>
     applyReceipts: [],
     viewedReceipts: [],
     refreshReceipts: [],
+    threads: [],
+    drafts: [],
+    conversationReceipts: [],
+    pickupReceipts: [],
   });
 /** The hunks' files, each side its own content, except `reverted` files' new sides. */
 const files = (...reverted: string[]) =>

@@ -24,6 +24,12 @@ export type CommandId =
   | "previousFile"
   | "nextNote"
   | "previousNote"
+  | "nextThread"
+  | "previousThread"
+  | "comment"
+  | "reply"
+  | "resolve"
+  | "comments"
   | "nextGroup"
   | "previousGroup"
   | "toggleNotes"
@@ -85,6 +91,20 @@ export const commands: readonly Command[] = [
   { id: "previousFile", keys: [["[", "F"]], label: "Previous file" },
   { id: "nextNote", keys: [["]", "N"]], label: "Next note" },
   { id: "previousNote", keys: [["[", "N"]], label: "Previous note" },
+  { id: "nextThread", keys: [["]", "T"]], label: "Next open thread" },
+  { id: "previousThread", keys: [["[", "T"]], label: "Previous open thread" },
+  {
+    id: "comment",
+    keys: [["C"]],
+    label: "Comment on the selected lines, or the line at the cursor",
+  },
+  { id: "reply", keys: [["R"]], label: "Reply to the thread or note at the cursor" },
+  {
+    id: "resolve",
+    keys: [["X"]],
+    label: "Resolve the open thread at the cursor; reopen it from all comments",
+  },
+  { id: "comments", keys: [["Shift+C"]], label: "All comments" },
   { id: "nextGroup", keys: [["Shift+J"]], label: "Next walkthrough group" },
   { id: "previousGroup", keys: [["Shift+K"]], label: "Previous walkthrough group" },
   { id: "toggleNotes", keys: [["I"]], label: "Show or collapse every note" },
@@ -95,16 +115,24 @@ export const commands: readonly Command[] = [
     id: "open",
     keys: [["Enter"]],
     label:
-      "Open the hidden lines or the note at the cursor; on a file header, fold or unfold the file",
+      "Open the hidden lines, the note or the thread at the cursor; on a file header, fold or unfold the file",
     vimOnly: true,
   },
   {
     id: "unfold",
     keys: [["Z", "O"]],
-    label: "Open the hidden lines, the note or the folded file at the cursor",
+    label: "Open the hidden lines, the note, the thread or the folded file at the cursor",
   },
-  { id: "cancel", keys: [["Escape"]], label: "Cancel the selection" },
-  { id: "fold", keys: [["Z", "C"]], label: "Close the note at the cursor, or fold its file" },
+  {
+    id: "cancel",
+    keys: [["Escape"]],
+    label: "Close the composer, the selection, the search highlight, the peek or the open thread",
+  },
+  {
+    id: "fold",
+    keys: [["Z", "C"]],
+    label: "Close the thread or the note at the cursor, or fold its file",
+  },
   { id: "toggleFold", keys: [["Z", "A"]], label: "Toggle the note or the fold at the cursor" },
   { id: "unfoldAll", keys: [["Z", "Shift+R"]], label: "Unfold every file" },
   { id: "foldAll", keys: [["Z", "Shift+M"]], label: "Fold every file" },

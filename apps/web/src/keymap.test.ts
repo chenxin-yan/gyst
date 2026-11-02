@@ -1,9 +1,4 @@
-import {
-  areHotkeysEqual,
-  formatForDisplay,
-  type HotkeyChord,
-  validateHotkey,
-} from "@tanstack/react-hotkeys";
+import { areHotkeysEqual, formatForDisplay, validateHotkey } from "@tanstack/react-hotkeys";
 import { describe, expect, it } from "vite-plus/test";
 import { commands, commandsFor, keyLabels, typed } from "./keymap.ts";
 
@@ -50,12 +45,20 @@ describe("commands", () => {
     expect(keysOf("refresh")).toEqual([["Shift+R"]]);
   });
 
-  it("has no keys of later tickets yet", () => {
-    for (const later of ["C", "R", "X"] satisfies HotkeyChord[])
-      expect(
-        singles.some((single) => areHotkeysEqual(single, later)),
-        later,
-      ).toBe(false);
+  // c comments and r replies, while ]c, zc and zR keep their sequences; C lists every comment.
+  it("binds conversation keys beside the sequences they end", () => {
+    expect(
+      ["comment", "reply", "resolve", "comments", "nextThread", "previousThread"].map((id) =>
+        label(id, "linux"),
+      ),
+    ).toEqual([["c"], ["r"], ["x"], ["Shift+c"], ["] t"], ["[ t"]]);
+    expect(typed("C", { key: "C" })).toBe(false);
+    expect(typed("Shift+C", { key: "C" })).toBe(true);
+    expect(typed("R", { key: "R" })).toBe(false);
+    // Mouse mode comments on its selection, and replies or resolves in the open thread.
+    expect(commandsFor("mouse").map(({ id }) => id)).toEqual(
+      expect.arrayContaining(["comment", "reply", "resolve", "comments", "nextThread"]),
+    );
   });
 
   it("prints keys for the help and the menu as the platform shows them", () => {

@@ -14,9 +14,15 @@ import { GitHub } from "./github.ts";
 // Test doubles for the capture seam; imported only by tests.
 
 const sha256 = (input: string) => createHash("sha256").update(input).digest("hex");
+/** What each blob the capture double names holds: the text that identifies it. */
+const blobTexts = new Map<string, string>();
 const commit = (char: string) => char.repeat(40);
 
-const text = (identity: string) => ({ kind: "text", blob: sha256(identity), size: 1 }) as const;
+const text = (identity: string) => {
+  const blob = sha256(identity);
+  blobTexts.set(blob, identity);
+  return { kind: "text", blob, size: 1 } as const;
+};
 
 /**
  * What a `Git.capture` double returns: `patch`'s hunks over files whose new side is identified by
@@ -68,8 +74,9 @@ export const noGitHub = Layer.succeed(GitHub, {
 });
 
 /**
- * Publishes manifests by identity alone and loads back those it published; the byte operations are
- * unused through `Sessions`.
+ * Publishes manifests by identity alone and loads back those it published. A blob `manifestOf`
+ * named reads back whole as its identifying text (a supporting file's content); other byte
+ * operations are unused through `Sessions`.
  */
 export const publishingContent = (
   putManifest: (typeof CapturedContent)["Service"]["putManifest"] = (manifest) =>
@@ -82,7 +89,12 @@ export const publishingContent = (
         Effect.tap((snapshotId) => Effect.sync(() => published.set(snapshotId, manifest))),
       ),
     putBlob: () => Effect.die("unused by Sessions"),
-    readBlob: () => Stream.die("unused by Sessions"),
+    readBlob: (blob) => {
+      const identity = blobTexts.get(blob);
+      return identity === undefined
+        ? Stream.die("unused by Sessions")
+        : Stream.succeed(new TextEncoder().encode(identity));
+    },
     materialize: () => Effect.die("unused by Sessions"),
     loadManifest: (snapshotId) => {
       const manifest = published.get(snapshotId);
