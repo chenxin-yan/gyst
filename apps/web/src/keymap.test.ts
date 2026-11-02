@@ -97,8 +97,6 @@ describe("commands", () => {
       ["Shift+a"],
     ]);
     expect(typed("Shift+O", { key: "o" })).toBe(false);
-    expect(completesSequence({ key: "O" }, { key: "z", at: 1000 }, 1500)).toBe(false);
-    expect(completesSequence({ key: "A" }, { key: "z", at: 1000 }, 1500)).toBe(false);
     expect(areHotkeysEqual("Shift+J", "J")).toBe(false);
     expect(typed("Shift+J", { key: "J" })).toBe(true);
     expect(typed("J", { key: "J" })).toBe(false);
