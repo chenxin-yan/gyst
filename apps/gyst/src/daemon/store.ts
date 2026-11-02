@@ -1,7 +1,8 @@
-import { type Session, SessionSchema } from "@gyst/core";
+import { type Session, SessionSchema, type SourceUnavailable } from "@gyst/core";
 import { Array, Context, Effect, FileSystem, Layer, type PlatformError, Schema } from "effect";
 import { createHash } from "node:crypto";
 import { dirname } from "node:path";
+import { storageFullIn } from "./content.ts";
 import { Paths } from "./paths.ts";
 
 const decodeSessionFile = Schema.decodeUnknownEffect(Schema.fromJsonString(SessionSchema), {
@@ -15,24 +16,43 @@ const DeleteReceiptsFileSchema = Schema.fromJsonString(Schema.Array(DeleteReceip
 const decodeDeleteReceipts = Schema.decodeUnknownEffect(DeleteReceiptsFileSchema, {
   onExcessProperty: "error",
 });
+/** A failed `writeAtomically`; `storage_full` only while the old file is kept. */
+type WriteFailure = PlatformError.PlatformError | SourceUnavailable;
 /** Session id to the `PATH` of the latest CLI invocation that opened it. */
 export type LaunchPaths = Readonly<Record<string, string>>;
 const decodeLaunchPaths = Schema.decodeUnknownEffect(
   Schema.fromJsonString(Schema.Record(Schema.String, Schema.String)),
 );
 
+const synced = (fs: FileSystem.FileSystem, file: string) =>
+  Effect.scoped(Effect.flatMap(fs.open(file, { flag: "r" }), (handle) => handle.sync));
+
 // Temp + rename: a reader never sees a half-written file, and a writer killed midway leaves the old
 // one. The scope removes the temp directory whether or not the file was renamed out of it, so a
-// failed write leaves nothing.
+// failed write leaves nothing. Synced before the rename and its directory after: reclaiming content
+// trusts what is saved, so a crash must not bring back an older file naming reclaimed content.
+// A failure before the rename keeps the old file, and running out of space there is `storage_full`,
+// safe to retry. One syncing the directory after it reports a replacement that is already visible
+// but may not survive a crash, so it is never `storage_full`.
 export const writeAtomically = Effect.fn("writeAtomically")(function* (
   path: string,
   content: string,
 ) {
   const fs = yield* FileSystem.FileSystem;
-  const temporary = yield* fs.makeTempFileScoped({ directory: dirname(path) });
-  yield* fs.chmod(temporary, 0o600);
-  yield* fs.writeFileString(temporary, content);
-  yield* fs.rename(temporary, path);
+  const directory = dirname(path);
+  const temporary = yield* Effect.gen(function* () {
+    const file = yield* fs.makeTempFileScoped({ directory });
+    yield* fs.chmod(file, 0o600);
+    yield* fs.writeFileString(file, content);
+    yield* synced(fs, file);
+    return file;
+  }).pipe(Effect.mapError(storageFullIn(directory)));
+  // An interruption between the two would leave the replacement visible but not durable.
+  yield* Effect.uninterruptible(
+    fs
+      .rename(temporary, path)
+      .pipe(Effect.mapError(storageFullIn(directory)), Effect.andThen(synced(fs, directory))),
+  );
 }, Effect.scoped);
 
 // Compare the exact persisted bytes again after the old daemon stops admitting commands.
@@ -57,24 +77,36 @@ export class SessionStore extends Context.Service<
   {
     /** Undecodable files are skipped: a corrupt or older session must not block valid ones. */
     readonly loadAll: Effect.Effect<Array<Session>, PlatformError.PlatformError>;
-    save(session: Session): Effect.Effect<void, PlatformError.PlatformError>;
+    /**
+     * Every session file as saved now: the sessions `loadAll` returns and the text of each one it
+     * skips, all of which reclaiming content must respect.
+     */
+    readonly loadSaved: Effect.Effect<
+      { readonly sessions: Array<Session>; readonly undecodable: Array<string> },
+      PlatformError.PlatformError
+    >;
+    save(session: Session): Effect.Effect<void, WriteFailure>;
     remove(id: string): Effect.Effect<void, PlatformError.PlatformError>;
+    /**
+     * Makes every save, receipt and removal visible in the data directory durable, including one a
+     * stopped daemon renamed into place but never synced. Run before acting on what is saved by
+     * releasing anything it no longer names.
+     */
+    readonly syncSaved: Effect.Effect<void, PlatformError.PlatformError>;
     /** Empty until the first deletion; an unreadable receipt file is a defect, never an empty list. */
     readonly loadDeleteReceipts: Effect.Effect<
       ReadonlyArray<DeleteReceipt>,
       PlatformError.PlatformError
     >;
     /** Replaces every receipt atomically, like a session save. */
-    saveDeleteReceipts(
-      receipts: ReadonlyArray<DeleteReceipt>,
-    ): Effect.Effect<void, PlatformError.PlatformError>;
+    saveDeleteReceipts(receipts: ReadonlyArray<DeleteReceipt>): Effect.Effect<void, WriteFailure>;
     /**
      * Empty when absent or unreadable: losing them costs only navigation, until the CLI opens the
      * session again.
      */
     readonly loadLaunchPaths: Effect.Effect<LaunchPaths>;
     /** Replaces every session's `PATH` atomically, like a session save. */
-    saveLaunchPaths(launchPaths: LaunchPaths): Effect.Effect<void, PlatformError.PlatformError>;
+    saveLaunchPaths(launchPaths: LaunchPaths): Effect.Effect<void, WriteFailure>;
   }
 >()("gyst/daemon/SessionStore") {
   static readonly layer = Layer.effect(
@@ -84,17 +116,34 @@ export class SessionStore extends Context.Service<
       const paths = yield* Paths;
       yield* fs.makeDirectory(paths.dataDir, { recursive: true, mode: 0o700 });
 
-      const loadAll = Effect.gen(function* () {
+      const readAll = Effect.gen(function* () {
         const files = yield* fs.readDirectory(paths.dataDir);
-        const sessions = yield* Effect.forEach(
+        return yield* Effect.forEach(
           files.filter((file) => file.endsWith(".json")),
           (file) =>
-            fs
-              .readFileString(paths.sessionFile(file.slice(0, -".json".length)))
-              .pipe(Effect.flatMap((content) => Effect.option(decodeSessionFile(content)))),
+            fs.readFileString(paths.sessionFile(file.slice(0, -".json".length))).pipe(
+              Effect.flatMap((content) =>
+                Effect.map(Effect.option(decodeSessionFile(content)), (session) => ({
+                  content,
+                  session,
+                })),
+              ),
+            ),
         );
-        return Array.getSomes(sessions);
-      }).pipe(Effect.withSpan("SessionStore.loadAll"));
+      });
+      const loadAll = readAll.pipe(
+        Effect.map((read) => Array.getSomes(read.map(({ session }) => session))),
+        Effect.withSpan("SessionStore.loadAll"),
+      );
+      const loadSaved = readAll.pipe(
+        Effect.map((read) => ({
+          sessions: Array.getSomes(read.map(({ session }) => session)),
+          undecodable: read.flatMap(({ content, session }) =>
+            session._tag === "None" ? [content] : [],
+          ),
+        })),
+        Effect.withSpan("SessionStore.loadSaved"),
+      );
 
       const write = (path: string, content: string) =>
         writeAtomically(path, content).pipe(Effect.provideService(FileSystem.FileSystem, fs));
@@ -104,6 +153,7 @@ export class SessionStore extends Context.Service<
       const remove = Effect.fn("SessionStore.remove")((id: string) =>
         fs.remove(paths.sessionFile(id), { force: true }),
       );
+      const syncSaved = synced(fs, paths.dataDir).pipe(Effect.withSpan("SessionStore.syncSaved"));
 
       const loadDeleteReceipts = Effect.gen(function* () {
         if (!(yield* fs.exists(paths.deleteReceiptsPath))) return [];
@@ -125,8 +175,10 @@ export class SessionStore extends Context.Service<
 
       return SessionStore.of({
         loadAll,
+        loadSaved,
         save,
         remove,
+        syncSaved,
         loadDeleteReceipts,
         saveDeleteReceipts,
         loadLaunchPaths,
