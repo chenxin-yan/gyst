@@ -4417,7 +4417,11 @@ describe("installed gyst in a sandboxed browser", () => {
     await side.getByRole("button", { name: "walk/a.ts (modified)", exact: true }).click();
     await headingsAre(page, ["walk/a.ts"]);
     await keys(page, "Shift+G");
-    const bottom = await steady(() => panelTop(page));
+    // On screen, not the panel's offset: @pierre/diffs 1.6.2 keeps the height it measured for an
+    // offscreen row's annotation after the view drops it, until it draws that row again.
+    const barTop = async () => (await cursorBar(page).boundingBox())?.y;
+    const bottom = await steady(barTop);
+    expect(bottom).toBeDefined();
     const reading = (await statusLine(page)
       .getByText(/^a\.ts/)
       .textContent())!;
@@ -4425,7 +4429,7 @@ describe("installed gyst in a sandboxed browser", () => {
     await says(page, "c.ts \u00b7 file");
     await side.getByRole("button", { name: "walk/a.ts (modified)", exact: true }).click();
     await says(page, reading);
-    expect(Math.abs((await steady(() => panelTop(page)))! - bottom!)).toBeLessThan(2);
+    expect(Math.abs((await steady(barTop))! - bottom!)).toBeLessThan(2);
     // Through a view with no changes to show, which has no reader to keep a place in, too.
     await side.getByRole("button", { name: /^Parse the config/ }).click();
     await says(page, "a.ts:20 \u00b7 new");
