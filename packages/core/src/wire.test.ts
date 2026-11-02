@@ -72,6 +72,8 @@ describe("daemon wire envelopes", () => {
         viewed: true,
       },
       { command: "layer", session: "s1", number: 3 },
+      { command: "commits", session: "s1", snapshotId },
+      { command: "commits", session: "s1", snapshotId, after: "a".repeat(40) },
       { command: "navigation", session: "s1", snapshotId },
       { command: "navigation", session: "s1", snapshotId, recheck: true },
       { command: "definition", ...target, position: { line: 1, character: 4 } },
@@ -169,6 +171,10 @@ describe("daemon wire envelopes", () => {
       { command: "code", session: "s1", snapshotId, file: "a", side: "new", cwd: "/repo" },
       { command: "files", session: "s1", snapshotId, after: "a/../../b" },
       { command: "files", session: "s1", snapshotId, path: "/repo" },
+      // Commit messages are the snapshot's captured ones, never a revision read from Git.
+      { command: "commits", session: "s1" },
+      { command: "commits", session: "s1", snapshotId, after: "HEAD~1" },
+      { command: "commits", session: "s1", snapshotId, range: "main..feature" },
       // Positions are whole 1-based lines or a byte offset, in order, never both.
       { command: "code", session: "s1", snapshotId, file: "a", side: "new", startLine: 0 },
       { command: "code", session: "s1", snapshotId, file: "a", side: "new", startLine: 1.5 },
@@ -203,6 +209,7 @@ describe("daemon wire envelopes", () => {
       "StatusPayloadSchema",
       "DiffPayloadSchema",
       "FilesPayloadSchema",
+      "CommitsPayloadSchema",
       "CodePayloadSchema",
       "CaptureProgressSchema",
       "pageBytes",

@@ -244,6 +244,7 @@ const manifestWith = (files: SnapshotManifest["files"]): SnapshotManifest => ({
   },
   files,
   hunks: [],
+  commits: [{ id: "b".repeat(40), message: "Add the app ✓\n\nWith its helper." }],
 });
 
 describe("CapturedContent manifests", () => {
