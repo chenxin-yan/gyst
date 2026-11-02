@@ -68,8 +68,11 @@ export {
   MarkdownSchema,
   type Note,
   NoteSchema,
+  type OutdatedReason,
+  OutdatedReasonSchema,
   parseReferenceHref,
 } from "./guidance.ts";
+export { counterpartLine } from "./mapping.ts";
 export {
   type AddonDiscovery,
   AddonDiscoverySchema,
@@ -85,6 +88,8 @@ export {
   ScopeSchema,
   type SessionSummary,
   SessionSummarySchema,
+  type RefreshPayload,
+  RefreshPayloadSchema,
   type StatusPayload,
   StatusPayloadSchema,
   type ViewedPayload,
@@ -102,6 +107,8 @@ export type DiffPayload = typeof DiffPayloadSchema.Type;
 
 export const SourceCheckPayloadSchema = Schema.Struct({
   sessionId: Schema.String,
+  /** The snapshot the source was compared with: revalidation names the snapshot it checked. */
+  snapshotId: Schema.String,
   revision: Schema.Number,
   state: Schema.Literals(["unchanged", "changed", "unavailable"]),
   checkedAt: Schema.String,
@@ -421,6 +428,17 @@ const reviewRequests = [
    * so a lost reply cannot turn into a second operation.
    */
   Schema.Struct({ command: Schema.Literal("delete"), ...exact, requestId: Schema.String }),
+  /**
+   * Explicitly recaptures the recorded scope and reconciles the review onto it, replacing the
+   * snapshot the caller observed. `requestId` is chosen before sending and reused for every retry,
+   * like `delete`; a refresh of a snapshot already replaced is stale.
+   */
+  Schema.Struct({
+    command: Schema.Literal("refresh"),
+    ...exact,
+    snapshotId: SnapshotIdSchema,
+    requestId: Schema.String,
+  }),
 ] as const;
 
 /**
@@ -488,7 +506,6 @@ export const RequestSchema = Schema.Union([
   ...reviewRequests,
   /** `batch` is the JSON apply envelope text; the use case validates it against `ApplyEnvelopeSchema`. */
   Schema.Struct({ command: Schema.Literal("apply"), ...exact, batch: Schema.String }),
-  Schema.Struct({ command: Schema.Literal("refresh"), ...exact }),
 ]);
 export type Request = typeof RequestSchema.Type;
 

@@ -170,7 +170,7 @@ type Preview =
  * The target's captured lines with a few around them, numbered as in the file, the target's
  * highlighted, and colored by the diff renderer's shared Shiki highlighter once it is ready.
  */
-function PeekPreview(props: { target: CapturedRange; read: () => Promise<RangeRead> }) {
+export function PeekPreview(props: { target: CapturedRange; read: () => Promise<RangeRead> }) {
   const { target, read } = props;
   const [preview, setPreview] = useState<Preview>({ kind: "loading" });
   useEffect(() => {

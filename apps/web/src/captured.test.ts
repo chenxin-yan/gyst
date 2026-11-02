@@ -34,13 +34,15 @@ describe("referenceAvailability", () => {
     expect(referenceAvailability(target, current(entry()))).toEqual({ available: true });
   });
 
-  it("says why a target can't be shown instead of reading another snapshot or path", () => {
-    expect(
-      referenceAvailability({ ...target, snapshotId: "c".repeat(64) }, current(entry())),
-    ).toEqual({
-      available: false,
-      reason: "captured in an earlier snapshot this session no longer keeps",
+  it("leaves a target pinned to an earlier snapshot to that snapshot's read, not the current files", () => {
+    const earlier = { ...target, snapshotId: "c".repeat(64) };
+    expect(referenceAvailability(earlier, current(undefined))).toEqual({ available: true });
+    expect(referenceAvailability(earlier, current(entry({ new: { kind: "absent" } })))).toEqual({
+      available: true,
     });
+  });
+
+  it("says why a target can't be shown instead of reading another path", () => {
     expect(referenceAvailability(target, current(undefined))).toEqual({
       available: false,
       reason: "not in this snapshot",

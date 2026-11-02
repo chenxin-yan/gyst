@@ -29,6 +29,7 @@ const session: Session = {
   receiptTexts: [],
   applyReceipts: [],
   viewedReceipts: [],
+  refreshReceipts: [],
 };
 const request = (fields: Partial<ViewedRequest> = {}): ViewedRequest => ({
   command: "viewed",

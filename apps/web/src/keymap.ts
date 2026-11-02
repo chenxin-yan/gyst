@@ -40,6 +40,8 @@ export type CommandId =
   | "stacked"
   | "auto"
   | "mode"
+  | "refresh"
+  | "check"
   | "menu"
   | "help";
 
@@ -108,6 +110,8 @@ export const commands: readonly Command[] = [
   { id: "stacked", keys: [["2"]], label: "Stacked diff" },
   { id: "auto", keys: [["0"]], label: "Auto diff layout, by width" },
   { id: "mode", keys: [], label: "Switch between Vim and Mouse mode" },
+  { id: "refresh", keys: [["Shift+R"]], label: "Refresh the session from its source" },
+  { id: "check", keys: [], label: "Check the source for changes without refreshing" },
   { id: "menu", keys: [["Meta+K"], ["Control+K"]], label: "Command menu" },
   { id: "help", keys: [["?"]], label: "Keyboard shortcuts" },
 ];

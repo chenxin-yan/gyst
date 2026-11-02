@@ -35,7 +35,19 @@ const initial = () =>
     receiptTexts: [],
     applyReceipts: [],
     viewedReceipts: [],
+    refreshReceipts: [],
   });
+/** The hunks' files, each side its own content, except `reverted` files' new sides. */
+const files = (...reverted: string[]) =>
+  ["a", "b", "c"].map((id) => ({
+    path: `${id}.ts`,
+    old: { kind: "text" as const, blob: `old-${id}`, size: 2 },
+    new: {
+      kind: "text" as const,
+      blob: reverted.includes(id) ? `old-${id}` : `new-${id}`,
+      size: 2,
+    },
+  }));
 // Every hunk's file has one captured line on each side.
 const captured = (session: Session): CapturedIndex => ({
   snapshotId: session.snapshotId,
@@ -47,6 +59,7 @@ const captured = (session: Session): CapturedIndex => ({
       ]),
     ),
   ),
+  earlierHunks: new Map(),
 });
 const apply = (session: Session, envelope: ApplyEnvelope) =>
   applyBatch(session, envelope, captured(session), "later");
@@ -97,6 +110,9 @@ it("publishes a walkthrough progressively beside per-hunk Viewed and replays exa
     totalHunks: 3,
     overviewMissing: true,
     groupsMissingOverview: [],
+    overviewOutdated: false,
+    groupsOutdated: [],
+    notesOutdated: [],
   });
   // Viewed is the human's per-hunk progress; it moves the one review revision.
   const viewed = view(first.session!, ["b", "c"], "view");
@@ -125,12 +141,20 @@ it("publishes a walkthrough progressively beside per-hunk Viewed and replays exa
     Result.isFailure(apply(next.session!, { ...nextBatch, revision: 1, idempotencyKey: "stale" })),
   ).toBe(true);
   expect(Result.getOrThrow(apply(next.session!, firstBatch))).toEqual({ status: first.status });
+  // a.ts went back to its old bytes, so its hunk is gone; b.ts and c.ts are as they were.
   const refreshed = refreshSession(
-    { ...next.session!, snapshotId: "next" },
-    [hunk("b"), hunk("c")],
+    next.session!,
+    { snapshotId: "next", snapshot: { files: files("a"), hunks: [hunk("b"), hunk("c")] } },
+    new Map([["snapshot", { files: files(), hunks: initial().hunks }]]),
     "later",
   );
-  expect(refreshed.groups[0]).toMatchObject({ title: group.title, notes: [], hunkIds: ["b"] });
+  expect(refreshed.groups[0]).toMatchObject({
+    title: group.title,
+    overview: { outdated: ["code"] },
+    notes: [{ id: "n", anchor: { snapshotId: "next" } }],
+    hunkIds: ["b"],
+  });
+  expect(refreshed.groups[0]!.notes[0]!.outdated).toBeUndefined();
   expect(refreshed.groups[1]).toEqual(next.session!.groups[1]);
   expect(refreshed.viewedHunkIds).toEqual(["b", "c"]);
 });
@@ -176,7 +200,12 @@ it("interns guidance text once and replays exact historical guidance after refre
       envelope([{ type: "note.update", id: "n0", markdown: "rewritten" }], viewed.revision, "edit"),
     ),
   ).session!;
-  const refreshed = refreshSession(edited, edited.hunks.slice(1), "later");
+  const refreshed = refreshSession(
+    edited,
+    { snapshotId: "snapshot", snapshot: { files: [], hunks: edited.hunks.slice(1) } },
+    new Map(),
+    "later",
+  );
   const reloaded = Schema.decodeUnknownSync(SessionSchema)(JSON.parse(JSON.stringify(refreshed)));
   for (const index of [0, count - 1])
     expect(apply(reloaded, envelopes[index]!)).toEqual(
