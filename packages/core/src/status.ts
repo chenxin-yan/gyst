@@ -5,7 +5,7 @@ import type { ThreadCounts } from "./thread.ts";
 export const summaryOf = (session: Session): SessionSummary =>
   Struct.pick(session, ["id", "repoRoot", "scope", "snapshotId", "createdAt", "updatedAt"]);
 
-function preparationOf(session: Session): Preparation {
+export function preparationOf(session: Session): Preparation {
   const current = new Set(session.hunks.map(({ id }) => id));
   const memberships = session.groups.flatMap(({ hunkIds }) => hunkIds);
   const groupedHunks = new Set(memberships.filter((id) => current.has(id))).size;

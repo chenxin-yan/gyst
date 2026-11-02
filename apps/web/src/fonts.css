@@ -1,0 +1,4 @@
+/* The baseline faces, which only the standalone walkthrough carries (vite.export.config.ts adds
+   this stylesheet to its build): it may fetch nothing, and its reader may have neither installed. */
+@import "@fontsource-variable/inter";
+@import "@fontsource-variable/jetbrains-mono";

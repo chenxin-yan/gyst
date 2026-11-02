@@ -1,37 +1,20 @@
 // Reading a reference's captured target: whether this session can show it, and its lines, only
 // through the `code` read of the snapshot it is pinned to. Nothing here reads live content or
 // redirects a reference to another snapshot or path. No React or DOM, so each piece is unit tested.
-import type {
-  BrowserRequest,
-  CapturedRange,
-  CodePayload,
-  ContentSide,
-  ManifestFile,
+import {
+  type BrowserRequest,
+  type CapturedRange,
+  type CodePayload,
+  type ManifestFile,
+  noTextReason,
 } from "@gyst/core/wire";
 import { capturedText } from "./reader.ts";
-
-/** Why a side has no captured text, short enough for a file header bar. */
-export const notCaptured = {
-  binary: "binary",
-  "unsupported-encoding": "not UTF-8 text",
-  symlink: "symbolic link",
-  submodule: "submodule",
-  quota: "left out by the snapshot quota",
-} satisfies Record<Extract<ContentSide, { kind: "unavailable" }>["reason"], string>;
 
 export type Availability =
   | { readonly available: true }
   | { readonly available: false; readonly reason: string };
 
 const available: Availability = { available: true };
-
-type NoText = Exclude<ContentSide, { kind: "text" }>;
-
-/** Why one side of a captured file holds no text. */
-const whyNoText = (side: CapturedRange["side"], content: NoText) =>
-  content.kind === "absent"
-    ? `absent on the ${side} side`
-    : `${side} side not captured: ${notCaptured[content.reason]}`;
 
 /**
  * Whether the reader can show a reference's target. A target pinned to an earlier snapshot is read
@@ -49,7 +32,7 @@ export function referenceAvailability(
   const side = current.file[target.side];
   return side.kind === "text"
     ? available
-    : { available: false, reason: whyNoText(target.side, side) };
+    : { available: false, reason: noTextReason(target.side, side) };
 }
 
 type CodeRequest = Extract<BrowserRequest, { command: "code" }>;
@@ -108,7 +91,7 @@ async function readLines(
       offset === undefined ? { ...pinned, startLine, ...end } : { ...pinned, offset, ...end },
     );
     if (content.kind !== "text")
-      return { kind: "unavailable", reason: whyNoText(target.side, content) };
+      return { kind: "unavailable", reason: noTextReason(target.side, content) };
     first ??= content.start.line;
     text += content.text;
     offset = content.next?.offset;
