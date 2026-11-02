@@ -1027,7 +1027,8 @@ describe("installed gyst in a sandboxed browser", () => {
     // src/long.ts's trailing range (lines 184-300) shows the renderer's count once its sides load.
     await pane.getByText("117 unmodified lines").first().waitFor();
     await loading.waitFor({ state: "detached" });
-    expect(await pane.getByRole("status").count()).toBe(0);
+    // app.ts's sides can still be in flight after README.md's and src/long.ts's land.
+    await waitFor(async () => (await pane.getByRole("status").count()) === 0, "no loading status");
     // Each changed text file's two sides, read once, from the session's snapshot.
     const { snapshotId } = (await gyst("session", "list")).sessions[0];
     const reads = codes.map(({ file, side, snapshotId: read }) => `${file} ${side} ${read}`);
