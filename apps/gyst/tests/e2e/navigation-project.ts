@@ -1,8 +1,8 @@
 // The TS/JS project navigation tests query, through the daemon's operations or in a browser, and
 // the helpers that build and address it.
 import { execFileSync } from "node:child_process";
-import { mkdir, writeFile } from "node:fs/promises";
-import { dirname, join } from "node:path";
+import { mkdir } from "node:fs/promises";
+import { write } from "./installed-gyst.ts";
 
 export const oldMath =
   "export function add(first: number, second: number) {\n  return first + second;\n}\n";
@@ -27,13 +27,6 @@ export const mathFiles = {
   edited: { "src/math.ts": newMath, "src/use.ts": newUse, "src/crlf.ts": crlf },
 };
 
-export const writeFiles = async (cwd: string, files: Record<string, string>) => {
-  for (const [path, content] of Object.entries(files)) {
-    await mkdir(dirname(join(cwd, path)), { recursive: true });
-    await writeFile(join(cwd, path), content);
-  }
-};
-
 /** A repository at `cwd` with `committed` as its only commit and `edited` left uncommitted. */
 export async function gitProject(
   env: NodeJS.ProcessEnv,
@@ -46,10 +39,10 @@ export async function gitProject(
   git("init", "-q");
   git("config", "user.email", "test@gyst.invalid");
   git("config", "user.name", "Gyst Test");
-  await writeFiles(cwd, committed);
+  await write(cwd, committed);
   git("add", ".");
   git("commit", "-qm", "initial");
-  await writeFiles(cwd, edited);
+  await write(cwd, edited);
   return cwd;
 }
 

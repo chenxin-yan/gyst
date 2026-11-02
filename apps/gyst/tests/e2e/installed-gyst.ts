@@ -1,8 +1,8 @@
 import { navigationAddon } from "@gyst/core";
-import { spawn, spawnSync } from "node:child_process";
+import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { request as httpRequest } from "node:http";
-import { mkdir, mkdtemp, readFile, realpath, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { delimiter, dirname, join } from "node:path";
 import { inject, onTestFinished } from "vite-plus/test";
@@ -235,6 +235,36 @@ export async function sandbox() {
       return run(installed.bin, args, { cwd, env: { ...env, GYST_DATA_DIR: dataDir }, stdin });
     },
   };
+}
+
+export type Sandbox = Awaited<ReturnType<typeof sandbox>>;
+
+export const git = (box: Sandbox, cwd: string, ...args: string[]) =>
+  execFileSync("git", args, {
+    cwd,
+    env: box.env,
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+
+export const write = async (cwd: string, files: Record<string, string>) => {
+  for (const [path, content] of Object.entries(files)) {
+    await mkdir(dirname(join(cwd, path)), { recursive: true });
+    await writeFile(join(cwd, path), content);
+  }
+};
+
+/** A repository in the sandbox whose one commit holds `tracked.txt`. */
+export async function repo(box: Sandbox, name: string): Promise<string> {
+  const cwd = join(box.root, name);
+  await mkdir(cwd, { recursive: true });
+  git(box, cwd, "init", "-q");
+  git(box, cwd, "config", "user.email", "test@gyst.invalid");
+  git(box, cwd, "config", "user.name", "Gyst Test");
+  await writeFile(join(cwd, "tracked.txt"), "one\n");
+  git(box, cwd, "add", ".");
+  git(box, cwd, "commit", "-qm", "initial");
+  return cwd;
 }
 
 /** A POST to the daemon's viewer on loopback, with exactly the given headers. */
