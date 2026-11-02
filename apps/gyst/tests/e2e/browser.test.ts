@@ -4417,7 +4417,8 @@ describe("installed gyst in a sandboxed browser", () => {
     await side.getByRole("button", { name: "walk/a.ts (modified)", exact: true }).click();
     await headingsAre(page, ["walk/a.ts"]);
     await keys(page, "Shift+G");
-    // On screen, not the panel's offset: @pierre/diffs 1.6.2 keeps the height it measured for an
+    // TODO: Compare the panel's offset again once https://github.com/pierrecomputer/pierre/issues/1250
+    // is fixed. Until then, on screen: @pierre/diffs 1.6.2 keeps the height it measured for an
     // offscreen row's annotation after the view drops it, until it draws that row again.
     const barTop = async () => (await cursorBar(page).boundingBox())?.y;
     const bottom = await steady(barTop);
