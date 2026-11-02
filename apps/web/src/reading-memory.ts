@@ -7,8 +7,9 @@ import type { ReviewView } from "./walkthrough.ts";
 /**
  * Where a reader left a session: its view, the captured target expanded over it with that file's
  * opened lines, the open peek and the places Back returns to, its input mode, Vim cursor, the hidden
- * lines it opened (a place inside them exists only once they open again) and what was at the
- * panel's top: a reading position, or an overview's offset.
+ * lines it opened (a place inside them exists only once they open again), its folded files per view
+ * and in the expanded reference (a place inside a file exists only while it is unfolded) and what was
+ * at the panel's top: a reading position, or an overview's offset.
  */
 export type ReadingPlace = {
   review: ReviewView;
@@ -19,16 +20,27 @@ export type ReadingPlace = {
   inputMode: InputMode;
   cursor: Cursor | undefined;
   opened: Map<string, Map<number, Opened>>;
+  folds: Folds;
+  expandedFolded: ReadonlySet<string>;
   top: Restore | undefined;
 };
+
+/** The files folded in each view the reader was shown, by `viewKey`; a view never shown folds its Generated files. */
+export type Folds = ReadonlyMap<string, ReadonlySet<string>>;
+
+export const viewKey = (view: ReviewView) =>
+  view.kind === "group" ? `group:${view.id}` : `files:${view.path}`;
 
 /**
  * Each session's reading place for this page's lifetime, so switching between stack layers (or any
  * sessions) and back resumes where the reader was. Kept per session ID, so one session's place never
  * leaks into another. After a refresh the view and the input mode carry over, and everything in a
- * file whose hunks the refresh left exactly as they were. In another file the top position and the
- * cursor move with a hunk that survived exactly, whatever its line numbers; else only the file at the
- * top, and a cursor on its header, are kept. An expanded reference and Back belong to the snapshot
+ * file whose hunks the refresh left exactly as they were, its fold in each view included, except that
+ * the view the reader was in never keeps folded a file holding the reader's line. In another
+ * file the top position and the cursor move with a hunk that survived exactly, whatever its line
+ * numbers; else only the file at the top, and a cursor on its header, are kept, and in each view the
+ * file is folded exactly when the new snapshot records it Generated and, in the view the reader was
+ * in, no kept position is on one of its lines. An expanded reference and Back belong to the snapshot
  * they were read in.
  */
 const places = new Map<
@@ -57,6 +69,7 @@ export const recall = (
   sessionId: string,
   snapshotId: string,
   hunks: readonly Hunk[],
+  generated: ReadonlySet<string>,
 ): ReadingPlace | undefined => {
   const saved = places.get(sessionId);
   if (saved === undefined || saved.snapshotId === snapshotId) return saved?.place;
@@ -88,7 +101,26 @@ export const recall = (
       ? { file, side: undefined, line: undefined }
       : { file, side, line: moved };
   };
-  const { review, inputMode, cursor, opened, top } = saved.place;
+  const { review, inputMode, cursor, opened, folds, top } = saved.place;
+  const cursorAfter = cursor && cursorNow(cursor);
+  const topAfter =
+    top !== undefined && "position" in top ? { position: topNow(top.position) } : top;
+  // A folded file has no lines, so a file still holding the reader's line stays unfolded.
+  const reading = new Set<string>();
+  if (cursorAfter?.kind === "line") reading.add(cursorAfter.file);
+  if (topAfter !== undefined && "position" in topAfter && topAfter.position.line !== undefined)
+    reading.add(topAfter.position.file);
+  // Kept lines can sit in a file the view folds: one read through an expanded reference.
+  const foldedNow = (folded: ReadonlySet<string>, kept: ReadonlySet<string>) =>
+    new Set(
+      [
+        ...[...folded].filter(unchanged),
+        ...[...generated].filter((file) => !unchanged(file)),
+      ].filter((file) => !kept.has(file)),
+    );
+  const here = viewKey(review);
+  // A place without its view's folds starts that view from its Generated files.
+  const foldsBefore = new Map(folds).set(here, folds.get(here) ?? generated);
   return {
     review,
     captured: undefined,
@@ -96,8 +128,15 @@ export const recall = (
     peek: undefined,
     back: [],
     inputMode,
-    cursor: cursor && cursorNow(cursor),
+    cursor: cursorAfter,
     opened: new Map([...opened].filter(([file]) => unchanged(file))),
-    top: top !== undefined && "position" in top ? { position: topNow(top.position) } : top,
+    folds: new Map(
+      [...foldsBefore].map(([key, folded]) => [
+        key,
+        foldedNow(folded, key === here ? reading : new Set()),
+      ]),
+    ),
+    expandedFolded: new Set(),
+    top: topAfter,
   };
 };

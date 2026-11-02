@@ -93,9 +93,17 @@ const statusPayloadFields = <Text extends Schema.Top>(text: Text) => ({
   ),
   preparation: PreparationSchema,
   viewedHunkIds: Schema.Array(Schema.String),
-  /** `viewed` is derived: every changed hunk of the file is Viewed. */
+  /**
+   * `viewed` is derived: every changed hunk of the file is Viewed. `generated` is present only when
+   * the snapshot records the file as Generated.
+   */
   files: Schema.Array(
-    Schema.Struct({ path: Schema.String, hunkCount: Schema.Number, viewed: Schema.Boolean }),
+    Schema.Struct({
+      path: Schema.String,
+      hunkCount: Schema.Number,
+      viewed: Schema.Boolean,
+      generated: Schema.optional(Schema.Literal(true)),
+    }),
   ),
 });
 export const StatusPayloadSchema = Schema.Struct({
@@ -154,6 +162,8 @@ export const SessionSchema = Schema.Struct({
   ...sessionSummaryFields,
   revision: Schema.Number,
   hunks: Schema.Array(HunkSchema),
+  /** The snapshot's Generated changed files, copied from its manifest like `hunks`. */
+  generatedFiles: Schema.optional(Schema.Array(Schema.String)),
   /** The walkthrough overview. */
   overview: Schema.NullOr(GuidanceTextSchema),
   groups: Schema.Array(GroupSchema),
