@@ -61,7 +61,10 @@ const pullRequestScopeOf = Effect.fn("pullRequestScopeOf")(function* (target: st
 
 type OpenRequest = Extract<Request, { command: "open" }>;
 
-/** The open request `gyst` and `session open` both build from a Git range, `--pr` or `--session`. */
+/**
+ * The open request `gyst` and `session open` both build from a Git range, `--pr` or `--session`,
+ * carrying this invocation's PATH: the daemon looks for the navigation add-on there.
+ */
 export const openRequestOf = Effect.fn("openRequestOf")(function* (target: {
   readonly range: string | undefined;
   readonly pr: string | undefined;
@@ -69,10 +72,12 @@ export const openRequestOf = Effect.fn("openRequestOf")(function* (target: {
 }) {
   if ([target.range, target.pr, target.session].filter((given) => given !== undefined).length > 1)
     return yield* new BadArgs({ message: "choose one of a Git range, --pr or --session" });
+  const path = process.env.PATH ?? "";
   if (target.session !== undefined)
-    return { command: "open", session: target.session } satisfies OpenRequest;
+    return { command: "open", session: target.session, path } satisfies OpenRequest;
   return {
     command: "open",
+    path,
     cwd: process.cwd(),
     scope:
       target.pr !== undefined ? yield* pullRequestScopeOf(target.pr) : yield* scopeOf(target.range),
@@ -157,7 +162,7 @@ const open = defineCommand(
   "open",
   {
     description:
-      "Open the session for uncommitted changes, a Git range or a GitHub PR, creating it only if none is saved; prints its identity without launching a viewer",
+      "Open the session for uncommitted changes, a Git range or a GitHub PR, creating it only if none is saved; prints its identity and viewer link without opening a browser",
   },
   (command) =>
     command

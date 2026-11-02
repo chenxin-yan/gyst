@@ -8,10 +8,10 @@ import {
 import { ErrorPayloadSchema } from "./errors.ts";
 import { PullRequestNumberSchema, PullRequestStatusSchema } from "./github.ts";
 import { CodeSideSchema, LineNumberSchema } from "./guidance.ts";
-import { AddonDiscoverySchema, AddonStateSchema } from "./navigation.ts";
+import { AddonStateSchema } from "./navigation.ts";
 import { HunkSchema, ScopeSchema, SessionSummarySchema } from "./session.ts";
 
-// `@gyst/core/wire` is the browser-safe entry: every contract a bridge or browser needs, without the
+// `@gyst/core/wire` is the browser-safe entry: every contract the browser needs, without the
 // Node-only snapshot parsing and hashing the root `@gyst/core` export pulls in.
 export {
   BadArgs,
@@ -113,8 +113,11 @@ export const OpenPayloadSchema = Schema.Struct({
   session: SessionSummarySchema,
   /** False when the saved session was returned as it was: reuse never refreshes it. */
   created: Schema.Boolean,
-  /** The token-free command a human runs to view this session; open itself launches nothing. */
-  launch: Schema.Struct({ argv: Schema.Array(Schema.String) }),
+  /**
+   * The session in the daemon's viewer, `http://localhost:<port>/session/<id>`, naming the port the
+   * daemon actually bound. A plain link: whoever can reach the port can open it.
+   */
+  link: Schema.String,
 });
 export type OpenPayload = typeof OpenPayloadSchema.Type;
 
@@ -182,7 +185,7 @@ const NavigationSymbolSchema = Schema.Struct({ text: Schema.String, range: TextR
 
 /** Why navigation did not run; review itself is unaffected by every one of these. */
 export const NavigationUnavailableSchema = Schema.Union([
-  /** The launcher found no usable add-on of this release; `addon` carries the install command. */
+  /** The daemon found no usable add-on of this release; `addon` carries the install command. */
   Schema.Struct({ kind: Schema.Literal("addon"), addon: AddonStateSchema }),
   /** The snapshot is not (or stopped being) the session's current one; only it is analysed. */
   Schema.Struct({ kind: Schema.Literal("historical") }),
@@ -259,7 +262,7 @@ export const NavigationSideStateSchema = Schema.Union([
 ]);
 export type NavigationSideState = typeof NavigationSideStateSchema.Type;
 
-/** Navigation readiness for one snapshot: the launcher's add-on and each side's analysis. */
+/** Navigation readiness for one snapshot: the session's add-on and each side's analysis. */
 export const NavigationStatusPayloadSchema = Schema.Struct({
   sessionId: Schema.String,
   snapshotId: SnapshotIdSchema,
@@ -363,10 +366,9 @@ const identifiersQuery = {
   line: LineNumberSchema,
 };
 
-/** Browser operations a bridge forwards to the daemon exactly as decoded. */
+/** Review operations both the CLI and the browser send, decoded the same on either transport. */
 const reviewRequests = [
   Schema.Struct({ command: Schema.Literal("list") }),
-  Schema.Struct({ command: Schema.Literal("open"), ...exact }),
   Schema.Struct({ command: Schema.Literal("status"), ...exact }),
   Schema.Struct({ command: Schema.Literal("check"), ...exact }),
   /**
@@ -374,11 +376,6 @@ const reviewRequests = [
    * verification only. It never refreshes code or changes review state.
    */
   Schema.Struct({ command: Schema.Literal("stack"), ...exact }),
-  /**
-   * Opens, or resumes as it is, one layer of the PR session's known stack. The checkout and
-   * repository are the session's own, so a browser can name neither.
-   */
-  Schema.Struct({ command: Schema.Literal("layer"), ...exact, number: PullRequestNumberSchema }),
   Schema.Struct({
     command: Schema.Literal("diff"),
     ...exact,
@@ -424,10 +421,25 @@ const reviewRequests = [
    * so a lost reply cannot turn into a second operation.
    */
   Schema.Struct({ command: Schema.Literal("delete"), ...exact, requestId: Schema.String }),
+] as const;
+
+/**
+ * The operations a browser may request: exact saved-session ids and read filters only. Checkout
+ * paths, Git input, PATHs, executables, add-on locations and caller roles are not expressible.
+ * Human actions exist only here, so they reach the daemon only through its HTTP adapter.
+ */
+export const BrowserRequestSchema = Schema.Union([
+  Schema.Struct({ command: Schema.Literal("open"), ...exact }),
+  ...reviewRequests,
+  /**
+   * Opens, or resumes as it is, one layer of the PR session's known stack. The checkout and
+   * repository are the session's own, so a browser can name neither.
+   */
+  Schema.Struct({ command: Schema.Literal("layer"), ...exact, number: PullRequestNumberSchema }),
   /**
    * The human marks exactly `hunkIds` Viewed (or not), against the snapshot and revision they
    * observed. `requestId` is chosen before sending and reused for every retry, like `delete`.
-   * No CLI command sends it: agents cannot mark Viewed.
+   * The socket cannot carry it: agents cannot mark Viewed.
    */
   Schema.Struct({
     command: Schema.Literal("viewed"),
@@ -438,19 +450,9 @@ const reviewRequests = [
     hunkIds: Schema.Array(Schema.String),
     viewed: Schema.Boolean,
   }),
-] as const;
-
-/**
- * The operations a browser may request: exact saved-session ids and read filters only. Checkout
- * paths, Git input, executables, add-on locations and caller roles are not expressible. A bridge
- * decodes browser input with this schema and forwards it unchanged, except that it binds its own
- * add-on discovery into navigation operations.
- */
-export const BrowserRequestSchema = Schema.Union([
-  ...reviewRequests,
   /**
-   * Navigation readiness of the session's current snapshot. `recheck` (Check again) has the
-   * launcher look for the add-on on its launch PATH again first.
+   * Navigation readiness of the session's current snapshot. `recheck` (Check again) has the daemon
+   * look for the add-on again first, on the PATH the session was last opened with.
    */
   Schema.Struct({ ...navigationStatus, recheck: Schema.optional(Schema.Boolean) }),
   /** Definitions or references of the symbol at `position` on one side of a snapshot file. */
@@ -461,25 +463,32 @@ export const BrowserRequestSchema = Schema.Union([
 ]);
 export type BrowserRequest = typeof BrowserRequestSchema.Type;
 
-/** One validated operation per session command; CLI flags and argv never cross the socket. */
+/**
+ * The operations the CLI sends over the daemon socket, one validated operation per session
+ * command; CLI flags and argv never cross it, and neither does any human action.
+ */
 export const RequestSchema = Schema.Union([
   /**
    * Trusted local entry points only. `cwd` is the caller's directory, bound by the entry point, and
    * selects the repository; the recorded scope then creates or reuses that repository's session.
+   * `path` is the invoking CLI's PATH: the daemon keeps the latest per session and looks for the
+   * navigation add-on only there.
    */
-  Schema.Struct({ command: Schema.Literal("open"), cwd: Schema.String, scope: ScopeSchema }),
+  Schema.Struct({
+    command: Schema.Literal("open"),
+    cwd: Schema.String,
+    scope: ScopeSchema,
+    path: Schema.optional(Schema.String),
+  }),
+  Schema.Struct({
+    command: Schema.Literal("open"),
+    ...exact,
+    path: Schema.optional(Schema.String),
+  }),
   ...reviewRequests,
   /** `batch` is the JSON apply envelope text; the use case validates it against `ApplyEnvelopeSchema`. */
   Schema.Struct({ command: Schema.Literal("apply"), ...exact, batch: Schema.String }),
   Schema.Struct({ command: Schema.Literal("refresh"), ...exact }),
-  /**
-   * The browser's navigation operations over the session's current snapshot, with `addon`: what
-   * the launcher discovered on its own PATH, bound by that trusted entry point like `open.cwd`.
-   */
-  Schema.Struct({ ...navigationStatus, addon: AddonDiscoverySchema }),
-  Schema.Struct({ ...definitionQuery, addon: AddonDiscoverySchema }),
-  Schema.Struct({ ...referencesQuery, addon: AddonDiscoverySchema }),
-  Schema.Struct({ ...identifiersQuery, addon: AddonDiscoverySchema }),
 ]);
 export type Request = typeof RequestSchema.Type;
 

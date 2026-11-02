@@ -180,7 +180,9 @@ describe("gyst session CLI seam", () => {
     const failure = async (args: string[]) => failed(await gyst(cwd, ["session", ...args]));
     const opened = json(await gyst(cwd, ["session", "open"]));
     expect(opened.session.scope).toEqual({ kind: "uncommitted" });
-    expect(opened.launch).toEqual({ argv: ["gyst", "--session", opened.session.id] });
+    expect(opened.link).toBe(
+      `http://localhost:${box.env.GYST_PORT}/session/${encodeURIComponent(opened.session.id)}`,
+    );
     const range = json(await gyst(cwd, ["session", "open", "HEAD..HEAD"]));
     expect(range.session.scope).toEqual({ kind: "range", range: "HEAD..HEAD" });
     expect(json(await gyst(cwd, ["session", "open", "--session", range.session.id]))).toEqual(
@@ -439,6 +441,8 @@ describe("gyst session CLI seam", () => {
       "content",
       "corrupt.json",
       "delete-receipts",
+      "launch-paths",
+      "viewer.port",
     ]);
 
     // A lost acknowledgement retried after that exit starts a daemon that answers from the receipt
@@ -454,6 +458,8 @@ describe("gyst session CLI seam", () => {
       "content",
       "corrupt.json",
       "delete-receipts",
+      "launch-paths",
+      "viewer.port",
     ]);
   }, 20_000);
 
@@ -637,7 +643,12 @@ describe("gyst session CLI seam", () => {
       `daemon.pid to name ${survivor}`,
     );
     expect(installedDaemons()).toEqual([survivor]);
-    expect((await readdir(data)).toSorted()).toEqual(["content", "daemon.pid", "daemon.sock"]);
+    expect((await readdir(data)).toSorted()).toEqual([
+      "content",
+      "daemon.pid",
+      "daemon.sock",
+      "viewer.port",
+    ]);
   }, 20_000);
 
   it("exits 130 on SIGINT through crust's cancellation and releases the socket and pid file", async () => {

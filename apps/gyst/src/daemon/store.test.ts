@@ -189,6 +189,20 @@ describe("SessionStore", () => {
     await rm(join(dataDir, "delete-receipts"));
   });
 
+  it("keeps launch PATHs private and out of the session listing, and reads a lost file as none", async () => {
+    expect(await run(SessionStore.use((s) => s.loadLaunchPaths))).toEqual({});
+    const launchPaths = { a: "/usr/local/bin:/usr/bin" };
+    await run(SessionStore.use((s) => s.saveLaunchPaths(launchPaths)));
+    expect((await stat(join(dataDir, "launch-paths"))).mode & 0o777).toBe(0o600);
+    expect(await run(SessionStore.use((s) => s.loadLaunchPaths))).toEqual(launchPaths);
+    expect((await run(SessionStore.use((s) => s.loadAll))).map(({ id }) => id)).not.toContain(
+      "launch-paths",
+    );
+    await writeFile(join(dataDir, "launch-paths"), "{");
+    expect(await run(SessionStore.use((s) => s.loadLaunchPaths))).toEqual({});
+    await rm(join(dataDir, "launch-paths"));
+  });
+
   it.skipIf(process.getuid?.() === 0)(
     "propagates filesystem errors instead of hiding a session",
     async () => {
