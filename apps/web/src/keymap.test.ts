@@ -96,6 +96,12 @@ describe("commands", () => {
       ["Shift+o"],
       ["Shift+a"],
     ]);
+    for (const sequence of sequences)
+      for (const key of sequence)
+        expect(
+          (["Shift+O", "Shift+A"] as const).some((own) => areHotkeysEqual(own, key)),
+          sequence.join(" "),
+        ).toBe(false);
     expect(typed("Shift+O", { key: "o" })).toBe(false);
     expect(areHotkeysEqual("Shift+J", "J")).toBe(false);
     expect(typed("Shift+J", { key: "J" })).toBe(true);
