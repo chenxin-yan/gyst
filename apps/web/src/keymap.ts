@@ -27,6 +27,9 @@ export type CommandId =
   | "nextGroup"
   | "previousGroup"
   | "toggleNotes"
+  | "search"
+  | "nextMatch"
+  | "previousMatch"
   | "open"
   | "unfold"
   | "cancel"
@@ -83,6 +86,9 @@ export const commands: readonly Command[] = [
   { id: "nextGroup", keys: [["Shift+J"]], label: "Next walkthrough group" },
   { id: "previousGroup", keys: [["Shift+K"]], label: "Previous walkthrough group" },
   { id: "toggleNotes", keys: [["I"]], label: "Show or collapse every note" },
+  { id: "search", keys: [["/"]], label: "Search the current view" },
+  { id: "nextMatch", keys: [["N"]], label: "Next search match" },
+  { id: "previousMatch", keys: [["Shift+N"]], label: "Previous search match" },
   {
     id: "open",
     keys: [["Enter"]],
