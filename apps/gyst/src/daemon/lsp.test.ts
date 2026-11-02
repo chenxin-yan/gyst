@@ -10,6 +10,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import {
+  documentUri,
   type Engine,
   EngineFailure,
   encodeFrame,
@@ -163,8 +164,17 @@ describe("lspLanguageId", () => {
   });
 });
 
-const bytes = (text: string) => new TextEncoder().encode(text);
+describe("documentUri", () => {
+  it("percent-encodes all but the unreserved characters, as the engine spells file URIs", () => {
+    const path = "/data/a b/session.$id/(group)/[slug]/@x/a+b,c;d=e&f!g'h*i~j-k_l.ts";
+    expect(documentUri(path)).toBe(
+      "file:///data/a%20b/session.%24id/%28group%29/%5Bslug%5D/%40x/a%2Bb%2Cc%3Bd%3De%26f%21g%27h%2Ai~j-k_l.ts",
+    );
+    expect(fileURLToPath(documentUri(path))).toBe(path);
+  });
+});
 
+const bytes = (text: string) => new TextEncoder().encode(text);
 describe("LSP framing", () => {
   it("reassembles frames split anywhere and splits several frames in one chunk", () => {
     const frames = Buffer.concat([

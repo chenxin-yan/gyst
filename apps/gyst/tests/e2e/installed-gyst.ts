@@ -1,5 +1,6 @@
+import { navigationAddon } from "@gyst/core";
 import { spawn, spawnSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { request as httpRequest } from "node:http";
 import { mkdir, mkdtemp, readFile, realpath, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -33,6 +34,20 @@ export function isolatedEnv(home: string, extra: NodeJS.ProcessEnv = {}): NodeJS
     ...extra,
   };
 }
+
+/**
+ * A launch PATH: `dirs` first, then `env`'s, minus any directory that already holds the navigation
+ * add-on, so a developer's own global install never stands in for the one a test chose.
+ */
+export const launchEnv = (env: NodeJS.ProcessEnv, ...dirs: string[]): NodeJS.ProcessEnv => ({
+  ...env,
+  PATH: [
+    ...dirs,
+    ...(env.PATH ?? "")
+      .split(delimiter)
+      .filter((dir) => dir !== "" && !existsSync(join(dir, navigationAddon.bin))),
+  ].join(delimiter),
+});
 
 export type Result = {
   readonly command: string;
@@ -72,6 +87,16 @@ export function run(
     if (options.stdin !== undefined) child.stdin?.end(options.stdin);
   });
 }
+
+/** npm beside the Node under test, with the runner's own npm cache. */
+export const npm = async (cwd: string, ...args: string[]) =>
+  succeeded(
+    await run(join(dirname(process.execPath), "npm"), [...args, "--no-audit", "--no-fund"], {
+      cwd,
+      env: { ...process.env, PATH: `${dirname(process.execPath)}${delimiter}${process.env.PATH}` },
+      timeout: 180_000,
+    }),
+  );
 
 const describeResult = (result: Result) =>
   `${result.command} exited ${result.exitCode ?? result.signal}\n--- stdout\n${result.stdout.slice(0, 20_000)}\n--- stderr\n${result.stderr.slice(0, 20_000)}`;

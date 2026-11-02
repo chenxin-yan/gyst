@@ -70,22 +70,41 @@ export type RangeRead =
 
 /**
  * Reads a target's lines and `context` lines around them through the `code` command of the
- * snapshot the target is pinned to, page by page until the requested end.
+ * snapshot the target is pinned to, page by page until the requested end. gyst refuses an end past
+ * the file's last line, so a target that close to the end is read on to the end, a few lines away.
  */
 export async function readRange(
   target: CapturedRange,
   read: CodeRead,
   context = 3,
 ): Promise<RangeRead> {
-  const pinned = pinnedRead(target);
   const startLine = Math.max(1, target.startLine - context);
-  const endLine = target.endLine + context;
+  try {
+    return await readLines(target, read, startLine, target.endLine + context);
+  } catch (error) {
+    if (
+      !(typeof error === "object" && error !== null && "_tag" in error) ||
+      error._tag !== "bad_args"
+    )
+      throw error;
+    return readLines(target, read, startLine, undefined);
+  }
+}
+
+async function readLines(
+  target: CapturedRange,
+  read: CodeRead,
+  startLine: number,
+  endLine: number | undefined,
+): Promise<RangeRead> {
+  const pinned = pinnedRead(target);
+  const end = endLine === undefined ? {} : { endLine };
   let text = "";
   let first: number | undefined;
   let offset: number | undefined;
   do {
     const { content } = await read(
-      offset === undefined ? { ...pinned, startLine, endLine } : { ...pinned, offset, endLine },
+      offset === undefined ? { ...pinned, startLine, ...end } : { ...pinned, offset, ...end },
     );
     if (content.kind !== "text")
       return { kind: "unavailable", reason: whyNoText(target.side, content) };

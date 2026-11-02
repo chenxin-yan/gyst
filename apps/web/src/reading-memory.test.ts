@@ -62,7 +62,7 @@ describe("reading memory", () => {
       lines: null,
       folded: new Set<string>(),
       restore: { scrollTop: 120 },
-      peek: { target, origin: { kind: "note", noteId: "span" } },
+      peek: { kind: "reference", target, origin: { kind: "note", noteId: "span" } },
     };
     const expanded: ReadingPlace = {
       ...placeAt("", undefined),
@@ -70,7 +70,7 @@ describe("reading memory", () => {
       captured: target,
       expandedOpened: new Map([["lib/x.ts", new Map([[1, { fromStart: 3, fromEnd: 0 }]])]]),
       expandedFolded: new Set(["lib/x.ts"]),
-      peek: { target, origin: { kind: "overview" } },
+      peek: { kind: "reference", target, origin: { kind: "overview" } },
       back: [origin],
       cursor: { file: "lib/x.ts", kind: "line", side: "additions", line: 5 },
       top: { position: { file: "lib/x.ts", side: "additions", line: 2 } },
