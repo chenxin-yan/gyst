@@ -181,7 +181,7 @@ carries its own fonts, highlighting and diagram renderer. It is read-only: group
 folds, layouts, full-file context, references with peek, expand and Back, and the reading keys work;
 it carries no conversations, Viewed progress, session id or local paths, makes no network request,
 and opens a web link only when you click it. It cannot be imported back into gyst. The reader itself
-is about 15 MiB; a 1,000-file export is about 20 MiB.
+is about 17 MiB; a 1,000-file export is about 23 MiB.
 
 ## Storage
 
