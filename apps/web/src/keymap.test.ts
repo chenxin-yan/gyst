@@ -91,6 +91,18 @@ describe("commands", () => {
         label(id, "linux"),
       ),
     ).toEqual([["Shift+j"], ["Shift+k"], ["] n"], ["[ n"], ["i"]]);
+    // The group bar's overview and Group viewed: shifted letters no sequence steps on.
+    expect(["groupOverview", "groupViewed"].map((id) => label(id, "linux"))).toEqual([
+      ["Shift+o"],
+      ["Shift+a"],
+    ]);
+    for (const sequence of sequences)
+      for (const key of sequence)
+        expect(
+          (["Shift+O", "Shift+A"] as const).some((own) => areHotkeysEqual(own, key)),
+          sequence.join(" "),
+        ).toBe(false);
+    expect(typed("Shift+O", { key: "o" })).toBe(false);
     expect(areHotkeysEqual("Shift+J", "J")).toBe(false);
     expect(typed("Shift+J", { key: "J" })).toBe(true);
     expect(typed("J", { key: "J" })).toBe(false);
@@ -102,6 +114,8 @@ describe("commands", () => {
         "nextNote",
         "previousNote",
         "toggleNotes",
+        "groupOverview",
+        "groupViewed",
       ]),
     );
   });
@@ -168,6 +182,7 @@ describe("commands", () => {
       "nextThread",
       "previousThread",
       "viewed",
+      "groupViewed",
       "refresh",
       "check",
       "export",

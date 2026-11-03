@@ -401,9 +401,17 @@ describe("walkthrough export", () => {
     expect(await pane.getByRole("checkbox").count()).toBe(0);
     expect(await page.getByText("PRIVATE-COMMENT-SENTINEL").count()).toBe(0);
 
-    // Group and file navigation, layouts and folds.
+    // The bar names each view and its size, never reading progress or Group viewed.
+    await pane.getByText("2 groups \u00b7 2 files \u00b7 2 hunks", { exact: true }).waitFor();
     await side.getByRole("button", { name: /^Quote the app line/ }).click();
     await expect.poll(() => headings(page)).toEqual(["src/app.ts"]);
+    await pane.getByText("Group 1 of 2", { exact: true }).waitFor();
+    await pane.getByText("1 file \u00b7 1 hunk", { exact: true }).waitFor();
+    expect(await pane.getByText(/\d+\/\d+ viewed/).count()).toBe(0);
+    expect(await pane.getByRole("button", { name: /Group viewed|Unmark group/ }).count()).toBe(0);
+    await keys(page, "Shift+A");
+    await pane.getByRole("region", { name: "Group overview" }).waitFor();
+    expect(await pane.getByText(/^Marked /).count()).toBe(0);
     await pane
       .getByText("'</script><script>window.hostileRan=1</script><!--'", { exact: false })
       .first()

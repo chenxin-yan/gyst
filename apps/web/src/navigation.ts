@@ -22,8 +22,17 @@ export type ReferencePeek = { kind: "reference"; target: CapturedRange; origin: 
 /** The open peek: a followed reference, or a semantic query under the code line it was asked on. */
 export type Peek = ReferencePeek | SemanticPeek;
 
-/** Where the reader is: a file and, inside its diff, the side and line at the top of the panel. */
-export type ReadingPosition = { file: string; side: Side | undefined; line: number | undefined };
+/**
+ * Where the reader is: a file and, inside its diff, the side and line at the top of the panel, with
+ * how far that line sat below the file's sticky header (`offset`, in pixels). The line is the first
+ * whole one there, so a hunk separator or note above it can be partly in view.
+ */
+export type ReadingPosition = {
+  file: string;
+  side: Side | undefined;
+  line: number | undefined;
+  offset?: number;
+};
 
 /**
  * What a restored panel scrolls to: a logical reading position, which survives reflow, or for an
@@ -46,6 +55,8 @@ export type Place = {
   folded: ReadonlySet<string>;
   restore: Restore;
   peek: Peek | undefined;
+  /** The group bar's reference Expand was followed from, focused again at the bar overview's offset. */
+  barReference?: { target: CapturedRange; overviewTop: number };
 };
 
 /** How to scroll back to a place left from `peek`: an overview's offset, or the reading position. */

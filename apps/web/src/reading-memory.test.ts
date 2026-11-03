@@ -17,6 +17,8 @@ const placeAt = (path: string, file: string | undefined): ReadingPlace => ({
   expandedFolded: new Set(),
   author: { shown: false, commits: undefined },
   top: file === undefined ? undefined : { position: { file, side: undefined, line: undefined } },
+  views: new Map(),
+  overviewsClosed: new Set(),
 });
 
 const hunk = (file: string, id: string, patch: string): Hunk => ({
@@ -27,6 +29,9 @@ const hunk = (file: string, id: string, patch: string): Hunk => ({
   contentHash: id,
 });
 const none: ReadonlySet<string> = new Set();
+const topAt = (line: number) => ({
+  position: { file: "lib/x.ts", side: "additions" as const, line, offset: 6 },
+});
 const x = hunk("lib/x.ts", "x1", "@@ -9 +9 @@\n-a\n+b");
 const y = hunk("lib/y.ts", "y1", "@@ -3 +3 @@\n-c\n+d");
 
@@ -87,7 +92,7 @@ describe("reading memory", () => {
       inputMode: "mouse",
       cursor: { file: "lib/x.ts", kind: "line", side: "additions", line: 10 },
       opened: new Map([["lib/x.ts", new Map([[0, { fromStart: 20, fromEnd: 0 }]])]]),
-      top: { position: { file: "lib/x.ts", side: "deletions", line: 9 } },
+      top: { position: { file: "lib/x.ts", side: "deletions", line: 9, offset: 5 } },
     };
     remember("d", "old", [wide, y], deep);
     // Only y.ts changed: x.ts reads the same, so the reader is where they were.
@@ -101,7 +106,7 @@ describe("reading memory", () => {
       ...deep,
       cursor: { file: "lib/x.ts", kind: "line", side: "additions", line: 12 },
       opened: new Map(),
-      top: { position: { file: "lib/x.ts", side: "deletions", line: 10 } },
+      top: { position: { file: "lib/x.ts", side: "deletions", line: 10, offset: 5 } },
     } satisfies ReadingPlace;
     expect(recall("d", "new", [moved, y], none)).toEqual(shifted);
     // A Generated file the reader is inside stays unfolded, so the place is there to return to;
@@ -142,6 +147,53 @@ describe("reading memory", () => {
     const overview: ReadingPlace = { ...placeAt("", undefined), top: { scrollTop: 40 } };
     remember("d", "new", [x], overview);
     expect(recall("d", "newer", [moved], none)).toEqual(overview);
+  });
+
+  it("keeps where the reader left each other view, moved with the hunks a refresh kept", () => {
+    // x.ts's hunk covers new lines 8-11.
+    const wide = hunk("lib/x.ts", "x1", "@@ -8,3 +8,4 @@\n c8\n-a\n+b\n+b2\n c10");
+    const inX: Cursor = { file: "lib/x.ts", kind: "line", side: "additions", line: 10 };
+    const left: ReadingPlace = {
+      ...placeAt("", "lib/y.ts"),
+      views: new Map([
+        ["group:core", { top: topAt(9), cursor: inX }],
+        ["files:lib/y.ts", { top: { scrollTop: 30 }, cursor: undefined }],
+      ]),
+      overviewsClosed: new Set(["core"]),
+    };
+    remember("v", "old", [wide, y], left);
+    expect(recall("v", "old", [wide, y], none)).toEqual(left);
+    // Only y.ts changed: the core group's place keeps its line and the pixel it sat at.
+    const yChanged = { ...y, patch: "@@ -3 +3 @@\n-c\n+e" };
+    expect(recall("v", "new", [wide, yChanged], none)?.views.get("group:core")).toEqual({
+      top: topAt(9),
+      cursor: inX,
+    });
+    // The hunk moved two lines down: the core group's place and cursor move with it.
+    const header = "@@ -8,3 +10,4 @@";
+    const moved = { ...wide, header, patch: wide.patch.replace("@@ -8,3 +8,4 @@", header) };
+    // A group's overview closed stays closed: the group outlives a refresh by its id.
+    expect(recall("v", "new", [moved, y], none)?.overviewsClosed).toEqual(new Set(["core"]));
+    expect(recall("v", "new", [moved, y], none)?.views).toEqual(
+      new Map([
+        ["group:core", { top: topAt(11), cursor: { ...inX, line: 12 } }],
+        ["files:lib/y.ts", { top: { scrollTop: 30 }, cursor: undefined }],
+      ]),
+    );
+    // An edited hunk keeps only its file, and an offset taken under the author's explanation goes.
+    const edited = hunk("lib/x.ts", "x2", "@@ -8,3 +8,4 @@\n c8\n-a\n+B\n+b2\n c10");
+    remember("v", "old", [wide, y], { ...left, author: { shown: true, commits: undefined } });
+    expect(recall("v", "new", [edited, y], none)?.views).toEqual(
+      new Map([
+        [
+          "group:core",
+          {
+            top: { position: { file: "lib/x.ts", side: undefined, line: undefined } },
+            cursor: undefined,
+          },
+        ],
+      ]),
+    );
   });
 
   it("keeps the author's explanation shown with its read commits for the same snapshot, and not past a refresh", () => {

@@ -32,6 +32,8 @@ export type CommandId =
   | "comments"
   | "nextGroup"
   | "previousGroup"
+  | "groupOverview"
+  | "groupViewed"
   | "toggleNotes"
   | "search"
   | "nextMatch"
@@ -108,6 +110,18 @@ export const commands: readonly Command[] = [
   { id: "comments", keys: [["Shift+C"]], label: "All comments" },
   { id: "nextGroup", keys: [["Shift+J"]], label: "Next walkthrough group" },
   { id: "previousGroup", keys: [["Shift+K"]], label: "Previous walkthrough group" },
+  // No sequence has a step `O` or `A`: `zo` and `za` end on the lowercase keys. `Shift+M` would be
+  // the second step of `zM`, so a slow `z` then `M` would mark a whole group.
+  {
+    id: "groupOverview",
+    keys: [["Shift+O"]],
+    label: "Show the group's overview, then more of it, then hide it",
+  },
+  {
+    id: "groupViewed",
+    keys: [["Shift+A"]],
+    label: "Mark every hunk of the group Viewed, or unmark them all",
+  },
   { id: "toggleNotes", keys: [["I"]], label: "Show or collapse every note" },
   { id: "search", keys: [["/"]], label: "Search the current view" },
   { id: "nextMatch", keys: [["N"]], label: "Next search match" },
@@ -179,6 +193,7 @@ const liveOnly: ReadonlySet<CommandId> = new Set([
   "nextThread",
   "previousThread",
   "viewed",
+  "groupViewed",
   "refresh",
   "check",
   "export",

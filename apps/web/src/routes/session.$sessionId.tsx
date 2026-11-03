@@ -94,6 +94,7 @@ import {
   type Cursor,
   edge,
   fileStep,
+  type HiddenRange,
   hiddenRanges,
   lineOn,
   type Model,
@@ -108,6 +109,8 @@ import {
 } from "../cursor.ts";
 import { CapturedHeader, useWholeSides } from "../expanded.tsx";
 import { ExportDialog, StandaloneTitle } from "../export.tsx";
+import { GroupBar, useGroupOverview } from "../group-bar.tsx";
+import { storedInputMode, storeInputMode } from "../input-mode.ts";
 import { contentLoader, hydrationConcurrency, hydrationWindow, nearbyItems } from "../hydration.ts";
 import { type Command, type CommandId, commandsFor, type InputMode, typed } from "../keymap.ts";
 import {
@@ -155,7 +158,14 @@ import {
   treeOf,
   wholeFileType,
 } from "../reader.ts";
-import { type Folds, type ReadingPlace, recall, remember, viewKey } from "../reading-memory.ts";
+import {
+  type Folds,
+  type ReadingPlace,
+  recall,
+  remember,
+  viewKey,
+  type ViewPlace,
+} from "../reading-memory.ts";
 import {
   diffText,
   type Hit,
@@ -191,6 +201,7 @@ import {
 import {
   annotationsOf,
   type DiffAnnotation,
+  groupViewedChange,
   type NoteFrom,
   noteSequence,
   noteStep,
@@ -554,7 +565,10 @@ function SessionReader(props: {
   const [mode, setMode] = useState<LayoutMode>("auto");
   const [width, setWidth] = useState(0);
   const [loads, setLoads] = useState<ReadonlyMap<string, FileLoad>>(new Map());
-  const [inputMode, setInputMode] = useState<InputMode>(recalled?.inputMode ?? "vim");
+  const [inputMode, setInputMode] = useState<InputMode>(
+    () => recalled?.inputMode ?? storedInputMode() ?? "vim",
+  );
+  useEffect(() => storeInputMode(inputMode), [inputMode]);
   const [cursor, setCursor] = useState<Cursor | undefined>(recalled?.cursor);
   const [lines, setLines] = useState<CodeViewLineSelection | null>(null);
   // Folds belong to the view they were made in, and an expanded reference folds on its own. A
@@ -570,6 +584,8 @@ function SessionReader(props: {
   // Hidden lines opened per file. They live here, not in the renderer, which forgets them with
   // an item it drops; bumping the version re-reads the cursor model after the renderer opened some.
   const [opened] = useState(() => recalled?.opened ?? new Map<string, Map<number, Opened>>());
+  // Where the reader left each other view, so a return resumes there; kept in place, as `opened`.
+  const [views] = useState(() => new Map<string, ViewPlace>(recalled?.views));
   const [openedVersion, setOpenedVersion] = useState(0);
   const viewer = useRef<Viewer>(null);
   // The main panel's scroller while the view has no changes to show, so no viewer.
@@ -605,6 +621,10 @@ function SessionReader(props: {
     key: 0,
     restore: undefined,
   });
+  // Where the panel lands after a view change, instead of keeping the position it showed.
+  const [landing, setLanding] = useState<{ restore: Restore | undefined }>();
+  // What the last Group viewed changed, said in that group's bar.
+  const [marked, setMarked] = useState<{ group: string; said: string; viewed: boolean }>();
   const [spacer, setSpacer] = useState<HTMLDivElement | null>(null);
   const peekHandle = useRef<PeekHandle>(null);
   // The control a peek was followed from, focused again when the peek closes. The renderer
@@ -691,6 +711,7 @@ function SessionReader(props: {
         : viewFiles(review, files, status),
     [captured, capturedFile, capturedEntry, review, files, status],
   );
+  const disclosure = useGroupOverview(inView.group, recalled?.overviewsClosed);
   const shown = inView.files;
   const shownPaths = useMemo(() => shown.map((file) => file.path), [shown]);
   const shownByPath = useMemo(() => new Map(shown.map((file) => [file.path, file])), [shown]);
@@ -929,6 +950,8 @@ function SessionReader(props: {
     expandedFolded,
     author: { shown: authorShown, commits: rangeCommits.read },
     top: recalled?.top,
+    views,
+    overviewsClosed: disclosure.closed,
   });
   readingPlace.current = {
     ...readingPlace.current,
@@ -942,6 +965,7 @@ function SessionReader(props: {
     folds,
     expandedFolded,
     author: { shown: authorShown, commits: rangeCommits.read },
+    overviewsClosed: disclosure.closed,
   };
   useEffect(() => remember(session.id, snapshotId, hunks, readingPlace.current));
   const returning = useRef(recalled !== undefined);
@@ -1132,9 +1156,11 @@ function SessionReader(props: {
         model.rows(top.file).some((row) => row.kind === "line" && lineOn(row, side) === top.line));
     if (ready) {
       returning.current = false;
-      const mark = { file: top.file, side, ...(top.line !== undefined && { line: top.line }) };
-      // After the renderer's next frame, which lays out the lines it has just opened again.
-      requestAnimationFrame(() => requestAnimationFrame(() => viewer.current?.reveal(mark, "top")));
+      // After the renderer's next frame, which lays out the lines it has just opened again. Landed
+      // as a view's own return is, so the line keeps how far below the file header it was left.
+      requestAnimationFrame(() =>
+        requestAnimationFrame(() => setLanding({ restore: { position: top } })),
+      );
     } else if (!fileRevealed.current) {
       fileRevealed.current = true;
       view.reveal({ file: top.file, side }, "top");
@@ -1176,6 +1202,14 @@ function SessionReader(props: {
     if (then && vim) viewer.current?.reveal({ file: then.file, side: then.side }, "nearest");
   };
 
+  /** Records a hidden range as opened whole, so the cursor model and the renderer show its lines. */
+  const recordOpened = (file: string, range: HiddenRange) => {
+    const byRange = openedNow.get(file) ?? new Map<number, Opened>();
+    byRange.set(range.index, { fromStart: range.size, fromEnd: 0 });
+    openedNow.set(file, byRange);
+    setOpenedVersion((version) => version + 1);
+  };
+
   /** Opens a hidden range whole and puts the cursor on its first line once the sides are loaded. */
   const openRange = (target: Extract<Cursor, { kind: "range" }>) => {
     const diff = diffs.get(target.file);
@@ -1185,10 +1219,7 @@ function SessionReader(props: {
     viewer.current?.expand(target.file, range.index, range.size);
     // A partial diff opens once its sides load; the renderer reports it back after hydration.
     if (diff.isPartial || row?.line === undefined) return;
-    const byRange = openedNow.get(target.file) ?? new Map<number, Opened>();
-    byRange.set(range.index, { fromStart: range.size, fromEnd: 0 });
-    openedNow.set(target.file, byRange);
-    setOpenedVersion((version) => version + 1);
+    recordOpened(target.file, range);
     const offset = row.line - range.new;
     const side = layout === "split" ? target.side : "additions";
     go({
@@ -1373,8 +1404,26 @@ function SessionReader(props: {
           : `${matchHere ? indexOf(searchResult, matchHere) + 1 : "–"}/${searchResult.total}`;
 
   // ─── captured-code navigation ───
-  /** A view the reader picks: it leaves any expanded reference, and Back starts over. */
-  const chooseView = (view: ReviewView) => {
+  /**
+   * A view the reader picks: it leaves any expanded reference, and Back starts over. The view left
+   * keeps its place and cursor, where a return resumes. A reference followed to a line lands there,
+   * its file unfolded in that view. A group first entered starts at its top, the cursor on its first
+   * file: keeping the position or the cursor in a file it shares with the view left would land
+   * mid-group.
+   */
+  const chooseView = (view: ReviewView, at?: { file: string; side: Side; line: number }) => {
+    const to = viewKey(view);
+    const leaving = to !== shownView;
+    const left = captured === undefined && leaving ? viewer.current?.position() : undefined;
+    if (left) views.set(shownView, { top: restoreFor(undefined, left), cursor: current });
+    // An expanded reference keeps the view it was expanded over, which is left all the same.
+    const saved =
+      at === undefined && (leaving || captured !== undefined) ? views.get(to) : undefined;
+    const enters =
+      at === undefined &&
+      saved === undefined &&
+      view.kind === "group" &&
+      (captured !== undefined || leaving);
     setReview(view);
     const chosen = viewKey(view);
     setViewFolds((before) =>
@@ -1382,9 +1431,110 @@ function SessionReader(props: {
     );
     setPeek(undefined);
     setBack([]);
-    if (captured === undefined) return;
+    setMarked(undefined);
+    returning.current = false;
+    if (saved) setCursor(saved.cursor);
+    else if (enters) setCursor(undefined);
+    const restore: Restore | undefined = at ? { position: at } : saved?.top;
+    if (at) {
+      setViewFolds((before) => {
+        const there = before.get(to) ?? generated;
+        if (!there.has(at.file)) return before;
+        const after = new Set(there);
+        after.delete(at.file);
+        return new Map(before).set(to, after);
+      });
+      setCursor({ file: at.file, kind: "line", side: at.side, line: at.line });
+    }
+    // A view with nothing to show has no reader to land: the next one starts at the place.
+    if (captured === undefined && viewer.current !== null)
+      return (restore !== undefined || enters) && setLanding({ restore });
     setCaptured(undefined);
-    setPanel(({ key }) => ({ key: key + 1, restore: undefined }));
+    setPanel(({ key }) => ({ key: key + 1, restore }));
+  };
+
+  /**
+   * Goes from the group bar to a reference's line when it is in a changed file of the current
+   * snapshot, opening the hidden range it sits in as `zo` would: in the shown group if it holds the
+   * file, else in the file's group, else in the file's own view. False for anything else, which the
+   * bar expands instead.
+   */
+  const jumpTo = (target: CapturedRange) => {
+    if (target.snapshotId !== snapshotId || !byPath.has(target.path)) return false;
+    const side: Side = target.side === "old" ? "deletions" : "additions";
+    const line = target.startLine;
+    const at = { file: target.path, side, line };
+    const owner = inView.group?.files.includes(target.path)
+      ? inView.group
+      : status.groups.find((group) => group.files.includes(target.path));
+    const view: ReviewView = owner
+      ? { kind: "group", id: owner.id }
+      : { kind: "files", path: target.path };
+    if (
+      !unfoldedRows(target.path).some((row) => row.kind === "line" && lineOn(row, side) === line)
+    ) {
+      const diff = diffs.get(target.path);
+      const range =
+        diff &&
+        hiddenRanges(diff).find((candidate) => {
+          const start = side === "deletions" ? candidate.old : candidate.new;
+          return line >= start && line < start + candidate.size;
+        });
+      // shortcut: an unloaded file's trailing range has no size yet, so a link into it expands;
+      // read the file's length first if such links turn up.
+      if (range === undefined) return false;
+      viewer.current?.expand(target.path, range.index, range.size);
+      recordOpened(target.path, range);
+      shownJump.current = {
+        at,
+        view: viewKey(view),
+        newLine: range.new + line - (side === "deletions" ? range.old : range.new),
+      };
+    }
+    chooseView(view, at);
+    return true;
+  };
+
+  /**
+   * A jump into hidden lines it just opened, landed on again once the renderer shows them
+   * (`newLine` is the line's new-side number): landed on before, it stops at the range they were
+   * hidden in. A file whose sides are still loading shows them once they load, which the renderer
+   * reports through `onOpened`. Dropped once the reader moves the cursor, scrolls by hand, chooses
+   * another view or expands a reference.
+   */
+  const shownJump = useRef<{
+    at: { file: string; side: Side; line: number };
+    view: string;
+    newLine: number;
+  }>(undefined);
+  useEffect(() => {
+    const jump = shownJump.current;
+    if (jump === undefined) return;
+    const { at } = jump;
+    if (
+      captured !== undefined ||
+      shownView !== jump.view ||
+      cursor?.kind !== "line" ||
+      cursor.file !== at.file ||
+      cursor.line !== at.line
+    )
+      return void (shownJump.current = undefined);
+    if (!viewer.current?.renders(at.file, jump.newLine)) return;
+    shownJump.current = undefined;
+    // After the renderer's next frame, which lays out the lines it has just opened.
+    requestAnimationFrame(() =>
+      requestAnimationFrame(() => setLanding({ restore: { position: at } })),
+    );
+  });
+
+  /** Group viewed: one Viewed write over the shown group's hunks, said in its bar. Folds nothing. */
+  const groupViewed = () => {
+    const group = inView.group;
+    if (group === undefined || group.hunkIds.length === 0) return;
+    const asked = groupViewedChange(group, files, progress.state.viewed);
+    if (!progress.write(`group:${group.id}`, group.hunkIds, asked.viewed))
+      return setNotice("Another Viewed change is still saving; try again.");
+    setMarked({ group: group.id, ...asked });
   };
 
   /** Opens a reference's peek where it was followed, in place of any other. */
@@ -1408,9 +1558,16 @@ function SessionReader(props: {
     else setRefocus({ origin: peek.origin, target: peek.target });
   };
 
-  /** Shows a peek's target in the main panel; Back returns to this place and this peek. */
-  const expand = (target: CapturedRange) => {
-    const at = viewer.current?.position() ?? { position: undefined, scrollTop: 0 };
+  /**
+   * Shows a peek's target in the main panel; Back returns to this place and this peek, or to the
+   * group bar's reference it was followed from (`fromBar`). Leaving the view, it keeps the view's
+   * place as choosing another view would.
+   */
+  const expand = (target: CapturedRange, fromBar = false) => {
+    const shownAt = viewer.current?.position();
+    if (captured === undefined && shownAt)
+      views.set(shownView, { top: restoreFor(undefined, shownAt), cursor: current });
+    const at = shownAt ?? { position: undefined, scrollTop: 0 };
     const origin: Place = {
       review,
       captured,
@@ -1419,6 +1576,9 @@ function SessionReader(props: {
       folded,
       restore: restoreFor(peek, at),
       peek,
+      ...(fromBar && {
+        barReference: { target, overviewTop: disclosure.region.current?.scrollTop ?? 0 },
+      }),
     };
     setBack((stack) => pushed(stack, origin));
     expandedOpened.current = new Map();
@@ -1449,6 +1609,9 @@ function SessionReader(props: {
     setExpandedFolded(to.folded);
     setPeek(to.peek);
     setPanel(({ key }) => ({ key: key + 1, restore: to.restore }));
+    if (to.barReference === undefined) return;
+    disclosure.top.current = to.barReference.overviewTop;
+    setRefocus({ origin: { kind: "overview" }, target: to.barReference.target });
   };
 
   // An expanded target scrolls into view once its file's lines are there to show; a place Back
@@ -1556,17 +1719,18 @@ function SessionReader(props: {
       )
     );
 
-  // The view's overview: a group's, with its notes on earlier code, or the walkthrough's above the
-  // whole snapshot.
+  // The view's overview: a group's in the group bar, with its notes on earlier code, or the
+  // walkthrough's above the whole snapshot. The bar is too small to read a peek in, so a reference
+  // there goes to its line in a changed file or expands; its notes on earlier code keep their peeks.
   const earlierNotes =
     inView.group?.notes.filter(({ anchor }) => anchor.snapshotId !== snapshotId) ?? [];
-  const overviewHeader = inView.group ? (
+  const groupOverview = inView.group && (
     <OverviewCard
       label="Group overview"
-      title={inView.group.title}
       overview={inView.group.overview}
       outdated={outdatedReason(inView.group.overview?.outdated, inView.group.hunkIds.length === 0)}
-      onReference={(target) => follow(target, { kind: "overview" })}
+      onReference={(target) => jumpTo(target) || expand(target, true)}
+      frameless
       earlierNotes={
         earlierNotes.length > 0 && (
           <section aria-label="Notes on earlier code" {...stylex.props(styles.earlierNotes)}>
@@ -1588,7 +1752,8 @@ function SessionReader(props: {
       peek={peek?.origin.kind === "overview" && peekOf()}
       refocus={refocus?.origin.kind === "overview" ? refocus.target : undefined}
     />
-  ) : (
+  );
+  const walkthroughOverview = inView.group === undefined &&
     review.kind === "files" &&
     review.path === "" &&
     status.overview && (
@@ -1600,8 +1765,7 @@ function SessionReader(props: {
         peek={peek?.origin.kind === "overview" && peekOf()}
         refocus={refocus?.origin.kind === "overview" ? refocus.target : undefined}
       />
-    )
-  );
+    );
 
   // A refresh whose reply did not arrive is sent again under its own id, so a lost acknowledgement
   // gets the recorded result instead of refreshing twice; any reply settles it.
@@ -1993,6 +2157,10 @@ function SessionReader(props: {
       const next = groups[id === "nextGroup" ? at + 1 : at === -1 ? groups.length - 1 : at - 1];
       return next && chooseView({ kind: "group", id: next.id });
     }
+    if ((id === "groupOverview" || id === "groupViewed") && inView.group === undefined)
+      return setNotice("Open a walkthrough group first.");
+    if (id === "groupOverview") return disclosure.toggle(true);
+    if (id === "groupViewed") return groupViewed();
     if (id === "toggleNotes") {
       const ids = notes.map(({ note }) => note.id);
       const collapse = ids.some((note) => !collapsedNotes.has(note));
@@ -2021,6 +2189,15 @@ function SessionReader(props: {
       if (lines !== null) return setLines(null);
       if (searchShown) return closeSearch();
       return peek !== undefined ? closePeek() : setExpandedThread(undefined);
+    }
+    // While the group overview has focus, movement scrolls it rather than the code behind it.
+    const overview = disclosure.region.current;
+    if (
+      overview?.contains(document.activeElement) &&
+      (id === "down" || id === "up" || id === "halfDown" || id === "halfUp")
+    ) {
+      const step = id === "down" || id === "up" ? lineStep : overview.clientHeight / 2;
+      return overview.scrollBy({ top: (id === "down" || id === "halfDown" ? 1 : -1) * step });
     }
     if (!vim) {
       // Mouse mode: movement scrolls; folds and Viewed act on the file at the top of the panel.
@@ -2409,10 +2586,25 @@ function SessionReader(props: {
         </>
       }
     >
+      {captured === undefined && (
+        <GroupBar
+          status={status}
+          review={review}
+          group={inView.group}
+          files={files}
+          size={{ files: shown.length, hunks: hunkCount, viewed: viewedCount }}
+          viewed={progress.state.viewed}
+          overview={groupOverview}
+          disclosure={disclosure}
+          box={inView.group && checkboxOf(progress.state, `group:${inView.group.id}`, [])}
+          marked={marked?.group === inView.group?.id ? marked : undefined}
+          onView={chooseView}
+          onGroupViewed={groupViewed}
+        />
+      )}
       {shown.length === 0 ? (
         <div ref={alone} {...stylex.props(styles.alone)}>
           {authorCard && <div {...stylex.props(styles.emptyHeader)}>{authorCard}</div>}
-          {inView.group && <div {...stylex.props(styles.emptyHeader)}>{overviewHeader}</div>}
           <p {...stylex.props(styles.empty)}>
             {files.length === 0 ? (
               "This session's snapshot has no changes."
@@ -2453,7 +2645,7 @@ function SessionReader(props: {
                   onRetry={() => wholeSides.load(captured)}
                 />
               ) : (
-                overviewHeader
+                walkthroughOverview
               )}
               {peekPlace &&
                 peekOf({ spacer, extent: () => viewer.current?.extentOf(peekPlace.file) })}
@@ -2464,6 +2656,7 @@ function SessionReader(props: {
           expandUnchanged={captured !== undefined}
           target={captured}
           restore={panel.restore}
+          landing={landing}
           onPaint={() => peekHandle.current?.place()}
           renderAnnotation={(annotation) => {
             if (annotation.kind === "thread") {
@@ -2542,6 +2735,7 @@ function SessionReader(props: {
           }}
           onManualScroll={() => {
             returning.current = false;
+            shownJump.current = undefined;
             pullBack();
           }}
           onPosition={onPosition}
@@ -2838,6 +3032,8 @@ function ContinuousDiff(props: {
   target: CapturedRange | undefined;
   /** Where the panel starts, read once when it mounts. */
   restore: Restore | undefined;
+  /** Where the panel lands, each time another is given, instead of keeping its position. */
+  landing: { restore: Restore | undefined } | undefined;
   /** After each repaint of the overlays: the diff may have moved under them. */
   onPaint: () => void;
   loadDiffFiles: FileDiffContentsLoader;
@@ -2895,7 +3091,12 @@ function ContinuousDiff(props: {
       const top = viewer.getTopForItem(id);
       if (top === undefined || seen < top || seen >= top + instance.height) continue;
       const anchor = instance.getNumericScrollAnchor(seen - top);
-      position.current = { file: id, side: anchor?.side, line: anchor?.lineNumber };
+      position.current = {
+        file: id,
+        side: anchor?.side,
+        line: anchor?.lineNumber,
+        ...(anchor && { offset: anchor.top - (seen - top) }),
+      };
       latest.current.onPosition({ position: position.current });
       return;
     }
@@ -3177,7 +3378,12 @@ function ContinuousDiff(props: {
           ?.getInstance()
           ?.getRenderedItems()
           .find((item) => item.id === file);
-        return rendered?.type === "diff" && rendered.instance.isLineRenderable(line);
+        // A partial diff counts every line renderable, though it shows none of its hidden ones.
+        return (
+          rendered?.type === "diff" &&
+          rendered.instance.fileDiff?.isPartial === false &&
+          rendered.instance.isLineRenderable(line)
+        );
       },
       height: () => node().clientHeight,
       scrollBy(pixels) {
@@ -3223,12 +3429,15 @@ function ContinuousDiff(props: {
   /**
    * Keeps the hidden lines the reader opened and the renderer's own in step after a render: lines
    * the renderer opened (a click) are recorded, and lines it forgot (it dropped and rebuilt the
-   * item) are opened again. Loaded sides only: a partial diff opens nothing yet.
+   * item) are opened again. Loaded sides only: a partial diff opens nothing yet, so lines opened
+   * in it are reported once its sides load and the renderer shows them.
    */
+  const openedWhilePartial = useRef(new Set<string>());
   const syncOpened = useCallback((file: string, instance: FileDiff<DiffAnnotation>) => {
     const diff = instance.fileDiff;
-    if (diff === undefined || diff.isPartial) return;
     const { opened, onOpened } = latest.current;
+    if (diff?.isPartial && opened.has(file)) openedWhilePartial.current.add(file);
+    if (diff === undefined || diff.isPartial) return;
     const byRange = opened.get(file) ?? new Map<number, Opened>();
     let changed = false;
     let reopened = false;
@@ -3253,8 +3462,9 @@ function ContinuousDiff(props: {
       changed = true;
     }
     if (changed) opened.set(file, byRange);
-    // Opened again too: a return to a reading place inside these lines waits for them.
-    if (changed || reopened) onOpened();
+    // Opened again or shown at last too: a return or a jump to a place inside these lines waits
+    // for them.
+    if (openedWhilePartial.current.delete(file) || changed || reopened) onOpened();
   }, []);
 
   // One item per file, reused while its fold and metadata are unchanged so the renderer keeps its
@@ -3437,9 +3647,21 @@ function ContinuousDiff(props: {
     [onWidth, paint],
   );
 
-  // Restore the logical position after a layout switch or a new selection that still holds it.
-  // A layout effect: it reads the position before any capture from the renderer's own re-render.
+  // Restore the logical position after a layout switch or a new selection that still holds it, or
+  // land where the reader was sent. A layout effect: it reads the position before any capture from
+  // the renderer's own re-render. A landing is the renderer's own instant scroll to its row, which
+  // it keeps anchored while it measures the rows above; a smooth scroll would be cut short by that
+  // re-anchoring. The panel sits below the group bar, so its top is already below the bar.
+  const landed = useRef(props.landing);
   useLayoutEffect(() => {
+    if (props.landing !== landed.current) {
+      landed.current = props.landing;
+      // A smooth scroll still on its way, from a key pressed just before, would carry on past it.
+      root.current?.scrollTo({ top: root.current.scrollTop, behavior: "instant" });
+      const target = props.landing?.restore;
+      position.current = target && "position" in target ? target.position : undefined;
+      restoreTop.current = target && "scrollTop" in target ? target.scrollTop : undefined;
+    }
     const at = position.current;
     pendingTop.current = undefined;
     manualAt.current = -Infinity;
@@ -3467,6 +3689,7 @@ function ContinuousDiff(props: {
             lineNumber: at.line,
             ...(at.side && { side: at.side }),
             align: "start",
+            offset: at.offset ?? 0,
           },
     );
     // Queued after the renderer's frame for that scroll, so its post-render captures are skipped.
@@ -3476,7 +3699,7 @@ function ContinuousDiff(props: {
       restoredTop.current = view.current?.getInstance()?.getScrollTop();
     });
     return () => cancelAnimationFrame(frame);
-  }, [layout, props.files]);
+  }, [layout, props.files, props.landing]);
   // A note that leaves with its view never reports the pointer leaving it.
   useLayoutEffect(() => {
     highlighted.current = undefined;
