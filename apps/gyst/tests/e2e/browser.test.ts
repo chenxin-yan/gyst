@@ -322,8 +322,13 @@ const barOn = (page: Page, text: string) =>
     }
     return false;
   }, `the cursor bar on ${text}`);
-/** The number of the first `lines` line (src/long.ts's) wholly below the sticky file header at the panel's top. */
-const topLine = async (page: Page, lines = /^export const line\d+ = /) => {
+/**
+ * What the reader sees at the panel's top: the first `lines` line (src/long.ts's) wholly below the
+ * sticky file header, as `text @ y`, `y` its distance below the panel's top. A return to a place is
+ * checked by this, not by the panel's scroll offset, which the renderer only estimates for rows it
+ * has not drawn since their annotations changed.
+ */
+const seenAtTop = async (page: Page, lines = /^export const line\d+ = /) => {
   const pane = page.getByRole("main");
   // The scrolling panel, not the pane: a group bar above it takes the pane's top.
   const panel = await pane
@@ -334,19 +339,31 @@ const topLine = async (page: Page, lines = /^export const line\d+ = /) => {
       while (at && getComputedStyle(at).overflowY !== "auto") at = at.parentElement;
       return { y: at!.getBoundingClientRect().top };
     });
-  const tops = await pane
-    .getByText(lines)
-    .evaluateAll((copies) =>
-      copies.map((copy) => [
-        Number(/(\d+) = /.exec(copy.textContent ?? "")![1]),
-        copy.getBoundingClientRect().top,
-      ]),
-    );
-  const below = tops
-    .filter(([, top]) => top! >= panel.y + 34 - 2)
-    .toSorted(([, a], [, b]) => a! - b!);
-  return below[0]?.[0];
+  const tops = await pane.getByText(lines).evaluateAll((copies) =>
+    copies.map((copy) => ({
+      text: copy.textContent ?? "",
+      top: copy.getBoundingClientRect().top,
+    })),
+  );
+  const first = tops
+    .filter(({ top }) => top >= panel.y + 34 - 2)
+    .toSorted((a, b) => a.top - b.top)[0];
+  return first && `${first.text} @ ${(first.top - panel.y).toFixed(1)}`;
 };
+/** The number of the first `lines` line (src/long.ts's) wholly below the sticky file header at the panel's top. */
+const topLine = async (page: Page, lines = /^export const line\d+ = /) => {
+  const seen = await seenAtTop(page, lines);
+  return seen === undefined ? undefined : Number(/(\d+) = /.exec(seen)![1]);
+};
+/** Expects the reader to see the line seen at the top `before` again, within 2 px of where it was. */
+const seesAgain = (now: string | undefined, before: string | undefined) => {
+  const [text, y] = now!.split(" @ ");
+  const [was, at] = before!.split(" @ ");
+  expect(text).toBe(was);
+  expect(Math.abs(Number(y) - Number(at))).toBeLessThan(2);
+};
+/** Walkthrough files' lines (walk/a.ts, walk/b.ts, walk/c.ts). */
+const walkLines = /^export const [abc]\d+ = /;
 /** Waits until `read` gives the same value twice, 200 ms apart, as once a scroll settled. */
 const steady = async <T>(read: () => Promise<T>) => {
   let last = await read();
@@ -4259,14 +4276,14 @@ describe("installed gyst in a sandboxed browser", () => {
     await headingsAre(page, ["walk/b.ts", "walk/a.ts"]);
     expect(await steady(() => panelTop(page))).toBe(0);
     await keys(page, "Control+d");
-    const read = await steady(() => panelTop(page));
-    expect(read).toBeGreaterThan(0);
+    expect(await steady(() => panelTop(page))).toBeGreaterThan(0);
+    const read = await steady(() => seenAtTop(page, walkLines));
     await keys(page, "Shift+J");
     await headingsAre(page, ["walk/c.ts", "walk/a.ts"]);
     expect(await steady(() => panelTop(page))).toBe(0);
     await keys(page, "Shift+K");
     await headingsAre(page, ["walk/b.ts", "walk/a.ts"]);
-    expect(Math.abs((await steady(() => panelTop(page)))! - read!)).toBeLessThan(2);
+    seesAgain(await steady(() => seenAtTop(page, walkLines)), read);
     // A short overview hides nothing, so its key closes it, then opens it again.
     const toggle = pane.getByRole("button", { name: /^Overview/ });
     await keys(page, "Shift+O");
@@ -4403,8 +4420,8 @@ describe("installed gyst in a sandboxed browser", () => {
     await headingsAre(page, ["walk/b.ts", "walk/a.ts"]);
     await keys(page, "]", "f", "]", "c", "]", "c");
     await says(page, "a.ts:20 \u00b7 new");
-    const left = await steady(() => panelTop(page));
-    expect(left).toBeGreaterThan(0);
+    expect(await steady(() => panelTop(page))).toBeGreaterThan(0);
+    const left = await steady(() => seenAtTop(page, walkLines));
     await keys(page, "Shift+J");
     await headingsAre(page, ["walk/c.ts", "walk/a.ts"]);
     await says(page, "c.ts \u00b7 file");
@@ -4412,17 +4429,12 @@ describe("installed gyst in a sandboxed browser", () => {
     await headingsAre(page, ["walk/b.ts", "walk/a.ts"]);
     await says(page, "a.ts:20 \u00b7 new");
     // Kept as the line at the panel's top and how far below the file header it sat: the same pixels.
-    expect(Math.abs((await steady(() => panelTop(page)))! - left!)).toBeLessThan(2);
+    seesAgain(await steady(() => seenAtTop(page, walkLines)), left);
     // A path's view too: a.ts's own view, left at its last change, is that change on return.
     await side.getByRole("button", { name: "walk/a.ts (modified)", exact: true }).click();
     await headingsAre(page, ["walk/a.ts"]);
     await keys(page, "Shift+G");
-    // TODO: Compare the panel's offset again once https://github.com/pierrecomputer/pierre/issues/1250
-    // is fixed. Until then, on screen: @pierre/diffs 1.6.2 keeps the height it measured for an
-    // offscreen row's annotation after the view drops it, until it draws that row again.
-    const barTop = async () => (await cursorBar(page).boundingBox())?.y;
-    const bottom = await steady(barTop);
-    expect(bottom).toBeDefined();
+    const bottom = await steady(() => seenAtTop(page, walkLines));
     const reading = (await statusLine(page)
       .getByText(/^a\.ts/)
       .textContent())!;
@@ -4430,18 +4442,18 @@ describe("installed gyst in a sandboxed browser", () => {
     await says(page, "c.ts \u00b7 file");
     await side.getByRole("button", { name: "walk/a.ts (modified)", exact: true }).click();
     await says(page, reading);
-    expect(Math.abs((await steady(barTop))! - bottom!)).toBeLessThan(2);
+    seesAgain(await steady(() => seenAtTop(page, walkLines)), bottom);
     // Through a view with no changes to show, which has no reader to keep a place in, too.
     await side.getByRole("button", { name: /^Parse the config/ }).click();
     await says(page, "a.ts:20 \u00b7 new");
-    const again = await steady(() => panelTop(page));
-    expect(again).toBeGreaterThan(0);
+    expect(await steady(() => panelTop(page))).toBeGreaterThan(0);
+    const again = await steady(() => seenAtTop(page, walkLines));
     await side.getByRole("button", { name: "app.ts", exact: true }).click();
     await page.getByRole("main").getByText("No captured changes under app.ts.").waitFor();
     await side.getByRole("button", { name: /^Parse the config/ }).click();
     await headingsAre(page, ["walk/b.ts", "walk/a.ts"]);
     await says(page, "a.ts:20 \u00b7 new");
-    expect(Math.abs((await steady(() => panelTop(page)))! - again!)).toBeLessThan(2);
+    seesAgain(await steady(() => seenAtTop(page, walkLines)), again);
   }, 30_000);
 
   it("keeps a group's place when the reader leaves it from a reference expanded over it", async () => {
@@ -4463,8 +4475,8 @@ describe("installed gyst in a sandboxed browser", () => {
     await headingsAre(page, ["walk/b.ts", "walk/a.ts"]);
     await keys(page, "]", "f", "]", "c", "]", "c");
     await says(page, "a.ts:20 \u00b7 new");
-    const left = await steady(() => panelTop(page));
-    expect(left).toBeGreaterThan(0);
+    expect(await steady(() => panelTop(page))).toBeGreaterThan(0);
+    const left = await steady(() => seenAtTop(page, walkLines));
     await pane
       .locator("[data-group-overview]")
       .getByRole("button", { name: "the constants" })
@@ -4478,7 +4490,7 @@ describe("installed gyst in a sandboxed browser", () => {
     await side.getByRole("button", { name: /^Parse the config/ }).click();
     await headingsAre(page, ["walk/b.ts", "walk/a.ts"]);
     await says(page, "a.ts:20 \u00b7 new");
-    expect(Math.abs((await steady(() => panelTop(page)))! - left!)).toBeLessThan(2);
+    seesAgain(await steady(() => seenAtTop(page, walkLines)), left);
 
     // Choosing the group the reference was expanded over resumes it the same way.
     await pane
@@ -4492,7 +4504,7 @@ describe("installed gyst in a sandboxed browser", () => {
     await side.getByRole("button", { name: /^Parse the config/ }).click();
     await headingsAre(page, ["walk/b.ts", "walk/a.ts"]);
     await says(page, "a.ts:20 \u00b7 new");
-    expect(Math.abs((await steady(() => panelTop(page)))! - left!)).toBeLessThan(2);
+    seesAgain(await steady(() => seenAtTop(page, walkLines)), left);
   }, 30_000);
 
   it("keeps each group's overview open or closed across a visit to another session", async () => {
