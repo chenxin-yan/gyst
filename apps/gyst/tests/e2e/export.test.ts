@@ -420,6 +420,17 @@ describe("walkthrough export", () => {
     await expect.poll(() => headings(page)).toEqual(["src/other.ts"]);
     await side.getByRole("button", { name: "Overview" }).click();
     await expect.poll(() => headings(page)).toEqual(["src/app.ts", "src/other.ts"]);
+    // The sidebar's tabs and trees work offline: a group's file enters the group there, and the
+    // Files tab's tree shows the real statuses, since the file has no Viewed.
+    await side.getByRole("treeitem", { name: "other.ts", exact: true }).click();
+    await expect.poll(() => headings(page)).toEqual(["src/other.ts"]);
+    await pane.getByText("Group 2 of 2", { exact: true }).waitFor();
+    await page.getByRole("tab", { name: "Files" }).click();
+    const appRow = side.getByRole("treeitem", { name: "app.ts", exact: true });
+    expect(await appRow.locator('[data-item-section="git"]').textContent()).toBe("M");
+    await side.getByRole("treeitem", { name: "src", exact: true }).click();
+    await expect.poll(() => headings(page)).toEqual(["src/app.ts", "src/other.ts"]);
+    await page.getByRole("tab", { name: "Walkthrough" }).click();
     await keys(page, "2");
     await page.getByRole("radio", { name: "Stacked", exact: true }).isChecked();
     expect(await page.getByRole("radio", { name: "Stacked", exact: true }).isChecked()).toBe(true);
